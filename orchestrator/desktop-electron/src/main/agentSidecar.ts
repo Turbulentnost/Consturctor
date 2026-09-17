@@ -3,7 +3,14 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { app } from 'electron'
 
-const CURSOR_ENV_KEYS = ['CURSOR_API_KEY', 'CURSOR_API_BASE_URL', 'CURSOR_SDK_MODEL'] as const
+const CURSOR_ENV_KEYS = [
+  'CURSOR_API_KEY',
+  'CURSOR_API_BASE_URL',
+  'CURSOR_SDK_MODEL',
+  'LM_STUDIO_BASE_URL',
+  'LM_STUDIO_MODEL',
+  'LM_STUDIO_OCR_MODEL'
+] as const
 
 function parseEnvFile(path: string): Record<string, string> {
   const out: Record<string, string> = {}
@@ -188,7 +195,7 @@ export class AgentSidecar {
     python: '',
     cwd: ''
   }
-  private readonly runMeta = new Map<string, { workflowId: string; kind: string }>()
+  private readonly runMeta = new Map<string, { workflowId: string; kind: string; source: string }>()
 
   constructor(
     private readonly backendUrl: string,
@@ -273,6 +280,16 @@ export class AgentSidecar {
   warmup(): void {
     this.start()
     this.configure(this.lastToken)
+  }
+
+  sessionCredentials(): { login: string; password: string } {
+    return { login: this.lastLogin, password: this.lastPassword }
+  }
+
+  setSessionCredentials(credentials?: { login?: string; password?: string }): void {
+    if (!credentials) return
+    if (credentials.login !== undefined) this.lastLogin = String(credentials.login || '')
+    if (credentials.password !== undefined) this.lastPassword = String(credentials.password || '')
   }
 
   status(): AgentSidecarStatus {
@@ -423,7 +440,8 @@ export class AgentSidecar {
     if (!runId) return
     this.runMeta.set(runId, {
       workflowId: String(command.workflowId || ''),
-      kind: String(command.type || '')
+      kind: String(command.type || ''),
+      source: String(command.source || '')
     })
   }
 
@@ -444,6 +462,7 @@ export class AgentSidecar {
     if (!next.kind && meta.kind) {
       next.kind = meta.kind === 'check_trigger' ? 'trigger' : meta.kind
     }
+    if (!next.source && meta.source) next.source = meta.source
     if (next.type === 'result' || next.type === 'error') {
       this.runMeta.delete(runId)
     }

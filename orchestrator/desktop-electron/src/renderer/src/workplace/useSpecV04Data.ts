@@ -1,6 +1,6 @@
 import { useContext } from 'react'
 import { type MeetingEvent } from '../utils/outlookMeetings'
-import type { UserProfile } from '../api/types'
+import type { BoardAgent, CalendarEvent, UserProfile } from '../api/types'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { SpecV04SourcesContext } from './SpecV04SourcesProvider'
@@ -33,11 +33,14 @@ export interface SpecV04SourcesState {
   mailImapError: string
   mailImapStatus: string
   processRows: SpecProcessRow[]
-  /** Регламентные агенты с запуском сегодня (`agentLaunchesToday`), не весь каталог. */
+  /** Регламентные агенты со слотом/триггером на календарный день (не lastRunStatus). */
   todayProcessRows: SpecProcessRow[]
+  /** Слоты доски для KPI «Сегодня» (фильтр по periodDay в buildTodayKpiTiles). */
+  boardEvents: CalendarEvent[]
+  boardAgents: BoardAgent[]
   allProcessRows: SpecProcessRow[]
   meetingCount: number
-  /** Совещания с датой начала = сегодня (локальный календарь). */
+  /** Совещания с датой начала = календарный сегодня. Плитки «Сегодня» считают `countMeetingsOnDay(meetings, periodDay)`. */
   meetingCountToday: number
   meetings: MeetingEvent[]
   meetingsLoading: boolean

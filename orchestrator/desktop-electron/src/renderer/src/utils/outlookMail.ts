@@ -130,3 +130,16 @@ export function formatMailTime(raw: string): string {
   if (!parsed) return raw || '—'
   return parsed.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
 }
+
+export function formatMailReceivedLabel(raw: string): string {
+  const parsed = parseMeetingTime(raw)
+  if (!parsed) return raw || '—'
+  return parsed.toLocaleString('ru-RU', {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}

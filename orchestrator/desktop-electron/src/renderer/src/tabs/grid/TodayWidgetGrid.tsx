@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { GripVertical, Maximize2, Pin } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/legacy'
 import 'react-grid-layout/css/styles.css'
-import './tabChrome.css'
+import { mergeTodayLayout, reflowTodayLayout } from './todayLayoutCompact'
+import { TodayWidgetExpandContext } from './TodayWidgetExpandContext'
 import {
   TODAY_GRID_COLS,
+  TODAY_GRID_LAYOUT_MAX_ROWS,
   TODAY_GRID_MARGIN,
   TODAY_GRID_MAX_ROWS,
-  TODAY_WIDGET_IDS,
   TODAY_WIDGET_LABELS,
   computeTodayGridMetrics,
   todayGridMinCanvasHeight,
+  todayLayoutExtentRows,
   type TodayWidgetId,
   useTodayWidgetLayout
 } from './useTodayWidgetLayout'
@@ -18,18 +22,47 @@ const GRID_MIN_CANVAS_HEIGHT = todayGridMinCanvasHeight()
 
 const TODAY_RESIZE_HANDLES = ['s', 'w', 'e', 'n', 'sw', 'nw', 'se', 'ne'] as const
 
-function PinIcon({ pinned }: { pinned: boolean }): React.JSX.Element {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M12 2l1.2 4.2L17 7l-3.8 2.8L14 14l-2-3.2L8 7l3.8-.8L12 2z"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-        fill={pinned ? 'currentColor' : 'none'}
-      />
-      <path d="M12 14v8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
+function TodayWidgetExpandModal({
+  widgetId,
+  onClose,
+  children
+}: {
+  widgetId: TodayWidgetId
+  onClose: () => void
+  children: React.ReactNode
+}): React.JSX.Element | null {
+  const title = TODAY_WIDGET_LABELS[widgetId]
+  return createPortal(
+    <div className="modal-overlay today-widget-expand-overlay" onClick={onClose} role="presentation">
+      <div
+        className="modal-card today-widget-expand-dialog"
+        data-widget={widgetId}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="today-widget-expand-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="today-widget-expand-head">
+          <h4 className="modal-title" id="today-widget-expand-title">
+            {title}
+          </h4>
+          <button type="button" className="today-plan-detail-close" onClick={onClose} aria-label="Закрыть">
+            ×
+          </button>
+        </header>
+        <div className="today-widget-expand-body">
+          <TodayWidgetExpandContext.Provider value>{children}</TodayWidgetExpandContext.Provider>
+        </div>
+        {widgetId === 'outlook' ? null : (
+          <div className="modal-actions">
+            <button type="button" className="btn-light" onClick={onClose}>
+              Закрыть
+            </button>
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body
   )
 }
 
@@ -37,93 +70,63 @@ function TodayWidgetChrome({
   id,
   editMode,
   locked,
-  hidden,
-  color,
   onToggleLock,
-  onToggleVisible,
-  onSetColor,
-  children
+  onExpand
 }: {
   id: TodayWidgetId
   editMode: boolean
   locked: boolean
-  hidden: boolean
-  color: string
   onToggleLock: () => void
-  onToggleVisible: () => void
-  onSetColor: (color: string) => void
-  children: React.ReactNode
+  onExpand: () => void
 }): React.JSX.Element {
   const label = TODAY_WIDGET_LABELS[id]
   return (
     <div
       className={[
-        'today-widget-shell',
-        editMode ? 'today-widget-shell--edit' : '',
-        locked ? 'today-widget-shell--locked' : '',
-        hidden ? 'today-widget-shell--hidden' : ''
+        'today-widget-chrome',
+        'today-widget-chrome-bar',
+        editMode ? 'today-widget-chrome-bar--edit' : ''
       ]
         .filter(Boolean)
         .join(' ')}
-      style={{ background: color || undefined }}
-      data-widget-id={id}
+      role="group"
+      aria-label={label}
     >
+      <span
+        className="today-widget-drag-handle"
+        aria-label={`Переместить: ${label}`}
+        title="Перетащите для перемещения"
+      >
+        <GripVertical size={15} strokeWidth={2} aria-hidden />
+      </span>
+      <span className="today-widget-chrome-title">{label}</span>
+      <button
+        type="button"
+        className="today-widget-expand-btn"
+        aria-label={`Развернуть: ${label}`}
+        title="Открыть в окне"
+        onClick={(event) => {
+          event.stopPropagation()
+          onExpand()
+        }}
+      >
+        <Maximize2 size={14} strokeWidth={2} aria-hidden />
+      </button>
       {editMode ? (
-        <div
-          className="today-widget-chrome today-widget-chrome-bar today-widget-drag-handle"
-          role="group"
-          aria-label={`Переместить: ${label}`}
-          title="Перетащите верхнюю панель для перемещения"
+        <button
+          type="button"
+          className={`today-widget-lock-btn${locked ? ' is-locked' : ''}`}
+          aria-label={locked ? `Открепить: ${label}` : `Закрепить: ${label}`}
+          aria-pressed={locked}
+          title={locked ? 'Закреплено — не двигается' : 'Закрепить на месте'}
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggleLock()
+          }}
         >
-          <span className="today-widget-drag-grip" aria-hidden>
-            ⋮⋮
-          </span>
-          <span className="today-widget-chrome-title">{label}</span>
-          <label className="tab-chrome-color" title="Цвет виджета">
-            <input
-              type="color"
-              value={color || '#ffffff'}
-              onChange={(event) => onSetColor(event.target.value)}
-              onClick={(event) => event.stopPropagation()}
-            />
-          </label>
-          <button
-            type="button"
-            className="tab-chrome-color-reset"
-            onClick={(event) => {
-              event.stopPropagation()
-              onSetColor('')
-            }}
-          >
-            Сброс цвета
-          </button>
-          <button
-            type="button"
-            className={`today-widget-lock-btn${hidden ? ' is-locked' : ''}`}
-            aria-label={hidden ? `Показать: ${label}` : `Скрыть: ${label}`}
-            onClick={(event) => {
-              event.stopPropagation()
-              onToggleVisible()
-            }}
-          >
-            {hidden ? 'Показать' : 'Скрыть'}
-          </button>
-          <button
-            type="button"
-            className={`today-widget-lock-btn${locked ? ' is-locked' : ''}`}
-            aria-label={locked ? `Открепить: ${label}` : `Закрепить: ${label}`}
-            aria-pressed={locked}
-            title={locked ? 'Закреплено — не двигается' : 'Закрепить на месте'}
-            onClick={(event) => {
-              event.stopPropagation()
-              onToggleLock()
-            }}
-          >
-            <PinIcon pinned={locked} />
-          </button>
-        </div>
+          <Pin size={14} strokeWidth={2} fill={locked ? 'currentColor' : 'none'} aria-hidden />
+        </button>
       ) : null}
-      <div className="today-widget-content">{children}</div>
     </div>
   )
 }
@@ -132,63 +135,113 @@ export function TodayWidgetGrid({
   userId,
   editMode,
   layoutWithStatic,
+  fullLayout,
   locked,
-  visible = {},
-  color = {},
   onLayoutChange,
   onToggleLock,
-  onToggleVisible,
-  onSetColor,
-  widgets
+  onRequestEditMode,
+  widgets,
+  visibleWidgetIds,
+  rightRail
 }: {
   userId: string
   editMode: boolean
   layoutWithStatic: LayoutItem[]
+  fullLayout: LayoutItem[]
   locked: Partial<Record<TodayWidgetId, boolean>>
-  visible?: Partial<Record<TodayWidgetId, boolean>>
-  color?: Partial<Record<TodayWidgetId, string>>
   onLayoutChange: (layout: Layout) => void
   onToggleLock: (id: TodayWidgetId) => void
-  onToggleVisible?: (id: TodayWidgetId) => void
-  onSetColor?: (id: TodayWidgetId, color: string) => void
+  onRequestEditMode: () => void
   widgets: Record<TodayWidgetId, React.ReactNode>
+  visibleWidgetIds: TodayWidgetId[]
+  rightRail?: React.ReactNode
 }): React.JSX.Element {
-  const draggable = editMode
   const canvasRef = useRef<HTMLDivElement>(null)
-  const [gridMetrics, setGridMetrics] = useState(() =>
-    computeTodayGridMetrics(GRID_MIN_CANVAS_HEIGHT, 800)
+  const layoutRef = useRef(fullLayout)
+  const layoutSessionRef = useRef(false)
+  const layoutReadyRef = useRef(false)
+  const [expandedWidgetId, setExpandedWidgetId] = useState<TodayWidgetId | null>(null)
+  const [sessionLayout, setSessionLayout] = useState<LayoutItem[] | null>(null)
+
+  const visibleLayout = useMemo(
+    () => layoutWithStatic.filter((item) => visibleWidgetIds.includes(item.i as TodayWidgetId)),
+    [layoutWithStatic, visibleWidgetIds]
   )
+  const displayLayout = sessionLayout ?? visibleLayout
+
+  const extentRows = useMemo(
+    () => todayLayoutExtentRows(displayLayout),
+    [displayLayout]
+  )
+  const [gridMetrics, setGridMetrics] = useState(() =>
+    computeTodayGridMetrics(GRID_MIN_CANVAS_HEIGHT, 800, extentRows)
+  )
+
+  useEffect(() => {
+    layoutRef.current = fullLayout
+  }, [fullLayout])
+
+  useEffect(() => {
+    if (!layoutSessionRef.current) setSessionLayout(null)
+  }, [visibleLayout])
 
   useEffect(() => {
     const node = canvasRef.current
     if (!node) return
 
     const measure = (): void => {
-      const height = Math.max(node.clientHeight, GRID_MIN_CANVAS_HEIGHT)
+      const viewportHeight = node.parentElement?.clientHeight ?? node.clientHeight
+      const height = Math.max(viewportHeight, GRID_MIN_CANVAS_HEIGHT)
       const width = node.clientWidth
-      const next = computeTodayGridMetrics(height, width)
-      setGridMetrics((prev) =>
-        prev.rowHeight === next.rowHeight &&
-        prev.canvasHeight === next.canvasHeight &&
-        prev.containerWidth === next.containerWidth
-          ? prev
-          : next
-      )
+      const layoutRows = editMode
+        ? Math.max(TODAY_GRID_MAX_ROWS, extentRows)
+        : TODAY_GRID_MAX_ROWS
+      setGridMetrics(computeTodayGridMetrics(height, width, layoutRows))
     }
 
     measure()
     const observer = new ResizeObserver(() => measure())
     observer.observe(node)
     return () => observer.disconnect()
-  }, [])
+  }, [editMode, extentRows])
 
-  const { rowHeight, canvasHeight, containerWidth, colWidth, marginX, marginY } = gridMetrics
+  const { rowHeight, canvasHeight, containerWidth, colWidth, marginX, marginY, canvasRows } = gridMetrics
+  const needsScroll = editMode
+
+  const beginLayoutSession = useCallback(() => {
+    layoutSessionRef.current = true
+    onRequestEditMode()
+  }, [onRequestEditMode])
+
+  const settleLayout = useCallback(
+    (next: Layout, priorityIds: string[]) => {
+      if (!layoutReadyRef.current) {
+        layoutReadyRef.current = true
+        return
+      }
+      layoutSessionRef.current = false
+      const reflowed = reflowTodayLayout([...next], priorityIds, TODAY_GRID_COLS, locked)
+      setSessionLayout(reflowed)
+      onLayoutChange(mergeTodayLayout(layoutRef.current, visibleWidgetIds, reflowed))
+    },
+    [locked, onLayoutChange, visibleWidgetIds]
+  )
+
+  const handleVisibleLayoutChange = useCallback((next: Layout) => {
+    if (!layoutReadyRef.current) {
+      layoutReadyRef.current = true
+      return
+    }
+    if (!layoutSessionRef.current) return
+    setSessionLayout([...next])
+  }, [])
 
   const canvasStyle = useMemo(
     () =>
       ({
-        minHeight: GRID_MIN_CANVAS_HEIGHT,
-        height: '100%',
+        minHeight: editMode ? GRID_MIN_CANVAS_HEIGHT : 0,
+        height: editMode ? undefined : '100%',
+        maxHeight: editMode ? undefined : '100%',
         '--today-rgl-row-height': `${rowHeight}px`,
         '--today-rgl-col-width': `${colWidth}px`,
         '--today-rgl-margin-x': `${marginX}px`,
@@ -198,63 +251,103 @@ export function TodayWidgetGrid({
   )
 
   const children = useMemo(() => {
-    return TODAY_WIDGET_IDS.filter((id) => editMode || visible[id] !== false).map((id) => (
+    return visibleWidgetIds.map((id) => (
       <div key={id} className="today-widget-grid-item">
-        <TodayWidgetChrome
-          id={id}
-          editMode={editMode}
-          locked={Boolean(locked[id])}
-          hidden={visible[id] === false}
-          color={color[id] || ''}
-          onToggleLock={() => onToggleLock(id)}
-          onToggleVisible={() => onToggleVisible?.(id)}
-          onSetColor={(next) => onSetColor?.(id, next)}
+        <div
+          className={[
+            'today-widget-shell',
+            editMode ? 'today-widget-shell--edit' : '',
+            locked[id] ? 'today-widget-shell--locked' : ''
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          data-widget-id={id}
         >
-          {widgets[id]}
-        </TodayWidgetChrome>
+          <TodayWidgetChrome
+            id={id}
+            editMode={editMode}
+            locked={Boolean(locked[id])}
+            onToggleLock={() => onToggleLock(id)}
+            onExpand={() => setExpandedWidgetId(id)}
+          />
+          <div className="today-widget-content">{widgets[id]}</div>
+        </div>
       </div>
     ))
-  }, [color, editMode, locked, onSetColor, onToggleLock, onToggleVisible, visible, widgets])
+  }, [editMode, locked, onToggleLock, visibleWidgetIds, widgets])
 
   return (
-    <div
-      ref={canvasRef}
-      className={[
-        'today-widget-canvas',
-        editMode ? 'today-widget-canvas--edit' : 'today-widget-canvas--view',
-        'today-widget-grid-host',
-        editMode ? 'today-widget-grid-host--edit' : ''
-      ]
-        .filter(Boolean)
-        .join(' ')}
-      style={canvasStyle}
-      data-user-id={userId || 'default'}
-    >
-      <GridLayout
-        className="today-widget-grid"
-        style={{ height: canvasHeight, minHeight: canvasHeight }}
-        width={Math.max(containerWidth, 1)}
-        cols={TODAY_GRID_COLS}
-        maxRows={TODAY_GRID_MAX_ROWS}
-        rowHeight={rowHeight}
-        margin={TODAY_GRID_MARGIN}
-        containerPadding={[0, 0]}
-        layout={layoutWithStatic}
-        onLayoutChange={onLayoutChange}
-        draggableHandle=".today-widget-chrome-bar"
-        draggableCancel=".today-widget-lock-btn"
-        isDraggable={draggable}
-        isResizable={draggable}
-        isBounded
-        compactType={null}
-        preventCollision
-        allowOverlap={false}
-        useCSSTransforms
-        resizeHandles={[...TODAY_RESIZE_HANDLES]}
+    <>
+      <div
+        ref={canvasRef}
+        className={[
+          'today-widget-canvas',
+          editMode ? 'today-widget-canvas--edit' : 'today-widget-canvas--view',
+          'today-widget-grid-host',
+          editMode ? 'today-widget-grid-host--edit' : '',
+          needsScroll ? 'today-widget-canvas--scroll' : ''
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        style={canvasStyle}
+        data-user-id={userId || 'default'}
       >
-        {children}
-      </GridLayout>
-    </div>
+        <GridLayout
+          className="today-widget-grid"
+          style={{
+            height: editMode ? canvasHeight : '100%',
+            minHeight: editMode ? canvasHeight : 0,
+            maxHeight: editMode ? undefined : '100%'
+          }}
+          width={Math.max(containerWidth, 1)}
+          cols={TODAY_GRID_COLS}
+          maxRows={
+            editMode
+              ? Math.max(TODAY_GRID_LAYOUT_MAX_ROWS, canvasRows, extentRows)
+              : TODAY_GRID_MAX_ROWS
+          }
+          rowHeight={rowHeight}
+          margin={TODAY_GRID_MARGIN}
+          containerPadding={[0, 0]}
+          layout={displayLayout}
+          onLayoutChange={handleVisibleLayoutChange}
+          onDragStart={(_layout, _oldItem, newItem) => {
+            beginLayoutSession()
+            if (newItem?.i) setSessionLayout((current) => current ?? [...visibleLayout])
+          }}
+          onResizeStart={(_layout, _oldItem, newItem) => {
+            beginLayoutSession()
+            if (newItem?.i) setSessionLayout((current) => current ?? [...visibleLayout])
+          }}
+          onDragStop={(layout, _oldItem, newItem) => {
+            settleLayout(layout, newItem?.i ? [newItem.i] : [])
+          }}
+          onResizeStop={(layout, _oldItem, newItem) => {
+            settleLayout(layout, newItem?.i ? [newItem.i] : [])
+          }}
+          draggableHandle=".today-widget-drag-handle"
+          draggableCancel=".today-widget-expand-btn, .today-widget-lock-btn"
+          isDraggable
+          isResizable
+          isBounded
+          compactType={null}
+          preventCollision={false}
+          allowOverlap={false}
+          useCSSTransforms
+          resizeHandles={[...TODAY_RESIZE_HANDLES]}
+        >
+          {children}
+        </GridLayout>
+        {rightRail ? <div className="today-widget-right-rail">{rightRail}</div> : null}
+      </div>
+      {expandedWidgetId ? (
+        <TodayWidgetExpandModal widgetId={expandedWidgetId} onClose={() => setExpandedWidgetId(null)}>
+          <div className="today-widget-expand-content" data-widget={expandedWidgetId}>
+            {widgets[expandedWidgetId]}
+          </div>
+        </TodayWidgetExpandModal>
+      ) : null}
+    </>
   )
 }
 

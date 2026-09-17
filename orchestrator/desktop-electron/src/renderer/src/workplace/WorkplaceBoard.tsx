@@ -279,6 +279,15 @@ export function agentLaunchesToday(agent: WorkplaceAgent, today = new Date()): b
   return Boolean(next && sameDay(next, today))
 }
 
+export {
+  filterDayLaunchEvents,
+  isAutoLaunchSource,
+  isKpiPlanBoardAgent,
+  isSuccessfulLaunchStatus,
+  summarizeDayLaunches
+} from './todayKpiLaunches'
+export type { DayLaunchSummary } from './todayKpiLaunches'
+
 export function buildWorkplaceAgents(board: WorkflowBoard, personal?: PersonalAgentSeed | null): WorkplaceAgent[] {
   const today = new Date()
   const todayEvents = board.events.filter((event) => {
@@ -1272,11 +1281,15 @@ export function TodayWorkplace({
     for (const agent of agents) {
       if (agent.standalone) continue
       const liveHitl = runs.entries[agent.workflowId]?.state.pendingHitl
-      if (agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR' || liveHitl) {
+      const liveQuestion = runs.entries[agent.workflowId]?.state.pendingQuestion
+      if (agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR' || liveHitl || liveQuestion) {
         cards.push({
           id: `wait:${agent.id}`,
           kind: 'waiting',
-          title: agent.tasks.find((task) => task.status === 'needs_decision')?.title || `Решение: ${agent.name}`,
+          title:
+            liveQuestion?.question ||
+            agent.tasks.find((task) => task.status === 'needs_decision')?.title ||
+            `Решение: ${agent.name}`,
           note:
             agent.status === 'ERROR'
               ? 'Агент сообщил об ошибке — разберите результат и подтвердите следующий шаг.'
@@ -1284,9 +1297,9 @@ export function TodayWorkplace({
           meta: `Агент «${agent.name}» · ${STATUS_LABEL[agent.status]}`,
           workflowId: agent.workflowId,
           agentName: agent.name,
-          requestId: liveHitl?.requestId,
+          requestId: liveHitl?.requestId || liveQuestion?.requestId,
           runId: runs.entries[agent.workflowId]?.backendRunId || agent.tasks.find((task) => task.runId)?.runId,
-          live: Boolean(liveHitl?.requestId)
+          live: Boolean(liveHitl?.requestId || liveQuestion?.requestId)
         })
       }
       const files = (recentFilesByWorkflow[agent.workflowId] || []).filter(isUserFacingResultFile)
@@ -1352,7 +1365,7 @@ export function TodayWorkplace({
           ? await findPendingToolRequest(item.workflowId, item.requestId)
           : null
       if (pending?.requestId) {
-        runs.respondHitl(item.workflowId, pending.requestId, true)
+        runs.respondDecision(item.workflowId, pending.requestId, true, pending.tool)
         setActionNote('Действие подтверждено — агент продолжит работу.')
         await refreshWorkflowKpi(item.workflowId)
         await reload()
@@ -1391,7 +1404,7 @@ export function TodayWorkplace({
           ? await findPendingToolRequest(item.workflowId, item.requestId)
           : null
       if (pending?.requestId) {
-        runs.respondHitl(item.workflowId, pending.requestId, false)
+        runs.respondDecision(item.workflowId, pending.requestId, false, pending.tool)
         setActionNote('Действие возвращено — агент получит отказ.')
         await reload()
         return

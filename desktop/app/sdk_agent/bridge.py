@@ -218,6 +218,7 @@ class CursorSdkBridge:
         on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         should_stop: Callable[[], bool] | None = None,
         confirm_writes: bool = False,
+        restrict_builtins: bool = False,
     ) -> dict[str, Any]:
         reload_cursor_api_key()
         self._ensure_ready()
@@ -276,6 +277,7 @@ class CursorSdkBridge:
                     "tools": sdk_tool_specs() if tools is None else tools,
                     "resumeAgentId": agent_id or None,
                     "workflowId": workflow_id,
+                    "restrictBuiltins": bool(restrict_builtins),
                 },
             )
             assert process.stdout is not None
@@ -759,6 +761,8 @@ class CursorSdkBridge:
 
     @staticmethod
     def _should_externalize_result(result: dict[str, Any], raw_bytes: int) -> bool:
+        if result.get("vision") and result.get("vision_pages"):
+            return False
         if raw_bytes > LARGE_TOOL_RESULT_BYTES:
             return True
         for value in result.values():

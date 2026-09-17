@@ -1,9 +1,12 @@
 import type { AgentEvent, AgentRunnerEvent } from '../../api/types'
-import { isTaskTool, resolveToolName, toolArgHint, toolCardTitle, toolLabel } from './labels'
+import { isTriggerCheckNoise } from './build'
+import { agentWantsText, explainTool, toolCardTitle, toolIntent } from './explainTool'
+import { isTaskTool, resolveToolName, toolArgHint } from './labels'
 import { summarizeToolResult } from './resultSummary'
 import { isAskQuestion, parseQuestionArgs } from './questionArgs'
 import { appendThinkingText, streamDelta } from './thinkingText'
 import type { FeedItem, PendingHitl, PendingQuestion, ToolItem } from './types'
+import { EMPTY_TIMING, type LiveTiming } from '../../workplace/runTiming'
 
 export interface AgentResult {
   kind: 'design' | 'readiness' | 'demo' | 'run' | 'trigger'
@@ -25,6 +28,8 @@ export interface RunState {
   pendingQuestion: PendingQuestion | null
   pendingHitl: PendingHitl | null
   activeRunId: string | null
+  runningSinceMs: number | null
+  timing: LiveTiming
 }
 
 /** Effects a single event can emit so callers can fire callbacks / navigate. */
@@ -42,7 +47,9 @@ export function createRunState(): RunState {
     error: '',
     pendingQuestion: null,
     pendingHitl: null,
-    activeRunId: null
+    activeRunId: null,
+    runningSinceMs: null,
+    timing: EMPTY_TIMING
   }
 }
 
@@ -259,7 +266,8 @@ function handleToolCall(state: RunState, payload: AgentRunnerEvent): RunState {
   const running = isRunningStatus(status) && !isDoneStatus(status)
   const done = isDoneStatus(status) || (!running && resultObj !== null)
   const errored = isErrorStatus(status)
-  const hint = toolArgHint(args)
+  const explained = explainTool(tool, args)
+  const hint = explained.facts[0] || toolArgHint(args)
   const summary = done ? summarizeResult(resultObj) : ''
   const title = toolCardTitle(tool, args)
   const merged = [...state.items]
@@ -302,7 +310,7 @@ function handleToolCall(state: RunState, payload: AgentRunnerEvent): RunState {
       error: errored
     })
   }
-  return { ...state, items: merged, status: done ? state.status : `Вызываю ${toolLabel(tool)}…` }
+  return { ...state, items: merged, status: done ? state.status : `${explained.activity}…` }
 }
 
 function handleTask(state: RunState, payload: AgentRunnerEvent): RunState {
@@ -400,7 +408,7 @@ function handleToolResult(state: RunState, payload: AgentRunnerEvent): RunState 
       id: nextId('tool'),
       tool,
       requestId,
-      title: toolLabel(tool),
+      title: toolCardTitle(tool),
       hint: '',
       arguments: {},
       result: resultObj,
@@ -431,6 +439,7 @@ export function applyRunnerEvent(state: RunState, payload: AgentRunnerEvent): Ru
       return handleToolResult(state, payload)
     case 'decision':
     case 'progress':
+      if (isTriggerCheckNoise(text)) return state
       return { ...state, items: pushSystem(state.items, text) }
     case 'status':
       return { ...state, status: text || 'Агент работает…' }
@@ -498,16 +507,18 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
     }
     case 'hitl': {
       const tool = String(event.tool || '')
+      const args = (event.arguments as Record<string, unknown>) || {}
       return {
         state: {
           ...state,
           pendingHitl: {
             requestId: String(event.requestId || ''),
             tool,
-            title: toolLabel(tool),
-            arguments: (event.arguments as Record<string, unknown>) || {}
+            title: agentWantsText(tool, args),
+            intent: toolIntent(tool, args),
+            arguments: args
           },
-          status: 'Требуется подтверждение действия'
+          status: 'Нужно ваше решение'
         }
       }
     }

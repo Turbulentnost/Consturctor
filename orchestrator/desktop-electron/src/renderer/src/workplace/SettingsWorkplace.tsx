@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { UserProfile } from '../api/types'
 import { api } from '../api/client'
+import {
+  defaultTodayWidgetVisibility,
+  readTodayWidgetVisibility,
+  TODAY_WIDGET_IDS,
+  TODAY_WIDGET_LABELS,
+  type TodayWidgetId,
+  writeTodayWidgetVisibility
+} from '../tabs/grid/todayWidgetSettings'
 
 type SettingsSection = 'general' | 'notifications' | 'access' | 'diagnostics' | 'integrations'
 
@@ -118,8 +126,28 @@ const TABS: { id: SettingsSection; label: string }[] = [
 
 const DEFAULT_EVENTS: EventChannelRow[] = [
   {
+    id: 'run_started',
+    title: 'Запуск начался',
+    icon: 'clock',
+    inApp: true,
+    email: false,
+    emailOptional: true,
+    when: 'immediate',
+    escalate: 'none'
+  },
+  {
+    id: 'run_finished',
+    title: 'Запуск закончен',
+    icon: 'clock',
+    inApp: true,
+    email: false,
+    emailOptional: true,
+    when: 'immediate',
+    escalate: 'none'
+  },
+  {
     id: 'decision_new',
-    title: 'Новое решение ожидает подтверждения',
+    title: 'Агент ожидает подтверждения',
     icon: 'clock',
     inApp: true,
     email: true,
@@ -299,11 +327,20 @@ export function SettingsWorkplace({
   const [unread, setUnread] = useState(0)
   const [savedNote, setSavedNote] = useState('')
   const [toolLines, setToolLines] = useState<string[]>([])
+  const [widgetVisibility, setWidgetVisibility] = useState<Record<TodayWidgetId, boolean>>(() =>
+    readTodayWidgetVisibility(user.id)
+  )
+  const [widgetDraft, setWidgetDraft] = useState<Record<TodayWidgetId, boolean>>(() =>
+    readTodayWidgetVisibility(user.id)
+  )
 
   useEffect(() => {
     const next = loadPrefs(user.id)
     setPrefs(next)
     setDraft(next)
+    const widgets = readTodayWidgetVisibility(user.id)
+    setWidgetVisibility(widgets)
+    setWidgetDraft(widgets)
   }, [user.id])
 
   useEffect(() => {
@@ -342,7 +379,12 @@ export function SettingsWorkplace({
     return () => window.clearTimeout(t)
   }, [savedNote])
 
-  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(prefs), [draft, prefs])
+  const dirty = useMemo(
+    () =>
+      JSON.stringify(draft) !== JSON.stringify(prefs) ||
+      JSON.stringify(widgetDraft) !== JSON.stringify(widgetVisibility),
+    [draft, prefs, widgetDraft, widgetVisibility]
+  )
 
   function patchEvent(id: string, patch: Partial<EventChannelRow>): void {
     setDraft((prev) => ({
@@ -354,12 +396,26 @@ export function SettingsWorkplace({
   function saveChanges(): void {
     savePrefs(user.id, draft)
     setPrefs(draft)
+    writeTodayWidgetVisibility(user.id, widgetDraft)
+    setWidgetVisibility(widgetDraft)
     setSavedNote('Изменения сохранены')
   }
 
   function restoreDefaults(): void {
     const next = structuredClone(DEFAULT_PREFS)
     setDraft(next)
+    const widgets = defaultTodayWidgetVisibility()
+    setWidgetDraft(widgets)
+  }
+
+  function saveWidgetSettings(): void {
+    writeTodayWidgetVisibility(user.id, widgetDraft)
+    setWidgetVisibility(widgetDraft)
+    setSavedNote('Настройки виджетов сохранены')
+  }
+
+  function restoreWidgetDefaults(): void {
+    setWidgetDraft(defaultTodayWidgetVisibility())
   }
 
   function openNotificationCenter(): void {
@@ -412,6 +468,34 @@ export function SettingsWorkplace({
             <div className="wp-actions">
               <button className="btn-primary" type="button" onClick={onFiles}>
                 Открыть файлы
+              </button>
+            </div>
+          </section>
+          <section className="set-card set-widgets-card">
+            <h2>Виджеты вкладки «Сегодня»</h2>
+            <p className="set-muted">Выберите, какие блоки показывать на главной рабочей вкладке.</p>
+            <ul className="set-widget-list">
+              {TODAY_WIDGET_IDS.map((id) => (
+                <li key={id}>
+                  <label className="set-widget-row">
+                    <input
+                      type="checkbox"
+                      checked={widgetDraft[id] !== false}
+                      onChange={(event) =>
+                        setWidgetDraft((prev) => ({ ...prev, [id]: event.target.checked }))
+                      }
+                    />
+                    <span>{TODAY_WIDGET_LABELS[id]}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+            <div className="wp-actions set-widget-actions">
+              <button className="btn-primary" type="button" onClick={saveWidgetSettings}>
+                Сохранить виджеты
+              </button>
+              <button className="btn-ghost" type="button" onClick={restoreWidgetDefaults}>
+                Все виджеты
               </button>
             </div>
           </section>

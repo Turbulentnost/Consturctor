@@ -53,7 +53,7 @@ import time
 import traceback
 import uuid
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -125,6 +125,7 @@ _NEVER_CONFIRM = frozenset(
         "code.write_python",
         "code.run_python",
         "report.export_document",
+        "office.format_document",
     }
 )
 _READ_EXACT = frozenset(
@@ -141,10 +142,15 @@ _READ_EXACT = frozenset(
         "calendar.show_meetings",
         "excel.list_files",
         "excel.read_workbook",
+        "office.read_file",
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
+        "onec.erp_assignments",
+        "onec.download_artifact",
+        "onec.erp_write_probe",
         "onec.erp_tasks_current",
+        "onec.erp_tasks_odata",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
@@ -162,9 +168,21 @@ _READ_EXACT = frozenset(
 _READ_PREFIXES = ("onec.search_", "onec.get_", "imap.", "turboproject.")
 
 
+def _compact_tool_name(name: str) -> str:
+    return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+
+def _matches_known_tool(name: str, known: frozenset[str]) -> bool:
+    tool = (name or "").strip()
+    if tool in known:
+        return True
+    compact = _compact_tool_name(tool)
+    return any(_compact_tool_name(item) == compact for item in known)
+
+
 def _is_read_tool(name: str) -> bool:
     tool = (name or "").strip()
-    if tool in _NEVER_CONFIRM or tool in _READ_EXACT:
+    if _matches_known_tool(tool, _NEVER_CONFIRM | _READ_EXACT):
         return True
     return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
 
@@ -188,9 +206,32 @@ def _text_has_finished_work_result(text: str) -> bool:
 
 def needs_confirmation(name: str) -> bool:
     tool = (name or "").strip()
-    if tool in _NEVER_CONFIRM:
+    if _matches_known_tool(tool, _NEVER_CONFIRM):
         return False
     return not _is_read_tool(tool)
+
+
+def _tool_wait_title(tool: str) -> str:
+    name = (tool or "").strip()
+    if name.startswith("onec."):
+        return "Доступ к 1С"
+    if name.startswith("excel."):
+        return "Действие в Excel"
+    if "outlook" in name or name.startswith("email."):
+        return "Действие в почте"
+    return name or "Действие агента"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _with_at(payload: dict[str, Any]) -> dict[str, Any]:
+    if str(payload.get("at") or "").strip():
+        return payload
+    out = dict(payload)
+    out["at"] = _now_iso()
+    return out
 
 
 _STDOUT_LOCK = threading.Lock()
@@ -330,6 +371,10 @@ KEEP_KNOWLEDGE_FILE_SPEC: dict[str, Any] = {
 KEEP_FILE_HINT = (
     "Files in materials/attachments are per-run inputs: read them now, they are already "
     "stored as temporary for this run only. "
+    "Word (.docx), PDF and images: office.read_file with filename or saved_path from "
+    "onec.download_artifact. Excel: excel.read_workbook. "
+    "Scans and photos are passed to Cursor SDK vision in the tool result — "
+    "do not use built-in Read or Grep on docx/pdf/xlsx/jpg and do not look for OCR. "
     "Call keepKnowledgeFile ONLY for a stable document that is identical and reusable on "
     "every later run (fixed catalog, regulation table, standing schedule). "
     "Do not keep a per-run input that changes each run (for example a yearly meetings file "
@@ -465,6 +510,7 @@ _SD_MEETING_TOOLS = {
     "onec.docflow_tasks",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_meeting_summary",
     "report.export_document",
     "users.current",
@@ -485,6 +531,7 @@ _RK_MEETING_TOOLS = {
     "onec.sql_query",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_task_report",
     "report.build_meeting_summary",
     "report.export_document",
@@ -586,6 +633,14 @@ def _is_calendar_control_text(*parts: Any) -> bool:
     return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
 
 
+def _is_assignment_journal_text(*parts: Any) -> bool:
+    """Журнал поручений — не серия совещаний Outlook; playbook не подменяем."""
+    blob = _meeting_blob(*parts)
+    if _is_rk_text(blob) or _is_sd_meeting_text(blob):
+        return False
+    return any(tip in blob for tip in ("аст00", "action tracker", "журнал поруч"))
+
+
 def _is_rk_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
     if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
@@ -655,10 +710,72 @@ _CALENDAR_CONTROL_TOOLS = {
 }
 
 
+def _whitelist_tool_names(record: Any) -> list[str]:
+    """Playbook / draft tools saved at formation. Empty means the catalog is still open."""
+    local = getattr(record, "local_run", None) or {}
+    if not isinstance(local, dict):
+        local = {}
+    book = local.get("playbook") if isinstance(local.get("playbook"), dict) else {}
+    draft = local.get("playbook_draft") if isinstance(local.get("playbook_draft"), dict) else {}
+    names: list[str] = []
+    seen: set[str] = set()
+    builtins = {
+        "read",
+        "grep",
+        "glob",
+        "ls",
+        "shell",
+        "edit",
+        "delete",
+        "applyAgentDiff",
+        "code.run_python",
+        "write",
+    }
+
+    def add(value: object) -> None:
+        name = str(value or "").strip()
+        if not name or name in seen or name in builtins:
+            return
+        seen.add(name)
+        names.append(name)
+
+    def add_all(values: object) -> None:
+        if isinstance(values, (list, tuple, set)):
+            for item in values:
+                add(item)
+
+    add_all(book.get("tools"))
+    add_all(local.get("live_tools_invoked"))
+    for blob in (book, draft):
+        for step in blob.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            add(step.get("tool") or step.get("tool_name"))
+            add_all(step.get("tool_candidates"))
+    if names and any(
+        item in seen
+        for item in (
+            "onec.download_artifact",
+            "excel.read_workbook",
+            "onec.erp_assignments",
+            "onec.list_attachments",
+            "onec.read_attachment",
+        )
+    ):
+        add("office.read_file")
+    if names:
+        return names
+    add_all(local.get("tools"))
+    return names
+
+
 def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
-    """Limit specialized agents to their playbook tools; keep the full catalog otherwise."""
+    """Limit an agent to its formation whitelist; fall back to SD/RK/calendar packs."""
     allowed: set[str] | None = None
-    if _is_calendar_control_workflow(record):
+    names = _whitelist_tool_names(record)
+    if names:
+        allowed = set(names)
+    elif _is_calendar_control_workflow(record):
         allowed = _CALENDAR_CONTROL_TOOLS
     elif _is_sd_meeting_workflow(record):
         allowed = _SD_MEETING_TOOLS
@@ -675,7 +792,12 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
 
 def _is_outlook_series_prompt(prompt: str) -> bool:
     blob = (prompt or "").casefold()
-    if _is_calendar_control_text(blob) or _is_sd_meeting_text(blob) or _is_rk_text(blob):
+    if (
+        _is_calendar_control_text(blob)
+        or _is_sd_meeting_text(blob)
+        or _is_rk_text(blob)
+        or _is_assignment_journal_text(blob)
+    ):
         return False
     return any(tip in blob for tip in _SERIES_SCHEDULE_TIPS)
 
@@ -710,7 +832,12 @@ def _meeting_blob(*parts: Any) -> str:
 
 
 def _is_meeting_text(*parts: Any) -> bool:
-    if _is_calendar_control_text(*parts) or _is_sd_meeting_text(*parts) or _is_rk_text(*parts):
+    if (
+        _is_calendar_control_text(*parts)
+        or _is_sd_meeting_text(*parts)
+        or _is_rk_text(*parts)
+        or _is_assignment_journal_text(*parts)
+    ):
         return False
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _MEETING_TIPS)
@@ -759,7 +886,7 @@ def _merge_outlook_rule_into_playbook(local_run: dict[str, Any] | None) -> dict[
             continue
         current = str(raw.get("instructions") or "").strip()
         name = str(raw.get("name") or "")
-        if _is_calendar_control_text(current, name):
+        if _is_calendar_control_text(current, name) or _is_assignment_journal_text(current, name):
             continue
         if OUTLOOK_SERIES_MARKER in current:
             continue
@@ -1124,6 +1251,8 @@ class ElectronBridge(CursorSdkBridge):
             self._knowledge_workflow_id = workflow_id
         if cwd:
             self._knowledge_cwd = cwd
+        kind = str(getattr(self._hitl_gate, "_kind", "") or "")
+        must_confirm = bool(confirm_writes) or kind == "run"
         return super().run(
             prompt=_with_sidecar_prompt(prompt, mode=mode),
             workflow_id=workflow_id,
@@ -1136,7 +1265,8 @@ class ElectronBridge(CursorSdkBridge):
             on_event=on_event,
             on_question=on_question,
             should_stop=should_stop,
-            confirm_writes=confirm_writes,
+            confirm_writes=must_confirm,
+            restrict_builtins=tools is not None,
         )
 
     def _handle_tool_request(
@@ -1254,6 +1384,8 @@ class HitlGate:
         self._needs_file: dict[str, bool] = {}
         self.qa_history: list[dict[str, str]] = []
         self._lock = threading.Lock()
+        self._events: list[dict[str, Any]] | None = None
+        self.on_events_changed: Any = None
         self.work_result_done = False
 
     def bind(self, *, workflow_id: str = "", kind: str = "") -> None:
@@ -1261,6 +1393,40 @@ class HitlGate:
             self._workflow_id = workflow_id
         if kind:
             self._kind = kind
+
+    def bind_events(self, events: list[dict[str, Any]]) -> None:
+        self._events = events
+
+    def _notify_events_changed(self) -> None:
+        callback = self.on_events_changed
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _append_wait_event(self, event: dict[str, Any]) -> None:
+        payload = _with_at(dict(event))
+        if self._events is not None:
+            self._events.append(payload)
+        self._notify_events_changed()
+
+    def _mark_wait_event(self, request_id: str, *, approved: bool) -> None:
+        rid = (request_id or "").strip()
+        if not rid or self._events is None:
+            return
+        for ev in reversed(self._events):
+            if str(ev.get("type") or "") not in {"hitl", "question"}:
+                continue
+            ev_id = str(ev.get("requestId") or ev.get("request_id") or "").strip()
+            if ev_id != rid:
+                continue
+            ev["status"] = "approved" if approved else "rejected"
+            ev["ok"] = bool(approved)
+            ev["skipped"] = not approved
+            break
+        self._notify_events_changed()
 
     def mark_work_result_done(self) -> None:
         self.work_result_done = True
@@ -1287,10 +1453,24 @@ class HitlGate:
                     "requestId": request_id,
                     "tool": tool,
                     "arguments": _safe_args(args),
+                    "title": _tool_wait_title(tool),
+                    "text": f"Нужно подтверждение: {tool}",
                 },
                 workflow_id=self._workflow_id,
                 kind=self._kind,
             )
+        )
+        self._append_wait_event(
+            {
+                "type": "hitl",
+                "tool": tool,
+                "title": _tool_wait_title(tool),
+                "text": f"Нужно подтверждение: {tool}",
+                "requestId": request_id,
+                "arguments": _safe_args(args),
+                "confirm_only": True,
+                "status": "pending",
+            }
         )
         try:
             return box.get()
@@ -1299,6 +1479,7 @@ class HitlGate:
                 self._hitl.pop(request_id, None)
 
     def resolve_hitl(self, request_id: str, approved: bool) -> None:
+        self._mark_wait_event(request_id, approved=approved)
         with self._lock:
             box = self._hitl.get(request_id)
         if box is not None:
@@ -1338,6 +1519,17 @@ class HitlGate:
                 workflow_id=self._workflow_id,
                 kind=self._kind,
             )
+        )
+        self._append_wait_event(
+            {
+                "type": "question",
+                "tool": "askQuestion",
+                "title": question or "Вопрос агента",
+                "text": question,
+                "requestId": request_id,
+                "confirm_only": True,
+                "status": "pending",
+            }
         )
         reply: dict[str, Any] = {}
         deadline = time.monotonic() + wait_s if wait_s > 0 else None
@@ -1653,15 +1845,15 @@ def _write_answer_document(cwd: str, filename: str, answer: str) -> Path | None:
     path = folder / name
     body = (answer or "").strip() or name
     try:
-        from docx import Document
+        from app.tools.ac.office_style import pretty_title, write_docx
 
-        document = Document()
-        document.add_heading(Path(name).stem.replace("_", " "), level=0)
-        for line in body.splitlines() or [body]:
-            document.add_paragraph(line)
         if path.suffix.lower() != ".docx":
             path = path.with_suffix(".docx")
-        document.save(path)
+        write_docx(
+            path,
+            title=pretty_title(Path(name).stem),
+            sections=[{"heading": "", "body": body}],
+        )
         return path
     except Exception:
         fallback = path.with_suffix(".md")
@@ -2334,6 +2526,41 @@ class Sidecar:
             self._api.update_local_agent_run_events(workflow_id, run_id, events)
         except Exception:  # noqa: BLE001
             pass
+        active = None
+        with self._lock:
+            for item in self._active.values():
+                if (item.history_run_id or "") == run_id or item.run_id == run_id:
+                    active = item
+                    break
+        if active is not None:
+            self._notify_fresh_waits(active)
+
+    def _notify_fresh_waits(self, active: "ActiveRun") -> None:
+        seen = getattr(active, "notified_waits", None)
+        if seen is None:
+            seen = set()
+            active.notified_waits = seen
+        for raw in list(getattr(active, "events", []) or []):
+            if not isinstance(raw, dict):
+                continue
+            kind = str(raw.get("type") or "").strip().lower()
+            if kind not in {"hitl", "question"}:
+                continue
+            request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+            status = str(raw.get("status") or "").strip().lower()
+            if not request_id or request_id in seen:
+                continue
+            seen.add(request_id)
+            if status in {"approved", "rejected"} or raw.get("skipped"):
+                continue
+            tool = str(raw.get("tool") or raw.get("title") or raw.get("text") or "").strip()
+            hint = f": {tool}" if tool else ""
+            self._api.notify_run_inbox(
+                title="Агент ожидает подтверждения",
+                body=f"Агент ожидает подтверждения{hint}. Откройте вкладку «Решения».",
+                workflow_id=active.workflow_id,
+                run_id=active.history_run_id or "",
+            )
 
     def _run_design(self, command: dict[str, Any], active: ActiveRun) -> None:
         workflow_id = str(command.get("workflowId") or "").strip()
@@ -2628,6 +2855,11 @@ class Sidecar:
         )
         run_ref = getattr(run_record, "id", "") or getattr(run_record, "run_id", "")
         active.history_run_id = str(run_ref or "")
+        active.gate.on_events_changed = lambda current=active: self._flush_history_events(
+            current.workflow_id,
+            current.history_run_id,
+            list(current.events),
+        )
         emit(
             _stamp_run_event(
                 {
@@ -2669,7 +2901,7 @@ class Sidecar:
             run_input_notes = self._ensure_run_inputs_provided(
                 active, workflow, provided_count=len(file_paths)
             )
-        events: list[dict[str, Any]] = []
+        events = active.events
         # Always include current workflow materials in the prompt. If a saved
         # SDK agent id belongs to another machine/account and resume falls back
         # to a fresh agent, the run still has the full playbook context.
@@ -2868,16 +3100,6 @@ class Sidecar:
             active.workflow_id = workflow_id
             active.gate.bind(workflow_id=workflow_id)
         evidence = str(check.get("changed") or check.get("evidence") or "")
-        emit(
-            {
-                "type": "event",
-                "runId": active.run_id,
-                "payload": {
-                    "type": "decision",
-                    "text": "Trigger fired" if fired else "Trigger condition not met",
-                },
-            }
-        )
         if not fired:
             emit(
                 {
@@ -3232,8 +3454,10 @@ class Sidecar:
         days_forward = command.get("daysForward")
         if isinstance(days_forward, int) and days_forward > 0:
             input_data["days_forward"] = days_forward
-        if for_user or command.get("allVisible"):
+        if command.get("allVisible"):
             input_data["max_scan_items"] = 2000
+        elif for_user:
+            input_data["max_scan_items"] = 500
 
         def _work() -> None:
             try:
@@ -3409,6 +3633,8 @@ class ActiveRun:
         self.history_run_id: str = ""
         self.history_finished: bool = False
         self.answer_buf: str = ""
+        self.events: list[dict[str, Any]] = []
+        gate.bind_events(self.events)
 
 
 def _ascii(text: str) -> str:

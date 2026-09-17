@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
-import { AgentFeed } from '../components/agentfeed'
+import { AgentFeed, omitTriggerCheckNoise } from '../components/agentfeed'
 import type { FeedItem } from '../components/agentfeed/types'
 import { useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
+import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { parseIso, sameDay } from '../utils/calendar'
 
@@ -26,6 +26,8 @@ const MAX_COMPOSER_LINES = 10
 function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
   const name = file.name || 'file'
   const size = formatSize(file.sizeBytes)
+  const when = formatFileWhen(file.createdAt)
+  const meta = [when, size].filter(Boolean).join(' · ')
   return (
     <li>
       <button
@@ -40,7 +42,7 @@ function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
           <span className="wf-file-name" title={name}>
             {name}
           </span>
-          {size ? <span className="wf-file-meta">{size}</span> : null}
+          {meta ? <span className="wf-file-meta">{meta}</span> : null}
         </div>
       </button>
     </li>
@@ -155,17 +157,17 @@ export function AgentRunPage({
   // events reach this page. Pull persisted steps so the feed is not empty.
   useEffect(() => {
     if (!running) return
-    if ((state?.items?.length ?? 0) > 0) return
+    if (omitTriggerCheckNoise(state?.items ?? []).length > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [running, workflowId, state?.items?.length, runs])
+  }, [running, workflowId, state?.items, runs])
 
   // On open, restore the latest known conversation for this exact agent.
   // Play (autoStart) must start a new run, not reopen the last feed.
   useEffect(() => {
     if (autoStart || initialMessage.trim()) return
-    if ((state?.items?.length ?? 0) > 0) return
+    if (omitTriggerCheckNoise(state?.items ?? []).length > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [workflowId, runs, state?.items?.length, autoStart, initialMessage])
+  }, [workflowId, runs, state?.items, autoStart, initialMessage])
 
   // The "Запустить" play button opens this page with autoStart, so the agent
   // starts immediately on its own playbook instead of waiting for a message.
@@ -216,6 +218,11 @@ export function AgentRunPage({
     setAttachments((prev) => prev.filter((item) => item !== path))
   }
 
+  const stop = useCallback((): void => {
+    if (!running) return
+    runs.cancel(workflowId)
+  }, [running, runs, workflowId])
+
   const submit = (): void => {
     if (running) return
     const message = input.trim()
@@ -256,6 +263,17 @@ export function AgentRunPage({
   useEffect(() => {
     resizeComposer()
   }, [input, resizeComposer])
+
+  useEffect(() => {
+    if (!running) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      stop()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [running, stop])
 
   useEffect(() => {
     const host = leftRef.current
@@ -401,14 +419,27 @@ export function AgentRunPage({
                   }
                 }}
               />
-              <button
-                className="wf-send"
-                disabled={running || (!input.trim() && attachments.length === 0)}
-                onClick={submit}
-                title={running ? 'Агент выполняется' : 'Отправить'}
-              >
-                ↑
-              </button>
+              {running ? (
+                <button
+                  type="button"
+                  className="wf-send wf-send-stop"
+                  onClick={stop}
+                  title="Остановить"
+                  aria-label="Остановить"
+                >
+                  <span className="wf-send-stop-icon" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="wf-send"
+                  disabled={!input.trim() && attachments.length === 0}
+                  onClick={submit}
+                  title="Отправить"
+                >
+                  ↑
+                </button>
+              )}
             </div>
           </div>
           <div className="wf-status">

@@ -213,7 +213,9 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "Скачать приложенный файл 1С по GUID вкладки «Файлы». "
             "file_id из onec.erp_assignments action=files. "
-            "OData Base64, том на диске, hs/dtw/files или UNC. Сервер, только чтение."
+            "OData Base64, том на диске, hs/dtw/files или UNC. Сервер, только чтение. "
+            "Дальше: Word/PDF/картинки — office.read_file, Excel — excel.read_workbook. "
+            "Встроенный Read по saved_path не вызывай."
         ),
         _schema(
             {

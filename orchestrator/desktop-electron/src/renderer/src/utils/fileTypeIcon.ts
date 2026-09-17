@@ -12,6 +12,8 @@ import iconDat from '../assets/fileicons/dat-svgrepo-com.svg'
 import iconDll from '../assets/fileicons/dll-svgrepo-com.svg'
 import iconDmg from '../assets/fileicons/dmg-svgrepo-com.svg'
 import iconDoc from '../assets/fileicons/doc-svgrepo-com.svg'
+import iconPdf from '../assets/fileicons/pdf-svgrepo-com.svg'
+import iconWord from '../assets/fileicons/word-svgrepo-com.svg'
 import iconDocker from '../assets/fileicons/docker-svgrepo-com.svg'
 import iconEps from '../assets/fileicons/eps-svgrepo-com.svg'
 import iconExcel from '../assets/fileicons/excel-svgrepo-com.svg'
@@ -82,11 +84,11 @@ const ICONS: Record<string, string> = {
   dylib: iconDll,
   dmg: iconDmg,
   pkg: iconDmg,
-  doc: iconDoc,
-  docx: iconDoc,
-  odt: iconDoc,
-  rtf: iconDoc,
-  pdf: iconDoc,
+  doc: iconWord,
+  docx: iconWord,
+  odt: iconWord,
+  rtf: iconWord,
+  pdf: iconPdf,
   ppt: iconDoc,
   pptx: iconDoc,
   odp: iconDoc,

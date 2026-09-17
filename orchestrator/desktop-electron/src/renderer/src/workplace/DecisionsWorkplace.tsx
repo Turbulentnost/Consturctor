@@ -16,6 +16,7 @@ import {
   extractToolDecisions,
   feedItemsToRunnerEvents,
   isDecisionTool,
+  isQuestionDecision,
   toolIntent,
   type ToolDecisionItem
 } from './decisionTools'
@@ -447,7 +448,7 @@ function DecisionDetail({
         <span>Уведомить за 10 минут до срока</span>
       </label>
       <div className="wp-actions wp-decision-actions">
-        {item.live && item.requestId && pending ? (
+        {item.requestId && pending ? (
           <>
             <button className="btn-primary" type="button" onClick={onConfirm}>
               Подтвердить
@@ -531,7 +532,8 @@ export function DecisionsTab({
             state.running,
             state.items.length,
             state.status,
-            state.pendingHitl?.requestId || ''
+            state.pendingHitl?.requestId || '',
+            state.pendingQuestion?.requestId || ''
           ].join(':')
         })
         .join('|'),
@@ -689,27 +691,48 @@ export function DecisionsTab({
     const items: ToolDecisionItem[] = []
     for (const entry of Object.values(runs.entries)) {
       const hitl = entry.state.pendingHitl
-      if (!hitl) continue
-      const tool = String(hitl.tool || '')
-      if (!isDecisionTool(tool, true)) continue
-      const seenKey = `${entry.workflowId}:${hitl.requestId}`
-      const item: ToolDecisionItem = {
-        id: `live:${entry.workflowId}:${hitl.requestId}`,
-        workflowId: entry.workflowId,
-        agentName: entry.title,
-        runId: entry.backendRunId || entry.state.activeRunId || '',
-        tool,
-        title: hitl.title || tool,
-        intent: toolIntent(tool, hitl.arguments),
-        result: '',
-        status: 'pending',
-        requestId: hitl.requestId,
-        at: stampFirstSeen(firstSeenRef.current, seenKey),
-        live: true,
-        arguments: hitl.arguments && typeof hitl.arguments === 'object' ? hitl.arguments : {}
+      if (hitl) {
+        const tool = String(hitl.tool || '')
+        if (isDecisionTool(tool, true)) {
+          const seenKey = `${entry.workflowId}:${hitl.requestId}`
+          const item: ToolDecisionItem = {
+            id: `live:${entry.workflowId}:${hitl.requestId}`,
+            workflowId: entry.workflowId,
+            agentName: entry.title,
+            runId: entry.backendRunId || entry.state.activeRunId || '',
+            tool,
+            title: hitl.title || tool,
+            intent: toolIntent(tool, hitl.arguments),
+            result: '',
+            status: 'pending',
+            requestId: hitl.requestId,
+            at: stampFirstSeen(firstSeenRef.current, seenKey),
+            live: true,
+            arguments: hitl.arguments && typeof hitl.arguments === 'object' ? hitl.arguments : {}
+          }
+          item.files = pickFilesForDecision(item, filesByWorkflow[entry.workflowId] || [])
+          items.push(item)
+        }
       }
-      item.files = pickFilesForDecision(item, filesByWorkflow[entry.workflowId] || [])
-      items.push(item)
+      const question = entry.state.pendingQuestion
+      if (question?.requestId) {
+        const seenKey = `${entry.workflowId}:${question.requestId}`
+        const item: ToolDecisionItem = {
+          id: `live:${entry.workflowId}:${question.requestId}`,
+          workflowId: entry.workflowId,
+          agentName: entry.title,
+          runId: entry.backendRunId || entry.state.activeRunId || '',
+          tool: 'askQuestion',
+          title: question.question || 'Вопрос агента',
+          intent: question.question || 'Агент ждёт ответ, чтобы продолжить прогон.',
+          result: '',
+          status: 'pending',
+          requestId: question.requestId,
+          at: stampFirstSeen(firstSeenRef.current, seenKey),
+          live: true
+        }
+        items.push(item)
+      }
     }
     return items
   }, [runs.entries, fromDay, toDay, filesByWorkflow])
@@ -1241,14 +1264,20 @@ export function DecisionsTab({
                   notify={Boolean(notifyPrefs[selected.id])}
                   onNotify={(on) => toggleNotify(selected.id, on)}
                   onConfirm={() => {
-                    if (selected.live && selected.requestId) {
-                      runs.respondHitl(selected.workflowId, selected.requestId, true)
+                    if (!selected.requestId) return
+                    if (isQuestionDecision(selected.tool)) {
+                      runs.answer(selected.workflowId, selected.requestId, 'Да, продолжай')
+                      return
                     }
+                    runs.respondHitl(selected.workflowId, selected.requestId, true)
                   }}
                   onReturn={() => {
-                    if (selected.live && selected.requestId) {
-                      runs.respondHitl(selected.workflowId, selected.requestId, false)
+                    if (!selected.requestId) return
+                    if (isQuestionDecision(selected.tool)) {
+                      runs.answer(selected.workflowId, selected.requestId, '', [], false)
+                      return
                     }
+                    runs.respondHitl(selected.workflowId, selected.requestId, false)
                   }}
                   onOpen={() => onOpenRun(selected.workflowId, selected.agentName, selected.runId)}
                 />

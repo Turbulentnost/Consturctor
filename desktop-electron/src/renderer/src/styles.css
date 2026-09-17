@@ -1433,6 +1433,12 @@ input {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.notify-card-time {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #7b8883;
+}
 .notify-card-body {
   margin-top: 4px;
   font-size: 12px;
@@ -5768,6 +5774,23 @@ button.feed-tool-head:hover {
   font-weight: 600;
   color: var(--main-text);
   margin-bottom: 8px;
+  line-height: 1.35;
+}
+.feed-hitl-intent {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--main-text);
+  margin: 0 0 10px;
+}
+.feed-hitl-facts {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  color: #5b6b74;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.feed-hitl-facts li + li {
+  margin-top: 4px;
 }
 .feed-hitl-args {
   margin: 0 0 12px;
@@ -6974,10 +6997,23 @@ button.feed-tool-head:hover {
   font-size: 18px;
   cursor: pointer;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .wf-send:disabled {
   background: #c4d3cd;
   cursor: default;
+}
+.wf-send-stop:hover {
+  filter: brightness(0.92);
+}
+.wf-send-stop-icon {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #fff;
 }
 .wf-status {
   display: flex;

@@ -67,7 +67,10 @@ def reset_run_scratch(cwd: str, *, clear_attachments: bool = True) -> None:
     Always clears ``tool_results/`` (large tool-result dumps). When
     ``clear_attachments`` is True it also clears ``materials/attachments/`` and
     removes leftover output documents (xlsx/docx/pdf/...) from the workspace
-    root left by previous runs. The caller keeps it False on a resume/follow-up
+    root left by previous runs. ``prepare_sdk_workspace`` then puts the latest
+    persisted agent outputs back under their original names, so the next run
+    can update ActionTracker.xlsx instead of inventing a second file.
+    The caller keeps ``clear_attachments`` False on a resume/follow-up
     so a file attached or produced in an earlier turn of the same conversation
     survives. Permanent knowledge in ``materials/`` and the run journal are left
     untouched (they are re-seeded from the DB anyway).
@@ -163,6 +166,38 @@ def seed_agent_brief(cwd: str, workflow: WorkflowRecord, *, extra: str = "") -> 
     instructions = str(playbook.get("instructions") or "").strip()
     if instructions:
         parts.extend(["", "## Инструкция запуска", instructions])
+    chain = str(playbook.get("chain") or "").strip()
+    if not chain:
+        chain_lines: list[str] = []
+        for index, step in enumerate(playbook.get("steps") or [], start=1):
+            if not isinstance(step, dict):
+                continue
+            candidates = step.get("tool_candidates") or []
+            tool = str(step.get("tool") or (candidates[0] if candidates else "") or "").strip()
+            title = str(step.get("title") or step.get("id") or f"шаг {index}").strip()
+            chain_lines.append(f"{index}. {title}" + (f" — {tool}" if tool else ""))
+            if step.get("on_empty"):
+                chain_lines.append(f"   если пусто: {step['on_empty']}")
+            if step.get("on_error"):
+                chain_lines.append(f"   если ошибка: {step['on_error']}")
+        if chain_lines:
+            chain = (
+                "Проверенная цепочка пробного запуска. "
+                "Повтори шаги в этом порядке, теми же инструментами.\n"
+                + "\n".join(chain_lines)
+            )
+    if chain:
+        parts.extend(
+            [
+                "",
+                "## Проверенная цепочка",
+                chain,
+                "",
+                "Это уже отработанный маршрут. Меняй только параметры запуска, не набор инструментов.",
+                "Если в корне рабочей папки уже лежит Excel или Word прошлого запуска — "
+                "обнови его (excel.edit_workbook), не создавай второй файл с новым именем.",
+            ]
+        )
     write_recipe = {}
     if isinstance(workflow.local_run, dict):
         raw_recipe = workflow.local_run.get("write_recipe")
@@ -222,9 +257,49 @@ def seed_agents_md(cwd: str) -> str:
 
 def workspace_file_pointer() -> str:
     return (
-        "Прочитай AGENTS.md, materials/agent.md и materials/manifest.json. "
-        "Детали в этих файлах, не в этом сообщении."
+        "Правила уже в AGENTS.md, паспорт — в materials/agent.md. "
+        "Не читай их повторно и не делай второй круг по manifest. "
+        "Сразу вызывай инструменты Constructor."
     )
+
+
+def seed_last_agent_outputs(api: ApiClient, workflow_id: str, cwd: str) -> list[str]:
+    """Put the latest agent-created office files back at the workspace root.
+
+    Independent runs wipe leftover xlsx/docx so list_files does not see junk.
+    The journal from the last successful run must still be there, otherwise
+    the agent thinks ActionTracker is missing and creates a second file.
+    """
+    wid = (workflow_id or "").strip()
+    root = Path((cwd or "").strip() or ".")
+    if not wid or not root.is_dir():
+        return []
+    try:
+        files = api.list_workflow_files(wid)
+    except Exception:
+        return []
+    latest: dict[str, WorkflowFileItem] = {}
+    for item in files.agent_files:
+        name = _safe_filename(item.filename or "")
+        if not name:
+            continue
+        if Path(name).suffix.lower() not in _STALE_OUTPUT_SUFFIXES:
+            continue
+        key = name.casefold()
+        previous = latest.get(key)
+        if previous is None or (item.created_at or "") >= (previous.created_at or ""):
+            latest[key] = item
+    restored: list[str] = []
+    for item in latest.values():
+        name = _safe_filename(item.filename or "")
+        target = root / name
+        try:
+            api.download_workflow_file_to(wid, item.id, target)
+        except Exception:
+            continue
+        if target.is_file():
+            restored.append(name)
+    return restored
 
 
 def prepare_sdk_workspace(
@@ -237,6 +312,7 @@ def prepare_sdk_workspace(
 ) -> str:
     seed_agents_md(cwd)
     seed_workflow_files(api, workflow_id, cwd)
+    seed_last_agent_outputs(api, workflow_id, cwd)
     if workflow is not None:
         seed_agent_brief(cwd, workflow, extra=extra_brief)
     return workspace_file_pointer()
@@ -267,7 +343,8 @@ def seed_workflow_files(api: ApiClient, workflow_id: str, cwd: str) -> str:
             "Если нужен файл, спроси через askQuestion с needsFile=true."
         )
     return (
-        "Прочитай materials/manifest.json, затем нужные файлы. "
+        "Нужные документы уже в materials/ и в manifest.json. "
+        "Не делай второй круг чтения манифеста. "
         "Если документа нет, спроси через askQuestion с needsFile=true."
     )
 

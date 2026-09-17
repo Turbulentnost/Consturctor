@@ -7,9 +7,13 @@ export function shouldTrackLiveRun(event: AgentEvent): boolean {
   const kind = String(event.kind || '')
   if (FORMATION_KINDS.has(kind)) return false
   if (!String(event.workflowId || '').trim()) return false
-  if (kind === 'run') return true
   if (event.type === 'question' || event.type === 'hitl') return true
   const payloadType = String(event.payload?.type || '')
+  if (kind === 'trigger' || kind === 'check_trigger') {
+    if (event.type === 'result' && event.fired === false) return false
+    return payloadType === 'run'
+  }
+  if (kind === 'run') return true
   if (payloadType === 'run') return true
   if (
     event.type === 'event' &&
@@ -25,10 +29,6 @@ export function shouldTrackLiveRun(event: AgentEvent): boolean {
     ].includes(payloadType)
   ) {
     return true
-  }
-  if (kind === 'trigger' || kind === 'check_trigger') {
-    if (event.type === 'result' && event.fired === false) return false
-    return payloadType === 'run'
   }
   return false
 }

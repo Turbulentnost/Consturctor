@@ -1,5 +1,6 @@
 import type { AgentRunnerEvent } from '../../api/types'
-import { isTaskTool, toolArgHint, toolCardTitle } from './labels'
+import { explainTool, toolCardTitle } from './explainTool'
+import { isTaskTool, toolArgHint } from './labels'
 import { summarizeToolResult } from './resultSummary'
 import { appendThinkingText } from './thinkingText'
 import type { FeedItem, ToolItem } from './types'
@@ -64,6 +65,17 @@ function isErrorStatus(status: string): boolean {
   return value === 'error' || value === 'failed'
 }
 
+const TRIGGER_CHECK_NOISE = /^(trigger condition not met|trigger fired)$/i
+
+/** Scheduled trigger polls must not look like chat messages. */
+export function isTriggerCheckNoise(text: string): boolean {
+  return TRIGGER_CHECK_NOISE.test((text || '').trim())
+}
+
+export function omitTriggerCheckNoise<T extends { kind: string; text?: string }>(items: T[]): T[] {
+  return items.filter((item) => item.kind !== 'system' || !isTriggerCheckNoise(item.text || ''))
+}
+
 /** Mark leftover tool cards as finished so a restored chat does not look live. */
 export function settleOpenFeedTools(items: FeedItem[]): FeedItem[] {
   let changed = false
@@ -87,7 +99,8 @@ export function buildFeedItems(
   const items: FeedItem[] = []
   const pushSystem = (text: string, tone: 'info' | 'error' | 'success' = 'info'): void => {
     const value = (text || '').trim()
-    if (value) items.push({ kind: 'system', id: nextId('sys'), text: value, tone })
+    if (!value || isTriggerCheckNoise(value)) return
+    items.push({ kind: 'system', id: nextId('sys'), text: value, tone })
   }
 
   for (const event of events) {
@@ -152,7 +165,7 @@ export function buildFeedItems(
               : current.statusText || 'Выполняется…'
         } else {
           const args = (event.arguments as Record<string, unknown>) || {}
-          const hint = toolArgHint(args)
+          const hint = explainTool(tool, args).facts[0] || toolArgHint(args)
           const summary = done ? summarizeResult(resultObj) : ''
           items.push({
             kind: 'tool',

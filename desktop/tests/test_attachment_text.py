@@ -19,6 +19,17 @@ def test_write_extracted_sidecar(tmp_path: Path) -> None:
     assert sidecar.read_text(encoding="utf-8") == "смета"
 
 
+def test_extract_image_skips_ocr_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.attachment_text._ocr",
+        lambda path: (_ for _ in ()).throw(AssertionError("OCR выключен")),
+    )
+    source = tmp_path / "scan.png"
+    source.write_bytes(b"\x89PNG\r\n")
+    text = extract_attachment_text(str(source), ocr=False)
+    assert "текст не извлечён" in text
+
+
 def test_unreadable_image_without_ocr(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("app.attachment_text._ocr", lambda path: "")
     source = tmp_path / "scan.png"

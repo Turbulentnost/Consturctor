@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { MiniCalendar, meetingsFromToolItem } from './MiniCalendar'
 import { OdataBriefing, odataEntityHint, odataRecordsFromResult } from './OdataBriefing'
+import { explainTool } from './explainTool'
 import { toolArgHint } from './labels'
 import { countCalendarEvents, countOdataRows, summarizeToolResult } from './resultSummary'
 import type { ToolItem } from './types'
@@ -36,6 +37,8 @@ function asText(value: unknown): string {
 }
 
 function requestLines(item: ToolItem): string[] {
+  const explained = explainTool(item.tool, item.arguments)
+  if (explained.facts.length) return explained.facts
   const args = item.arguments || {}
   const lines: string[] = []
   const people = asText(args.people) || asText(args.attendees) || asText(args.mailbox)
@@ -50,7 +53,7 @@ function requestLines(item: ToolItem): string[] {
   if (entity) lines.push(`Сущность: ${entity}`)
   if (path && path !== entity) lines.push(`Путь: ${path}`)
   if (number) lines.push(`Номер: ${number}`)
-  if (filter) lines.push(`Фильтр: ${filter}`)
+  if (filter) lines.push(`Ищет: ${filter}`)
   if (!lines.length) {
     const hint = item.hint || toolArgHint(args)
     if (hint) lines.push(hint)
@@ -81,7 +84,7 @@ export function ToolCard({ item, liftMeetings = false }: ToolCardProps): React.J
   const expandable = structured || hasResult || request.length > 0
   const [open, setOpen] = useState(false)
   const [touched, setTouched] = useState(false)
-  const shown = touched ? open : structured || (!item.done && request.length > 0)
+  const shown = touched ? open : structured
 
   if (meetings.length > 0 && liftMeetings && item.tool === CALENDAR_PLAN) {
     const status = item.error ? item.summary || 'Ошибка' : 'В результате'

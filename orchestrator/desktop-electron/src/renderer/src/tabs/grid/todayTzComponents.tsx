@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { SpecIconCalendar } from '../../workplace/specV04Icons'
 import {
@@ -11,11 +11,10 @@ import {
   type TodayPlanBlock,
   type TodayPlanBlockDetail
 } from './todayDemoData'
-import { TodayFullPlanModal } from './TodayFullPlanModal'
+import { layoutPlanTrack, planBlockStyle, type PositionedPlanBlock } from './planBlockLayout'
 
 const DAY_START = TODAY_PLAN_DAY_START
 const DAY_END = TODAY_PLAN_DAY_END
-const DAY_SPAN = DAY_END - DAY_START
 
 function startOfToday(): Date {
   const d = new Date()
@@ -157,115 +156,37 @@ function PlanEventDetailDialog({
   )
 }
 
-/** Icon inset from block border — must match todayGrid.css */
-const PLAN_BLOCK_ICON_LEFT_PX = 3
-const PLAN_BLOCK_ICON_WIDTH_PX = 22
-const PLAN_BLOCK_ICON_TEXT_GAP_PX = 4
-
-let planBlockMeasureCanvas: CanvasRenderingContext2D | null | undefined
-
-function planBlockMeasureCtx(): CanvasRenderingContext2D | null {
-  if (planBlockMeasureCanvas !== undefined) return planBlockMeasureCanvas
-  const canvas = document.createElement('canvas')
-  planBlockMeasureCanvas = canvas.getContext('2d')
-  return planBlockMeasureCanvas
-}
-
-function planBlockFirstWord(title: string): string {
-  const trimmed = title.trim()
-  const match = /\S+/.exec(trimmed)
-  return match ? match[0] : trimmed
-}
-
-function planBlockTextWidth(text: string, titleEl: HTMLElement): number {
-  const ctx = planBlockMeasureCtx()
-  if (!ctx || !text) return 0
-  const style = getComputedStyle(titleEl)
-  ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
-  return Math.ceil(ctx.measureText(text).width)
-}
-
-/** Icon-only / hidden title only when even the first word cannot fit (not when full title overflows). */
-function planBlockNeedsCompact(button: HTMLElement, titleEl: HTMLElement, hasIcon: boolean): boolean {
-  const width = button.clientWidth
-  if (width <= 0) return false
-
-  const buttonStyle = getComputedStyle(button)
-  const padX = parseFloat(buttonStyle.paddingLeft) + parseFloat(buttonStyle.paddingRight)
-  const innerWidth = width - padX
-
-  const titleStyle = getComputedStyle(titleEl)
-  const titlePadX = parseFloat(titleStyle.paddingLeft) + parseFloat(titleStyle.paddingRight)
-  const firstWord = planBlockFirstWord(titleEl.textContent ?? '')
-  const minWordWidth = planBlockTextWidth(firstWord, titleEl) || 8
-
-  if (!hasIcon) {
-    const textSpace = innerWidth - titlePadX
-    return textSpace < minWordWidth
-  }
-
-  const iconZone = PLAN_BLOCK_ICON_LEFT_PX + PLAN_BLOCK_ICON_WIDTH_PX + PLAN_BLOCK_ICON_TEXT_GAP_PX
-  const titlePadLeft = parseFloat(titleStyle.paddingLeft)
-  const titlePadRight = parseFloat(titleStyle.paddingRight)
-  const textSpace = innerWidth - Math.max(titlePadLeft, iconZone) - titlePadRight
-
-  const iconOnlyThreshold =
-    padX + PLAN_BLOCK_ICON_LEFT_PX + PLAN_BLOCK_ICON_WIDTH_PX + PLAN_BLOCK_ICON_TEXT_GAP_PX + minWordWidth
-  if (width < iconOnlyThreshold) return true
-
-  return textSpace < minWordWidth
-}
-
 function PlanTimelineBlock({
   block,
   onSelect
 }: {
-  block: TodayPlanBlock
+  block: PositionedPlanBlock
   onSelect: (block: TodayPlanBlock) => void
 }): React.JSX.Element {
   const isLunch = block.lane === 'lunch'
-  const hint = block.subtitle ? `${block.title} — ${block.subtitle}` : block.title
-  const blockRef = useRef<HTMLButtonElement>(null)
-  const titleRef = useRef<HTMLElement>(null)
-  const [compact, setCompact] = useState(false)
-
-  useLayoutEffect(() => {
-    const button = blockRef.current
-    const titleEl = titleRef.current
-    if (!button || !titleEl) return
-
-    const update = (): void => {
-      setCompact(planBlockNeedsCompact(button, titleEl, !isLunch))
-    }
-
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(button)
-    return () => observer.disconnect()
-  }, [block.title, isLunch])
-
+  const timeLabel = `${formatHourLabel(block.startHour)} – ${formatHourLabel(block.endHour)}`
+  const hint = block.subtitle
+    ? `${timeLabel} · ${block.title} — ${block.subtitle}`
+    : `${timeLabel} · ${block.title}`
   const open = (): void => onSelect(block)
 
   return (
     <button
-      ref={blockRef}
       type="button"
       className={`today-plan-block tone-${block.tone}${isLunch ? ' today-plan-block-lunch' : ''}`}
-      style={blockStyle(block)}
-      data-compact={compact ? 'true' : 'false'}
+      style={planBlockStyle(block, DAY_START, DAY_END)}
       title={hint}
       aria-label={`Подробнее: ${hint}`}
       onClick={open}
     >
-      <div className="today-plan-block-inner">
-        {!isLunch ? (
-          <span className="today-plan-block-ico" aria-hidden>
-            <PlanBlockIcon kind={block.kind} />
-          </span>
-        ) : null}
-        <strong ref={titleRef} className="today-plan-block-title">
-          {block.title}
-        </strong>
+      {!isLunch ? (
+        <span className="today-plan-block-ico" aria-hidden>
+          <PlanBlockIcon kind={block.kind} />
+        </span>
+      ) : null}
+      <div className="today-plan-block-body">
+        <span className="today-plan-block-time">{timeLabel}</span>
+        <strong className="today-plan-block-title">{block.title}</strong>
       </div>
     </button>
   )
@@ -282,10 +203,17 @@ function PlanTrack({
   laneClass: string
   onSelectBlock: (block: TodayPlanBlock) => void
 }): React.JSX.Element {
+  const layout = useMemo(() => {
+    const merged = lunchBlock ? [...blocks, lunchBlock] : blocks
+    return layoutPlanTrack(merged)
+  }, [blocks, lunchBlock])
+
   return (
-    <div className={`today-plan-track ${laneClass}`}>
-      {lunchBlock ? <PlanTimelineBlock block={lunchBlock} onSelect={onSelectBlock} /> : null}
-      {blocks.map((block) => (
+    <div
+      className={`today-plan-track ${laneClass}`}
+      style={{ height: layout.heightPx, minHeight: layout.heightPx }}
+    >
+      {layout.blocks.map((block) => (
         <PlanTimelineBlock key={block.id} block={block} onSelect={onSelectBlock} />
       ))}
     </div>
@@ -313,18 +241,6 @@ function IconClock(): React.JSX.Element {
       <path d="M12 8v4l2.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   )
-}
-
-function blockStyle(block: TodayPlanBlock): React.CSSProperties {
-  const left = ((block.startHour - DAY_START) / DAY_SPAN) * 100
-  const width = ((block.endHour - block.startHour) / DAY_SPAN) * 100
-  const style: React.CSSProperties = { left: `${left}%`, width: `${Math.max(width, 3.5)}%` }
-  if (block.accent) {
-    style.background = block.accent.bg
-    style.borderColor = block.accent.border
-    style.boxShadow = `inset 3px 0 0 ${block.accent.border}`
-  }
-  return style
 }
 
 function whoTag(block: TodayPlanBlock): string {
@@ -390,72 +306,13 @@ function PlanBlockIcon({ kind }: { kind: TodayPlanBlock['kind'] }): React.JSX.El
   )
 }
 
-export type TodayBarFilters = {
-  source: string
-  status: string
-  executor: string
-  process: string
-}
-
-export const EMPTY_TODAY_BAR_FILTERS: TodayBarFilters = {
-  source: '',
-  status: '',
-  executor: '',
-  process: ''
-}
-
-function TodayWidgetBasket({
-  ids,
-  labels,
-  onRestore
-}: {
-  ids: string[]
-  labels?: Record<string, string>
-  onRestore: (id: string) => void
-}): React.JSX.Element {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="tab-chrome-basket">
-      <button
-        type="button"
-        className={`tab-chrome-basket-btn${open ? ' is-open' : ''}`}
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        Корзина ({ids.length})
-      </button>
-      {open ? (
-        <ul className="tab-chrome-basket-list">
-          {ids.map((id) => (
-            <li key={id}>
-              <span>{labels?.[id] || id}</span>
-              <button type="button" onClick={() => onRestore(id)}>
-                Вернуть
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  )
-}
-
 export function TodayFiltersBar({
   periodDay,
   onPeriodDayChange,
   onReset,
   widgetEditMode = false,
   onWidgetEditModeChange,
-  onResetWidgetLayout,
-  basketIds,
-  basketLabels,
-  onRestoreWidget,
-  barFilters,
-  onBarFiltersChange,
-  sourceOptions = [],
-  statusOptions = [],
-  executorOptions = [],
-  processOptions = []
+  onResetWidgetLayout
 }: {
   periodDay: Date
   onPeriodDayChange: (day: Date) => void
@@ -463,20 +320,7 @@ export function TodayFiltersBar({
   widgetEditMode?: boolean
   onWidgetEditModeChange?: (edit: boolean) => void
   onResetWidgetLayout?: () => void
-  basketIds?: string[]
-  basketLabels?: Record<string, string>
-  onRestoreWidget?: (id: string) => void
-  barFilters?: TodayBarFilters
-  onBarFiltersChange?: (next: TodayBarFilters) => void
-  sourceOptions?: Array<string | { value: string; label: string }>
-  statusOptions?: string[]
-  executorOptions?: string[]
-  processOptions?: string[]
 }): React.JSX.Element {
-  const filters = barFilters || EMPTY_TODAY_BAR_FILTERS
-  const setFilter = (patch: Partial<TodayBarFilters>): void => {
-    onBarFiltersChange?.({ ...filters, ...patch })
-  }
   return (
     <div className="today-filters-bar wp-card">
       <label className="today-filter-field">
@@ -498,71 +342,28 @@ export function TodayFiltersBar({
       </label>
       <label className="today-filter-field">
         <span className="today-filter-label">Процесс</span>
-        <select
-          className="today-filter-control today-filter-select"
-          value={filters.process}
-          onChange={(event) => setFilter({ process: event.target.value })}
-        >
+        <select className="today-filter-control today-filter-select" defaultValue="">
           <option value="">Все процессы</option>
-          {processOptions.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
         </select>
       </label>
       <label className="today-filter-field">
         <span className="today-filter-label">Источник</span>
-        <select
-          className="today-filter-control today-filter-select"
-          value={filters.source}
-          onChange={(event) => setFilter({ source: event.target.value })}
-        >
+        <select className="today-filter-control today-filter-select" defaultValue="">
           <option value="">Все источники</option>
-          {sourceOptions.map((item) => {
-            const value = typeof item === 'string' ? item : item.value
-            const label = typeof item === 'string' ? item : item.label
-            return (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            )
-          })}
         </select>
       </label>
       <label className="today-filter-field">
         <span className="today-filter-label">Исполнитель</span>
-        <select
-          className="today-filter-control today-filter-select"
-          value={filters.executor}
-          onChange={(event) => setFilter({ executor: event.target.value })}
-        >
+        <select className="today-filter-control today-filter-select" defaultValue="">
           <option value="">Все исполнители</option>
-          {executorOptions.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
         </select>
       </label>
       <label className="today-filter-field">
         <span className="today-filter-label">Статус</span>
-        <select
-          className="today-filter-control today-filter-select"
-          value={filters.status}
-          onChange={(event) => setFilter({ status: event.target.value })}
-        >
+        <select className="today-filter-control today-filter-select" defaultValue="">
           <option value="">Все статусы</option>
-          {statusOptions.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
         </select>
       </label>
-      {basketIds?.length && onRestoreWidget ? (
-        <TodayWidgetBasket ids={basketIds} labels={basketLabels} onRestore={onRestoreWidget} />
-      ) : null}
       {onWidgetEditModeChange ? (
         <button
           type="button"
@@ -583,7 +384,6 @@ export function TodayFiltersBar({
         className="today-filter-reset"
         onClick={() => {
           onPeriodDayChange(startOfToday())
-          onBarFiltersChange?.(EMPTY_TODAY_BAR_FILTERS)
           onReset?.()
         }}
       >
@@ -597,17 +397,14 @@ export function TodayFiltersBar({
 export function TodayPlanPanel({
   periodDay,
   userId,
-  fio,
-  onOpenRun
+  fio
 }: {
   periodDay: Date
   userId: string
   fio: string
-  onOpenRun?: (workflowId: string, title: string, runId?: string) => void
 }): React.JSX.Element {
   const plan = useTodayPlanTimeline(periodDay, { userId, fio })
   const [selectedBlock, setSelectedBlock] = useState<TodayPlanBlock | null>(null)
-  const [fullPlanOpen, setFullPlanOpen] = useState(false)
 
   return (
     <section className="wp-card today-plan-card today-plan-tz">
@@ -625,27 +422,15 @@ export function TodayPlanPanel({
             {plan.loading ? <p className="today-plan-head-note">Загружаем календарь…</p> : null}
           </div>
         </div>
-        <button
-          type="button"
-          className="today-plan-open"
-          onClick={() => setFullPlanOpen(true)}
-        >
+        <button type="button" className="today-plan-open">
           Открыть полный план →
         </button>
       </header>
 
-      <div
-        className="today-plan-timeline"
-        style={{ '--plan-span': DAY_SPAN } as React.CSSProperties}
-      >
-        <div className="today-plan-hours" aria-hidden>
+      <div className="today-plan-timeline">
+        <div className="today-plan-hours">
           {TODAY_TIMELINE_HOURS.map((hour) => (
-            <span
-              key={hour}
-              style={{ left: `${((hour - DAY_START) / DAY_SPAN) * 100}%` }}
-            >
-              {String(hour).padStart(2, '0')}:00
-            </span>
+            <span key={hour}>{String(hour).padStart(2, '0')}:00</span>
           ))}
         </div>
         <div className="today-plan-lanes">
@@ -671,13 +456,6 @@ export function TodayPlanPanel({
       {selectedBlock ? (
         <PlanEventDetailDialog block={selectedBlock} onClose={() => setSelectedBlock(null)} />
       ) : null}
-      <TodayFullPlanModal
-        open={fullPlanOpen}
-        periodDay={periodDay}
-        fio={fio}
-        onClose={() => setFullPlanOpen(false)}
-        onOpenRun={onOpenRun}
-      />
     </section>
   )
 }

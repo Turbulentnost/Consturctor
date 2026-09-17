@@ -9,6 +9,7 @@ from typing import Any
 from app.tools.ac.agent_workspace import AgentWorkspaceResolver
 from app.tools.ac.code_execution_tools import register_code_execution_tools
 from app.tools.ac.document_tools import register_document_tools
+from app.tools.ac.office_tools import register_office_tools
 from app.tools.ac.com_backed_tools import register_outlook_com_tools
 from app.tools.ac.excel_tools import register_excel_tools
 from app.tools.ac.onec_tools import register_onec_readonly_tools
@@ -65,6 +66,7 @@ def build_registry() -> ToolRegistry:
     register_onec_readonly_tools(registry, _onec_com_worker())
     register_report_tools(registry, skip_existing=True)
     register_document_tools(registry, resolver, skip_existing=True)
+    register_office_tools(registry, resolver, skip_existing=True)
     register_web_tools(registry, skip_existing=True, workspace_resolver=resolver)
     register_excel_tools(registry, resolver, skip_existing=True)
     register_powershell_tools(registry, resolver, skip_existing=True)

@@ -4,6 +4,7 @@
   height: 100vh;
   width: 100vw;
   min-height: 0;
+  overflow: hidden;
   background: var(--content-bg);
 }
 
@@ -168,11 +169,12 @@
 }
 
 .orch-grid-search {
-  grid-column: 5 / 8;
+  grid-column: 5 / 7;
   grid-row: 1;
   display: flex;
   align-items: center;
   min-width: 0;
+  width: 100%;
 }
 
 .orch-grid-search .global-search {
@@ -183,67 +185,40 @@
 }
 
 .orch-grid-util {
-  grid-column: 8;
+  grid-column: 7 / 9;
+  flex-shrink: 0;
   grid-row: 1;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
+  overflow: visible;
+  z-index: 12;
 }
 
 .orch-grid-util .user-menu {
   position: static;
   top: auto;
   right: auto;
-  height: auto;
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 6px;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.orch-grid-util .user-menu .icon-btn,
-.orch-grid-util .user-menu .avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 18px;
+  height: 44px;
+  width: max-content;
+  min-width: max-content;
+  max-width: none;
   flex-shrink: 0;
 }
 
-.orch-grid-util .user-menu .avatar-img {
-  border-radius: 18px;
+.orch-grid-util .user-menu--admin .user-menu__profile-wrap {
+  flex: 0 0 auto;
 }
 
-.orch-grid-util .user-menu .who {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  flex: 1 1 0;
-  min-width: 0;
-  max-width: 11rem;
-  text-align: left;
-  line-height: 1.2;
+.orch-grid-util .user-menu--admin .user-menu__profile-btn {
+  max-width: none;
 }
 
-.orch-grid-util .user-menu .who .name {
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--main-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.orch-grid-util .user-menu .who .pos {
-  margin-top: 1px;
-  font-size: 11px;
-  color: var(--content-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.orch-grid-util .user-menu--admin .who {
+  max-width: min(360px, 36vw);
+  flex: 0 1 auto;
 }
 
 .orch-grid-util .icon-btn-help {
@@ -416,6 +391,56 @@
   top: 12px;
   right: 16px;
   z-index: 100;
+}
+
+.orch-grid.orch-grid-subpage {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.orch-grid.orch-grid-subpage .orch-grid-util {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.orch-grid.orch-grid-subpage .orch-slot-main {
+  grid-column: 1;
+  grid-row: 2 / 3;
+}
+
+.orch-grid.orch-grid-subpage .orch-slot-main.orch-heavy-embed-slot {
+  grid-row: 2 / 3;
+  min-height: 0;
+  align-self: stretch;
+}
+
+.orch-slot-main.orch-heavy-embed-slot > .orch-heavy-embed,
+.orch-heavy-embed.orch-agent-subpage {
+  flex: 1 1 0;
+  align-self: stretch;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.orch-heavy-embed.orch-agent-subpage > * {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+}
+
+.orch-agent-subpage .agent-studio {
+  padding: 8px 8px 12px;
+}
+
+.orch-agent-subpage .wf-page {
+  padding-top: 0;
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
 }
 
 .orch-legacy-fullpage {

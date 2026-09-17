@@ -4,7 +4,7 @@ import type { UserProfile } from '../api/types'
 import { turboProjectTaskToTodayRow } from './specV04Mappers'
 import type { TodayProjectTaskRow } from './useTodayProjectTasks'
 import { turboProjectInvokeArgs } from './userContext'
-import { turboTaskAssignedToActor } from './turboAssigneeMatch'
+import { filterTurboTasksByActor } from './turboAssigneeMatch'
 import { isTechnicalTurboMessage } from './turboSession'
 
 export type TurboProjectOpenTaskRow = TodayProjectTaskRow
@@ -12,7 +12,7 @@ export type TurboProjectOpenTaskRow = TodayProjectTaskRow
 export type TurboProjectTasksFetchOptions = {
   /** When true, only incomplete tasks (status=open on gateway). */
   openOnly?: boolean
-  /** When true, filter by session FIO (default). When false, all_assignees on gateway. */
+  /** When true (default), only the current user's tasks. When false, all assignees. */
   assigneeOnly?: boolean
   limit?: number
 }
@@ -62,7 +62,12 @@ export function useTurboProjectOpenTasks(
           limit
         }
         if (openOnly) extra.status = 'open'
-        extra.all_assignees = true
+        if (!assigneeOnly) extra.all_assignees = true
+        else if (erpFio.trim()) {
+          extra.employee = erpFio
+          extra.fio = erpFio
+          extra.assignee = erpFio
+        }
 
         const res = await api.invokeServerTool(
           'turboproject.get_project_tasks',
@@ -83,12 +88,8 @@ export function useTurboProjectOpenTasks(
         const all = raw.filter(
           (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
         )
-        const mine = erpFio.trim()
-          ? all.filter((task) => turboTaskAssignedToActor(task, erpFio))
-          : all
-        const fallbackAll = Boolean(assigneeOnly && mine.length === 0 && all.length > 0)
-        const list = assigneeOnly && !fallbackAll ? mine : all
-        setShowingAllAssignees(fallbackAll)
+        const list = resolveOpenProjectTasks(all, erpFio, assigneeOnly)
+        setShowingAllAssignees(!assigneeOnly)
         list.sort((left, right) => {
           const leftDelay = Number(left.delay_days ?? 0)
           const rightDelay = Number(right.delay_days ?? 0)
@@ -97,7 +98,10 @@ export function useTurboProjectOpenTasks(
         })
         const mapped = list.map((task) => turboProjectTaskToTodayRow(task, projectId, erpFio))
         setRows(mapped)
-        setMatchedCount(Number.isFinite(matched) && matched > 0 ? matched : mapped.length)
+        const serverMatched = Number.isFinite(matched) && matched > 0 ? matched : mapped.length
+        setMatchedCount(
+          assigneeOnly && mapped.length < all.length ? mapped.length : serverMatched
+        )
       } catch (err) {
         if (!alive) return
         setRows([])
@@ -114,4 +118,15 @@ export function useTurboProjectOpenTasks(
   }, [projectId, user?.id, erpFio, enabled, openOnly, assigneeOnly, limit])
 
   return { loading, rows, error, matchedCount, showingAllAssignees }
+}
+
+/** Open project tasks: the current user only, unless assigneeOnly is off. Never fall back to everyone. */
+export function resolveOpenProjectTasks(
+  tasks: Record<string, unknown>[],
+  actorFio: string,
+  assigneeOnly: boolean
+): Record<string, unknown>[] {
+  if (!assigneeOnly) return tasks
+  if (!actorFio.trim()) return tasks
+  return filterTurboTasksByActor(tasks, actorFio)
 }

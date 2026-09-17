@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CalendarEvent, WorkflowBoard } from '../api/types'
 import {
   dedupeMeetingEvents,
@@ -8,12 +8,16 @@ import {
 } from '../utils/outlookMeetings'
 import { parseIso, sameDay } from '../utils/calendar'
 import { useWorkplaceData } from './WorkplaceBoard'
-import type { TodayPlanBlock } from '../tabs/grid/todayDemoData'
-import { agentAccent, shortAgentLabel } from './agentAccent'
+import {
+  TODAY_PLAN_AI_MOCKS,
+  TODAY_PLAN_MEETING_MOCKS,
+  TODAY_PLAN_PREFER_MOCKS,
+  type TodayPlanBlock
+} from '../tabs/grid/todayDemoData'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
-export const TODAY_PLAN_DAY_START = 7
+export const TODAY_PLAN_DAY_START = 9
 export const TODAY_PLAN_DAY_END = 18
 
 const MEETING_TONES: TodayPlanBlock['tone'][] = ['pink', 'purple', 'sky', 'orange', 'teal']
@@ -104,37 +108,30 @@ function meetingToBlock(meeting: MeetingEvent, index: number): TodayPlanBlock | 
 function agentEventToBlock(
   event: CalendarEvent,
   agentTitle: string,
-  agentCode: string | undefined,
   index: number
 ): TodayPlanBlock | null {
   const start = parseIso(event.startAt)
   if (!start) return null
   const end = new Date(start.getTime() + 60 * 60 * 1000)
-  const rawTitle = (event.subtitle || event.title || agentTitle || 'Запуск агента').trim()
-  const shortName = shortAgentLabel(agentCode, agentTitle)
-  const briefTask =
-    rawTitle && rawTitle !== agentTitle && rawTitle !== 'Запуск агента' ? rawTitle : ''
-  const displayTitle = briefTask ? `${shortName}: ${briefTask}` : shortName
+  const title = (event.subtitle || event.title || agentTitle || 'Запуск агента').trim()
+  const displayTitle = title === agentTitle ? 'Запуск агента' : title
   const status = (event.status || '').trim()
   const source = (event.source || '').trim()
   const runId = (event.runId || '').trim()
-  const accent = agentAccent(event.workflowId || agentTitle)
   return {
     id: `ai:${event.id || event.runId || `${event.workflowId}-${event.startAt}`}`,
     startHour: decimalHour(start),
     endHour: decimalHour(end),
     title: displayTitle,
-    subtitle: briefTask || agentTitle,
+    subtitle: agentTitle,
     tone: AI_TONES[index % AI_TONES.length],
     who: 'ai',
     kind: 'reg',
     lane: 'ai',
-    accent,
     detail: {
       timeRange: formatTimeRange(start, end),
       typeLabel: 'Запуск ИИ-агента',
       agentName: agentTitle,
-      agentCode: shortName,
       status: status || undefined,
       source: source || undefined,
       workflowId: event.workflowId || undefined,
@@ -148,41 +145,32 @@ function nextRunToBlock(
   workflowId: string,
   nextRunAt: string,
   agentTitle: string,
-  agentCode: string | undefined,
   index: number
 ): TodayPlanBlock | null {
   const start = parseIso(nextRunAt)
   if (!start) return null
   const end = new Date(start.getTime() + 60 * 60 * 1000)
-  const shortName = shortAgentLabel(agentCode, agentTitle || 'ИИ-агент')
-  const accent = agentAccent(workflowId || agentTitle)
   return {
     id: `ai-next:${workflowId}-${nextRunAt}`,
     startHour: decimalHour(start),
     endHour: decimalHour(end),
-    title: shortName,
+    title: agentTitle || 'ИИ-агент',
     subtitle: 'Плановый запуск',
     tone: AI_TONES[index % AI_TONES.length],
     who: 'ai',
     kind: 'reg',
     lane: 'ai',
-    accent,
     detail: {
       timeRange: formatTimeRange(start, end),
       typeLabel: 'Плановый запуск ИИ-агента',
       agentName: agentTitle || 'ИИ-агент',
-      agentCode: shortName,
       workflowId,
       note: 'Запуск по расписанию агента'
     }
   }
 }
 
-function aiBlocksForDay(
-  board: WorkflowBoard,
-  periodDay: Date,
-  codeById: Map<string, string>
-): TodayPlanBlock[] {
+function aiBlocksForDay(board: WorkflowBoard, periodDay: Date): TodayPlanBlock[] {
   const workflows = board.agents.filter((item) => item.kind === 'workflow')
   const titleById = new Map(workflows.map((agent) => [agent.id, agent.title || 'ИИ-агент']))
   const dayEvents = board.events.filter((event) => {
@@ -195,8 +183,7 @@ function aiBlocksForDay(
   const seen = new Set<string>()
 
   dayEvents.forEach((event, index) => {
-    const title = titleById.get(event.workflowId) || 'ИИ-агент'
-    const block = agentEventToBlock(event, title, codeById.get(event.workflowId), index)
+    const block = agentEventToBlock(event, titleById.get(event.workflowId) || 'ИИ-агент', index)
     if (!block) return
     const key = `${event.workflowId}:${Math.floor(block.startHour * 60)}`
     if (seen.has(key)) return
@@ -211,7 +198,7 @@ function aiBlocksForDay(
     const key = `${agent.id}:${Math.floor(decimalHour(next) * 60)}`
     if (seen.has(key)) continue
     seen.add(key)
-    const block = nextRunToBlock(agent.id, agent.nextRunAt, agent.title, codeById.get(agent.id), slot)
+    const block = nextRunToBlock(agent.id, agent.nextRunAt, agent.title, slot)
     if (block) blocks.push(block)
     slot += 1
   }
@@ -232,7 +219,7 @@ export function useTodayPlanTimeline(
   options: { userId: string; fio: string }
 ): TodayPlanTimelineState {
   const { userId, fio } = options
-  const { board, agents, loading: boardLoading } = useWorkplaceData(
+  const { board, loading: boardLoading } = useWorkplaceData(
     userId ? { userId, fio } : null
   )
 
@@ -255,7 +242,8 @@ export function useTodayPlanTimeline(
         return
       }
     }
-    setMeetingsLoading(true)
+    const hadCache = Boolean(readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey))
+    if (!hadCache) setMeetingsLoading(true)
     setMeetingsError('')
     void ensureOutlookMeetings('day', periodDay, { owner: fio })
       .then((res) => {
@@ -285,8 +273,11 @@ export function useTodayPlanTimeline(
     }
   }, [dayKey, fio, generation, periodDay, userId])
 
+  const stableMeetingsRef = useRef<TodayPlanBlock[]>([])
+  const stableAiRef = useRef<TodayPlanBlock[]>([])
+
   return useMemo(() => {
-    const loading = meetingsLoading && !meetings.length
+    const loading = meetingsLoading || boardLoading
     const onDay = dedupeMeetingEvents(
       meetings.filter((item) => {
         const start = parseMeetingTime(item.start)
@@ -294,20 +285,38 @@ export function useTodayPlanTimeline(
       })
     )
 
-    const meetingBlocks = onDay
+    let meetingBlocks = onDay
       .map((meeting, index) => meetingToBlock(meeting, index))
       .filter((item): item is TodayPlanBlock => item !== null)
       .sort((a, b) => a.startHour - b.startHour)
 
-    const codeById = new Map(agents.map((agent) => [agent.workflowId, agent.code || '']))
-    const aiBlocks = aiBlocksForDay(board, periodDay, codeById)
+    let aiBlocks = aiBlocksForDay(board, periodDay)
+
+    if (TODAY_PLAN_PREFER_MOCKS) {
+      meetingBlocks = TODAY_PLAN_MEETING_MOCKS
+      aiBlocks = TODAY_PLAN_AI_MOCKS
+    } else {
+      if (loading) {
+        if (!meetingBlocks.length && stableMeetingsRef.current.length) {
+          meetingBlocks = stableMeetingsRef.current
+        }
+        if (!aiBlocks.length && stableAiRef.current.length) {
+          aiBlocks = stableAiRef.current
+        }
+      }
+    }
+
+    if (meetingBlocks.length) stableMeetingsRef.current = meetingBlocks
+    if (aiBlocks.length) stableAiRef.current = aiBlocks
+
+    const usingPlanMocks = TODAY_PLAN_PREFER_MOCKS
 
     return {
-      loading,
-      meetingsError,
+      loading: TODAY_PLAN_PREFER_MOCKS ? false : loading,
+      meetingsError: usingPlanMocks ? '' : meetingsError,
       meetingBlocks,
       aiBlocks,
       lunchBlock: TODAY_LUNCH_BLOCK
     }
-  }, [agents, board, boardLoading, meetings, meetingsError, meetingsLoading, periodDay, dayKey])
+  }, [board, boardLoading, meetings, meetingsError, meetingsLoading, periodDay, dayKey])
 }

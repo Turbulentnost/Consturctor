@@ -7,6 +7,15 @@ import logoUrl from '../assets/logo.png'
 
 const TEST_USER_FIO = 'Анна Де Армас'
 
+function loginErrorMessage(err: unknown): string {
+  const raw = err instanceof ApiError ? err.message.trim() : ''
+  if (!raw) return 'Ошибка входа'
+  if (/OSError|Errno \d+|pyodbc|Traceback|sqlalchemy|Invalid argument/i.test(raw)) {
+    return 'Не удалось войти: нет связи с 1С или сервером. Проверьте сеть и попробуйте снова.'
+  }
+  return raw
+}
+
 function testLoginResult(): LoginResult {
   return {
     accessToken: '',
@@ -66,7 +75,7 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
       setRememberPreference(remember)
       onLoggedIn(result, remember, password, fio.trim())
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Ошибка входа')
+      setError(loginErrorMessage(err))
     } finally {
       setBusy(false)
     }
@@ -79,7 +88,7 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
         <img className="login-logo" src={logoUrl} alt="Оркестратор" />
         <div className="brand">Оркестратор</div>
         <div className="subtitle">Оркестратор должности</div>
-        <div className="hint">Вход через учётную запись 1С · пилот · 2 агента</div>
+        <div className="hint">Вход через учётную запись 1С</div>
         {banner ? <div className="login-banner">{banner}</div> : null}
 
         <label>ФИО</label>

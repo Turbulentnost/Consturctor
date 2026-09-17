@@ -18,8 +18,45 @@ function installBrowserApi(): void {
 
   const noopUnsub = (): (() => void) => () => undefined
 
+  const COM_SECRET_KEY = 'orchestrator.session.comSecret'
+  const readComSecret = (): { login: string; password: string; nameMail: string } | null => {
+    try {
+      const raw = sessionStorage.getItem(COM_SECRET_KEY)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as { login?: string; password?: string; nameMail?: string }
+      if (!parsed.password) return null
+      return {
+        login: parsed.login || '',
+        password: parsed.password,
+        nameMail: parsed.nameMail || ''
+      }
+    } catch {
+      return null
+    }
+  }
+
   window.api = {
     getConfig: async () => ({ backendUrl: BACKEND, testUser: false }),
+    setComSecret: async (payload) => {
+      if (!payload?.password) {
+        sessionStorage.removeItem(COM_SECRET_KEY)
+        return { ok: true }
+      }
+      sessionStorage.setItem(
+        COM_SECRET_KEY,
+        JSON.stringify({
+          login: payload.login || '',
+          password: payload.password,
+          nameMail: payload.nameMail || ''
+        })
+      )
+      return { ok: true }
+    },
+    getComSecret: async () => readComSecret(),
+    clearComSecret: async () => {
+      sessionStorage.removeItem(COM_SECRET_KEY)
+      return { ok: true }
+    },
     request: async (opts) => {
       const url = new URL(opts.path, `${BACKEND}/`)
       if (opts.params) {
@@ -54,6 +91,59 @@ function installBrowserApi(): void {
     },
     upload: async () => ({ ok: false, status: 501, error: 'Загрузка файлов только в Electron' }),
     fetchDataUrl: async () => ({ ok: false, error: 'Только в Electron' }),
+    fetchFilePreview: async (opts) => {
+      const raw = String(opts.url || '').trim()
+      if (!raw) return { ok: false, error: 'Нет ссылки на файл' }
+      const url = raw.startsWith('http://') || raw.startsWith('https://') ? raw : `${BACKEND}${raw.startsWith('/') ? raw : `/${raw}`}`
+      const headers: Record<string, string> = {}
+      if (opts.token) headers.Authorization = `Bearer ${opts.token}`
+      try {
+        const res = await fetch(url, { headers })
+        if (!res.ok) return { ok: false, error: `Ошибка загрузки (${res.status})` }
+        const buffer = await res.arrayBuffer()
+        if (buffer.byteLength > 20 * 1024 * 1024) {
+          return { ok: false, tooLarge: true, error: 'Файл слишком большой для предпросмотра' }
+        }
+        const name = String(opts.fileName || raw).toLowerCase()
+        const headerMime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+        const bytes = new Uint8Array(buffer)
+        const isPdf =
+          bytes.length >= 4 &&
+          bytes[0] === 0x25 &&
+          bytes[1] === 0x50 &&
+          bytes[2] === 0x44 &&
+          bytes[3] === 0x46
+        const isText =
+          /\.(txt|md|csv|json|xml|html|htm|log)$/.test(name) || headerMime.startsWith('text/')
+        const isEmbed =
+          isPdf ||
+          headerMime.startsWith('image/') ||
+          headerMime === 'application/pdf' ||
+          /\.(pdf|png|jpe?g|webp|gif)$/.test(name)
+        if (isText) {
+          return { ok: true, kind: 'text', text: new TextDecoder('utf-8').decode(buffer), mime: headerMime || 'text/plain' }
+        }
+        if (isEmbed) {
+          const mime = isPdf ? 'application/pdf' : headerMime || 'application/octet-stream'
+          const blob = new Blob([buffer], { type: mime })
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(String(reader.result || ''))
+            reader.onerror = () => reject(new Error('read failed'))
+            reader.readAsDataURL(blob)
+          })
+          return { ok: true, kind: 'embed', dataUrl, mime }
+        }
+        return {
+          ok: true,
+          kind: 'external',
+          hint: 'Документ этого формата лучше открыть после скачивания',
+          mime: headerMime || 'application/octet-stream'
+        }
+      } catch {
+        return { ok: false, error: 'Не удалось загрузить файл' }
+      }
+    },
     download: async () => ({ ok: false, error: 'Только в Electron' }),
     createWorkflow: async () => ({ ok: false, status: 501, error: 'Только в Electron' }),
     stream: async () => ({ ok: false, status: 501, error: 'Только в Electron' }),
@@ -67,6 +157,7 @@ function installBrowserApi(): void {
     stopNotifications: async () => ({ ok: true }),
     showNotification: async () => ({ ok: true }),
     onNotificationOpen: noopUnsub,
+    onNotificationStop: noopUnsub,
     onNotificationHitl: noopUnsub,
     onInboxChanged: noopUnsub,
     onBoardUpdated: noopUnsub,

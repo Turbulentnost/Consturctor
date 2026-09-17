@@ -246,13 +246,15 @@ export function SpecBottomRow({ children }: { children: ReactNode }): React.JSX.
   return <div className="spec-v04-bottom-row">{children}</div>
 }
 
-export function SpecPanel({ title, extra, children }: { title: string; extra?: ReactNode; children: ReactNode }): React.JSX.Element {
+export function SpecPanel({ title, extra, children }: { title?: string; extra?: ReactNode; children: ReactNode }): React.JSX.Element {
   return (
     <section className="wp-card spec-v04-panel">
-      <header className="spec-v04-panel-head">
-        <h3>{title}</h3>
-        {extra}
-      </header>
+      {title || extra ? (
+        <header className="spec-v04-panel-head">
+          {title ? <h3>{title}</h3> : null}
+          {extra}
+        </header>
+      ) : null}
       {children}
     </section>
   )

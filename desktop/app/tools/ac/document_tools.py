@@ -18,6 +18,7 @@ from typing import Any
 
 from app.tools.ac.agent_workspace import AgentWorkspaceResolver, WorkspaceError
 from app.tools.ac.base import BaseTool
+from app.tools.ac.office_style import as_kpis, as_sections, as_word_table, pretty_title, theme_names
 from app.tools.ac.registry import ToolRegistry
 from app.tools.ac.tooling import (
     ToolCallResult,
@@ -25,41 +26,6 @@ from app.tools.ac.tooling import (
     ToolExecutionMode,
     ToolSideEffectLevel,
 )
-
-
-def _as_sections(value: Any) -> list[dict[str, str]]:
-    sections: list[dict[str, str]] = []
-    if isinstance(value, list):
-        for item in value:
-            if isinstance(item, dict):
-                heading = str(item.get("heading") or item.get("title") or "").strip()
-                body = str(item.get("body") or item.get("text") or "").strip()
-                if heading or body:
-                    sections.append({"heading": heading, "body": body})
-            elif isinstance(item, str) and item.strip():
-                sections.append({"heading": "", "body": item.strip()})
-    elif isinstance(value, str) and value.strip():
-        sections.append({"heading": "", "body": value.strip()})
-    return sections
-
-
-def _as_table(value: Any) -> tuple[list[str], list[list[str]]]:
-    if not isinstance(value, dict):
-        return [], []
-    headers = [str(h) for h in (value.get("headers") or []) if str(h).strip()]
-    rows: list[list[str]] = []
-    for row in value.get("rows") or []:
-        if isinstance(row, (list, tuple)):
-            rows.append([_cell(c) for c in row])
-        elif isinstance(row, dict) and headers:
-            rows.append([_cell(row.get(h, "")) for h in headers])
-    return headers, rows
-
-
-def _cell(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value)
 
 
 class ReportExportDocumentTool(BaseTool):
@@ -71,11 +37,11 @@ class ReportExportDocumentTool(BaseTool):
                 name="report.export_document",
                 title="Экспорт отчёта в файл",
                 description=(
-                    "Сохраняет готовый отчёт файлом в папке агента: Word (.docx), "
-                    "если доступен, иначе Markdown (.md). На вход - title, sections "
-                    "(heading/body), summary и необязательная table (headers/rows). "
-                    "Возвращает file (путь). Используй для 'отчёт Word/документ', "
-                    "когда нужен именно файл, а не текст. Текст пиши в sections сам - "
+                    "Сохраняет готовый отчёт файлом в папке агента: Word (.docx) "
+                    "с корпоративным оформлением (титул, тема, таблица, колонтитулы), "
+                    "если python-docx доступен, иначе Markdown (.md). "
+                    "На вход — title, sections (heading/body), summary, table, "
+                    "необязательно theme/kpis. Текст пиши в sections сам — "
                     "инструмент ничего не выдумывает."
                 ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
@@ -109,6 +75,15 @@ class ReportExportDocumentTool(BaseTool):
                                 "rows": {"type": "array"},
                             },
                         },
+                        "theme": {
+                            "type": "string",
+                            "enum": ["navy", "forest", "graphite", "wine", "sand"],
+                            "description": "Цветовая тема. По умолчанию navy.",
+                        },
+                        "kpis": {
+                            "type": "array",
+                            "description": "Плашки в начале: [{label, value, hint}]",
+                        },
                         "format": {
                             "type": "string",
                             "enum": ["docx", "md"],
@@ -125,10 +100,12 @@ class ReportExportDocumentTool(BaseTool):
     def execute(self, input_data: dict) -> ToolCallResult:
         raw_name = str(input_data.get("filename") or "").strip() or "report"
         stem = Path(raw_name).stem or "report"
-        title = str(input_data.get("title") or stem).strip()
+        title = pretty_title(input_data.get("title"), stem)
         summary = str(input_data.get("summary") or "").strip()
-        sections = _as_sections(input_data.get("sections"))
-        headers, rows = _as_table(input_data.get("table"))
+        sections = as_sections(input_data.get("sections"))
+        headers, rows = as_word_table(input_data.get("table"))
+        theme = str(input_data.get("theme") or "navy").strip()
+        kpis = as_kpis(input_data.get("kpis"))
         want = str(input_data.get("format") or "docx").strip().lower()
 
         try:
@@ -138,7 +115,7 @@ class ReportExportDocumentTool(BaseTool):
         except WorkspaceError as exc:
             return self._fail("WORKSPACE_ERROR", str(exc))
 
-        if not sections and not summary and not rows:
+        if not sections and not summary and not rows and not kpis:
             return self._fail(
                 "REPORT_EMPTY",
                 "Нет данных для отчёта: заполни summary/sections по собранным данным.",
@@ -147,7 +124,9 @@ class ReportExportDocumentTool(BaseTool):
         use_docx = want != "md" and _docx_available()
         try:
             if use_docx:
-                path = self._write_docx(workspace, stem, title, summary, sections, headers, rows)
+                path = self._write_docx(
+                    workspace, stem, title, summary, sections, headers, rows, theme, kpis
+                )
                 fmt = "docx"
             else:
                 path = self._write_md(workspace, stem, title, summary, sections, headers, rows)
@@ -166,6 +145,7 @@ class ReportExportDocumentTool(BaseTool):
                 "path": str(path),
                 "format": fmt,
                 "section_count": len(sections),
+                "theme": theme if fmt == "docx" else "md",
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
             },
         )
@@ -179,29 +159,22 @@ class ReportExportDocumentTool(BaseTool):
         sections: list[dict[str, str]],
         headers: list[str],
         rows: list[list[str]],
+        theme: str,
+        kpis: list[dict[str, str]],
     ) -> Path:
-        from docx import Document
+        from app.tools.ac.office_style import write_docx
 
         path = workspace.resolve(f"{stem}.docx")
-        document = Document()
-        document.add_heading(title, level=0)
-        if summary:
-            document.add_paragraph(summary)
-        for section in sections:
-            if section["heading"]:
-                document.add_heading(section["heading"], level=1)
-            if section["body"]:
-                for line in section["body"].splitlines() or [section["body"]]:
-                    document.add_paragraph(line)
-        if headers and rows:
-            table = document.add_table(rows=1, cols=len(headers))
-            for idx, head in enumerate(headers):
-                table.rows[0].cells[idx].text = head
-            for row in rows:
-                cells = table.add_row().cells
-                for idx in range(len(headers)):
-                    cells[idx].text = row[idx] if idx < len(row) else ""
-        document.save(str(path))
+        write_docx(
+            path,
+            title=title,
+            summary=summary,
+            sections=sections,
+            headers=headers,
+            rows=rows,
+            theme=theme if theme in theme_names() else "navy",
+            kpis=kpis,
+        )
         return path
 
     def _write_md(

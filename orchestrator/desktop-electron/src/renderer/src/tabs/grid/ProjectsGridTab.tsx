@@ -74,13 +74,15 @@ function ProjectExpandedTasks({
   user,
   erpFio,
   enabled,
-  taskFetch
+  taskFetch,
+  emptyLabel
 }: {
   projectId: string
   user: UserProfile
   erpFio: string
   enabled: boolean
   taskFetch: TurboProjectTasksFetchOptions
+  emptyLabel: string
 }): React.JSX.Element {
   const tasks = useTurboProjectOpenTasks(projectId, user, erpFio, enabled, taskFetch)
   return (
@@ -88,7 +90,7 @@ function ProjectExpandedTasks({
       rows={tasks.rows}
       loading={tasks.loading}
       error={tasks.error}
-      emptyLabel="Нет задач по выбранному фильтру"
+      emptyLabel={emptyLabel}
     />
   )
 }
@@ -129,6 +131,9 @@ export function ProjectsGridTab({
     }),
     [myTasksOnly]
   )
+  const tasksEmptyLabel = myTasksOnly
+    ? 'Нет моих открытых задач в проекте'
+    : 'Нет открытых задач в MPP'
 
   useEffect(() => {
     if (selectedId || !projects[0]?.id) return
@@ -172,8 +177,12 @@ export function ProjectsGridTab({
       { id: 'active', label: 'Активные проекты', value: String(allProjects.length || '—'), tone: 'green' },
       {
         id: 'tasks',
-        label: 'Открытые задачи',
-        value: String(allProjects.reduce((s, p) => s + p.tasks, 0) || '—'),
+        label: myTasksOnly ? 'Мои открытые задачи' : 'Открытые задачи',
+        value: myTasksOnly
+          ? projectTasks.loading
+            ? '…'
+            : String(projectTasks.matchedCount || projectTasks.rows.length || '—')
+          : String(allProjects.reduce((s, p) => s + p.tasks, 0) || '—'),
         tone: 'blue'
       },
       { id: 'risk', label: 'С риском', value: riskCount ? String(riskCount) : '—', tone: 'orange' },
@@ -185,7 +194,16 @@ export function ProjectsGridTab({
       },
       { id: 'load', label: 'Загрузка', value: '—', tone: 'yellow' }
     ],
-    [allProjects, riskCount, selected, projectTasks.rows.length, doneTasksInView]
+    [
+      allProjects,
+      riskCount,
+      selected,
+      myTasksOnly,
+      projectTasks.loading,
+      projectTasks.matchedCount,
+      projectTasks.rows.length,
+      doneTasksInView
+    ]
   )
 
   const toggleExpanded = (projectId: string) => {
@@ -258,7 +276,7 @@ export function ProjectsGridTab({
                 <th>Проект</th>
                 <th>Код</th>
                 <th>Роль</th>
-                <th>Задачи</th>
+                <th>{myTasksOnly ? 'Мои задачи' : 'Задачи'}</th>
                 <th>Статус</th>
                 <th>Срок</th>
                 <th>Прогресс</th>
@@ -304,7 +322,15 @@ export function ProjectsGridTab({
                       </td>
                       <td>{p.code}</td>
                       <td>{p.role}</td>
-                      <td>{p.tasks}</td>
+                      <td>
+                        {myTasksOnly
+                          ? p.id === effectiveId
+                            ? projectTasks.loading
+                              ? '…'
+                              : projectTasks.matchedCount || projectTasks.rows.length
+                            : '—'
+                          : p.tasks}
+                      </td>
                       <td>
                         <SpecPill tone={p.statusTone}>{p.status}</SpecPill>
                       </td>
@@ -324,7 +350,7 @@ export function ProjectsGridTab({
                               rows={projectTasks.rows}
                               loading={projectTasks.loading}
                               error={projectTasks.error}
-                              emptyLabel="Нет задач по выбранному фильтру"
+                              emptyLabel={tasksEmptyLabel}
                             />
                           ) : (
                             <ProjectExpandedTasks
@@ -333,6 +359,7 @@ export function ProjectsGridTab({
                               erpFio={data.erpFio}
                               enabled={Boolean(p.id) && (turboLive || data.projects.length > 0)}
                               taskFetch={taskFetch}
+                              emptyLabel={tasksEmptyLabel}
                             />
                           )}
                         </td>
@@ -376,16 +403,23 @@ export function ProjectsGridTab({
               ) : null}
             </dl>
             <p className="spec-v04-muted">
-              Открытых задач (MPP): {selected.tasks}
-              {projectTasks.matchedCount > projectTasks.rows.length
-                ? ` · показано ${projectTasks.rows.length} из ${projectTasks.matchedCount}`
-                : projectTasks.rows.length
-                  ? ` · ${projectTasks.rows.length} в списке`
-                  : ''}
+              {projectTasks.loading
+                ? myTasksOnly
+                  ? 'Загружаем мои открытые задачи…'
+                  : 'Загружаем открытые задачи…'
+                : myTasksOnly
+                  ? projectTasks.matchedCount || projectTasks.rows.length
+                    ? projectTasks.matchedCount > projectTasks.rows.length
+                      ? `Моих открытых задач: ${projectTasks.matchedCount} · показано ${projectTasks.rows.length}`
+                      : `Моих открытых задач: ${projectTasks.matchedCount || projectTasks.rows.length}`
+                    : 'Нет моих открытых задач в проекте'
+                  : projectTasks.matchedCount > projectTasks.rows.length
+                    ? `Открытых задач (MPP): ${projectTasks.matchedCount} · показано ${projectTasks.rows.length}`
+                    : `Открытых задач (MPP): ${projectTasks.matchedCount || selected.tasks}`}
             </p>
             <SpecProgress value={selected.progress} />
             <div className="spec-detail-pane spec-detail-pane-row">
-              <h4>Задачи проекта</h4>
+              <h4>{myTasksOnly ? 'Мои задачи проекта' : 'Задачи проекта'}</h4>
               <label className="spec-v04-toggle-inline">
                 <input
                   type="checkbox"
@@ -393,16 +427,15 @@ export function ProjectsGridTab({
                   onChange={(e) => setMyTasksOnly(e.target.checked)}
                 />
                 Только мои
-                {projectTasks.showingAllAssignees ? (
-                  <span className="spec-v04-muted"> · все задачи</span>
-                ) : null}
               </label>
             </div>
             <ProjectTasksTable
               rows={projectTasks.rows}
               loading={projectTasks.loading}
               error={projectTasks.error}
-              emptyLabel="Нет задач в MPP по фильтру"
+              emptyLabel={
+                myTasksOnly ? 'Нет моих открытых задач в проекте' : 'Нет открытых задач в MPP'
+              }
             />
             {openHint ? <p className="spec-v04-muted">{openHint}</p> : null}
             <footer className="spec-detail-actions">

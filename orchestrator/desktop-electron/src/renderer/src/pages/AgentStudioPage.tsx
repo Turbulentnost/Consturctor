@@ -152,7 +152,7 @@ export function AgentStudioPage({
 
   const basePhrase = useMemo(() => {
     if (session.pendingQuestion) return 'Агент ждёт ваш ответ'
-    if (session.pendingHitl) return 'Требуется подтверждение действия'
+    if (session.pendingHitl) return session.pendingHitl.title || 'Нужно ваше решение'
     if (busy) {
       if (session.status) return session.status
       if (phase === 'executing') return 'Пробный запуск'
@@ -224,6 +224,17 @@ export function AgentStudioPage({
       }, 400)
     }
   }
+
+  useEffect(() => {
+    if (!busy) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      formation.cancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [busy, formation.cancel])
 
   const submit = (): void => {
     const message = input.trim()
@@ -315,14 +326,27 @@ export function AgentStudioPage({
                   }
                 }}
               />
-              <button
-                className="wf-send"
-                disabled={(!input.trim() && attachments.length === 0) || composerDisabled}
-                onClick={submit}
-                title="Отправить"
-              >
-                ↑
-              </button>
+              {busy ? (
+                <button
+                  type="button"
+                  className="wf-send wf-send-stop"
+                  onClick={formation.cancel}
+                  title="Остановить"
+                  aria-label="Остановить"
+                >
+                  <span className="wf-send-stop-icon" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="wf-send"
+                  disabled={!input.trim() && attachments.length === 0}
+                  onClick={submit}
+                  title="Отправить"
+                >
+                  ↑
+                </button>
+              )}
             </div>
           </div>
           <div className="wf-status">

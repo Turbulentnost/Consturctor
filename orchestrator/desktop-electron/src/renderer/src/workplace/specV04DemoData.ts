@@ -113,6 +113,8 @@ export interface SpecTaskRow {
   performer?: string
   channel?: string
   role?: string
+  /** Turbo: мне / чужие в проектах, где я руководитель / и то и другое. */
+  turboScope?: 'mine' | 'managed' | 'both'
 }
 
 export const DEMO_TASK_ROWS: SpecTaskRow[] = [
@@ -180,11 +182,8 @@ export interface SpecProjectRow {
   progress: number
   risk: string
   riskTone: SpecPillTone
-  /** TurboProject file_id (when distinct from code). */
   fileId?: string
-  /** Руководитель / owner из карточки или 1С. */
   manager?: string
-  /** Внешняя ссылка Turbo / web, если портфель её отдал. */
   url?: string
 }
 
@@ -230,15 +229,12 @@ export const DEMO_PROJECT_ROWS: SpecProjectRow[] = [
   }
 ]
 
+export interface SpecMailAttachment {
+  name: string
+}
+
 export interface SpecMailRow {
   id: string
-  /** Outlook MAPI EntryID (same as id when loaded via COM). */
-  entryId?: string
-  /** RFC Message-ID when known (IMAP / compare). */
-  messageId?: string
-  /** IMAP uid for fetch_message; desktop never opens IMAP sockets. */
-  imapUid?: number
-  channel?: 'imap' | 'outlook'
   sender: string
   subject: string
   category: string
@@ -250,9 +246,12 @@ export interface SpecMailRow {
   status: string
   stTone: SpecPillTone
   assignee: string
+  to?: string
+  body?: string
+  preview?: string
+  receivedLabel?: string
   unread?: boolean
-  bodyPreview?: string
-  attachmentNames?: string[]
+  attachments?: SpecMailAttachment[]
 }
 
 export const DEMO_MAIL_ROWS: SpecMailRow[] = [
@@ -375,8 +374,6 @@ export interface SpecKnowledgeRow {
   version: string
   updated: string
   author: string
-  url?: string
-  workflowId?: string
 }
 
 export const DEMO_KNOWLEDGE_ROWS: SpecKnowledgeRow[] = [

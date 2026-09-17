@@ -1,9 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import type { AgentEvent, CalendarEvent } from '../api/types'
+import type { AgentEvent, AgentRunHistoryItem, CalendarEvent } from '../api/types'
 import { comCredentials } from './session'
-import { buildFeedItems, settleOpenFeedTools } from '../components/agentfeed/build'
+import { buildFeedItems, isTriggerCheckNoise, omitTriggerCheckNoise, settleOpenFeedTools } from '../components/agentfeed/build'
 import {
   applyAgentEvent,
   cancelPendingTools,
@@ -20,6 +20,7 @@ import {
   eventWorkflowId,
   isInFlightRunStatus,
   isLiveRunState,
+  pendingWaitsFromEvents,
   shouldTrackLiveRun
 } from './liveRun'
 
@@ -60,6 +61,14 @@ function backgroundEntryKey(workflowId: string): string {
   return `__bg_explain__${workflowId}`
 }
 
+function isEmptyTriggerCheckRun(item: AgentRunHistoryItem): boolean {
+  if (isInFlightRunStatus(item.status)) return false
+  const answer = (item.answer || item.summary || '').trim()
+  if (isTriggerCheckNoise(answer)) return true
+  if ((item.source || '').toLowerCase() !== 'trigger') return false
+  return !answer && !(item.message || '').trim() && !Number(item.agentWorkMs || 0)
+}
+
 export function explainBackgroundEntryKey(workflowId: string): string {
   return backgroundEntryKey(workflowId)
 }
@@ -72,8 +81,9 @@ export interface RunStore {
   startRun: (opts: StartRunOptions) => string
   answer: (workflowId: string, requestId: string, value: string, filePaths?: string[], ok?: boolean) => void
   respondHitl: (workflowId: string, requestId: string, approved: boolean) => void
+  respondDecision: (workflowId: string, requestId: string, approved: boolean, tool?: string) => void
   skip: (workflowId: string) => void
-  cancel: (workflowId: string) => void
+  cancel: (workflowId: string, backendRunId?: string) => void
   clear: (workflowId: string) => void
   /** Drop every run and stop sidecar workers. Used on logout / user switch. */
   clearAll: () => void
@@ -393,6 +403,23 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     })
   }, [])
 
+  const respondDecision = useCallback(
+    (workflowId: string, requestId: string, approved: boolean, tool?: string) => {
+      const entry = entriesRef.current[workflowId]
+      const pendingQuestion = entry?.state.pendingQuestion
+      const isQuestion =
+        tool === 'askQuestion' ||
+        tool === 'question' ||
+        Boolean(pendingQuestion?.requestId && pendingQuestion.requestId === requestId)
+      if (isQuestion) {
+        answer(workflowId, requestId, approved ? 'Да, продолжай' : '', [], approved)
+        return
+      }
+      respondHitl(workflowId, requestId, approved)
+    },
+    [answer, respondHitl]
+  )
+
   const skip = useCallback((workflowId: string) => {
     agentClient.skip('')
     setEntries((prev) => {
@@ -405,7 +432,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     })
   }, [])
 
-  const cancel = useCallback((workflowId: string) => {
+  const cancel = useCallback((workflowId: string, backendRunIdArg = '') => {
     const entry = entriesRef.current[workflowId]
     const runId = entry?.state.activeRunId
     const sidecarWorkflowId = entry?.workflowId || workflowId
@@ -415,7 +442,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       delete indexRef.current[runId]
     }
     agentClient.cancel(runId || '', sidecarWorkflowId)
-    const backendRunId = entry?.backendRunId || ''
+    const backendRunId = backendRunIdArg || entry?.backendRunId || ''
     if (backendRunId) {
       void api
         .finishLocalAgentRun(sidecarWorkflowId, backendRunId, {
@@ -470,14 +497,14 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     const wid = workflowId.trim()
     if (!wid) return
     const current = entriesRef.current[wid]
-    if (current?.state.activeRunId && (current.state.items?.length ?? 0) > 0) return
+    if (current?.state.activeRunId && omitTriggerCheckNoise(current.state.items || []).length > 0) return
     try {
       let runId = current?.backendRunId || ''
       if (!runId) {
         const list = await api.listAgentRuns(wid)
         runId =
           list.find((item) => isInFlightRunStatus(item.status))?.runId ||
-          list[0]?.runId ||
+          list.find((item) => !isEmptyTriggerCheckRun(item))?.runId ||
           ''
       }
       if (!runId) {
@@ -504,7 +531,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       }
       const detail = await api.getAgentRunDetail(wid, runId)
       const inFlight = isInFlightRunStatus(detail.item.status)
-      const historyItems = buildFeedItems(detail.events, { live: inFlight })
+      const historyItems = omitTriggerCheckNoise(buildFeedItems(detail.events, { live: inFlight }))
       const startedAt = Date.parse(detail.item.startedAt || '')
       const startedMs = Number.isFinite(startedAt) ? startedAt : null
       const hung =
@@ -521,14 +548,19 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       setEntries((prev) => {
         const entry = prev[wid] ?? emptyLiveEntry(wid, '', runId)
         if (entry.state.activeRunId && (entry.state.items?.length ?? 0) > 0) return prev
-        const liveItems = entry.state.items || []
+        const liveItems = omitTriggerCheckNoise(entry.state.items || [])
         const items =
           liveItems.length >= historyItems.length
             ? liveItems
             : historyItems
         const answer = (detail.item.answer || detail.item.summary || '').trim()
         let nextItems = items
-        if (!inFlight && answer && !nextItems.some((item) => item.kind === 'result')) {
+        if (
+          !inFlight &&
+          answer &&
+          !isTriggerCheckNoise(answer) &&
+          !nextItems.some((item) => item.kind === 'result')
+        ) {
           nextItems = [...nextItems, { kind: 'result', id: `hist-res-${runId}`, text: answer }]
         }
         if (hung) {
@@ -540,7 +572,10 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           )
         }
         const locallyOwned = Boolean(entry.state.activeRunId)
-        const live = inFlight && !hung && locallyOwned
+        const waits = pendingWaitsFromEvents(detail.events)
+        const pendingQuestion = entry.state.pendingQuestion || (inFlight ? waits.pendingQuestion : null)
+        const pendingHitl = entry.state.pendingHitl || (inFlight ? waits.pendingHitl : null)
+        const live = inFlight && !hung && (locallyOwned || Boolean(pendingQuestion || pendingHitl))
         if (!live) {
           nextItems = settleOpenFeedTools(nextItems)
         }
@@ -554,10 +589,14 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
               items: nextItems,
               running: live,
               runningSinceMs: live ? startedMs || entry.state.runningSinceMs || Date.now() : null,
-              status: live ? entry.state.status || 'Агент работает…' : '',
+              status: pendingHitl || pendingQuestion
+                ? 'Нужно ваше решение'
+                : live
+                  ? entry.state.status || 'Агент работает…'
+                  : '',
               error: hung ? SDK_DEAD_ANSWER : entry.state.error,
-              pendingQuestion: live ? entry.state.pendingQuestion : null,
-              pendingHitl: live ? entry.state.pendingHitl : null
+              pendingQuestion,
+              pendingHitl
             }
           }
         }
@@ -653,10 +692,22 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         for (const [wid, entry] of Object.entries(next)) {
           if (running.has(wid)) continue
           if (entry.state.activeRunId) continue
-          if ((entry.state.items?.length ?? 0) > 0) continue
-          if (!entry.state.running) continue
-          delete next[wid]
-          changed = true
+          if (entry.state.running || entry.state.pendingHitl || entry.state.pendingQuestion) {
+            if ((entry.state.items?.length ?? 0) === 0) {
+              delete next[wid]
+            } else {
+              next[wid] = {
+                ...entry,
+                state: {
+                  ...entry.state,
+                  running: false,
+                  pendingHitl: null,
+                  pendingQuestion: null
+                }
+              }
+            }
+            changed = true
+          }
         }
         return changed ? next : prev
       })
@@ -687,6 +738,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       startRun,
       answer,
       respondHitl,
+      respondDecision,
       skip,
       cancel,
       clear,
@@ -702,6 +754,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       startRun,
       answer,
       respondHitl,
+      respondDecision,
       skip,
       cancel,
       clear,

@@ -7,10 +7,17 @@ from pathlib import Path
 _TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".xml", ".html", ".htm", ".log"}
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 _MAX_CHARS = 12_000
-_UNREADABLE = "текст не извлечён"
+UNREADABLE = "текст не извлечён"
+_UNREADABLE = UNREADABLE
 
 
-def extract_attachment_text(path: str) -> str:
+def extract_attachment_text(
+    path: str,
+    *,
+    max_chars: int = _MAX_CHARS,
+    max_pages: int = 0,
+    ocr: bool = True,
+) -> str:
     file_path = Path(path)
     name = file_path.name
     suffix = file_path.suffix.lower()
@@ -20,13 +27,13 @@ def extract_attachment_text(path: str) -> str:
         if suffix in _TEXT_SUFFIXES:
             text = file_path.read_text(encoding="utf-8", errors="replace")
         elif suffix == ".pdf":
-            text = _read_pdf(file_path)
+            text = _read_pdf(file_path, max_pages=max_pages, ocr=ocr)
         elif suffix == ".docx":
             text = _read_docx(file_path)
         elif suffix in {".xlsx", ".xlsm"}:
             text = _read_xlsx(file_path)
         elif suffix in _IMAGE_SUFFIXES:
-            text = _ocr(file_path)
+            text = _ocr(file_path) if ocr else ""
         elif suffix == ".doc":
             text = _read_doc(file_path)
         else:
@@ -36,8 +43,9 @@ def extract_attachment_text(path: str) -> str:
     text = (text or "").strip()
     if not text:
         return f"файл {name} прикреплён, {_UNREADABLE}"
-    if len(text) > _MAX_CHARS:
-        text = text[:_MAX_CHARS].rstrip() + "\n…"
+    limit = max(200, int(max_chars or _MAX_CHARS))
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "\n…"
     return text
 
 
@@ -77,7 +85,7 @@ def _ocr(path: Path) -> str:
     return ocr_file(path)
 
 
-def _read_pdf(path: Path) -> str:
+def _read_pdf(path: Path, *, max_pages: int = 0, ocr: bool = True) -> str:
     native = ""
     try:
         import fitz  # pymupdf
@@ -86,13 +94,16 @@ def _read_pdf(path: Path) -> str:
     if fitz is not None:
         doc = fitz.open(path)
         try:
-            native = "\n\n".join((page.get_text() or "") for page in doc)
+            pages = list(doc)
+            if max_pages and max_pages > 0:
+                pages = pages[:max_pages]
+            native = "\n\n".join((page.get_text() or "") for page in pages)
         finally:
             doc.close()
     native = (native or "").strip()
     if native:
         return native
-    return _ocr(path)
+    return _ocr(path) if ocr else ""
 
 
 def _read_docx(path: Path) -> str:

@@ -6,7 +6,7 @@ import { loadUserAvatar } from '../api/avatars'
 import type { ChatMessage, ChatThread, DirectoryUser } from '../api/types'
 import logoUrl from '../assets/logo.png'
 import iconSearch from '../assets/search.png'
-import { NavIcon as UserNavIcon } from '../layout/navIcons'
+import { NavIcon } from '../layout/navIcons'
 
 export type AdminPageKey =
   | 'overview'
@@ -70,53 +70,9 @@ const USER_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'decisions', label: PAGE_LABELS.decisions },
   { key: 'kpi', label: PAGE_LABELS.kpi },
   { key: 'history', label: PAGE_LABELS.history },
-  { key: 'knowledge', label: PAGE_LABELS.knowledge }
+  { key: 'knowledge', label: PAGE_LABELS.knowledge },
+  { key: 'settings', label: PAGE_LABELS.settings }
 ]
-
-function AdminNavIcon({ page }: { page: PageKey }): React.JSX.Element {
-  if (page === 'overview' || page === 'history' || page === 'launch_calendar') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="4" y="5" width="16" height="15" rx="3" />
-        <path d="M8 3v4M16 3v4M4 10h16" strokeLinecap="round" />
-        {page === 'history' ? <path d="M12 13v3l2 1.5" strokeLinecap="round" /> : null}
-        {page === 'launch_calendar' ? <path d="M9 15l-2 2 2 2M15 15l2 2-2 2" strokeLinecap="round" strokeLinejoin="round" /> : null}
-        {page === 'overview' ? <path d="M8 14h8M8 17h5" strokeLinecap="round" /> : null}
-      </svg>
-    )
-  }
-  if (page === 'kpi') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="5" y="5" width="14" height="14" rx="2" />
-        <path d="M8 16l4-5 4 5" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    )
-  }
-  if (page === 'users') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="9" cy="9" r="3" />
-        <circle cx="17" cy="10" r="2.5" />
-        <path d="M4 19c0-2.2 2.2-4 5-4M14 19c0-1.6 1.4-3 3.5-3" strokeLinecap="round" />
-      </svg>
-    )
-  }
-  if (page === 'knowledge_base') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="5" y="4" width="14" height="16" rx="2" />
-        <path d="M9 8h6M9 12h6M9 16h4" strokeLinecap="round" />
-      </svg>
-    )
-  }
-  return (
-    <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M12 3l7 4v6c0 4.4-3.1 7.4-7 8-3.9-.6-7-3.6-7-8V7l7-4z" strokeLinejoin="round" />
-      <circle cx="12" cy="11" r="2" />
-    </svg>
-  )
-}
 
 function initials(fio: string): string {
   const parts = (fio || '').replace(/\./g, ' ').split(/\s+/).filter(Boolean)
@@ -343,8 +299,6 @@ export function Sidebar({
         )}
       </div>
 
-      {!collapsed && !showAdminNav ? <div className="pilot-badge">Пилот · 2 агента</div> : null}
-
       <nav className="nav">
         {items.map((item) => {
           const isActive = item.key === active
@@ -356,7 +310,7 @@ export function Sidebar({
               title={item.label}
             >
               <span className="nav-icon" aria-hidden>
-                {showAdminNav ? <AdminNavIcon page={item.key} /> : <UserNavIcon page={item.key} />}
+                <NavIcon page={item.key} />
               </span>
               {!collapsed && <span className="nav-label">{item.label}</span>}
             </button>

@@ -75,6 +75,7 @@ def test_extract_skips_json_dump_and_read_tools(tmp_path: Path) -> None:
     book.write_bytes(b"xlsx")
     assert extract_result_files({"path": str(book)}, tool="excel.list_files") == []
     assert extract_result_files({"path": str(book)}, tool="excel.read_workbook") == []
+    assert extract_result_files({"path": str(book)}, tool="office.read_file") == []
     assert extract_result_files({"path": str(book)}, tool="code.write_python") == []
 
 

@@ -43,11 +43,15 @@ required_clarifications: только незакрытые пробелы.
 
 ## Запуск
 
+Если в materials/agent.md есть «Проверенная цепочка» — это уже отработанный маршрут пробного запуска. Повтори шаги по порядку теми же инструментами. Меняй только параметры запуска. Не составляй новый план и не подменяй шаги другими вызовами.
 Сначала вызови инструменты и получи реальные данные, только потом делай выводы.
 Если в run_inputs есть обязательный файл и его нет в materials/attachments, остановись и спроси через askQuestion с needsFile=true. Не подменяй отсутствующий файл пользователя другим источником.
 Результат работы агента это конкретный итог бизнес-процесса: найденные факты, принятые решения, выполненные действия. Это не твои размышления и не пересказ плана.
 Создавать файл или нет решает согласованный итоговый выходной результат (что агент должен выдать в конце) и явная просьба пользователя, а не общее правило.
-Если согласованный результат это документ (Word/Excel/PDF/файл) или пользователь просит файл, создай его инструментами Constructor (excel.create_workbook и excel.edit_workbook для таблиц, report.export_document для отчёта) и заполни реальными данными из инструментов. Встроенные edit, запись файлов и терминал (shell) отключены: любую запись делай только этими инструментами Constructor, они спросят подтверждение перед сохранением.
+Если в корне рабочей папки уже есть Excel или Word прошлого запуска — обнови этот файл (excel.edit_workbook / office.format_document). Не создавай второй журнал с новым именем.
+Если согласованный результат это документ (Word/Excel/PDF/файл) или пользователь просит файл, создай его инструментами Constructor (excel.create_workbook и excel.edit_workbook для таблиц, report.export_document для отчёта Word). Эти инструменты всегда оформляют файл: баннер, тема, таблица. Голый Excel или сырой Word писать нельзя — не обходи оформление через код или shell. Если нужно сменить тему — office.format_document. Заполни реальными данными из инструментов. Встроенные edit, запись файлов и терминал (shell) отключены: любую запись делай только этими инструментами Constructor, они спросят подтверждение перед сохранением.
+Журнал поручений АСТ00 / Action Tracker: onec.erp_assignments (номер кириллица АСТ00, не латиница ACT). Не подменяй журнал задачами исполнителя, action=tasks, протоколами, Task или OCR. Дальше только шаги playbook этого агента.
+Вложения 1С после onec.download_artifact читай так: Word/PDF/картинки — office.read_file (filename или saved_path), Excel — excel.read_workbook. Скан или фото office.read_file сам передаёт в зрение модели Cursor SDK — читай страницы из ответа инструмента, не вызывай Read/Grep и не ищи OCR. Встроенные Read и Grep для docx/pdf/xlsx/jpg не вызывай.
 Если согласованный результат это сообщение, уведомление или ответ, файл не создавай, пиши итог в ответ в чат.
 Никогда не записывай размышления (thinking) или ход рассуждений в файлы. Размышления остаются в thinking.
 Не создавай файлы, которые пересказывают задание, план или твои намерения. Такой файл не является результатом.
@@ -82,11 +86,26 @@ _FILES_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*FILES\b", re.I)
 _ACTIONS_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*ACTIONS\b", re.I)
 _TESTS_PASS_RE = re.compile(r"TESTS:\s*PASS", re.I)
 _TESTS_FAIL_RE = re.compile(r"TESTS:\s*FAIL", re.I)
+_TEMPLATE_PLACEHOLDER_RE = re.compile(
+    r"<(?:кратко|имя файла|какое действие|кому и что|если менялось)",
+    re.I,
+)
+_INSTRUCTIONAL_RESULT_RE = re.compile(
+    r"(?:заверши|пиши|выведи|начни строкой)\s+#{0,6}\s*WORK[ _]?RESULT",
+    re.I,
+)
+
+
+def looks_like_work_result_template(text: str) -> bool:
+    """True for the unused AGENTS.md example, not a real closing block."""
+    return bool(_TEMPLATE_PLACEHOLDER_RE.search(text or ""))
 
 
 def text_has_finished_work_result(text: str) -> bool:
     """True when the run produced a closable result block, not just the words TESTS: PASS."""
-    raw = text or ""
+    raw = _INSTRUCTIONAL_RESULT_RE.sub("", text or "")
+    if looks_like_work_result_template(raw):
+        return False
     if _TESTS_FAIL_RE.search(raw) or not _TESTS_PASS_RE.search(raw):
         return False
     if _WORK_RESULT_RE.search(raw):
@@ -98,12 +117,22 @@ def strip_to_work_result(text: str) -> str:
     """Drop planning narration before the final ## WORK_RESULT block.
 
     If no WORK_RESULT marker is present, return the text unchanged (stripped).
+    Keep the previous sentence when the block starts mid-phrase
+    («и его календарь…»).
     """
     raw = text or ""
     match = _WORK_RESULT_RE.search(raw)
     if not match:
         return raw.strip()
-    return raw[match.start():].strip()
+    before = raw[: match.start()].strip()
+    after = raw[match.start() :].strip()
+    body = _WORK_RESULT_RE.sub("", after, count=1)
+    body = re.sub(r"^\s*TESTS:\s*(PASS|FAIL)\s*$", "", body, flags=re.I | re.M).strip()
+    if before and re.match(r"^(и|а|но|или)\b", body, flags=re.I):
+        last = re.sub(r"\s+", " ", before.split("\n\n")[-1]).strip()
+        if last:
+            return f"{last} {body}"
+    return after
 
 
 def format_tool_catalog(limit: int = 80) -> str:
@@ -259,11 +288,29 @@ def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
             "Заверши ## WORK_RESULT и TESTS: PASS."
         )
     else:
-        read_hint = "Прочитай AGENTS.md и materials/agent.md."
+        read_hint = (
+            "AGENTS.md уже в правилах — не читай его и не цитируй шаблон WORK_RESULT. "
+            "Один раз открой materials/agent.md, если ещё не открывал. "
+            "Не начинай второй круг Read/Grep по тем же файлам, журналу и вложениям. "
+            "Если есть проверенная цепочка — сразу вызывай инструменты Constructor по порядку. "
+            "Заверши ## WORK_RESULT и TESTS: PASS."
+        )
     return (
         f"{prefix}{read_hint} "
         "Думай и пиши только на русском.\n\n"
         f"Задача:\n{task}"
+    )
+
+
+def build_continue_run_prompt() -> str:
+    """Resume the same SDK agent after a turn that stopped without WORK_RESULT."""
+    return (
+        "Продолжи этот же запуск до конца. Не начинай сначала. "
+        "AGENTS.md, materials/agent.md, журнал и уже открытые файлы прочитаны — "
+        "не читай их снова и не повторяй успешные инструменты. "
+        "Вызови только оставшиеся шаги Constructor, затем сразу выведи только блок "
+        "## WORK_RESULT ... TESTS: PASS. "
+        "План и комментарии «сейчас прочитаю» в чат не пиши."
     )
 
 
@@ -277,8 +324,9 @@ def build_demo_sdk_prompt(workflow: WorkflowRecord, *, resume: bool = False) -> 
         "playbook следующего запуска. Ничего до ## WORK_RESULT в ответ не пиши. "
         "Файл создавай, только если согласованный итоговый результат это документ "
         "или пользователь просит файл: тогда сформируй его инструментами Constructor "
-        "(excel.create_workbook / excel.edit_workbook / report.export_document) с реальными "
-        "данными. Встроенные edit, запись файлов и терминал отключены. "
+        "(excel.create_workbook / excel.edit_workbook / report.export_document / office.format_document) с реальными "
+        "данными — эти инструменты всегда оформляют файл, голый Excel/Word писать нельзя. "
+        "Встроенные edit, запись файлов и терминал отключены. "
         "Не записывай размышления в файлы и не создавай файлы-пересказы задания или плана. "
         "Если нужно показать план встреч или расписание, вызови инструмент визуализации "
         "(calendar.show_meetings) до блока WORK_RESULT, а не описывай его словами. "

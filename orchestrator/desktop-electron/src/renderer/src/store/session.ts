@@ -1,10 +1,17 @@
 const TOKEN_KEY = 'orchestrator.session.token'
 const FIO_KEY = 'orchestrator.session.fio'
 const REMEMBER_KEY = 'orchestrator.session.remember'
+const COM_SECRET_KEY = 'orchestrator.session.comSecret'
 
 export interface StoredSession {
   accessToken: string
   fio: string
+}
+
+export type ComSessionSecret = {
+  login: string
+  password: string
+  nameMail: string
 }
 
 export function loadSession(): StoredSession | null {
@@ -36,10 +43,9 @@ export function setRememberPreference(value: boolean): void {
 }
 
 /**
- * In-memory 1C password from Orchestrator login (FIO in localStorage token session only).
- * Used for SOAP документооборот (FIO+password), gateway OData and COM; not written to disk.
- * After JWT restore without re-login the password is empty — UI shows the 1C reconnect dialog
- * instead of requiring DOK_HTTP_USER/PASSWORD in backend/.env.
+ * 1C password from the Orchestrator login form.
+ * Kept in renderer memory, sessionStorage (survives Vite HMR), and Electron
+ * safeStorage when «Запомнить пользователя» is on — JWT itself has no password.
  */
 let comLogin = ''
 let comPassword = ''
@@ -52,11 +58,78 @@ let devGatewayPassword = ''
 let devGatewayNameMail = ''
 let devGatewayFio = ''
 
-export function setComCredentials(login: string, password: string, nameMail = ''): void {
+function readRendererComSecret(): ComSessionSecret | null {
+  try {
+    const raw = sessionStorage.getItem(COM_SECRET_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<ComSessionSecret>
+    const password = parsed.password || ''
+    if (!password) return null
+    return {
+      login: (parsed.login || '').trim(),
+      password,
+      nameMail: (parsed.nameMail || '').trim()
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeRendererComSecret(secret: ComSessionSecret | null): void {
+  try {
+    if (!secret?.password) {
+      sessionStorage.removeItem(COM_SECRET_KEY)
+      return
+    }
+    sessionStorage.setItem(
+      COM_SECRET_KEY,
+      JSON.stringify({
+        login: secret.login,
+        password: secret.password,
+        nameMail: secret.nameMail
+      })
+    )
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+function syncComSecretToMain(persist: boolean): void {
+  const api = window.api
+  if (!api?.setComSecret) return
+  if (!comPassword) {
+    void api.clearComSecret?.().catch(() => undefined)
+    return
+  }
+  void api
+    .setComSecret({
+      login: comLogin,
+      password: comPassword,
+      nameMail: comNameMail,
+      persist
+    })
+    .catch(() => undefined)
+}
+
+const cachedRendererSecret = readRendererComSecret()
+if (cachedRendererSecret) {
+  comLogin = cachedRendererSecret.login
+  comPassword = cachedRendererSecret.password
+  comNameMail = cachedRendererSecret.nameMail
+}
+
+export function setComCredentials(
+  login: string,
+  password: string,
+  nameMail = '',
+  opts?: { persist?: boolean }
+): void {
   comLogin = (login || '').trim()
   comPassword = password || ''
   comNameMail = (nameMail || '').trim()
   comCredentialsRevision += 1
+  writeRendererComSecret(comPassword ? { login: comLogin, password: comPassword, nameMail: comNameMail } : null)
+  syncComSecretToMain(opts?.persist ?? rememberPreference())
 }
 
 /** After JWT restore: sync v8users.Name / FIO from profile without touching password. */
@@ -81,6 +154,24 @@ export function clearComCredentials(): void {
   comPassword = ''
   comNameMail = ''
   comCredentialsRevision += 1
+  writeRendererComSecret(null)
+  void window.api?.clearComSecret?.().catch(() => undefined)
+}
+
+/** Apply a secret from Electron main / sidecar without looping persist if unchanged. */
+export function restoreComCredentials(
+  secret: Partial<ComSessionSecret> | null | undefined,
+  opts?: { persist?: boolean }
+): boolean {
+  const password = secret?.password || ''
+  if (!password || !secret) return false
+  const login = (secret.login || '').trim()
+  const nameMail = (secret.nameMail || '').trim()
+  if (comPassword === password && (!login || comLogin === login) && (!nameMail || comNameMail === nameMail)) {
+    return true
+  }
+  setComCredentials(login || comLogin, password, nameMail || comNameMail, opts)
+  return true
 }
 
 export function comCredentials(): { login: string; password: string; nameMail: string } {

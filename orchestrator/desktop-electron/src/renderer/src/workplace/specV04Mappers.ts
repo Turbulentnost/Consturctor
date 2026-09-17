@@ -1,6 +1,7 @@
 import type { WorkplaceAgent } from './WorkplaceBoard'
 import type { SpecMailRow, SpecPillTone, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
-import { parseIso } from '../utils/calendar'
+import { parseIso, sameDay } from '../utils/calendar'
+import { personNameMatches } from './turboAssigneeMatch'
 
 function toneForStatus(text: string): SpecPillTone {
   const key = text.toLowerCase()
@@ -17,13 +18,51 @@ function whoFromDocflowRole(role: string): string {
   return 'Я'
 }
 
+function looksLikeDocflowNumber(text: string): boolean {
+  const value = text.trim()
+  if (!value) return false
+  return /^(до|do)[-.\s]?\d/i.test(value) || /^\d{5,}$/.test(value)
+}
+
+function stripDocflowNumber(text: string, number: string): string {
+  let value = text.trim()
+  if (number) {
+    const escaped = number.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    value = value.replace(new RegExp(`^${escaped}\\s*[·•\\-:]*\\s*`, 'i'), '').trim()
+  }
+  return value.replace(/^(до|do)[-.\s]?\d[\d.\-]*\s*[·•\-:]*\s*/i, '').trim()
+}
+
+function isGenericDocflowStub(text: string): boolean {
+  return /^(не согласовано|завершена|выполнена|открыта)$/i.test(text.trim())
+}
+
+/** Текст задачи без номера ДО-…: description / comment / step. */
+export function erpTaskContentTitle(task: Record<string, unknown>): string {
+  const number = String(task.number || '').trim()
+  const candidates = [
+    String(task.title || '').trim(),
+    String(task.comment || '').trim(),
+    String(task.approval || '').trim()
+  ]
+  for (const raw of candidates) {
+    const cleaned = stripDocflowNumber(raw, number)
+    if (cleaned && !looksLikeDocflowNumber(cleaned) && !isGenericDocflowStub(cleaned)) {
+      return cleaned
+    }
+  }
+  for (const raw of candidates) {
+    const cleaned = stripDocflowNumber(raw, number)
+    if (cleaned && !looksLikeDocflowNumber(cleaned)) return cleaned
+  }
+  return 'Задача 1С'
+}
+
 export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): SpecTaskRow {
   const refKey = String(task.ref_key || task.refKey || '').trim()
   const number = String(task.number || '').trim()
-  const titleRaw = String(task.title || number || 'Задача 1С').trim()
-  const title =
-    number && titleRaw && !titleRaw.includes(number) ? `${number} · ${titleRaw}` : titleRaw
-  const due = String(task.due_at || '').trim()
+  const title = erpTaskContentTitle(task)
+  const due = String(task.due_at || task.due || task.dueDate || '').trim()
   const done = Boolean(task.done)
   const late = Boolean(task.late)
   const taskSource = String(task.source || 'erp_pm').trim().toLowerCase()
@@ -47,7 +86,7 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
     sourceTone: isDocflow ? 'green' : 'blue',
     process: String(task.approval || task.comment || '—'),
     project: '—',
-    deadline: due || '—',
+    deadline: formatTaskDeadline(due),
     urgent: late,
     priority: late ? 'Высокий' : 'Средний',
     priorityTone: late ? 'red' : 'orange',
@@ -204,14 +243,56 @@ function turboProjectRole(item: Record<string, unknown>, actorFio: string): stri
   )
 }
 
-function formatTurboTaskDeadline(raw: string): string {
+/** Руководитель проекта: роль из 1С/Turbo или совпадение ФИО с полем руководителя. */
+export function isTurboProjectManager(
+  project: Pick<SpecProjectRow, 'role' | 'manager'>,
+  actorFio: string
+): boolean {
+  if (/руковод/i.test(project.role || '')) return true
+  const manager = (project.manager || '').trim()
+  const fio = actorFio.trim()
+  if (!fio || !manager) return false
+  return personNameMatches(fio, manager) || personNameMatches(fio, manager, 'surname')
+}
+
+/** Открытая задача Turbo: срок выбранного дня или просрочка (delay_days). */
+export function isRawTurboTodayOrOverdue(task: Record<string, unknown>, day: Date): boolean {
+  const percent = Number(task.percent_complete ?? 0)
+  if (Number.isFinite(percent) && percent >= 1) return false
+  const delay = Number(task.delay_days ?? 0)
+  if (Number.isFinite(delay) && delay > 0) return true
+  const finish = String(task.finish_date || '').trim()
+  if (!finish) return false
+  const stamp = parseIso(finish) || parseIso(finish.replace(' ', 'T'))
+  return stamp ? sameDay(stamp, day) : false
+}
+
+export function isOutlookMailFromMe(row: SpecMailRow): boolean {
+  return /отправлен/i.test(row.category || '') || row.status === 'Отправлено'
+}
+
+export function mailPartyLabel(row: SpecMailRow): string {
+  const sent = isOutlookMailFromMe(row)
+  const to = (row.to || '').trim()
+  if (sent && to) return to
+  return row.sender
+}
+
+/** Compact deadline for narrow today tiles: `16.09`, not a clipped ISO string. */
+function formatTaskDeadline(raw: string): string {
   const value = (raw || '').trim()
-  if (!value) return '—'
+  if (!value || value === '—' || value.startsWith('0001-01-01')) return '—'
+  const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (iso) return `${iso[3]}.${iso[2]}`
   const stamp = parseIso(value) || parseIso(value.replace(' ', 'T'))
   if (!stamp) return value.length > 10 ? value.slice(0, 10) : value
   const dd = String(stamp.getDate()).padStart(2, '0')
   const mm = String(stamp.getMonth() + 1).padStart(2, '0')
   return `${dd}.${mm}`
+}
+
+function formatTurboTaskDeadline(raw: string): string {
+  return formatTaskDeadline(raw)
 }
 
 function turboTaskStatusLabel(percent: number, delayDays: number): string {
@@ -248,7 +329,8 @@ export function turboProjectTaskToSpecTaskRow(
   task: Record<string, unknown>,
   projectId: string,
   projectName: string,
-  actorFio: string
+  actorFio: string,
+  turboScope: SpecTaskRow['turboScope'] = 'mine'
 ): SpecTaskRow {
   const mini = turboProjectTaskToTodayRow(task, projectId, actorFio)
   const delayDays = Number(task.delay_days ?? 0)
@@ -267,7 +349,8 @@ export function turboProjectTaskToSpecTaskRow(
     statusTone: mini.statusTone,
     executor: actorFio,
     who: mini.assignee,
-    progress: turboTaskProgressDisplay(task)
+    progress: turboTaskProgressDisplay(task),
+    turboScope
   }
 }
 
@@ -365,11 +448,13 @@ export function outlookMessageToMailRow(msg: Record<string, unknown>, index: num
     : []
   const bodyPreview = String(msg.body_preview || '').trim()
   const inboxStatus = unread ? 'Непрочитано' : 'Прочитано'
+  const to = String(msg.to || msg.recipients || '').trim()
   return {
     id: entryId,
     entryId,
     channel: 'outlook',
     sender: String(msg.sender || msg.from || '—'),
+    to: to || undefined,
     subject,
     category: direction === 'sent' ? 'Отправленные' : 'Входящие',
     catTone: 'blue',

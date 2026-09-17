@@ -10,6 +10,15 @@ export interface ApiResponse<T = unknown> {
 const api = {
   getConfig: (): Promise<{ backendUrl: string; testUser: boolean }> =>
     ipcRenderer.invoke('app:getConfig'),
+  setComSecret: (payload: {
+    login?: string
+    password?: string
+    nameMail?: string
+    persist?: boolean
+  }): Promise<{ ok: boolean }> => ipcRenderer.invoke('session:setComSecret', payload),
+  getComSecret: (): Promise<{ login: string; password: string; nameMail: string } | null> =>
+    ipcRenderer.invoke('session:getComSecret'),
+  clearComSecret: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('session:clearComSecret'),
   request: <T = unknown>(opts: {
     method?: string
     path: string
@@ -33,6 +42,16 @@ const api = {
     token?: string | null
   }): Promise<{ ok: boolean; dataUrl?: string; error?: string }> =>
     ipcRenderer.invoke('api:fetchDataUrl', opts),
+  fetchFilePreview: (opts: {
+    url: string
+    fileName?: string
+    token?: string | null
+  }): Promise<
+    | { ok: true; kind: 'text'; text: string; mime: string }
+    | { ok: true; kind: 'embed'; dataUrl: string; mime: string }
+    | { ok: true; kind: 'external'; hint: string; mime: string }
+    | { ok: false; error: string; tooLarge?: boolean }
+  > => ipcRenderer.invoke('api:fetchFilePreview', opts),
   download: (opts: {
     url: string
     defaultName?: string
@@ -120,19 +139,44 @@ const api = {
     runId?: string
     requestId?: string
     draftId?: string
+    openDecisions?: boolean
+    canStop?: boolean
   }): Promise<{ ok: boolean }> => ipcRenderer.invoke('notify:show', payload),
   onNotificationOpen: (
-    callback: (payload: { workflowId: string; runId: string; draftId?: string }) => void
+    callback: (payload: {
+      workflowId: string
+      runId: string
+      draftId?: string
+      requestId?: string
+      openDecisions?: boolean
+    }) => void
   ): (() => void) => {
     const listener = (
       _event: unknown,
-      payload: { workflowId: string; runId: string; draftId?: string }
+      payload: {
+        workflowId: string
+        runId: string
+        draftId?: string
+        requestId?: string
+        openDecisions?: boolean
+      }
     ): void => {
       callback(payload)
     }
     ipcRenderer.on('notification:open', listener)
     return () => {
       ipcRenderer.removeListener('notification:open', listener)
+    }
+  },
+  onNotificationStop: (
+    callback: (payload: { workflowId: string; runId: string }) => void
+  ): (() => void) => {
+    const listener = (_event: unknown, payload: { workflowId: string; runId: string }): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('notification:stop', listener)
+    return () => {
+      ipcRenderer.removeListener('notification:stop', listener)
     }
   },
   onNotificationHitl: (

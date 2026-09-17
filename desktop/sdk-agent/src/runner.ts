@@ -1,5 +1,6 @@
 import { Agent } from "@cursor/sdk";
-import { writeSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
 import { randomUUID } from "node:crypto";
@@ -36,6 +37,7 @@ type RunCommand = {
   useTools?: boolean;
   tools?: ToolSpec[];
   resumeAgentId?: string;
+  restrictBuiltins?: boolean;
 };
 
 type ToolResultCommand = {
@@ -289,6 +291,7 @@ async function executeAskQuestion(
 function buildCustomTools(
   specs: ToolSpec[],
   stopState?: { done: boolean },
+  cwd?: string,
 ): Record<string, unknown> {
   const tools: Record<string, unknown> = {};
   for (const spec of specs) {
@@ -352,8 +355,15 @@ function buildCustomTools(
         }
         const result = payload.result || {};
         const skipped = Boolean((result as { skipped?: unknown }).skipped);
-        emit({ type: "tool_result", requestId, tool: name, ok: true, skipped, result });
-        return modelView(result);
+        emit({
+          type: "tool_result",
+          requestId,
+          tool: name,
+          ok: true,
+          skipped,
+          result: publicToolResult(result),
+        });
+        return toModelResult(result, cwd);
       },
     };
   }
@@ -392,8 +402,22 @@ function hasResultSections(text: string): boolean {
 
 // A finished work block: TESTS: PASS plus either the official header or the
 // FILES/ACTIONS sections the model often emits without "## WORK_RESULT".
+// The unused AGENTS.md template must not stop the run.
+function looksLikeWorkResultTemplate(text: string): boolean {
+  return /<(?:кратко|имя файла|какое действие|кому и что|если менялось)/i.test(text || "");
+}
+
+function stripInstructionalResult(text: string): string {
+  return (text || "").replace(
+    /(?:заверши|пиши|выведи|начни строкой)\s+#{0,6}\s*WORK[ _]?RESULT/gi,
+    ""
+  );
+}
+
 function isFinishedWorkResult(text: string): boolean {
-  return testsPassReady(text) && (hasWorkResult(text) || hasResultSections(text));
+  const raw = stripInstructionalResult(text);
+  if (looksLikeWorkResultTemplate(raw)) return false;
+  return testsPassReady(raw) && (hasWorkResult(raw) || hasResultSections(raw));
 }
 
 // Keep only the final "## WORK_RESULT" block; drop the reasoning narration
@@ -403,7 +427,19 @@ function stripToWorkResult(text: string): string {
   const raw = text || "";
   const match = raw.match(WORK_RESULT_RE);
   if (!match || match.index === undefined) return raw.trim();
-  return raw.slice(match.index).trim();
+  const before = raw.slice(0, match.index).trim();
+  const after = raw.slice(match.index).trim();
+  const body = after
+    .replace(/^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\s*:?\s*/im, "")
+    .replace(/^\s*TESTS:\s*(PASS|FAIL)\s*$/gim, "")
+    .trim();
+  // Model sometimes splits a sentence across the marker:
+  // "Планирую совещания…" / "## WORK_RESULT" / "и его календарь…".
+  if (before && /^(и|а|но|или)\b/i.test(body)) {
+    const last = (before.split(/\n{2,}/).pop() || before).replace(/\s+/g, " ").trim();
+    if (last) return `${last} ${body}`.replace(/[ \t]+/g, " ").trim();
+  }
+  return after;
 }
 
 function playbookDraftReady(text: string): boolean {
@@ -583,6 +619,98 @@ function modelView(result: JsonValue): JsonValue {
   };
 }
 
+function publicToolResult(result: JsonValue): JsonValue {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return result;
+  }
+  const rec = { ...(result as Record<string, JsonValue>) };
+  delete rec.screenshot_base64;
+  delete rec.sdk_images;
+  return rec;
+}
+
+function toModelResult(result: JsonValue, cwd?: string): unknown {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return result;
+  }
+  const rec = result as Record<string, JsonValue>;
+  const images = collectVisionImages(rec, cwd);
+  if (!images.length) {
+    return modelView(result);
+  }
+  const structured = publicToolResult(rec) as Record<string, JsonValue>;
+  const text =
+    typeof structured.next_step === "string" && structured.next_step.trim()
+      ? [
+          structured.next_step,
+          structured.text ? String(structured.text) : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      : JSON.stringify(structured);
+  return {
+    content: [{ type: "text", text }, ...images],
+    structuredContent: structured,
+  };
+}
+
+function collectVisionImages(
+  rec: Record<string, JsonValue>,
+  cwd?: string,
+): Array<{ type: "image"; data: string; mimeType?: string }> {
+  const images: Array<{ type: "image"; data: string; mimeType?: string }> = [];
+  const pages = rec.vision_pages;
+  if (Array.isArray(pages)) {
+    for (const page of pages) {
+      if (!page || typeof page !== "object" || Array.isArray(page)) continue;
+      const item = page as Record<string, JsonValue>;
+      const loaded = loadVisionFile(String(item.path || ""), cwd, String(item.mimeType || ""));
+      if (loaded) images.push(loaded);
+    }
+  }
+  const shot = rec.screenshot_base64;
+  if (typeof shot === "string" && shot.length > 80) {
+    images.push({
+      type: "image",
+      data: shot.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, ""),
+      mimeType: typeof rec.screenshot_mime === "string" ? rec.screenshot_mime : "image/png",
+    });
+  }
+  return images;
+}
+
+function loadVisionFile(
+  raw: string,
+  cwd?: string,
+  mimeType?: string,
+): { type: "image"; data: string; mimeType?: string } | null {
+  const target = resolveUnderCwd(cwd, raw);
+  if (!target) return null;
+  try {
+    const data = readFileSync(target).toString("base64");
+    if (!data) return null;
+    const mime =
+      mimeType && mimeType.startsWith("image/")
+        ? mimeType
+        : target.toLowerCase().endsWith(".png")
+          ? "image/png"
+          : "image/jpeg";
+    return { type: "image", data, mimeType: mime };
+  } catch {
+    return null;
+  }
+}
+
+function resolveUnderCwd(cwd: string | undefined, raw: string): string | null {
+  const path = (raw || "").trim();
+  const root = (cwd || "").trim();
+  if (!path || !root) return null;
+  const target = isAbsolute(path) ? resolve(path) : resolve(root, path);
+  const rel = relative(resolve(root), target);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return null;
+  return target;
+}
+
 const DEFAULT_TOOL_TIMEOUT_MS = 90 * 1000;
 const TOOL_RESULT_BUFFER_MS = 20 * 1000;
 
@@ -719,7 +847,7 @@ async function runAgent(command: RunCommand): Promise<void> {
   // Do not inject askQuestion into interview: it blocks up to 15 minutes and
   // the regulation chat cannot answer that tool call.
   const stopState = { done: false };
-  const customTools = interview ? {} : buildCustomTools(command.tools || [], stopState);
+  const customTools = interview ? {} : buildCustomTools(command.tools || [], stopState, cwd);
   const customNames = Object.keys(customTools);
   emit({
     type: "status",
@@ -740,16 +868,29 @@ async function runAgent(command: RunCommand): Promise<void> {
       model: modelParams.length ? { id: model, params: modelParams } : { id: model },
       ...(conversationMode ? { mode: conversationMode } : {}),
       // Ban the built-in mutating/exec tools so every write goes through a
-      // Constructor customTool with HITL. Read-only built-ins (read/grep/glob/
-      // ls) stay for navigation, "mcp" keeps our customTools.
-      // Not persisted across resume, so it is re-applied on every create/resume.
+      // Constructor customTool with HITL. Read and Grep stay so the agent can
+      // open materials/agent.md, the run journal, and result_file pages.
+      // restrictBuiltins also hides Glob/Ls so a published agent does not
+      // wander the workspace. Not persisted across resume — re-applied every time.
       // Do not enable autoReview: it waits for the IDE classifier/UI we don't have,
       // and the feed stays on «Выполняется» forever.
       ...(interviewChat
         ? { tools: [] as string[] }
         : interview
           ? { tools: interviewReadTools }
-          : { disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"] }),
+          : command.restrictBuiltins
+            ? {
+                disallowedTools: [
+                  "shell",
+                  "edit",
+                  "delete",
+                  "applyAgentDiff",
+                  "glob",
+                  "ls",
+                  "task",
+                ],
+              }
+            : { disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"] }),
       local: {
         cwd,
         customTools: customTools as never,

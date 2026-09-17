@@ -375,17 +375,19 @@ export function App(): React.JSX.Element {
         : ''
     for (const entry of Object.values(runs.entries)) {
       const hitl = entry.state.pendingHitl
-      if (!hitl?.requestId) continue
-      if (seenHitlRef.current.has(hitl.requestId)) continue
+      const question = entry.state.pendingQuestion
+      const requestId = hitl?.requestId || question?.requestId || ''
+      if (!requestId || seenHitlRef.current.has(requestId)) continue
+      const locallyOwned = Boolean(entry.state.activeRunId)
       const watchingThisAgent = windowFocused && activeWorkflowId === entry.workflowId
-      if (watchingThisAgent) continue
-      seenHitlRef.current.add(hitl.requestId)
+      if (watchingThisAgent && locallyOwned) continue
+      seenHitlRef.current.add(requestId)
       void window.api.showNotification?.({
-        title: 'Агент ждёт подтверждения',
-        body: `${entry.title || 'ИИ-агент'}: ${hitl.title || hitl.tool}`,
+        title: 'Агент ожидает подтверждения',
+        body: `${entry.title || 'ИИ-агент'}: ${hitl?.title || hitl?.intent || hitl?.tool || question?.question || 'нужно подтверждение'}`,
         workflowId: entry.workflowId,
         runId: entry.state.activeRunId || entry.backendRunId || '',
-        requestId: hitl.requestId
+        requestId
       })
     }
   }, [runs.entries, view, windowFocused])

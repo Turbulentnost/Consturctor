@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
 import { resolveLayoutOverlaps } from './gridReflow'
 
@@ -6,13 +6,16 @@ export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v5'
 
 export const TODAY_GRID_COLS = 8
 export const TODAY_GRID_MAX_ROWS = 6
+/** Saved layout may use extra rows while editing (scroll); clamp must not squash back to viewport rows. */
+export const TODAY_GRID_LAYOUT_MAX_ROWS = 12
 export const TODAY_GRID_MARGIN: [number, number] = [5, 5]
 /** Floor row height when the canvas slot is tight (6×44 + margins ≈ 289px). */
 export const TODAY_MIN_ROW_HEIGHT = 44
 
 export function computeTodayGridMetrics(
   containerHeight: number,
-  containerWidth: number
+  containerWidth: number,
+  canvasRows = TODAY_GRID_MAX_ROWS
 ): {
   rowHeight: number
   canvasHeight: number
@@ -20,24 +23,31 @@ export function computeTodayGridMetrics(
   colWidth: number
   marginX: number
   marginY: number
+  canvasRows: number
 } {
   const [marginX, marginY] = TODAY_GRID_MARGIN
-  const rows = TODAY_GRID_MAX_ROWS
+  const viewportRows = TODAY_GRID_MAX_ROWS
+  const rows = Math.max(viewportRows, canvasRows)
   const cols = TODAY_GRID_COLS
   const innerH = Math.max(0, containerHeight)
   const rowHeight = Math.max(
     TODAY_MIN_ROW_HEIGHT,
-    Math.floor((innerH - (rows - 1) * marginY) / rows)
+    Math.floor((innerH - (viewportRows - 1) * marginY) / viewportRows)
   )
   const canvasHeight = rows * rowHeight + (rows - 1) * marginY
   const innerW = Math.max(0, containerWidth)
   const colWidth = Math.max(0, (innerW - marginX * (cols - 1)) / cols)
-  return { rowHeight, canvasHeight, containerWidth: innerW, colWidth, marginX, marginY }
+  return { rowHeight, canvasHeight, containerWidth: innerW, colWidth, marginX, marginY, canvasRows: rows }
 }
 
-export function todayGridMinCanvasHeight(): number {
+export function todayGridMinCanvasHeight(rows = TODAY_GRID_MAX_ROWS): number {
   const [, marginY] = TODAY_GRID_MARGIN
-  return TODAY_GRID_MAX_ROWS * TODAY_MIN_ROW_HEIGHT + (TODAY_GRID_MAX_ROWS - 1) * marginY
+  return rows * TODAY_MIN_ROW_HEIGHT + (rows - 1) * marginY
+}
+
+export function todayLayoutExtentRows(layout: LayoutItem[]): number {
+  if (!layout.length) return TODAY_GRID_MAX_ROWS
+  return Math.max(TODAY_GRID_MAX_ROWS, ...layout.map((item) => (item.y ?? 0) + (item.h ?? 1)))
 }
 
 export const TODAY_WIDGET_IDS = [
@@ -102,7 +112,7 @@ function clampLayoutItem(item: LayoutItem, defaults: LayoutItem): LayoutItem {
   const minW = defaults.minW ?? 1
   const minH = defaults.minH ?? 1
   const maxW = Math.min(defaults.maxW ?? TODAY_GRID_COLS, TODAY_GRID_COLS)
-  const maxH = Math.min(defaults.maxH ?? TODAY_GRID_MAX_ROWS, TODAY_GRID_MAX_ROWS)
+  const maxH = Math.min(defaults.maxH ?? TODAY_GRID_LAYOUT_MAX_ROWS, TODAY_GRID_LAYOUT_MAX_ROWS)
 
   let w = typeof item.w === 'number' ? Math.round(item.w) : defaults.w
   let h = typeof item.h === 'number' ? Math.round(item.h) : defaults.h
@@ -112,7 +122,7 @@ function clampLayoutItem(item: LayoutItem, defaults: LayoutItem): LayoutItem {
   w = Math.max(minW, Math.min(maxW, w))
   h = Math.max(minH, Math.min(maxH, h))
   x = Math.max(0, Math.min(TODAY_GRID_COLS - w, x))
-  y = Math.max(0, Math.min(TODAY_GRID_MAX_ROWS - h, y))
+  y = Math.max(0, Math.min(TODAY_GRID_LAYOUT_MAX_ROWS - h, y))
 
   return { ...defaults, x, y, w, h }
 }
@@ -216,12 +226,12 @@ function layoutGeomEqual(left: LayoutItem[], right: LayoutItem[]): boolean {
 
 export function applyTodayLayoutStaticFlags(
   layout: LayoutItem[],
-  editMode: boolean,
+  _editMode: boolean,
   locked: Partial<Record<TodayWidgetId, boolean>>
 ): LayoutItem[] {
   return layout.map((item) => ({
     ...item,
-    static: !editMode || Boolean(locked[item.i as TodayWidgetId])
+    static: Boolean(locked[item.i as TodayWidgetId])
   }))
 }
 
@@ -241,18 +251,29 @@ export function useTodayWidgetLayout(userId: string): {
   resetLayout: () => void
 } {
   const [persist, setPersist] = useState(() => readPersist(userId))
-  const [editMode, setEditMode] = useState(false)
+  const [editMode, setEditModeState] = useState(false)
+  const layoutRef = useRef(persist.layout)
+  const lockedRef = useRef(persist.locked)
 
   useEffect(() => {
-    setPersist(readPersist(userId))
-    setEditMode(false)
+    const next = readPersist(userId)
+    setPersist(next)
+    layoutRef.current = next.layout
+    lockedRef.current = next.locked
+    setEditModeState(false)
   }, [userId])
 
   const layout = persist.layout
   const locked = persist.locked
 
+  useEffect(() => {
+    layoutRef.current = layout
+    lockedRef.current = locked
+  }, [layout, locked])
+
   const persistState = useCallback(
     (next: TodayWidgetLayoutPersist) => {
+      layoutRef.current = next.layout
       setPersist(next)
       writePersist(userId, next)
     },
@@ -269,6 +290,19 @@ export function useTodayWidgetLayout(userId: string): {
       persistState({ layout: proposed, locked, visible, color })
     },
     [color, layout, locked, persistState, visible]
+  )
+
+  const setEditMode = useCallback(
+    (value: boolean | ((prev: boolean) => boolean)) => {
+      setEditModeState((prev) => {
+        const next = typeof value === 'function' ? value(prev) : value
+        if (prev && !next) {
+          persistState({ layout: layoutRef.current, locked: lockedRef.current })
+        }
+        return next
+      })
+    },
+    [persistState]
   )
 
   const toggleWidgetLock = useCallback(

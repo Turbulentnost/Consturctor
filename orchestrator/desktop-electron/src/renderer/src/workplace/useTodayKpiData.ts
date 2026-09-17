@@ -1,7 +1,10 @@
 import { useMemo } from 'react'
 import type { UserProfile } from '../api/types'
-import type { SpecPillTone } from './specV04DemoData'
+import { sameDay } from '../utils/calendar'
+import { countMeetingsOnDay } from '../utils/outlookMeetings'
 import type { SpecSummaryTile } from './specV04Shell'
+import { isTurboPinPlaceholder } from './orchestratorTaskSources'
+import { summarizeDayLaunches } from './todayKpiLaunches'
 import { type SpecV04SourcesState, useSpecV04Sources } from './useSpecV04Data'
 
 function pct(done: number, total: number): number {
@@ -13,94 +16,42 @@ function dash(loading: boolean, text: string): string {
   return loading ? '—' : text
 }
 
-export type TodayDayBreakdownItem = {
-  id: string
-  title: string
-  source: string
-  status: string
-  statusTone: SpecPillTone
-  deadline: string
-  done: boolean
-}
-
-export type TodayDayBreakdown = {
-  done: TodayDayBreakdownItem[]
-  todo: TodayDayBreakdownItem[]
-  dayDone: number
-  dayTotal: number
-}
-
-function isDoneStatus(status: string): boolean {
-  return status === 'Выполнена' || status === 'Выполнен'
-}
-
-/** 1С задачи + регламентные агенты с работой сегодня. Без выдуманных строк. */
-export function buildTodayDayBreakdown(data: SpecV04SourcesState): TodayDayBreakdown {
-  const items: TodayDayBreakdownItem[] = [
-    ...data.erpTasks.map((task) => ({
-      id: `erp:${task.id}`,
-      title: task.title,
-      source: task.source || '1С',
-      status: task.status,
-      statusTone: task.statusTone,
-      deadline: task.deadline,
-      done: isDoneStatus(task.status)
-    })),
-    ...data.todayProcessRows.map((row) => ({
-      id: `reg:${row.id}`,
-      title: row.name,
-      source: row.source || 'Регламент',
-      status: row.status,
-      statusTone: row.statusTone,
-      deadline: row.deadline,
-      done: isDoneStatus(row.status)
-    }))
-  ]
-  return {
-    done: items.filter((item) => item.done),
-    todo: items.filter((item) => !item.done),
-    dayDone: items.filter((item) => item.done).length,
-    dayTotal: items.length
-  }
+function factPlan(done: number, total: number): string {
+  return total ? `${done} из ${total}` : '—'
 }
 
 /**
- * KPI «Сегодня»: агрегаты из useSpecV04Sources (1С:Документооборот SOAP, Turbo, агенты, Outlook).
- * «Выполнение дня» — композит: выполненные задачи 1С + регламентные агенты сегодня / их сумма (без Turbo).
- * «Регламентные работы» — только агенты с запуском сегодня (`todayProcessRows`).
- * «Задачи 1С» — onec.docflow_tasks (HTTP SOAP /doc/ws/dm.1cws).
+ * KPI «Сегодня»: факт/план за выбранный день.
+ * День = фильтр «Период». Чат и lastRunStatus карточки не входят.
  */
-export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
-  const dayLoading = data.erpLoading || data.tableLoading
-  const onecDead = Boolean(data.erpError) && !data.erpTaskCount && !data.erpLoading
-  const turboDead = Boolean(data.turboError) && !data.projectCount && !data.turboLoading
+export function buildTodayKpiTiles(data: SpecV04SourcesState, periodDay = new Date()): SpecSummaryTile[] {
+  const loading = data.loading
+  const launches = summarizeDayLaunches(data.boardEvents || [], data.boardAgents || [], periodDay)
 
   const onecTotal = data.erpTaskCount
-  const onecDone = data.erpTasks.filter((t) => t.status === 'Выполнена').length
+  const onecDone = data.erpTasks.filter((task) => task.status === 'Выполнена').length
 
-  const regRows = data.todayProcessRows
-  const regTotal = regRows.length
-  const regDone = regRows.filter((r) => r.status === 'Выполнен').length
+  const dayTotal = onecTotal + launches.slotCount
+  const dayDone = onecDone + launches.slotDone
+  const dayPct = loading ? undefined : pct(dayDone, dayTotal || 1)
 
-  const dayTotal = onecTotal + regTotal
-  const dayDone = onecDone + regDone
-  const dayPct = dayLoading ? undefined : pct(dayDone, dayTotal || 1)
+  const regTotal = launches.agentIds.length
+  const regDone = launches.agentDoneIds.length
 
-  const projTotal = data.projectCount
-  const projActive = data.projects.filter(
-    (p) => !/заверш|закрыт|complete|done/i.test(p.status)
-  ).length
-  const meetToday = data.meetingCountToday
+  const projects = (data.projects || []).filter((project) => !isTurboPinPlaceholder(project))
+  const projTotal = projects.length
+  const meetToday = countMeetingsOnDay(data.meetings || [], periodDay)
+  const periodIsToday = sameDay(periodDay, new Date())
 
   return [
     {
       id: 'day',
       label: 'Выполнение дня',
-      value: dash(dayLoading, dayTotal ? `${dayDone} из ${dayTotal}` : '—'),
-      hint: dayLoading
+      value: dash(loading, factPlan(dayDone, dayTotal)),
+      hint: loading
         ? 'загрузка…'
         : dayTotal
-          ? '1С + регламентные агенты'
+          ? '1С + запуски по расписанию'
           : 'нет задач на учёте',
       tone: 'orange',
       progress: dayPct,
@@ -109,57 +60,50 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
     {
       id: 'onec',
       label: 'Задачи из 1С',
-      value: dash(data.erpLoading || onecDead, onecTotal ? String(onecTotal) : '—'),
-      hint: data.erpLoading
-        ? 'загрузка…'
-        : onecDead
-          ? ''
-          : onecTotal
-            ? `${onecDone} выполнено`
-            : '',
+      value: dash(loading, factPlan(onecDone, onecTotal)),
+      hint: loading ? 'загрузка…' : onecTotal ? 'срок дня и просроченные' : 'сегодня и просроченные',
       tone: 'blue',
-      progress: data.erpLoading || onecDead ? undefined : pct(onecDone, onecTotal || 1),
+      progress: loading ? undefined : pct(onecDone, onecTotal || 1),
       ring: true
     },
     {
       id: 'reg',
       label: 'Регламентные работы',
-      value: dash(data.tableLoading, regTotal ? String(regTotal) : '—'),
-      hint: data.tableLoading
+      value: dash(loading, factPlan(regDone, regTotal)),
+      hint: loading
         ? 'загрузка…'
         : regTotal
-          ? `${regDone} из ${regTotal} выполнено`
-          : 'запуски сегодня',
+          ? 'агенты с запуском за день'
+          : 'агенты Constructor',
       tone: 'green',
-      progress: data.tableLoading ? undefined : pct(regDone, regTotal || 1),
+      progress: loading ? undefined : pct(regDone, regTotal || 1),
       ring: true
     },
     {
       id: 'proj',
       label: 'Проекты',
-      value: dash(data.turboLoading || turboDead, projTotal ? String(projTotal) : '—'),
-      hint: data.turboLoading ? 'загрузка…' : projTotal ? `${projActive} активных` : '',
-      tone: 'purple',
-      progress: data.turboLoading || turboDead ? undefined : pct(projActive, projTotal || 1),
-      ring: true
+      value: dash(loading, projTotal ? String(projTotal) : '—'),
+      hint: loading ? 'загрузка…' : 'TurboProject',
+      tone: 'purple'
     },
     {
       id: 'ev',
       label: 'События дня',
-      value: dash(data.meetingsLoading, meetToday ? String(meetToday) : '—'),
-      hint: data.meetingsLoading ? 'загрузка…' : 'Outlook, сегодня',
-      tone: 'yellow',
-      progress: data.meetingsLoading ? undefined : meetToday ? Math.min(100, 25 + meetToday * 15) : 0,
-      ring: true
+      value: dash(loading, meetToday ? String(meetToday) : '—'),
+      hint: loading ? 'загрузка…' : periodIsToday ? 'Outlook, сегодня' : 'Outlook',
+      tone: 'yellow'
     }
   ]
 }
 
-export function useTodayKpiData(user: UserProfile | null): {
+export function useTodayKpiData(
+  user: UserProfile | null,
+  periodDay: Date = new Date()
+): {
   data: SpecV04SourcesState
   tiles: SpecSummaryTile[]
 } {
   const data = useSpecV04Sources(user)
-  const tiles = useMemo(() => buildTodayKpiTiles(data), [data])
+  const tiles = useMemo(() => buildTodayKpiTiles(data, periodDay), [data, periodDay])
   return { data, tiles }
 }

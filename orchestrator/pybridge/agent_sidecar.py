@@ -125,6 +125,7 @@ _NEVER_CONFIRM = frozenset(
         "code.write_python",
         "code.run_python",
         "report.export_document",
+        "office.format_document",
     }
 )
 _READ_EXACT = frozenset(
@@ -141,6 +142,7 @@ _READ_EXACT = frozenset(
         "calendar.show_meetings",
         "excel.list_files",
         "excel.read_workbook",
+        "office.read_file",
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
@@ -330,6 +332,9 @@ KEEP_KNOWLEDGE_FILE_SPEC: dict[str, Any] = {
 KEEP_FILE_HINT = (
     "Files in materials/attachments are per-run inputs: read them now, they are already "
     "stored as temporary for this run only. "
+    "Word (.docx), PDF and images: office.read_file with filename or saved_path from "
+    "onec.download_artifact. Excel: excel.read_workbook. "
+    "Do not use built-in Read or Grep on docx/pdf/xlsx/jpg — they hang on binaries. "
     "Call keepKnowledgeFile ONLY for a stable document that is identical and reusable on "
     "every later run (fixed catalog, regulation table, standing schedule). "
     "Do not keep a per-run input that changes each run (for example a yearly meetings file "
@@ -465,6 +470,7 @@ _SD_MEETING_TOOLS = {
     "onec.docflow_tasks",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_meeting_summary",
     "report.export_document",
     "users.current",
@@ -485,6 +491,7 @@ _RK_MEETING_TOOLS = {
     "onec.sql_query",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_task_report",
     "report.build_meeting_summary",
     "report.export_document",
@@ -586,6 +593,14 @@ def _is_calendar_control_text(*parts: Any) -> bool:
     return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
 
 
+def _is_assignment_journal_text(*parts: Any) -> bool:
+    """Журнал поручений — не серия совещаний Outlook; playbook не подменяем."""
+    blob = _meeting_blob(*parts)
+    if _is_rk_text(blob) or _is_sd_meeting_text(blob):
+        return False
+    return any(tip in blob for tip in ("аст00", "action tracker", "журнал поруч"))
+
+
 def _is_rk_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
     if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
@@ -655,10 +670,72 @@ _CALENDAR_CONTROL_TOOLS = {
 }
 
 
+def _whitelist_tool_names(record: Any) -> list[str]:
+    """Playbook / draft tools saved at formation. Empty means the catalog is still open."""
+    local = getattr(record, "local_run", None) or {}
+    if not isinstance(local, dict):
+        local = {}
+    book = local.get("playbook") if isinstance(local.get("playbook"), dict) else {}
+    draft = local.get("playbook_draft") if isinstance(local.get("playbook_draft"), dict) else {}
+    names: list[str] = []
+    seen: set[str] = set()
+    builtins = {
+        "read",
+        "grep",
+        "glob",
+        "ls",
+        "shell",
+        "edit",
+        "delete",
+        "applyAgentDiff",
+        "code.run_python",
+        "write",
+    }
+
+    def add(value: object) -> None:
+        name = str(value or "").strip()
+        if not name or name in seen or name in builtins:
+            return
+        seen.add(name)
+        names.append(name)
+
+    def add_all(values: object) -> None:
+        if isinstance(values, (list, tuple, set)):
+            for item in values:
+                add(item)
+
+    add_all(book.get("tools"))
+    add_all(local.get("live_tools_invoked"))
+    for blob in (book, draft):
+        for step in blob.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            add(step.get("tool") or step.get("tool_name"))
+            add_all(step.get("tool_candidates"))
+    if names and any(
+        item in seen
+        for item in (
+            "onec.download_artifact",
+            "excel.read_workbook",
+            "onec.erp_assignments",
+            "onec.list_attachments",
+            "onec.read_attachment",
+        )
+    ):
+        add("office.read_file")
+    if names:
+        return names
+    add_all(local.get("tools"))
+    return names
+
+
 def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
-    """Limit specialized agents to their playbook tools; keep the full catalog otherwise."""
+    """Limit an agent to its formation whitelist; fall back to SD/RK/calendar packs."""
     allowed: set[str] | None = None
-    if _is_calendar_control_workflow(record):
+    names = _whitelist_tool_names(record)
+    if names:
+        allowed = set(names)
+    elif _is_calendar_control_workflow(record):
         allowed = _CALENDAR_CONTROL_TOOLS
     elif _is_sd_meeting_workflow(record):
         allowed = _SD_MEETING_TOOLS
@@ -675,7 +752,12 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
 
 def _is_outlook_series_prompt(prompt: str) -> bool:
     blob = (prompt or "").casefold()
-    if _is_calendar_control_text(blob) or _is_sd_meeting_text(blob) or _is_rk_text(blob):
+    if (
+        _is_calendar_control_text(blob)
+        or _is_sd_meeting_text(blob)
+        or _is_rk_text(blob)
+        or _is_assignment_journal_text(blob)
+    ):
         return False
     return any(tip in blob for tip in _SERIES_SCHEDULE_TIPS)
 
@@ -710,7 +792,12 @@ def _meeting_blob(*parts: Any) -> str:
 
 
 def _is_meeting_text(*parts: Any) -> bool:
-    if _is_calendar_control_text(*parts) or _is_sd_meeting_text(*parts) or _is_rk_text(*parts):
+    if (
+        _is_calendar_control_text(*parts)
+        or _is_sd_meeting_text(*parts)
+        or _is_rk_text(*parts)
+        or _is_assignment_journal_text(*parts)
+    ):
         return False
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _MEETING_TIPS)
@@ -759,7 +846,7 @@ def _merge_outlook_rule_into_playbook(local_run: dict[str, Any] | None) -> dict[
             continue
         current = str(raw.get("instructions") or "").strip()
         name = str(raw.get("name") or "")
-        if _is_calendar_control_text(current, name):
+        if _is_calendar_control_text(current, name) or _is_assignment_journal_text(current, name):
             continue
         if OUTLOOK_SERIES_MARKER in current:
             continue
@@ -1137,6 +1224,7 @@ class ElectronBridge(CursorSdkBridge):
             on_question=on_question,
             should_stop=should_stop,
             confirm_writes=confirm_writes,
+            restrict_builtins=tools is not None,
         )
 
     def _handle_tool_request(
@@ -1653,15 +1741,15 @@ def _write_answer_document(cwd: str, filename: str, answer: str) -> Path | None:
     path = folder / name
     body = (answer or "").strip() or name
     try:
-        from docx import Document
+        from app.tools.ac.office_style import pretty_title, write_docx
 
-        document = Document()
-        document.add_heading(Path(name).stem.replace("_", " "), level=0)
-        for line in body.splitlines() or [body]:
-            document.add_paragraph(line)
         if path.suffix.lower() != ".docx":
             path = path.with_suffix(".docx")
-        document.save(path)
+        write_docx(
+            path,
+            title=pretty_title(Path(name).stem),
+            sections=[{"heading": "", "body": body}],
+        )
         return path
     except Exception:
         fallback = path.with_suffix(".md")
@@ -2868,16 +2956,6 @@ class Sidecar:
             active.workflow_id = workflow_id
             active.gate.bind(workflow_id=workflow_id)
         evidence = str(check.get("changed") or check.get("evidence") or "")
-        emit(
-            {
-                "type": "event",
-                "runId": active.run_id,
-                "payload": {
-                    "type": "decision",
-                    "text": "Trigger fired" if fired else "Trigger condition not met",
-                },
-            }
-        )
         if not fired:
             emit(
                 {
@@ -3232,8 +3310,10 @@ class Sidecar:
         days_forward = command.get("daysForward")
         if isinstance(days_forward, int) and days_forward > 0:
             input_data["days_forward"] = days_forward
-        if for_user or command.get("allVisible"):
+        if command.get("allVisible"):
             input_data["max_scan_items"] = 2000
+        elif for_user:
+            input_data["max_scan_items"] = 500
 
         def _work() -> None:
             try:

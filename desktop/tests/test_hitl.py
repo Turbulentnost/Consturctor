@@ -42,6 +42,8 @@ def test_read_tools_do_not_ask_hitl() -> None:
     assert not needs_confirmation("onec.odata_catalog")
     assert not needs_confirmation("onec.erp_assignments")
     assert not needs_confirmation("onec.download_artifact")
+    assert not needs_confirmation("office.read_file")
+    assert not needs_confirmation("excel.read_workbook")
     assert not needs_confirmation("onecdownload_artifact")
     assert not needs_confirmation("onec.erp_write_probe")
     assert not needs_confirmation("users.list")
@@ -102,6 +104,29 @@ def test_explain_odata_post_is_human() -> None:
     assert "СлужебнаяЗаписка" in text
     assert "номер 123" in text
     assert "черновик" in text.lower()
+
+
+def test_explain_assignments_list_is_human() -> None:
+    title, text = explain_tool(
+        "onec.erp_assignments",
+        {"action": "list", "include_last_day": True, "limit": 40},
+    )
+    assert title == "Поручения в 1С"
+    assert "журнал" in text.lower()
+    assert "action" not in text
+    assert "include_last_day" not in text
+    assert "40" in text
+
+
+def test_explain_assignments_write_mentions_number() -> None:
+    title, text = explain_tool(
+        "onec.erp_assignments_write",
+        {"action": "update", "number": "АСТ00-00093", "status": "ВРаботе"},
+    )
+    assert title == "Изменение поручения"
+    assert "АСТ00-00093" in text
+    assert "ВРаботе" in text
+    assert "erp_assignments" not in text
 
 
 def test_explain_unknown_tool_has_fallback() -> None:

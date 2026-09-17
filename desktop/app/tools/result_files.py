@@ -28,6 +28,7 @@ _SKIP_TOOLS = frozenset(
     {
         "excel.list_files",
         "excel.read_workbook",
+        "office.read_file",
         "code.write_python",
         "code.run_python",
     }

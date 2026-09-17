@@ -9,14 +9,14 @@
 | Задачи 1С | live | **`onec.docflow_tasks`** — HTTP SOAP `/doc/ws/dm.1cws` (DOK_HTTP_*). Без `erp_tasks_current` / OData. |
 | Проекты | live | `turboproject.get_user_portfolio` (source id `turboproject`) |
 | Письма (вкладка «Почта» / процессы) | live | **Проба сегодня:** Outlook COM Inbox vs backend IMAP (`POST /api/v1/tools/invoke` → `imap.search` / `imap.list_unread`, desktop **не** открывает IMAP-сокеты). Сверка по `message-id` или нормализованным `(from, subject, date)`. Если IMAP даёт письма за сегодня, которых нет в Outlook — **IMAP primary** (маппер `imapMessageToMailRow`). Иначе COM week (`outlook.search_mail`, `folder=All`, пн…вс). Stub/пустой IMAP — не переключать, показать `GET /api/v1/tools/imap/status`. COM остаётся fallback и для ответ/открыть/прочитано. Ошибки COM и IMAP независимы. |
-| Письма («Сегодня») | live | Та же проба primary. Виджет дня: IMAP (`imap.search` `date=Период`) или COM Inbox. Stub/пусто IMAP — COM + строка статуса IMAP. |
+| Письма («Сегодня») | live | `useTodayOutlookMail`: один кэш Inbox+Sent за день. Переключатель «От меня» режет кэш без нового запроса. Колонки: от/кому, тема, время, статус. |
 | Совещания | live/partial | `ensureOutlookMeetings` |
 | База знаний | partial | `api.listWorkflows()` (регламенты Constructor) |
 | KPI «Сегодня» (5 плиток) | live/partial | `useTodayKpiData` → `useSpecV04Sources` (см. ниже) |
-| Сегодня → «Результаты дня» | live | `useTodayAgentResults` → `GET /api/v1/workflows/files` (`listPlatformFiles`), фильтр: `source=agent`, день = «Период», скачивание `api.download` |
+| Сегодня → «Результаты агентов» | live | `useTodayAgentResults` → `GET /api/v1/workflows/files` (`listPlatformFiles`), фильтр: `source=agent`, день = «Период»; в списке имена агентов, просмотр в модалке (`api.fetchFilePreview`) и скачивание `api.download` |
 | Сегодня → «Подготовленные решения» | live | `useTodayPreparedDecisions` (день = «Период», scope = пользователь): доска `useWorkplaceData` + `useRuns` (live HITL / `WAITING_HUMAN`) + `extractToolDecisions` по прогонам за день (`listAgentRuns` / `getAgentRunDetail`) + файлы агентов без вердикта (`listPlatformFiles`, как «Результаты дня»); подзаголовок — `intent`/`result` инструмента, `summary`/`agentTitle` файла или итог прогона (`run.summary` / `cleanRunResult`); пустой список без demo; mock `TODAY_PREPARED_DECISIONS` не используется |
-| Сегодня → «Проектные задачи» | live | `useTodayProjectTasks`: портфель + до 5× `get_project_tasks` (open); **pin** `VITE_TURBO_PIN_FILE_IDS=363`; для pin — все open-задачи, не только «на день» |
-| Сегодня → «Задачи из 1С» | live | `loadOrchestratorErpTasks` → `onec.docflow_tasks` (`today_and_overdue`: срок сегодня + просроченные) |
+| Сегодня → «Проектные задачи» | live | Один кэш `turboTasks`: мне + сегодня/просроченные по проектам руководителя. Переключатель «Как руководитель» режет кэш без нового запроса. Колонки: задача / срок / статус. |
+| Сегодня → «Задачи из 1С» | live | `loadOrchestratorErpTasks` → `onec.docflow_tasks` (кэш SOAP). Колонки: содержимое / срок / статус. Переключатель «Задачи от меня» режет кэш по `role=author` / ФИО автора. |
 | Сегодня → «Предстоящие события» | live | `useSpecV04Sources` → `ensureOutlookMeetings`, фильтр по «Период» |
 | Сегодня / план дня | live | `useTodayPlanTimeline`: Outlook + доска агентов (без demo-fallback блоков) |
 | Глобальный поиск (row 1) | noop | локальный фильтр — TBD endpoint |
@@ -26,13 +26,15 @@
 
 ### KPI вкладки «Сегодня» (`buildTodayKpiTiles`)
 
+День = фильтр «Период». Формат 1–3: `факт из план`. Чат и `lastRunStatus` карточки не входят.
+
 | Плитка | Источник | Примечание |
 |--------|----------|------------|
-| Выполнение дня | erp_tasks + агенты доски | % в кольце; value = «N из M»; без Turbo-задач |
-| Задачи 1С | `onec.docflow_tasks` | HTTP SOAP `/doc/ws/dm.1cws`. Общий кэш полной выгрузки (`DOK_HTTP_CACHE_TTL_SEC`), нарезка по ФИО на backend. |
-| Регламентные работы | `useWorkplaceData` agents (!standalone) | count + выполненные по статусу процесса |
-| Проекты | `turboproject.get_user_portfolio` | count портфеля |
-| События дня | `ensureOutlookMeetings` + `meetingCountToday` | только встречи на текущий день |
+| Выполнение дня | 1С today+overdue + слоты `schedule\|trigger\|event` | факт = выполненные 1С + успешные слоты (`ok`/`done`/`completed`) |
+| Задачи 1С | `onec.docflow_tasks` | план = все задачи среза; факт = «Выполнена». SOAP пока режет `executed`. |
+| Регламентные работы | `board.events` опубликованных агентов | план = уникальные агенты со слотом/event за день; факт = хотя бы один успешный запуск за день |
+| Проекты | `turboproject.get_user_portfolio` | число проектов без pin-заглушек; без кольца |
+| События дня | `ensureOutlookMeetings` + `countMeetingsOnDay(periodDay)` | встречи Outlook на выбранный день; без кольца |
 | History journal count | mock | audit API — TBD |
 | Decisions comparison table | mock | payload агента — TBD |
 | Project calendar (bottom) | mock | TurboProject events tool — TBD |
