@@ -262,6 +262,22 @@ def test_map_document_executor_row_subject_and_action() -> None:
     assert item["performer"] == "Жалыбин Максим Дмитриевич"
 
 
+def test_list_docflow_tasks_no_limit_keeps_full_user_slice(monkeypatch) -> None:
+    from app.services import docflow_tasks
+
+    rows = [
+        {"number": f"do-{index}", "title": f"T{index}", "done": False, "due_at": "2026-09-10 18:00:00"}
+        for index in range(240)
+    ]
+    monkeypatch.setattr(docflow_tasks, "_get", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.tools.onec.docflow_inbox_fetch.fetch_inbox_tasks_soap",
+        lambda fio, **_kwargs: (rows, ""),
+    )
+    got = docflow_tasks.list_docflow_tasks(fio="Иванов И.И.", only_open=True, limit=0)
+    assert len(got) == 240
+
+
 def test_list_docflow_tasks_uses_soap_not_odata(monkeypatch) -> None:
     from app.services import docflow_tasks
 

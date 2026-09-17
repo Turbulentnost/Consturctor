@@ -7,7 +7,6 @@ import type {
   BoardAgent,
   CalendarEvent,
   PositionOrchestrator,
-  WorkflowFileItem,
   WorkflowBoard
 } from '../api/types'
 import { humanWhen, parseIso, sameDay, windowFor } from '../utils/calendar'
@@ -17,7 +16,6 @@ import { personalAgentWorkflowId } from './personalAgent'
 import { useRuns } from '../store/runs'
 import {
   findPendingToolRequest,
-  isUserFacingResultFile,
   readVerdict,
   runDecisionId,
   writeVerdict
@@ -873,7 +871,9 @@ function PreparedSolutionsRail({
         </div>
       </header>
       {!featured ? (
-        <p className="wp-rail-empty">Пока нет подготовленных решений. Они появятся после запусков агентов.</p>
+        <p className="wp-rail-empty">
+          Пока нет запросов на разрешение. Они появятся, когда агенту понадобится подтверждение операции.
+        </p>
       ) : (
         <article className="wp-solution-card">
           <div className="wp-solution-ico" aria-hidden>
@@ -1227,7 +1227,6 @@ export function TodayWorkplace({
   const [catalog, setCatalog] = useState<'today' | 'all'>('today')
   const [selectedId, setSelectedId] = useState('')
   const [askText, setAskText] = useState('')
-  const [recentFilesByWorkflow, setRecentFilesByWorkflow] = useState<Record<string, WorkflowFileItem[]>>({})
   const [kpiByWorkflow, setKpiByWorkflow] = useState<Record<string, AgentKpi | null>>({})
   const [latestRunByWorkflow, setLatestRunByWorkflow] = useState<Record<string, AgentRunHistoryItem | null>>({})
   const [boardTick, setBoardTick] = useState(0)
@@ -1282,51 +1281,26 @@ export function TodayWorkplace({
       if (agent.standalone) continue
       const liveHitl = runs.entries[agent.workflowId]?.state.pendingHitl
       const liveQuestion = runs.entries[agent.workflowId]?.state.pendingQuestion
-      if (agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR' || liveHitl || liveQuestion) {
-        cards.push({
-          id: `wait:${agent.id}`,
-          kind: 'waiting',
-          title:
-            liveQuestion?.question ||
-            agent.tasks.find((task) => task.status === 'needs_decision')?.title ||
-            `Решение: ${agent.name}`,
-          note:
-            agent.status === 'ERROR'
-              ? 'Агент сообщил об ошибке — разберите результат и подтвердите следующий шаг.'
-              : 'Агент подготовил материал и ждёт подтверждения человека.',
-          meta: `Агент «${agent.name}» · ${STATUS_LABEL[agent.status]}`,
-          workflowId: agent.workflowId,
-          agentName: agent.name,
-          requestId: liveHitl?.requestId || liveQuestion?.requestId,
-          runId: runs.entries[agent.workflowId]?.backendRunId || agent.tasks.find((task) => task.runId)?.runId,
-          live: Boolean(liveHitl?.requestId || liveQuestion?.requestId)
-        })
-      }
-      const files = (recentFilesByWorkflow[agent.workflowId] || []).filter(isUserFacingResultFile)
-      for (const file of files.slice(0, 2)) {
-        const fileId = file.id || file.name
-        if (readVerdict(agent.workflowId, fileId)) continue
-        cards.push({
-          id: `file:${agent.workflowId}:${fileId}`,
-          kind: 'file',
-          title: file.name || 'Файл результата',
-          note: `Результат агента «${agent.name}». Откройте файл и подтвердите или верните на доработку.`,
-          meta: file.createdAt
-            ? `Подготовлено ${(() => {
-                const stamp = parseIso(file.createdAt)
-                return stamp ? humanWhen(stamp) : 'сегодня'
-              })()}`
-            : 'Подготовлено сегодня',
-          workflowId: agent.workflowId,
-          agentName: agent.name,
-          fileId,
-          fileUrl: file.downloadUrl,
-          runId: file.runId
-        })
-      }
+      if (!liveHitl && !liveQuestion && agent.status !== 'WAITING_HUMAN') continue
+      cards.push({
+        id: `wait:${agent.id}`,
+        kind: 'waiting',
+        title:
+          liveQuestion?.question ||
+          liveHitl?.title ||
+          agent.tasks.find((task) => task.status === 'needs_decision')?.title ||
+          `Разрешение: ${agent.name}`,
+        note: 'Агенту потребовалось разрешение на выполнение операции.',
+        meta: `Агент «${agent.name}» · ждёт подтверждения`,
+        workflowId: agent.workflowId,
+        agentName: agent.name,
+        requestId: liveHitl?.requestId || liveQuestion?.requestId,
+        runId: runs.entries[agent.workflowId]?.backendRunId || agent.tasks.find((task) => task.runId)?.runId,
+        live: Boolean(liveHitl?.requestId || liveQuestion?.requestId)
+      })
     }
     return cards.slice(0, 6)
-  }, [agents, recentFilesByWorkflow, runs.entries, decisionTick])
+  }, [agents, runs.entries])
 
   const openPreparedItem = (item: PreparedCard): void => {
     if (item.fileUrl) {
@@ -1440,39 +1414,6 @@ export function TodayWorkplace({
         }
       })
   }, [visible, kpiByWorkflow, latestRunByWorkflow, runs.entries, boardTick])
-
-  useEffect(() => {
-    const targets = agents
-      .map((agent) => agent.workflowId)
-      .filter((workflowId) => workflowId && !workflowId.startsWith('personal-agent:'))
-    if (!targets.length) {
-      setRecentFilesByWorkflow({})
-      return
-    }
-    let alive = true
-    void Promise.all(
-      targets.map(async (workflowId) => {
-        const files = await api.listWorkflowFiles(workflowId).catch(() => [] as WorkflowFileItem[])
-        const produced = files
-          .filter((file) => {
-            const source = String(file.source || '').toLowerCase()
-            const origin = String(file.origin || '').toLowerCase()
-            return source === 'agent' || source === 'result' || origin.includes('agent')
-          })
-          .filter(isUserFacingResultFile)
-          .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
-        return [workflowId, produced] as const
-      })
-    ).then((pairs) => {
-      if (!alive) return
-      const next: Record<string, WorkflowFileItem[]> = {}
-      for (const [workflowId, files] of pairs) next[workflowId] = files
-      setRecentFilesByWorkflow(next)
-    })
-    return () => {
-      alive = false
-    }
-  }, [agents])
 
   useEffect(() => {
     const unsubscribe = window.api.onBoardUpdated?.(() => setBoardTick((value) => value + 1))

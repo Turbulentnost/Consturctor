@@ -44,23 +44,29 @@ const PROCESS_TABS = [
   { id: 'meet', label: 'Совещания' }
 ]
 
+const EXTERNAL_PROCESS_PREFIXES = ['erp:', 'mail:', 'meet:', 'proj:', 'turbo:', 'imap:']
+
+function constructorWorkflowId(rowId: string): string {
+  if (!rowId || EXTERNAL_PROCESS_PREFIXES.some((prefix) => rowId.startsWith(prefix))) return ''
+  return rowId
+}
+
 function ProcessDetail({
   row,
   onOpen,
+  onRun,
   onOpenRun,
   meetingDone,
   onToggleMeetingDone
 }: {
   row: SpecProcessRow
   onOpen?: (workflowId: string, title: string) => void
+  onRun?: (workflowId: string, title: string) => void
   onOpenRun?: (workflowId: string, title: string, runId?: string) => void
   meetingDone?: boolean
   onToggleMeetingDone?: () => void
 }): React.JSX.Element {
-  const openId =
-    row.id.startsWith('erp:') || row.id.startsWith('mail:') || row.id.startsWith('meet:') || row.id.startsWith('proj:')
-      ? ''
-      : row.id
+  const openId = constructorWorkflowId(row.id)
   const [detailTab, setDetailTab] = useState<DetailTabId>('general')
   const [historyRuns, setHistoryRuns] = useState<AgentRunHistoryItem[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -221,10 +227,27 @@ function ProcessDetail({
         ) : null}
         {openId ? (
           <>
-            <button type="button" className="spec-btn-outline spec-btn-outline-block" onClick={() => onOpen?.(openId, row.name)}>
+            <button
+              type="button"
+              className="spec-btn-outline spec-btn-outline-block"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onOpen?.(openId, row.name)
+              }}
+            >
               Открыть процесс
             </button>
-            <button type="button" className="spec-btn-launch spec-btn-launch-block" onClick={() => onOpen?.(openId, row.name)}>
+            <button
+              type="button"
+              className="spec-btn-launch spec-btn-launch-block"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                if (onRun) onRun(openId, row.name)
+                else onOpenRun?.(openId, row.name)
+              }}
+            >
               <span>Запустить исполнение</span>
             </button>
           </>
@@ -239,11 +262,13 @@ function ProcessDetail({
 export function ProcessesGridTab({
   user,
   onOpen,
+  onRun,
   onOpenRun,
   navProcessTab
 }: {
   user: UserProfile
   onOpen: (workflowId: string, title: string) => void
+  onRun: (workflowId: string, title: string) => void
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
   navProcessTab?: string | null
 }): React.JSX.Element {
@@ -413,6 +438,10 @@ export function ProcessesGridTab({
                   key={row.id}
                   className={effectiveId === row.id ? 'selected' : ''}
                   onClick={() => setSelectedId(row.id)}
+                  onDoubleClick={() => {
+                    const workflowId = constructorWorkflowId(row.id)
+                    if (workflowId) onOpen(workflowId, row.name)
+                  }}
                 >
                   <td>
                     <strong>{row.name}</strong>
@@ -444,13 +473,8 @@ export function ProcessesGridTab({
                             return
                           }
                           setRowMenuId('')
-                          if (
-                            !row.id.startsWith('erp:') &&
-                            !row.id.startsWith('mail:') &&
-                            !row.id.startsWith('proj:')
-                          ) {
-                            onOpenRun(row.id, row.name)
-                          }
+                          const workflowId = constructorWorkflowId(row.id)
+                          if (workflowId) onOpen(workflowId, row.name)
                         }}
                       >
                         ⋮
@@ -482,6 +506,7 @@ export function ProcessesGridTab({
           <ProcessDetail
             row={selected}
             onOpen={onOpen}
+            onRun={onRun}
             onOpenRun={onOpenRun}
             meetingDone={isMeetingRowId(selected.id) ? meetingCompletion.isDone(selected.id) : undefined}
             onToggleMeetingDone={

@@ -2,49 +2,35 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { StandardTabChrome, type ChromeTileSpec } from '../tabs/grid/TabChromeGrid'
 import { DEFAULT_DECISIONS_LAYOUT } from '../tabs/grid/useTabChromeLayout'
 import { api } from '../api/client'
-import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
+import type { WorkflowFileItem } from '../api/types'
 import { FilterBar } from './FilterBar'
-import { useWorkplaceData } from './WorkplaceBoard'
 import { humanWhen, parseIso } from '../utils/calendar'
-import { MiniCalendar, meetingsFromEvents, type MiniMeeting } from '../components/agentfeed/MiniCalendar'
-import { cleanRunResult } from '../utils/cleanRunResult'
+import { MiniCalendar } from '../components/agentfeed/MiniCalendar'
 import { useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { fileExt, formatSize } from '../pages/filesGrouping'
-import { isUserFacingResultFile } from './preparedDecisions'
-import {
-  extractToolDecisions,
-  feedItemsToRunnerEvents,
-  isDecisionTool,
-  isQuestionDecision,
-  toolIntent,
-  type ToolDecisionItem
-} from './decisionTools'
-import { agentResultToToolDecision } from './agentResultDecisions'
+import { isQuestionDecision, type ToolDecisionItem } from './decisionTools'
 import { agentAccentStyle } from './agentAccent'
+import {
+  attachmentNames,
+  decisionDayKey,
+  pickFilesForDecision,
+  shiftDecisionDay,
+  todayDecisionDayKey,
+  uniqueDecisionFiles,
+  useDecisionCatalog
+} from './useDecisionCatalog'
 
 function pad(value: number): string {
   return String(value).padStart(2, '0')
 }
 
 function dayKey(stamp: Date): string {
-  return `${stamp.getFullYear()}-${pad(stamp.getMonth() + 1)}-${pad(stamp.getDate())}`
+  return decisionDayKey(stamp)
 }
 
 function todayKey(): string {
-  return dayKey(new Date())
-}
-
-function inRange(stamp: Date | null, fromDay: string, toDay: string): boolean {
-  if (!stamp) return false
-  const key = dayKey(stamp)
-  const start = fromDay <= toDay ? fromDay : toDay
-  const end = fromDay <= toDay ? toDay : fromDay
-  return key >= start && key <= end
-}
-
-function runStamp(run: AgentRunHistoryItem): Date | null {
-  return parseIso(run.finishedAt || run.startedAt || '')
+  return todayDecisionDayKey()
 }
 
 function formatRange(fromDay: string, toDay: string): string {
@@ -53,11 +39,6 @@ function formatRange(fromDay: string, toDay: string): string {
     return fromDay
   }
   return `${fromDay} — ${toDay}`
-}
-
-function isOpenRun(status: string): boolean {
-  const key = (status || '').trim().toLowerCase()
-  return key === 'started' || key === 'running'
 }
 
 function toolStatusLabel(item: ToolDecisionItem): string {
@@ -78,9 +59,7 @@ function runStatusLabel(status: string): string {
 }
 
 function shiftDay(base: string, delta: number): string {
-  const stamp = parseIso(`${base}T12:00:00`) || new Date()
-  stamp.setDate(stamp.getDate() + delta)
-  return dayKey(stamp)
+  return shiftDecisionDay(base, delta)
 }
 
 type DecisionStatusFilter = '' | 'pending' | 'review' | 'confirmed' | 'returned'
@@ -132,39 +111,8 @@ function itemHasAttachment(item: ToolDecisionItem): boolean {
   return /attach|влож|файл|file|document|xlsx|docx|pdf/.test(blob) || attachmentNames(item).length > 0
 }
 
-function mentionedFileNames(item: ToolDecisionItem): Set<string> {
-  return new Set(attachmentNames(item).map((name) => name.toLowerCase()))
-}
-
 function uniqueFiles(items: WorkflowFileItem[]): WorkflowFileItem[] {
-  const seen = new Set<string>()
-  const out: WorkflowFileItem[] = []
-  for (const file of items) {
-    const key = file.id || `${file.runId || ''}:${file.name}`
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    out.push(file)
-  }
-  return out
-}
-
-function pickFilesForDecision(item: ToolDecisionItem, pool: WorkflowFileItem[]): WorkflowFileItem[] {
-  const facing = pool.filter(isUserFacingResultFile)
-  const mentioned = mentionedFileNames(item)
-  const byName = facing.filter((file) => mentioned.has((file.name || '').toLowerCase()))
-  const byRun = facing.filter((file) => {
-    const rid = (file.runId || '').trim()
-    return Boolean(item.runId) && Boolean(rid) && (rid === item.runId || rid === 'local')
-  })
-  const runAttach = facing.filter(
-    (file) => file.scope === 'run_attachment' && (!file.runId || file.runId === item.runId)
-  )
-  const picked = uniqueFiles([...byName, ...byRun, ...runAttach])
-  if (picked.length) return picked
-  return facing
-    .slice()
-    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
-    .slice(0, 8)
+  return uniqueDecisionFiles(items)
 }
 
 function fileTypeLabel(name: string): string {
@@ -206,31 +154,6 @@ function recommendedText(item: ToolDecisionItem): string {
   return item.title
 }
 
-const FIRST_SEEN_STORAGE = 'orchestrator.decisionFirstSeen.v1'
-
-function readFirstSeen(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(FIRST_SEEN_STORAGE)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as unknown
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {}
-  } catch {
-    return {}
-  }
-}
-
-function stampFirstSeen(store: Record<string, string>, key: string, fallback?: string): string {
-  if (store[key]) return store[key]
-  const value = fallback || new Date().toISOString()
-  store[key] = value
-  try {
-    localStorage.setItem(FIRST_SEEN_STORAGE, JSON.stringify(store))
-  } catch {
-    /* ignore */
-  }
-  return value
-}
-
 function remainingLabel(ms: number): string {
   if (ms <= 0) {
     const late = Math.max(1, Math.round(-ms / 60_000))
@@ -265,26 +188,6 @@ function deadlineInfo(item: ToolDecisionItem, now: number): {
     label: remainingLabel(remainingMs),
     dueClock: clockLabel(due)
   }
-}
-
-function attachmentNames(item: ToolDecisionItem): string[] {
-  const names: string[] = []
-  const visit = (value: unknown): void => {
-    if (typeof value === 'string') {
-      const base = value.split(/[\\/]/).pop() || value
-      if (/\.(xlsx|xls|xlsm|docx|pdf|pptx|csv|png|jpe?g|zip)$/i.test(base)) names.push(base)
-      return
-    }
-    if (Array.isArray(value)) {
-      value.forEach(visit)
-      return
-    }
-    if (value && typeof value === 'object') {
-      Object.values(value as Record<string, unknown>).forEach(visit)
-    }
-  }
-  visit(item.arguments || {})
-  return Array.from(new Set(names))
 }
 
 function sourceChips(item: ToolDecisionItem): string[] {
@@ -491,251 +394,17 @@ export function DecisionsTab({
     const now = new Date()
     return new Date(now.getFullYear(), now.getMonth(), 1)
   })
-  const [loadingDetails, setLoadingDetails] = useState(false)
-  const [filesByWorkflow, setFilesByWorkflow] = useState<Record<string, WorkflowFileItem[]>>({})
-  const [tools, setTools] = useState<ToolDecisionItem[]>([])
-  const [results, setResults] = useState<
-    Array<{
-      workflowId: string
-      agentName: string
-      runId: string
-      at: string
-      text: string
-      status: string
-      meetings: MiniMeeting[]
-    }>
-  >([])
-  const { agents, loading, error } = useWorkplaceData()
+  const catalog = useDecisionCatalog({ userId, fromDay, toDay })
+  const { agents, error, filesByWorkflow, ensureWorkflowFiles } = catalog
+  const loading = catalog.loading
+  const loadingDetails = catalog.loadingDetails
+  const results = catalog.results
   const runs = useRuns()
-  const agentsRef = useRef(agents)
-  agentsRef.current = agents
-  const firstSeenRef = useRef<Record<string, string>>(readFirstSeen())
   const notifiedRef = useRef<Set<string>>(new Set())
   const pickListRef = useRef<HTMLDivElement>(null)
-  const loadingFilesRef = useRef<Set<string>>(new Set())
   const [selectedId, setSelectedId] = useState('')
   const [now, setNow] = useState(() => Date.now())
   const [notifyPrefs, setNotifyPrefs] = useState<Record<string, boolean>>(readNotifyPrefs)
-
-  const agentKey = useMemo(() => agents.map((item) => item.workflowId).join('|'), [agents])
-  const [pollTick, setPollTick] = useState(0)
-
-  const runActivityKey = useMemo(
-    () =>
-      Object.entries(runs.entries)
-        .map(([wid, entry]) => {
-          const state = entry.state
-          return [
-            wid,
-            entry.backendRunId,
-            state.activeRunId,
-            state.running,
-            state.items.length,
-            state.status,
-            state.pendingHitl?.requestId || '',
-            state.pendingQuestion?.requestId || ''
-          ].join(':')
-        })
-        .join('|'),
-    [runs.entries]
-  )
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setPollTick((value) => value + 1), 30000)
-    return () => window.clearInterval(timer)
-  }, [])
-
-  useEffect(() => {
-    if (!agentKey) {
-      setLoadingDetails(false)
-      return
-    }
-    let alive = true
-    setLoadingDetails(true)
-    void (async () => {
-      const collectedTools: ToolDecisionItem[] = []
-      const collectedResults: Array<{
-        workflowId: string
-        agentName: string
-        runId: string
-        at: string
-        text: string
-        status: string
-        meetings: MiniMeeting[]
-      }> = []
-      const seenRuns = new Set<string>()
-      try {
-        const collectedFiles: Record<string, WorkflowFileItem[]> = {}
-        const liveEntries = runs.entries
-        const jobs = agentsRef.current.slice(0, 40).map(async (agent) => {
-          const [history, workflowFiles] = await Promise.all([
-            api.listAgentRuns(agent.workflowId).catch(() => [] as AgentRunHistoryItem[]),
-            api.listWorkflowFiles(agent.workflowId).catch(() => [] as WorkflowFileItem[])
-          ])
-          const visibleFiles = workflowFiles.filter(isUserFacingResultFile)
-          collectedFiles[agent.workflowId] = visibleFiles
-
-          const live = liveEntries[agent.workflowId]
-          if (live?.state.items.length) {
-            const liveEvents = feedItemsToRunnerEvents(live.state.items)
-            const liveRunId =
-              live.backendRunId || live.state.activeRunId || `live:${agent.workflowId}`
-            const liveAt = new Date(live.state.runningSinceMs || Date.now()).toISOString()
-            if (liveEvents.length) {
-              seenRuns.add(`${agent.workflowId}:${liveRunId}`)
-              const extracted = extractToolDecisions(liveEvents, {
-                workflowId: agent.workflowId,
-                agentName: agent.name,
-                runId: liveRunId,
-                at: liveAt,
-                runClosed: !live.state.running
-              })
-              for (const item of extracted) {
-                item.files = pickFilesForDecision(item, visibleFiles)
-              }
-              collectedTools.push(...extracted)
-            }
-            const cleaned = cleanRunResult({
-              answer: '',
-              events: liveEvents,
-              status: live.state.running ? 'running' : 'ok'
-            })
-            const meetings = meetingsFromEvents(liveEvents)
-            if (cleaned.text || meetings.length) {
-              collectedResults.push({
-                workflowId: agent.workflowId,
-                agentName: agent.name,
-                runId: liveRunId,
-                at: liveAt,
-                text: cleaned.text,
-                status: live.state.running ? 'running' : 'ok',
-                meetings
-              })
-            }
-          }
-
-          const matched = history
-            .filter((run) => inRange(runStamp(run), fromDay, toDay))
-            .slice(0, 10)
-          for (const run of matched) {
-            const runKey = `${agent.workflowId}:${run.runId}`
-            if (seenRuns.has(runKey)) continue
-            seenRuns.add(runKey)
-            const detail = await api.getAgentRunDetail(agent.workflowId, run.runId).catch(() => null)
-            const events: AgentRunnerEvent[] = detail?.events || []
-            const at = run.finishedAt || run.startedAt || ''
-            const extracted = extractToolDecisions(events, {
-              workflowId: agent.workflowId,
-              agentName: agent.name,
-              runId: run.runId,
-              at,
-              runClosed: !isOpenRun(run.status)
-            })
-            for (const item of extracted) {
-              item.files = pickFilesForDecision(item, visibleFiles)
-            }
-            collectedTools.push(...extracted)
-            const cleaned = cleanRunResult({
-              answer: detail?.item.answer || run.answer,
-              summary: run.summary,
-              events,
-              status: run.status
-            })
-            const meetings = meetingsFromEvents(events)
-            const storedMeetings = detail?.item.calendarMeetings || []
-            const plan = meetings.length ? meetings : storedMeetings
-            if (cleaned.text || plan.length) {
-              collectedResults.push({
-                workflowId: agent.workflowId,
-                agentName: agent.name,
-                runId: run.runId,
-                at,
-                text: cleaned.text,
-                status: run.status,
-                meetings: plan
-              })
-            }
-            if (!extracted.length) {
-              const asDecision = agentResultToToolDecision({
-                workflowId: agent.workflowId,
-                agentName: agent.name,
-                agentCode: agent.code,
-                runId: run.runId,
-                at,
-                text: cleaned.text || run.summary || '',
-                status: run.status,
-                hasFile: visibleFiles.some((file) => file.runId === run.runId)
-              })
-              if (asDecision) collectedTools.push(asDecision)
-            }
-          }
-        })
-        await Promise.all(jobs)
-        if (!alive) return
-        collectedTools.sort((left, right) => String(right.at).localeCompare(String(left.at)))
-        collectedResults.sort((left, right) => String(right.at).localeCompare(String(left.at)))
-        setTools(collectedTools)
-        setResults(collectedResults)
-        setFilesByWorkflow((prev) => ({ ...prev, ...collectedFiles }))
-      } finally {
-        if (alive) setLoadingDetails(false)
-      }
-    })()
-    return () => {
-      alive = false
-    }
-  }, [agentKey, fromDay, toDay, runActivityKey, pollTick, runs.entries])
-
-  const livePending = useMemo(() => {
-    if (!inRange(new Date(), fromDay, toDay)) return []
-    const items: ToolDecisionItem[] = []
-    for (const entry of Object.values(runs.entries)) {
-      const hitl = entry.state.pendingHitl
-      if (hitl) {
-        const tool = String(hitl.tool || '')
-        if (isDecisionTool(tool, true)) {
-          const seenKey = `${entry.workflowId}:${hitl.requestId}`
-          const item: ToolDecisionItem = {
-            id: `live:${entry.workflowId}:${hitl.requestId}`,
-            workflowId: entry.workflowId,
-            agentName: entry.title,
-            runId: entry.backendRunId || entry.state.activeRunId || '',
-            tool,
-            title: hitl.title || tool,
-            intent: toolIntent(tool, hitl.arguments),
-            result: '',
-            status: 'pending',
-            requestId: hitl.requestId,
-            at: stampFirstSeen(firstSeenRef.current, seenKey),
-            live: true,
-            arguments: hitl.arguments && typeof hitl.arguments === 'object' ? hitl.arguments : {}
-          }
-          item.files = pickFilesForDecision(item, filesByWorkflow[entry.workflowId] || [])
-          items.push(item)
-        }
-      }
-      const question = entry.state.pendingQuestion
-      if (question?.requestId) {
-        const seenKey = `${entry.workflowId}:${question.requestId}`
-        const item: ToolDecisionItem = {
-          id: `live:${entry.workflowId}:${question.requestId}`,
-          workflowId: entry.workflowId,
-          agentName: entry.title,
-          runId: entry.backendRunId || entry.state.activeRunId || '',
-          tool: 'askQuestion',
-          title: question.question || 'Вопрос агента',
-          intent: question.question || 'Агент ждёт ответ, чтобы продолжить прогон.',
-          result: '',
-          status: 'pending',
-          requestId: question.requestId,
-          at: stampFirstSeen(firstSeenRef.current, seenKey),
-          live: true
-        }
-        items.push(item)
-      }
-    }
-    return items
-  }, [runs.entries, fromDay, toDay, filesByWorkflow])
 
   const processOptions = useMemo(
     () =>
@@ -760,14 +429,8 @@ export function DecisionsTab({
 
   const visibleTools = useMemo(() => {
     const q = query.trim().toLowerCase()
-    const seen = new Set<string>()
     const merged: ToolDecisionItem[] = []
-    for (const item of [...livePending, ...tools]) {
-      const key = item.requestId
-        ? `${item.workflowId}:${item.requestId}`
-        : `${item.workflowId}:${item.runId}:${item.tool}:${item.status}`
-      if (seen.has(key)) continue
-      seen.add(key)
+    for (const item of catalog.items) {
       if (q && !`${item.title} ${item.tool} ${item.agentName}`.toLowerCase().includes(q)) continue
       if (processId && item.workflowId !== processId) continue
       if (status && decisionStatusBucket(item) !== status) continue
@@ -792,7 +455,7 @@ export function DecisionsTab({
       return sort === 'due_desc' ? rightDue - leftDue : leftDue - rightDue
     })
     return merged
-  }, [livePending, tools, query, processId, status, priority, attachmentsOnly, due, sort, today])
+  }, [catalog.items, query, processId, status, priority, attachmentsOnly, due, sort, today])
 
   const pending = visibleTools.filter((item) => item.status === 'pending')
   const awaitingMe = visibleTools.filter((item) => decisionStatusBucket(item) === 'pending')
@@ -819,23 +482,9 @@ export function DecisionsTab({
     : []
 
   useEffect(() => {
-    const ids = new Set<string>()
-    if (selected?.workflowId) ids.add(selected.workflowId)
-    for (const item of livePending) ids.add(item.workflowId)
-    for (const id of ids) {
-      if (!id || filesByWorkflow[id] || loadingFilesRef.current.has(id)) continue
-      loadingFilesRef.current.add(id)
-      void api
-        .listWorkflowFiles(id)
-        .catch(() => [] as WorkflowFileItem[])
-        .then((files) => {
-          setFilesByWorkflow((prev) => ({ ...prev, [id]: files.filter(isUserFacingResultFile) }))
-        })
-        .finally(() => {
-          loadingFilesRef.current.delete(id)
-        })
-    }
-  }, [selected?.workflowId, livePending, filesByWorkflow])
+    if (selected?.workflowId) ensureWorkflowFiles(selected.workflowId)
+    for (const item of catalog.livePending) ensureWorkflowFiles(item.workflowId)
+  }, [selected?.workflowId, catalog.livePending, ensureWorkflowFiles])
 
   useEffect(() => {
     if (visibleTools.some((item) => item.id === selectedId)) return

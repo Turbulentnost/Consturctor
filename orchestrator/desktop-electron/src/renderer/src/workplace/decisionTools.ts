@@ -138,8 +138,16 @@ export interface ToolDecisionItem {
   requestId: string
   at: string
   live: boolean
+  permissionRequested?: boolean
   arguments?: Record<string, unknown>
   files?: WorkflowFileItem[]
+}
+
+/** HITL / вопрос / ожидание человека — не итог прогона и не обычный вызов инструмента. */
+export function isPermissionDecision(item: Pick<ToolDecisionItem, 'tool' | 'live' | 'permissionRequested'>): boolean {
+  if (item.tool === 'agent_result') return false
+  if (item.permissionRequested || item.live) return true
+  return item.tool === 'waiting_human' || isQuestionDecision(item.tool)
 }
 
 function eventTool(event: AgentRunnerEvent): string {
@@ -180,15 +188,18 @@ export function feedItemsToRunnerEvents(items: FeedItem[]): AgentRunnerEvent[] {
 
 export function extractToolDecisions(
   events: AgentRunnerEvent[],
-  meta: { workflowId: string; agentName: string; runId: string; at: string; runClosed?: boolean }
+  meta: { workflowId: string; agentName: string; runId: string; at: string; runClosed?: boolean },
+  options?: { permissionOnly?: boolean }
 ): ToolDecisionItem[] {
   const items: ToolDecisionItem[] = []
   const open: ToolDecisionItem[] = []
+  const permissionOnly = Boolean(options?.permissionOnly)
 
   const makeItem = (
     tool: string,
     event: AgentRunnerEvent,
-    status: ToolDecisionItem['status']
+    status: ToolDecisionItem['status'],
+    permissionRequested: boolean
   ): ToolDecisionItem => ({
     id: `${meta.runId}:${event.requestId || tool}:${items.length}`,
     workflowId: meta.workflowId,
@@ -206,6 +217,7 @@ export function extractToolDecisions(
     requestId: String(event.requestId || ''),
     at: meta.at,
     live: !meta.runClosed && status === 'pending',
+    permissionRequested,
     arguments: event.arguments && typeof event.arguments === 'object' ? event.arguments : {}
   })
 
@@ -222,16 +234,23 @@ export function extractToolDecisions(
     const tool = eventTool(event)
     const confirm = eventLooksLikeConfirm(event)
     const rejected = eventLooksLikeReject(event) || Boolean(event.skipped)
-    if (confirm && tool && isDecisionTool(tool, true)) {
+    const resolvedTool = tool || (confirm ? 'waiting_human' : '')
+    if (confirm && resolvedTool && isDecisionTool(resolvedTool, true)) {
       const statusRaw = String(event.status || '').toLowerCase()
       const approved = statusRaw === 'approved' || (event.ok === true && statusRaw !== 'pending')
-      let item = findOpen(tool, String(event.requestId || ''))
+      let item = findOpen(resolvedTool, String(event.requestId || ''))
       if (!item) {
-        item = makeItem(tool, event, rejected ? 'rejected' : approved ? 'confirmed' : 'pending')
+        item = makeItem(
+          resolvedTool,
+          event,
+          rejected ? 'rejected' : approved ? 'confirmed' : 'pending',
+          true
+        )
         items.push(item)
         open.push(item)
       } else if (event.requestId) {
         item.requestId = String(event.requestId)
+        item.permissionRequested = true
       }
       if (rejected) {
         item.status = 'rejected'
@@ -257,7 +276,8 @@ export function extractToolDecisions(
     const failed = Boolean(event.error) || statusRaw.includes('error') || statusRaw.includes('fail') || event.ok === false
     let item = findOpen(tool, String(event.requestId || ''))
     if (!item) {
-      item = makeItem(tool, event, hasResult ? 'done' : 'pending')
+      if (permissionOnly) continue
+      item = makeItem(tool, event, hasResult ? 'done' : 'pending', false)
       items.push(item)
       open.push(item)
     }
@@ -277,5 +297,12 @@ export function extractToolDecisions(
       item.result = item.result || 'Инструмент не был выполнен.'
     }
   }
-  return items
+  return permissionOnly ? items.filter(isPermissionDecision) : items
+}
+
+export function extractPermissionDecisions(
+  events: AgentRunnerEvent[],
+  meta: { workflowId: string; agentName: string; runId: string; at: string; runClosed?: boolean }
+): ToolDecisionItem[] {
+  return extractToolDecisions(events, meta, { permissionOnly: true })
 }

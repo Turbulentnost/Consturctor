@@ -90,7 +90,12 @@ export function SpecSummaryTiles({
           <>
             <div className="spec-v04-tile-top">
               <div className="spec-v04-tile-label-row">
-                <SpecTileIcon id={tile.id} />
+                <span className="spec-tile-icon-host">
+                  <SpecTileIcon id={tile.id} />
+                  {tile.notify ? (
+                    <i className="spec-tile-notify-dot" title="Есть уведомление" aria-hidden />
+                  ) : null}
+                </span>
                 <span className="spec-v04-tile-label" title={tile.label}>
                   {tile.label}
                 </span>
@@ -129,6 +134,7 @@ export function SpecSummaryTiles({
               type="button"
               className={classNames}
               aria-pressed={active}
+              aria-label={tile.notify ? `${tile.label}, есть уведомление` : tile.label}
               onClick={() => onSelect?.(tile.id)}
             >
               {body}

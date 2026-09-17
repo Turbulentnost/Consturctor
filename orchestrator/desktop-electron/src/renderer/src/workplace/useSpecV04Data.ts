@@ -4,7 +4,7 @@ import type { BoardAgent, CalendarEvent, UserProfile } from '../api/types'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { SpecV04SourcesContext } from './SpecV04SourcesProvider'
-import { buildTaskCatalog, filterTaskRows } from './tileFilters'
+import { buildTaskCatalog, filterTaskRows, isDocflowFromMe, isDocflowToMe } from './tileFilters'
 
 export interface SpecV04SourcesState {
   /** Любой из долгих источников ещё грузится. Не использовать как стоп-кран виджета. */
@@ -189,23 +189,14 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
     catalog.erpIds,
     catalog.turboIds
   ).length
-  const fromMe = data.erpTasks.filter((t) => {
-    const role = String(t.role || '').trim().toLowerCase()
-    return role === 'author' || role === 'both'
-  }).length
+  const toMe = data.erpTasks.filter((t) => isDocflowToMe(t, data.erpFio)).length
+  const fromMe = data.erpTasks.filter((t) => isDocflowFromMe(t, data.erpFio)).length
   const regTotal = data.processRows.length
   const onecDead = Boolean(data.erpError) && !data.erpTaskCount && !data.erpLoading
   const turboDead = Boolean(data.turboError) && !data.turboTaskCount && !data.turboLoading
-  const onecDone = data.erpTasks.filter((t) => t.status === 'Выполнена').length
   const allHint = allPending ? 'загрузка…' : ''
-  const onecHint = data.erpLoading
-    ? 'загрузка…'
-    : onecDead
-      ? ''
-      : data.erpTaskCount
-        ? `${onecDone} выполнено`
-        : ''
-  const fromMeHint = data.erpLoading ? 'загрузка…' : onecDead ? '' : fromMe ? `${fromMe} от меня` : ''
+  const onecHint = data.erpLoading ? 'загрузка…' : onecDead ? '' : toMe ? 'задачи мне, открытые' : ''
+  const fromMeHint = data.erpLoading ? 'загрузка…' : onecDead ? '' : fromMe ? 'задачи от меня, открытые' : ''
   const turboHint = data.turboLoading
     ? 'загрузка…'
     : turboDead
@@ -224,7 +215,7 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
     {
       id: 'onec',
       label: 'Задачи из 1С',
-      value: taskTileValue(data.erpLoading, data.erpTaskCount, onecDead),
+      value: taskTileValue(data.erpLoading, toMe, onecDead),
       hint: onecHint,
       tone: 'blue'
     },

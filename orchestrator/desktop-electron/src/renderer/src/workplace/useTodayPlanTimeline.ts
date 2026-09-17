@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef } from 'react'
 import type { CalendarEvent, WorkflowBoard } from '../api/types'
 import {
   dedupeMeetingEvents,
-  ensureOutlookMeetings,
+  meetingOverlapsLocalDay,
   parseMeetingTime,
   type MeetingEvent
 } from '../utils/outlookMeetings'
@@ -14,8 +14,7 @@ import {
   TODAY_PLAN_PREFER_MOCKS,
   type TodayPlanBlock
 } from '../tabs/grid/todayDemoData'
-import { useGridRefreshGeneration } from './GridDataRefreshContext'
-import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
+import { useTodayOutlookMeetings } from './useTodayOutlookMeetings'
 
 export const TODAY_PLAN_DAY_START = 9
 export const TODAY_PLAN_DAY_END = 18
@@ -223,55 +222,11 @@ export function useTodayPlanTimeline(
     userId ? { userId, fio } : null
   )
 
-  const [meetingsLoading, setMeetingsLoading] = useState(true)
-  const [meetingsError, setMeetingsError] = useState('')
-  const [meetings, setMeetings] = useState<MeetingEvent[]>([])
-
+  const outlookMeetings = useTodayOutlookMeetings(periodDay, { userId, fio })
+  const meetings = outlookMeetings.meetings
+  const meetingsLoading = outlookMeetings.loading
+  const meetingsError = outlookMeetings.error
   const dayKey = `${periodDay.getFullYear()}-${periodDay.getMonth()}-${periodDay.getDate()}`
-  const generation = useGridRefreshGeneration()
-
-  useEffect(() => {
-    let alive = true
-    const cacheKey = `today-plan-meetings:${userId}:${dayKey}`
-    if (!shouldRunGridFetch(cacheKey, generation)) {
-      const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
-      if (cached) {
-        setMeetings(cached.meetings)
-        setMeetingsError(cached.error)
-        setMeetingsLoading(false)
-        return
-      }
-    }
-    const hadCache = Boolean(readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey))
-    if (!hadCache) setMeetingsLoading(true)
-    setMeetingsError('')
-    void ensureOutlookMeetings('day', periodDay, { owner: fio })
-      .then((res) => {
-        if (!alive) return
-        if (!res.ok) {
-          const errText = res.error || 'Outlook недоступен'
-          setMeetings([])
-          setMeetingsError(errText)
-          writeGridCache(cacheKey, { meetings: [], error: errText })
-          return
-        }
-        setMeetings(res.meetings)
-        writeGridCache(cacheKey, { meetings: res.meetings, error: '' })
-      })
-      .catch((err) => {
-        if (!alive) return
-        setMeetings([])
-        const errText = err instanceof Error ? err.message : 'Ошибка календаря'
-        setMeetingsError(errText)
-        writeGridCache(cacheKey, { meetings: [], error: errText })
-      })
-      .finally(() => {
-        if (alive) setMeetingsLoading(false)
-      })
-    return () => {
-      alive = false
-    }
-  }, [dayKey, fio, generation, periodDay, userId])
 
   const stableMeetingsRef = useRef<TodayPlanBlock[]>([])
   const stableAiRef = useRef<TodayPlanBlock[]>([])
@@ -279,10 +234,7 @@ export function useTodayPlanTimeline(
   return useMemo(() => {
     const loading = meetingsLoading || boardLoading
     const onDay = dedupeMeetingEvents(
-      meetings.filter((item) => {
-        const start = parseMeetingTime(item.start)
-        return start ? isOnLocalDay(start, periodDay) : false
-      })
+      meetings.filter((item) => meetingOverlapsLocalDay(item, periodDay))
     )
 
     let meetingBlocks = onDay

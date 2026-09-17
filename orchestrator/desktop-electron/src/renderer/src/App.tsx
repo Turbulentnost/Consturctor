@@ -30,7 +30,6 @@ import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
 import { FilesPage } from './pages/FilesPage'
 import { OrchGridShell } from './layout/OrchGridShell'
-import { OrchSlotMain } from './layout/GridSlots'
 import type { WorkplaceTabKey } from './layout/tabRegistry'
 import { ProcessesGridTab } from './tabs/grid/ProcessesGridTab'
 import { TasksGridTab } from './tabs/grid/TasksGridTab'
@@ -697,7 +696,7 @@ function AppShell(): React.JSX.Element {
           ? 'ai_agents'
           : lastTab
 
-  async function openAgentRun(workflowId: string, runId = '', _autoStart = false, title = ''): Promise<void> {
+  async function openAgentRun(workflowId: string, runId = '', autoStart = false, title = ''): Promise<void> {
     if (!workflowId) {
       flash('У карточки нет id агента на сервере')
       return
@@ -707,6 +706,10 @@ function AppShell(): React.JSX.Element {
       return
     }
     const nextTitle = title || 'ИИ-агент'
+    if (autoStart) {
+      setView({ kind: 'agentrun', workflowId, title: nextTitle, autoStart: true })
+      return
+    }
     const live = runs.entries[workflowId]
     if (liveEntryMatchesRun(live, runId)) {
       setView({ kind: 'agentrun', workflowId, title: nextTitle || live.title, autoStart: false })
@@ -861,7 +864,24 @@ function AppShell(): React.JSX.Element {
   function renderWorkplaceGridTab(key: WorkplaceTabKey): React.JSX.Element {
     switch (key) {
       case 'processes':
-        return <ProcessesGridTab user={activeUser} navProcessTab={tabIntent?.processTab} onOpen={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
+        return (
+          <ProcessesGridTab
+            user={activeUser}
+            navProcessTab={tabIntent?.processTab}
+            onOpen={(workflowId, title) => {
+              setLastTab('processes')
+              setView({ kind: 'passport', workflowId, title, tab: 'info' })
+            }}
+            onRun={(workflowId, title) => {
+              setLastTab('processes')
+              void openAgentRun(workflowId, '', true, title)
+            }}
+            onOpenRun={(workflowId, title, runId) => {
+              setLastTab('processes')
+              void openAgentRun(workflowId, runId || '', false, title)
+            }}
+          />
+        )
       case 'tasks':
         return <TasksGridTab user={activeUser} navTaskFilter={tabIntent?.taskFilter} />
       case 'projects':
@@ -910,7 +930,7 @@ function AppShell(): React.JSX.Element {
       return <AgentRunPage workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
     }
     if (view.kind === 'passport') {
-      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
+      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: isWorkplaceTabKey(lastTab) ? lastTab : 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
     }
     if (view.kind === 'history') {
       return (
@@ -1010,14 +1030,14 @@ function AppShell(): React.JSX.Element {
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
             >
               {workplaceSubpage ? (
-                <OrchSlotMain spanAll heavyEmbed>
-                  <div className="orch-heavy-embed orch-agent-subpage">{renderUserFullscreen()}</div>
-                </OrchSlotMain>
+                <div className="orch-agent-subpage-root">{renderUserFullscreen()}</div>
               ) : (
                 renderUserContent()
               )}
             </OrchGridShell>
-            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+            {view.kind === 'chat' || view.kind === 'agentrun' ? null : (
+              <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+            )}
           </div>
         ) : (
           <div className="app-root">
@@ -1061,7 +1081,9 @@ function AppShell(): React.JSX.Element {
                 {content}
               </div>
             </main>
-            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+            {view.kind === 'chat' || view.kind === 'agentrun' ? null : (
+              <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+            )}
           </div>
         )}
       </SpecV04SourcesProvider>

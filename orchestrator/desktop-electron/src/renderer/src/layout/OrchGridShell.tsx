@@ -113,16 +113,6 @@ export function OrchGridShell({
       )}
 
       <div className="orch-grid-util">
-        <button
-          type="button"
-          className="icon-btn-help"
-          title="Помощь"
-          onClick={() => {
-            window.open('https://wiki.turbo-don.ru', '_blank', 'noopener,noreferrer')
-          }}
-        >
-          ?
-        </button>
         <UserMenu
           user={user}
           avatarUrl={avatarUrl}

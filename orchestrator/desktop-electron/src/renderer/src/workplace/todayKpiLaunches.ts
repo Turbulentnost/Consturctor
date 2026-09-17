@@ -64,14 +64,26 @@ export function summarizeDayLaunches(
   day: Date
 ): DayLaunchSummary {
   const slots = filterDayLaunchEvents(events, agents, day)
-  const agentIds = [...new Set(slots.map((event) => event.workflowId))]
-  const agentDoneIds = [
-    ...new Set(slots.filter((event) => isSuccessfulLaunchStatus(event.status)).map((event) => event.workflowId))
-  ]
+  const planned = new Set(slots.map((event) => event.workflowId))
+  const successful = new Set(
+    slots.filter((event) => isSuccessfulLaunchStatus(event.status)).map((event) => event.workflowId)
+  )
+  for (const agent of agents) {
+    if (!isKpiPlanBoardAgent(agent) || !agent.id) continue
+    const next = parseIso(agent.nextRunAt)
+    if (next && sameDay(next, day)) planned.add(agent.id)
+    const last = parseIso(agent.lastRunAt)
+    const kind = (agent.triggerKind || '').toLowerCase()
+    const scheduled = kind === 'interval' || kind === 'datetime' || kind === 'event'
+    if (last && sameDay(last, day) && scheduled) planned.add(agent.id)
+    if (last && sameDay(last, day) && isSuccessfulLaunchStatus(agent.lastRunStatus)) {
+      successful.add(agent.id)
+    }
+  }
   return {
     slotCount: slots.length,
     slotDone: slots.filter((event) => isSuccessfulLaunchStatus(event.status)).length,
-    agentIds,
-    agentDoneIds
+    agentIds: [...planned],
+    agentDoneIds: [...successful]
   }
 }

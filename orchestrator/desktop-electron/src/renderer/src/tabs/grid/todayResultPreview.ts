@@ -1,5 +1,5 @@
 import { api } from '../../api/client'
-import { cleanRunResult } from '../../utils/cleanRunResult'
+import { cleanRunResult, isBrokenResultText } from '../../utils/cleanRunResult'
 import type { TodayAgentResultItem } from '../../workplace/useTodayAgentResults'
 
 export function resultAgentLabel(file: TodayAgentResultItem): string {
@@ -82,8 +82,7 @@ function pickPreviewText(fromRun: string, summary: string): string {
   const cleaned = (fromRun || '').trim()
   const local = (summary || '').trim()
   if (!cleaned) return local
-  const truncated = cleaned.length < 48 || /^(и|а|но|или)\b/i.test(cleaned)
-  if (truncated && local.length > cleaned.length) return local
+  if (isBrokenResultText(cleaned) && local.length > cleaned.length) return local
   return cleaned
 }
 
@@ -97,16 +96,32 @@ async function loadRunResultText(file: TodayAgentResultItem): Promise<string> {
       events: detail.events,
       status: detail.item.status
     })
-    return (cleaned.text || '').trim()
+    const text = (cleaned.text || '').trim()
+    const raw = (detail.item.answer || detail.item.summary || '').trim()
+    if (text && !isBrokenResultText(text)) return text
+    if (raw && raw.length > text.length) return raw
+    return text || raw
+  } catch {
+    return ''
+  }
+}
+
+async function loadFileExtractedText(file: TodayAgentResultItem): Promise<string> {
+  if (!file.workflowId || !file.id) return ''
+  try {
+    return (await api.getWorkflowFileText(file.workflowId, file.id)).trim()
   } catch {
     return ''
   }
 }
 
 export async function loadResultFilePreview(file: TodayAgentResultItem): Promise<ResultFilePreview> {
-  const fromRun = await loadRunResultText(file)
+  const [fromRun, extracted] = await Promise.all([loadRunResultText(file), loadFileExtractedText(file)])
   const stub = pickPreviewText(fromRun, file.summary || '')
-  const stubIsShort = !stub || stub.length < 80 || /^(и|а|но|или)\b/i.test(stub)
+  const stubIsShort = isBrokenResultText(stub) || stub.length < 80
+  if (stubIsShort && extracted && !isBrokenResultText(extracted) && extracted.length > stub.length) {
+    return previewFromText(file, extracted)
+  }
   const canPreviewInline = file.kind === 'pdf' || file.kind === 'csv'
   if (file.downloadUrl && (canPreviewInline || stubIsShort)) {
     try {

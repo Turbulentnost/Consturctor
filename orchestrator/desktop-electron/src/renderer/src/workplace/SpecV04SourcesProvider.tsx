@@ -56,6 +56,7 @@ const EMPTY: SpecV04SourcesState = {
   meetingCount: 0,
   meetingCountToday: 0,
   meetings: [],
+  meetingsLoading: false,
   erpError: '',
   erpSecondaryHint: '',
   sources: { erp: '—', turbo: '—', mail: '—' },
@@ -99,6 +100,7 @@ export function SpecV04SourcesProvider({
   const [mailRows, setMailRows] = useState<SpecMailRow[]>([])
   const [mailSource, setMailSource] = useState('—')
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
+  const [meetingsLoading, setMeetingsLoading] = useState(true)
   const [oneCAuthFailure, setOneCAuthFailure] = useState(false)
   const hasLoadedSourcesRef = useRef(false)
 
@@ -161,15 +163,23 @@ export function SpecV04SourcesProvider({
   }, [user.id, erpFio, outlookMailbox, generation, comCredsRevision])
 
   useEffect(() => {
-    if (!user.id) return
+    if (!user.id) {
+      setMeetingsLoading(false)
+      return
+    }
     let alive = true
+    setMeetingsLoading(true)
     const today = new Date()
     void ensureOutlookMeetings('week', today, { owner: erpFio })
       .then((cal) => {
-        if (alive) setMeetings(dedupeMeetingEvents(cal.meetings || []))
+        if (!alive) return
+        setMeetings(dedupeMeetingEvents(cal.meetings || []))
       })
       .catch(() => {
         if (alive) setMeetings([])
+      })
+      .finally(() => {
+        if (alive) setMeetingsLoading(false)
       })
     return () => {
       alive = false
@@ -244,6 +254,7 @@ export function SpecV04SourcesProvider({
       meetingCount: meetings.length,
       meetingCountToday,
       meetings,
+      meetingsLoading,
       sources: {
         erp: erpSource || ORCH_SOURCE_ID.erpPm,
         turbo: turboSource || ORCH_SOURCE_ID.turboProject,
@@ -274,6 +285,7 @@ export function SpecV04SourcesProvider({
       board.agents,
       allProcessRows,
       meetings,
+      meetingsLoading,
       meetingCountToday,
       erpSource,
       turboSource,

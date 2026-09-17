@@ -456,6 +456,11 @@ _RK_TIPS = (
     "пл-01-001",
     "пл 01-001",
 )
+_ARTIFACT_CLOSE_TIPS = (
+    "проверка артефактов",
+    "предложение поручений к закрытию",
+    "предложение к закрытию поручений",
+)
 
 RK_RUN_HINT = (
     "This is RK meeting prep (ПЛ-01-001), not calendar control. "
@@ -471,6 +476,16 @@ RK_RUN_HINT = (
     "Call report.export_document with the agenda/lists BEFORE ## WORK_RESULT. "
     "If the meeting date is unconfirmed, still export the file, then WORK_RESULT "
     "with «Недостаточно данных». Finish with TESTS: PASS; no step narration in chat."
+)
+ARTIFACT_CLOSE_HINT = (
+    "This is artifact check and close proposal, not RK meeting prep. "
+    "Do not search a meeting date, agenda, or \\\\192.168.1.198 RK folders. "
+    "Do not ask for an Excel registry or launch files. "
+    "Call onec.erp_assignments action=list only_open=true include_files=true limit=100. "
+    "Download executor files with onec.download_artifact. "
+    "Read Word/PDF/images via office.read_file, Excel via excel.read_workbook. "
+    "Decide per card: recommend close / partial / no / insufficient data. "
+    "Export Word, then ## WORK_RESULT. No 1C write without HITL."
 )
 
 CALENDAR_CONTROL_HINT = (
@@ -643,11 +658,12 @@ FILE_QUESTION_SKIP_ANSWER = (
     "Файла нет. Продолжай без вложения: ищи данные в 1С, Outlook, Excel "
     "и сетевых папках по playbook агента. Не спрашивай этот файл снова."
 )
-RUN_INPUT_SKIP_ANSWER = (
+RK_FOLDER_SKIP_ANSWER = (
     "Файла нет. Ищи план работ в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\8. Планы работ, "
     "реестр в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\10. Секретарь РК\\РЕЕСТР ПОРУЧЕНИЙ "
     "и поручения в 1С ERP. Не спрашивай файл снова."
 )
+RUN_INPUT_SKIP_ANSWER = FILE_QUESTION_SKIP_ANSWER
 _RUN_INPUT_GATE_HINTS = (
     "файл, который пользователь будет прикладывать",
     "прикладывать при каждом запуске",
@@ -660,9 +676,16 @@ def _is_calendar_control_text(*parts: Any) -> bool:
     return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
 
 
+def _is_artifact_close_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    return any(tip in blob for tip in _ARTIFACT_CLOSE_TIPS)
+
+
 def _is_assignment_journal_text(*parts: Any) -> bool:
     """Журнал поручений — не серия совещаний Outlook; playbook не подменяем."""
     blob = _meeting_blob(*parts)
+    if _is_artifact_close_text(blob):
+        return True
     if _is_rk_text(blob) or _is_sd_meeting_text(blob):
         return False
     return any(tip in blob for tip in ("аст00", "action tracker", "журнал поруч"))
@@ -670,6 +693,8 @@ def _is_assignment_journal_text(*parts: Any) -> bool:
 
 def _is_rk_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
+    if _is_artifact_close_text(blob):
+        return False
     if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
         return False
     return any(tip in blob for tip in _RK_TIPS)
@@ -838,6 +863,8 @@ def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
     parts = [KEEP_FILE_HINT]
     if _is_calendar_control_text(prompt):
         parts.append(CALENDAR_CONTROL_HINT)
+    elif _is_artifact_close_text(prompt):
+        parts.append(ARTIFACT_CLOSE_HINT)
     elif _is_sd_meeting_text(prompt):
         parts.append(SD_MEETING_HINT)
     elif _is_rk_text(prompt):
@@ -3665,6 +3692,11 @@ class Sidecar:
         run_inputs = _run_inputs_from_local(dict(getattr(workflow, "local_run", None) or {}))
         if not run_inputs:
             return []
+        skip_answer = (
+            RK_FOLDER_SKIP_ANSWER
+            if _is_rk_meeting_workflow(workflow)
+            else FILE_QUESTION_SKIP_ANSWER
+        )
         notes: list[str] = []
         for idx, spec in enumerate(run_inputs):
             if idx < provided_count:
@@ -3684,16 +3716,16 @@ class Sidecar:
                     "needsFile": True,
                     "accept": accept,
                     "autoContinueSeconds": RUN_INPUT_WAIT_SECONDS,
-                    "autoContinueAnswer": RUN_INPUT_SKIP_ANSWER,
+                    "autoContinueAnswer": skip_answer,
                     "why": (
                         "Это временный файл только для текущего запуска, "
                         "он не сохраняется в базу знаний. "
-                        "Через 30 секунд агент продолжит сам: 1С и папки РК."
+                        "Через 30 секунд агент продолжит сам по playbook."
                     ),
                 },
                 should_stop=active.stop.is_set,
             )
-            answer = str(reply.get("answer") or "").strip() or RUN_INPUT_SKIP_ANSWER
+            answer = str(reply.get("answer") or "").strip() or skip_answer
             notes.append(answer)
         return notes
 

@@ -17,6 +17,7 @@ import {
   compareTasksByUrgency,
   EMPTY_TASK_TILE_FILTER,
   filterTaskRows,
+  formatSurnameInitials,
   isDeadTaskSource,
   isOverdueTask,
   parseTaskDueDate,
@@ -24,6 +25,7 @@ import {
   type TaskSourceFilter,
   type TaskTileFilter
 } from '../../workplace/tileFilters'
+import { formatDocflowCreated } from '../../workplace/specV04Mappers'
 import {
   CREATE_TASK_CHANNEL_LABEL,
   ORCH_CREATE_TASK,
@@ -59,7 +61,13 @@ export function TasksGridTab({
   }
   const taskRows = useMemo(() => {
     const q = query.trim().toLowerCase()
-    const filtered = filterTaskRows(catalog.rows, effectiveTile, catalog.erpIds, catalog.turboIds).filter(
+    const filtered = filterTaskRows(
+      catalog.rows,
+      effectiveTile,
+      catalog.erpIds,
+      catalog.turboIds,
+      data.erpFio
+    ).filter(
       (row) => {
         if (barStatus && row.status !== barStatus) return false
         if (barProject && row.project !== barProject) return false
@@ -81,7 +89,7 @@ export function TasksGridTab({
       })
     }
     return [...filtered].sort(compareTasksByUrgency)
-  }, [catalog, effectiveTile, query, barStatus, barProject, barSort, barOverdue])
+  }, [catalog, data.erpFio, effectiveTile, query, barStatus, barProject, barSort, barOverdue])
   const onTileSelect = (id: string): void => {
     setTileFilter((current) => applyTaskTileClick(current, id, isDeadTaskSource(data, id)))
   }
@@ -120,6 +128,8 @@ export function TasksGridTab({
   const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
   const effectiveId = selectedId || taskRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
+  const onecToMe = effectiveTile.source === 'onec'
+  const onecFromMe = effectiveTile.source === 'onec-from-me'
 
   useEffect(() => {
     const onCreate = (event: Event): void => {
@@ -219,17 +229,24 @@ export function TasksGridTab({
               <tr>
                 <th />
                 <th>Задача</th>
-                <th>Источник</th>
-                <th>Процесс</th>
                 <th>Срок</th>
-                <th>Статус</th>
-                <th>Прогресс</th>
+                {onecFromMe ? <th>Исполнитель</th> : null}
+                {onecToMe ? <th>Автор</th> : null}
+                {onecToMe || onecFromMe ? <th>Создана</th> : null}
+                {onecToMe || onecFromMe ? null : (
+                  <>
+                    <th>Источник</th>
+                    <th>Процесс</th>
+                    <th>Статус</th>
+                    <th>Прогресс</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
               {!taskRows.length ? (
                 <tr>
-                  <td colSpan={7} className="spec-v04-empty">
+                  <td colSpan={onecToMe || onecFromMe ? 5 : 7} className="spec-v04-empty">
                     {showOneCReconnect ? (
                       <OneCReconnectInline
                         errorHint={reconnectHint}
@@ -253,15 +270,31 @@ export function TasksGridTab({
                   <td>
                     <strong>{row.title}</strong>
                   </td>
-                  <td>{row.source}</td>
-                  <td>{row.process}</td>
-                  <td className={row.urgent ? 'spec-deadline-urgent' : undefined}>{row.deadline}</td>
-                  <td>
-                    <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
+                  <td className={row.urgent ? 'spec-deadline-urgent' : undefined}>
+                    {row.deadline || '—'}
                   </td>
-                  <td>
-                    <SpecProgress value={row.progress} />
-                  </td>
+                  {onecFromMe ? (
+                    <>
+                      <td>{formatSurnameInitials(row.performer || row.executor)}</td>
+                      <td>{formatDocflowCreated(row.createdAt || '')}</td>
+                    </>
+                  ) : onecToMe ? (
+                    <>
+                      <td>{formatSurnameInitials(row.author || '')}</td>
+                      <td>{formatDocflowCreated(row.createdAt || '')}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td>{row.source}</td>
+                      <td>{row.process}</td>
+                      <td>
+                        <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
+                      </td>
+                      <td>
+                        <SpecProgress value={row.progress} />
+                      </td>
+                    </>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -295,6 +328,10 @@ export function TasksGridTab({
               <div>
                 <dt>Исполнитель</dt>
                 <dd>{selected.performer || selected.executor || '—'}</dd>
+              </div>
+              <div>
+                <dt>Создана</dt>
+                <dd>{formatDocflowCreated(selected.createdAt || '')}</dd>
               </div>
               <div>
                 <dt>Канал</dt>

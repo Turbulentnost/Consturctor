@@ -6,24 +6,21 @@ import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
 import type { TodayWidgetId } from './useTodayWidgetLayout'
 import { SpecAskOrchestratorBlock, SpecPanel, SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
-import { useTodayKpiData } from '../../workplace/useTodayKpiData'
+import { buildTodayKpiTiles, useTodayKpiData } from '../../workplace/useTodayKpiData'
+import { useTodayTileAlerts } from '../../workplace/useTodayTileAlerts'
+import { alertTileForWidget, widgetIdForTodayTile } from '../../workplace/todayTileAlerts'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
 import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecSessionHints'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import { erpActorFio } from '../../workplace/userContext'
-import { isOutlookMailFromMe, mailPartyLabel } from '../../workplace/specV04Mappers'
+import { formatDocflowCreated, isOutlookMailFromMe, mailPartyLabel } from '../../workplace/specV04Mappers'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
-import { parseMeetingTime } from '../../utils/outlookMeetings'
-import { sameDay } from '../../utils/calendar'
+import { parseMeetingTime, selectUpcomingEventMeetings } from '../../utils/outlookMeetings'
+import { MONTHS_GEN, sameDay } from '../../utils/calendar'
+import { useTodayOutlookMeetings } from '../../workplace/useTodayOutlookMeetings'
 import { useTodayPreparedDecisions } from '../../workplace/useTodayPreparedDecisions'
-import {
-  formatSurnameInitials,
-  isDocflowFromMe,
-  isDocflowToMe,
-  isTaskDueOnDay,
-  isTurboTaskAsManager,
-  isTurboTaskToMe
-} from '../../workplace/tileFilters'
+import { formatSurnameInitials, isTurboTaskAsManager, isTurboTaskToMe } from '../../workplace/tileFilters'
+import { onecTodayRowsForTable } from '../../workplace/useTodayKpiData'
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
@@ -141,58 +138,68 @@ export function TodayGridTab({
 }): React.JSX.Element {
   const { forceRefresh } = useGridDataRefreshContext()
   const [periodDay, setPeriodDay] = useState(startOfToday)
-  const { data, tiles } = useTodayKpiData(user, periodDay)
+  const { data, onecTodayRows } = useTodayKpiData(user, periodDay)
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const [onecFromMe, setOnecFromMe] = useState(false)
   const [outlookFromMe, setOutlookFromMe] = useState(false)
   const [projectAsManager, setProjectAsManager] = useState(false)
+  const [openWidgetId, setOpenWidgetId] = useState<TodayWidgetId | null>(null)
   const outlookMail = useTodayOutlookMail(periodDay)
   const preparedDecisions = useTodayPreparedDecisions(periodDay, user.id)
   const projectTasks = useTodayProjectTasks(periodDay, data)
+  const { alerts, dismissTile } = useTodayTileAlerts(data.boardAgents || [])
+  const tiles = useMemo(
+    () => buildTodayKpiTiles(data, periodDay, onecTodayRows, alerts),
+    [alerts, data, onecTodayRows, periodDay]
+  )
   const erpFio = erpActorFio(user)
+  const outlookMeetings = useTodayOutlookMeetings(periodDay, {
+    userId: user.id || '',
+    fio: erpFio
+  })
 
   const mailRows = useMemo(() => {
     return outlookMail.rows
       .filter((row) => (outlookFromMe ? isOutlookMailFromMe(row) : !isOutlookMailFromMe(row)))
       .slice(0, 4)
   }, [outlookFromMe, outlookMail.rows])
-  const projectRows = useMemo(() => {
-    return projectTasks.rows
-      .filter((row) => (projectAsManager ? isTurboTaskAsManager(row) : isTurboTaskToMe(row)))
-      .slice(0, 4)
+  const projectRowsAll = useMemo(() => {
+    return projectTasks.rows.filter((row) =>
+      projectAsManager ? isTurboTaskAsManager(row) : isTurboTaskToMe(row)
+    )
   }, [projectAsManager, projectTasks.rows])
-  const taskRows = useMemo(() => {
-    const filtered = data.erpTasks.filter((row) => {
-      if (onecFromMe) {
-        return isDocflowFromMe(row, erpFio) && isTaskDueOnDay(row, periodDay)
-      }
-      return isDocflowToMe(row)
-    })
-    return filtered.slice(0, 4)
-  }, [data.erpTasks, onecFromMe, erpFio, periodDay])
+  const projectRows = useMemo(() => projectRowsAll.slice(0, 4), [projectRowsAll])
+  const taskRows = useMemo(
+    () => onecTodayRowsForTable(onecTodayRows, onecFromMe, erpFio),
+    [erpFio, onecFromMe, onecTodayRows]
+  )
+  const upcomingMeetings = useMemo(
+    () => selectUpcomingEventMeetings(outlookMeetings.meetings, periodDay),
+    [outlookMeetings.meetings, periodDay]
+  )
   const meetingRows = useMemo(() => {
-    return data.meetings
-      .filter((meeting) => {
+    return upcomingMeetings.slice(0, 6).map((meeting) => {
         const start = parseMeetingTime(meeting.start)
-        return start ? sameDay(start, periodDay) : false
-      })
-      .sort((left, right) => left.start.localeCompare(right.start))
-      .slice(0, 4)
-      .map((meeting) => {
-        const start = parseMeetingTime(meeting.start)
+        const clock = start
+          ? `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`
+          : meeting.start
         const time =
-          start != null
-            ? `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`
-            : meeting.start
-        const attendees = (meeting.attendees || '').split(/[,;]/).map((part) => part.trim()).filter(Boolean)
+          start && !sameDay(start, periodDay)
+            ? `${start.getDate()} ${MONTHS_GEN[start.getMonth() + 1]} ${clock}`
+            : clock
+        const attendees = (meeting.attendees || '')
+          .split(/[,;]/)
+          .map((part) => part.trim())
+          .filter(Boolean)
         return {
+          id: `${meeting.id}:${meeting.start}`,
           time,
           title: meeting.subject,
           format: meeting.location?.trim() || '—',
           participants: attendees.length ? `${attendees.length} чел.` : '—'
         }
       })
-  }, [data.meetings, periodDay])
+  }, [periodDay, upcomingMeetings])
 
   const ask = (message: string): void => {
     onAskOrchestrator(message, 'Вкладка «Сегодня»')
@@ -305,7 +312,7 @@ export function TodayGridTab({
               <button
                 type="button"
                 className="today-refresh-btn"
-                title="Обновить задачи 1С:Документооборот: сегодня и просроченные"
+                title="Обновить задачи 1С. На Сегодня — только срок сегодня и просроченные"
                 disabled={data.sourcesLoading}
                 onClick={() => forceRefresh()}
               >
@@ -327,12 +334,12 @@ export function TodayGridTab({
             data.erpError || data.error
               ? 'Не удалось загрузить задачи документооборота'
               : onecFromMe
-                ? 'Нет задач от вас на выбранный день'
-                : 'Нет задач на сегодня и просроченных'
+                ? 'Нет задач от вас со сроком сегодня или просроченных'
+                : 'Нет задач вам со сроком сегодня или просроченных'
           }
           hint={
             [
-              onecFromMe ? 'кэш ДО · автор · срок сегодня' : '',
+              onecFromMe ? 'от меня · срок сегодня и просроченные' : 'срок сегодня и просроченные',
               data.erpSecondaryHint,
               data.sources.erp !== '—' ? data.sources.erp : ''
             ]
@@ -340,24 +347,27 @@ export function TodayGridTab({
               .join(' · ') || undefined
           }
           emptyExtra={onecReconnectBlock}
-          columns={onecFromMe ? ['Задача', 'Исполнитель', 'Статус'] : ['Задача', 'Статус']}
+          columns={
+            onecFromMe
+              ? ['Задача', 'Срок', 'Исполнитель', 'Создана']
+              : ['Задача', 'Срок', 'Автор', 'Создана']
+          }
           rows={taskRows.map((row) =>
             onecFromMe
               ? [
                   <TodayCellText key={`${row.id}-t`} text={row.title} />,
+                  <TodayCellText key={`${row.id}-d`} text={row.deadline || '—'} />,
                   <TodayCellText
                     key={`${row.id}-p`}
                     text={formatSurnameInitials(row.performer || row.executor)}
                   />,
-                  <SpecPill key={`${row.id}-st`} tone={row.statusTone}>
-                    {row.status}
-                  </SpecPill>
+                  <TodayCellText key={`${row.id}-c`} text={formatDocflowCreated(row.createdAt || '')} />
                 ]
               : [
                   <TodayCellText key={`${row.id}-t`} text={row.title} />,
-                  <SpecPill key={`${row.id}-st`} tone={row.statusTone}>
-                    {row.status}
-                  </SpecPill>
+                  <TodayCellText key={`${row.id}-d`} text={row.deadline || '—'} />,
+                  <TodayCellText key={`${row.id}-a`} text={formatSurnameInitials(row.author || '')} />,
+                  <TodayCellText key={`${row.id}-c`} text={formatDocflowCreated(row.createdAt || '')} />
                 ]
           )}
         />
@@ -366,7 +376,11 @@ export function TodayGridTab({
       projects: (
         <TodayWindow>
         <MiniTableCard
-          title="Проектные задачи"
+          title={
+            projectRowsAll.length
+              ? `Проектные задачи · ${projectRowsAll.length}`
+              : 'Проектные задачи'
+          }
           tableClassName="today-mini-table-tasks"
           headerAction={
             <label className="today-from-me-toggle">
@@ -409,15 +423,21 @@ export function TodayGridTab({
       events: (
         <TodayWindow>
         <MiniTableCard
-          title="Предстоящие события"
-          loading={data.sourcesLoading}
-          emptyText="Нет событий Outlook на выбранный день"
+          title={
+            upcomingMeetings.length
+              ? `Предстоящие события · ${upcomingMeetings.length}`
+              : 'Предстоящие события'
+          }
+          loading={outlookMeetings.loading}
+          error={outlookMeetings.error || undefined}
+          emptyText="Нет совещаний Outlook на выбранный день"
+          hint={outlookMeetings.meetings.length ? 'календарь Outlook' : undefined}
           columns={['Время', 'Событие', 'Формат', 'Участники']}
           rows={meetingRows.map((row) => [
-            <TodayCellText key={`${row.time}-t`} text={row.time} />,
-            <TodayCellText key={`${row.time}-ti`} text={row.title} />,
-            <TodayCellText key={`${row.time}-f`} text={row.format} />,
-            <TodayCellText key={`${row.time}-p`} text={row.participants} />
+            <TodayCellText key={`${row.id}-t`} text={row.time} />,
+            <TodayCellText key={`${row.id}-ti`} text={row.title} />,
+            <TodayCellText key={`${row.id}-f`} text={row.format} />,
+            <TodayCellText key={`${row.id}-p`} text={row.participants} />
           ])}
         />
         </TodayWindow>
@@ -437,7 +457,7 @@ export function TodayGridTab({
           ) : preparedDecisions.error ? (
             <p className="today-table-status today-table-error">{preparedDecisions.error}</p>
           ) : !preparedDecisions.items.length ? (
-            <p className="today-table-status">Нет подготовленных решений за выбранный день</p>
+            <p className="today-table-status">Нет запросов на разрешение за выбранный день</p>
           ) : (
             <ul className="today-decision-list">
               {preparedDecisions.items.map((item) => {
@@ -503,7 +523,6 @@ export function TodayGridTab({
       data.error,
       data.oneCAuthFailure,
       onecReconnectBlock,
-      data.meetings,
       data.outlookMailbox,
       data.sources.erp,
       data.sources.turbo,
@@ -514,12 +533,17 @@ export function TodayGridTab({
       preparedDecisions.loading,
       mailRows,
       projectRows,
+      projectRowsAll,
       meetingRows,
+      upcomingMeetings,
       onOpenDecisions,
       onOpenRun,
       outlookMail.error,
       outlookMail.loading,
       outlookMail.source,
+      outlookMeetings.error,
+      outlookMeetings.loading,
+      outlookMeetings.meetings,
       periodDay,
       projectTasks.error,
       projectTasks.loading,
@@ -538,7 +562,14 @@ export function TodayGridTab({
     <>
       <OrchSlotMetrics>
         <div className="orch-today-tiles">
-          <SpecSummaryTiles tiles={tiles} />
+          <SpecSummaryTiles
+            tiles={tiles}
+            onSelect={(id) => {
+              const widgetId = widgetIdForTodayTile(id)
+              if (widgetId) setOpenWidgetId(widgetId)
+              if (id === 'ev' || id === 'meet') dismissTile('meet')
+            }}
+          />
         </div>
       </OrchSlotMetrics>
 
@@ -562,6 +593,17 @@ export function TodayGridTab({
           onLayoutChange={onLayoutChange}
           onToggleLock={toggleWidgetLock}
           widgets={todayWidgets}
+          openWidgetId={openWidgetId}
+          onOpenWidgetConsumed={() => setOpenWidgetId(null)}
+          widgetAlerts={{
+            events: alerts.meet,
+            decisions: alerts.decisions,
+            results: alerts.results
+          }}
+          onWidgetOpened={(id) => {
+            const tile = alertTileForWidget(id)
+            if (tile) dismissTile(tile)
+          }}
         />
       </OrchSlotTodayCanvas>
       <OneCReconnectDialog

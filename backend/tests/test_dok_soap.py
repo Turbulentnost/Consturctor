@@ -17,14 +17,17 @@ from app.tools.onec.dok_soap import (
     ROLE_EXECUTOR,
     SOURCE_FROM_ME,
     SOURCE_INBOX,
+    _query_limit_xml,
     envelope,
     is_today_or_overdue,
+    list_open_tasks,
     load_config,
     normalize_person,
     object_id_value,
     parse_tasks,
     parse_users,
     performer_value,
+    person_matches,
     slice_dump_for_user,
     soap_configured,
     soap_timeout_message,
@@ -191,6 +194,111 @@ def test_slice_dump_dedupes_repeated_task_id() -> None:
 def test_normalize_person_yo_and_spaces() -> None:
     assert normalize_person("Комарькова  Анастасия") == normalize_person("комарькова анастасия")
     assert normalize_person("Ёлкин") == normalize_person("елкин")
+
+
+def test_person_matches_full_fio_vs_initials() -> None:
+    full = "Комарькова Анастасия Эдуардовна"
+    assert person_matches(full, "Комаркова А.Э.")
+    assert person_matches(full, "Комаркова А. Э.")
+    assert person_matches("Комаркова А.Э.", full)
+    assert person_matches(full, "Комаркова Анастасия")
+    assert not person_matches(full, "Комаркова Ольга")
+    assert not person_matches(full, "Жалыбин М.Д.")
+    assert not person_matches(full, "Комаркова Е.А.")
+    assert not person_matches("Ильченко Екатерина Александровна", "Ильченко Е.")
+    assert not person_matches("Ильченко Екатерина Александровна", "Ильченко Елена Петровна")
+
+
+def test_task_role_for_user_matches_initials_as_executor() -> None:
+    row = {
+        "performer": "Комаркова А.Э.",
+        "author": "Жалыбин Максим Дмитриевич",
+    }
+    assert task_role_for_user(row, "Комарькова Анастасия Эдуардовна") == ROLE_EXECUTOR
+    assert task_role_for_user(
+        {"performer": "Петров П.П.", "author": "Комаркова А.Э."},
+        "Комарькова Анастасия Эдуардовна",
+    ) == ROLE_AUTHOR
+
+
+def test_query_limit_xml_has_no_ceiling() -> None:
+    assert _query_limit_xml(0) == ""
+    assert _query_limit_xml(-1) == ""
+    assert _query_limit_xml(61) == "<dm:limit>61</dm:limit>"
+    assert _query_limit_xml(2000) == "<dm:limit>2000</dm:limit>"
+
+
+def test_list_open_tasks_omits_limit_when_unlimited(monkeypatch) -> None:
+    from app.tools.onec import dok_soap
+
+    captured: dict[str, str] = {}
+
+    def fake_execute(_config, body: str, timeout: float = 0):
+        captured["body"] = body
+        return _soap(
+            '<dm:return xmlns:dm="http://www.1c.ru/dm" '
+            'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            'xsi:type="dm:DMGetObjectListResponse"></dm:return>'
+        )
+
+    monkeypatch.setattr(dok_soap, "execute_dm", fake_execute)
+    config = DokConfig(
+        server="192.168.2.229",
+        port=81,
+        user="svc",
+        password="x",
+        timeout=30,
+        base_path="/doc",
+    )
+    list_open_tasks(config, None, timeout=1, limit=0, user=None, filter_mode=None)
+    assert "<dm:limit>" not in captured["body"]
+
+
+def test_slice_dump_keeps_full_inbox_and_from_me() -> None:
+    mine = "Комарькова Анастасия Эдуардовна"
+    dump = {
+        "rows": [
+            *[
+                {
+                    "id": f"to-me-{index}",
+                    "performer": "Комаркова А.Э.",
+                    "author": "Бурцева Н.А.",
+                    "executed": False,
+                    "due": "2026-09-30T23:59:00",
+                }
+                for index in range(61)
+            ],
+            {
+                "id": "from-me-1",
+                "performer": "Баререева В.О.",
+                "author": mine,
+                "executed": False,
+                "due": "2026-10-31T23:59:00",
+            },
+        ]
+    }
+    sliced = slice_dump_for_user(dump, mine)
+    roles = [row["role"] for row in sliced["rows"]]
+    assert sliced["count"] == 62
+    assert roles.count(ROLE_EXECUTOR) == 61
+    assert roles.count(ROLE_AUTHOR) == 1
+
+
+def test_slice_dump_keeps_executor_with_initials() -> None:
+    dump = {
+        "rows": [
+            {
+                "id": "to-me-init",
+                "performer": "Комаркова А.Э.",
+                "author": "Жалыбин Максим Дмитриевич",
+                "executed": False,
+                "due": "2026-09-17T18:00:00",
+            }
+        ]
+    }
+    sliced = slice_dump_for_user(dump, "Комарькова Анастасия Эдуардовна")
+    assert sliced["count"] == 1
+    assert sliced["rows"][0]["role"] == ROLE_EXECUTOR
 
 
 def test_is_today_or_overdue() -> None:
@@ -520,6 +628,54 @@ def test_fetch_inbox_keeps_dump_when_server_ignores_filter(monkeypatch) -> None:
     assert calls["n"] == 1
     assert payload["count"] == 1
     assert payload["rows"][0]["id"] == "mine"
+
+
+def test_fetch_inbox_keeps_from_me_when_not_today_scope(monkeypatch) -> None:
+    from app.tools.onec import dok_soap
+
+    monkeypatch.setattr(
+        dok_soap,
+        "find_user",
+        lambda *_args, **_kwargs: {"id": "1", "name": "Иванов И.И.", "type": "DMUser"},
+    )
+
+    def fake_list(*_args, **_kwargs):
+        return [
+            {
+                "id": "to-me",
+                "performer": "Иванов И.И.",
+                "author": "Бурцева Н.А.",
+                "executed": False,
+                "due": "2026-09-30T23:59:00",
+            },
+            {
+                "id": "from-me",
+                "performer": "Баререева В.О.",
+                "author": "Иванов И.И.",
+                "executed": False,
+                "due": "2026-10-31T23:59:00",
+            },
+            {
+                "id": "other",
+                "performer": "Петров П.П.",
+                "author": "Сидоров С.С.",
+                "executed": False,
+                "due": "2026-09-30T23:59:00",
+            },
+        ]
+
+    monkeypatch.setattr(dok_soap, "list_open_tasks", fake_list)
+    config = DokConfig(
+        server="192.168.2.229",
+        port=81,
+        user="svc",
+        password="x",
+        timeout=30,
+        base_path="/doc",
+    )
+    payload = dok_soap.fetch_inbox(config, "Иванов И.И.", since_days=30, retrieve=False)
+    by_id = {row["id"] for row in payload["rows"]}
+    assert by_id == {"to-me", "from-me"}
 
 
 def test_inbox_cache_shares_dump_across_users(tmp_path, monkeypatch) -> None:

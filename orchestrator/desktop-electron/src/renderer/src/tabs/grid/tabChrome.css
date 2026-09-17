@@ -65,6 +65,36 @@
   min-height: 0;
 }
 
+.tab-chrome-canvas--view .react-resizable-handle {
+  display: none;
+  pointer-events: none;
+}
+
+.tab-chrome-canvas--view .react-grid-item:has([data-widget-id='side']) {
+  z-index: 4;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .tab-chrome-content {
+  overflow: hidden;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-detail-card {
+  height: 100%;
+  min-height: 0;
+  position: relative;
+  z-index: 2;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-detail-actions {
+  position: relative;
+  z-index: 3;
+  pointer-events: auto;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-detail-actions button {
+  pointer-events: auto;
+}
+
 .tab-chrome-shell {
   height: 100%;
   min-height: 0;

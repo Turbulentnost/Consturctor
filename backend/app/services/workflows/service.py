@@ -423,6 +423,10 @@ def _validate_and_store_draft(
         validate_draft,
     )
 
+    from app.services.workflows.artifact_close_playbook import (
+        artifact_close_playbook_draft,
+        is_artifact_close_agent,
+    )
     from app.services.workflows.meeting_agent_config import apply_meeting_agent_config
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_playbook_draft
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_playbook_draft
@@ -431,7 +435,17 @@ def _validate_and_store_draft(
     allow_web = regulation_allows_web(_regulation_blob(row))
     enriched = attach_tool_candidates(draft, allow_web=allow_web)
     blob = _regulation_blob(row)
-    if is_rk_meeting_agent(row.title or "", row.notes or "", blob):
+    if is_artifact_close_agent(row.title or "", row.notes or "", blob):
+        seed = artifact_close_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": seed["steps"],
+            "run_inputs": [],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
+    elif is_rk_meeting_agent(row.title or "", row.notes or "", blob):
         seed = rk_playbook_draft()
         enriched = {
             **seed,
@@ -2576,6 +2590,10 @@ def _onec_domain_tools(blob: str) -> list[str]:
 def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
     """Playbook whitelist first; otherwise MCP tools from the plan domain."""
     from app.services.workflows.tool_whitelist import collect_runtime_whitelist
+    from app.services.workflows.artifact_close_playbook import (
+        artifact_close_runtime_tools,
+        is_artifact_close_agent,
+    )
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_runtime_tools
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_runtime_tools
 
@@ -2602,6 +2620,9 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         ]
     ).casefold()
     kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
+
+    if kind == "assignment_artifacts" or is_artifact_close_agent(blob):
+        return artifact_close_runtime_tools()
 
     if kind == "revision_commission" or is_rk_meeting_agent(blob):
         return rk_runtime_tools()

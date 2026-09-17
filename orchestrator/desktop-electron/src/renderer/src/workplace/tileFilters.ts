@@ -2,6 +2,7 @@ import { parseMeetingTime } from '../utils/outlookMeetings'
 import { parseIso, sameDay } from '../utils/calendar'
 import type { MeetingEvent } from '../utils/outlookMeetings'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
+import { personNameMatches } from './turboAssigneeMatch'
 import type { SpecV04SourcesState } from './useSpecV04Data'
 import type { WorkplaceKpiAgentRow } from './workplaceKpiTypes'
 
@@ -14,7 +15,7 @@ export type TaskTileFilter = {
 
 export const EMPTY_TASK_TILE_FILTER: TaskTileFilter = { source: 'all', overdueOnly: false }
 
-/** Today tile «Задачи из 1С»: source=onec → role executor|both (see isDocflowToMe). */
+/** Today tile «Задачи из 1С»: только срок сегодня / просроченные, роль executor|both. */
 export const TODAY_ONEC_TASK_FILTER: TaskTileFilter = { source: 'onec', overdueOnly: false }
 
 const TASK_SOURCE_IDS = new Set<string>(['all', 'onec', 'onec-from-me', 'proj', 'reg'])
@@ -28,9 +29,17 @@ export function docflowRoleOf(row: { role?: string }): string {
   return norm(row.role)
 }
 
-export function isDocflowToMe(row: { role?: string }): boolean {
+export function isDocflowToMe(
+  row: { role?: string; performer?: string; executor?: string },
+  actorFio = ''
+): boolean {
   const role = docflowRoleOf(row)
-  return role === 'executor' || role === 'both' || role === ''
+  if (role === 'author') return false
+  const performer = String(row.performer || '').trim()
+  if (actorFio && performer && performer !== '—' && personNameMatches(actorFio, performer)) {
+    return true
+  }
+  return role === 'executor' || role === 'both'
 }
 
 export function isTurboTaskToMe(row: { turboScope?: string }): boolean {
@@ -45,15 +54,7 @@ export function isDocflowFromMe(row: { role?: string; author?: string }, actorFi
   const role = docflowRoleOf(row)
   if (role === 'author' || role === 'both') return true
   const author = String(row.author || '').trim()
-  const actor = actorFio.trim()
-  if (!author || !actor) return false
-  const authorKey = author.toLowerCase()
-  const actorKey = actor.toLowerCase()
-  if (authorKey === actorKey || authorKey.includes(actorKey) || actorKey.includes(authorKey)) {
-    return true
-  }
-  const surname = actorKey.split(/\s+/)[0] || ''
-  return Boolean(surname && authorKey.includes(surname))
+  return Boolean(author && actorFio.trim() && personNameMatches(actorFio, author))
 }
 
 /** «Иванов Иван Иванович» / «Иванов И.И.» → «Иванов И.И.». */
@@ -72,10 +73,34 @@ export function formatSurnameInitials(fio: string): string {
 
 export function isTaskDueOnDay(row: { deadline?: string }, day: Date): boolean {
   const raw = String(row.deadline || '').trim()
-  if (!raw || raw === '—') return true
+  if (!raw || raw === '—') return false
+  if (/сегодня/i.test(raw)) return sameDay(day, new Date())
   const due = parseTaskDueDate(raw)
-  if (!due) return true
+  if (!due) return false
   return sameDay(due, day)
+}
+
+/** Вкладка «Сегодня»: срок выбранного дня или просрочка как в 1С (не любой прошлый срок). */
+export function isTodayOrOverdueTask(row: SpecTaskRow, day: Date, now = new Date()): boolean {
+  if (row.status === 'Выполнена') return false
+  if (isTaskDueOnDay(row, day)) return true
+  if (!sameDay(day, now)) return false
+  return /просроч/i.test(row.status || '') || Boolean(row.urgent)
+}
+
+/** Виджет/плитка «Задачи из 1С» на Сегодня: мне (или «от меня»), только сегодня + просроченные. */
+export function filterOnecTodayRows(
+  rows: SpecTaskRow[],
+  day: Date,
+  opts?: { fromMe?: boolean; actorFio?: string }
+): SpecTaskRow[] {
+  const fromMe = Boolean(opts?.fromMe)
+  const fio = opts?.actorFio || ''
+  return rows.filter((row) => {
+    if (!isTodayOrOverdueTask(row, day)) return false
+    if (fromMe) return isDocflowFromMe(row, fio)
+    return isDocflowToMe(row, fio)
+  })
 }
 
 export function parseTaskDueDate(deadline: string): Date | null {
@@ -105,14 +130,10 @@ export function parseTaskDueDate(deadline: string): Date | null {
   return null
 }
 
-export function isOverdueTask(row: SpecTaskRow, now = new Date()): boolean {
+export function isOverdueTask(row: SpecTaskRow, _now = new Date()): boolean {
   if (row.status === 'Выполнена') return false
-  if (/просроч/i.test(row.status || '')) return true
-  if (row.urgent) return true
-  const due = parseTaskDueDate(row.deadline)
-  if (!due) return false
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  return due.getTime() < todayStart.getTime()
+  // Как в шапке 1С «Просроченных»: не любой прошедший срок, только пометка ДО.
+  return /просроч/i.test(row.status || '') || Boolean(row.urgent)
 }
 
 export function compareTasksByUrgency(left: SpecTaskRow, right: SpecTaskRow): number {
@@ -170,14 +191,15 @@ function matchesTaskSource(
   row: SpecTaskRow,
   source: TaskSourceFilter,
   erpIds: Set<string>,
-  turboIds: Set<string>
+  turboIds: Set<string>,
+  actorFio = ''
 ): boolean {
   if (source === 'all') return true
   const origin = taskOrigin(row, erpIds, turboIds)
   if (source === 'proj' || source === 'reg') return origin === source
   if (origin !== 'onec') return false
-  if (source === 'onec') return isDocflowToMe(row)
-  if (source === 'onec-from-me') return isDocflowFromMe(row)
+  if (source === 'onec') return isDocflowToMe(row, actorFio)
+  if (source === 'onec-from-me') return isDocflowFromMe(row, actorFio)
   return false
 }
 
@@ -185,10 +207,11 @@ export function filterTaskRows(
   rows: SpecTaskRow[],
   filter: TaskTileFilter,
   erpIds: Set<string>,
-  turboIds: Set<string>
+  turboIds: Set<string>,
+  actorFio = ''
 ): SpecTaskRow[] {
   return rows.filter((row) => {
-    if (!matchesTaskSource(row, filter.source, erpIds, turboIds)) return false
+    if (!matchesTaskSource(row, filter.source, erpIds, turboIds, actorFio)) return false
     if (filter.overdueOnly && !isOverdueTask(row)) return false
     return true
   })

@@ -1,9 +1,14 @@
-"""Unified hooks for specialized meeting agents (SD, RK)."""
+"""Unified hooks for specialized agents (artifact-close, SD, RK)."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from app.services.workflows.artifact_close_playbook import (
+    apply_artifact_close_config,
+    apply_artifact_close_plan_runtime,
+    is_artifact_close_agent,
+)
 from app.services.workflows.rk_meeting_playbook import (
     apply_rk_config,
     apply_rk_plan_runtime,
@@ -18,7 +23,11 @@ from app.services.workflows.sd_meeting_playbook import (
 
 def is_meeting_agent(*parts: str) -> bool:
     blob = " ".join(str(part or "") for part in parts).strip()
-    return is_rk_meeting_agent(blob) or is_sd_meeting_agent(blob)
+    return (
+        is_artifact_close_agent(blob)
+        or is_rk_meeting_agent(blob)
+        or is_sd_meeting_agent(blob)
+    )
 
 
 def refresh_meeting_agent_view(
@@ -29,7 +38,7 @@ def refresh_meeting_agent_view(
     notes: str,
     document_text: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Return plan/local_run with latest RK/SD playbook steps and tools (no DB write)."""
+    """Return plan/local_run with latest specialized playbook steps and tools (no DB write)."""
     blob = " ".join(part for part in (title, notes, document_text) if part).strip()
     if not is_meeting_agent(title, notes, blob):
         return dict(plan_json or {}), dict(local_run or {})
@@ -50,7 +59,10 @@ def apply_meeting_agent_config(
     document_text: str = "",
 ) -> dict[str, Any]:
     del document_text
-    local = apply_rk_config(local_run, title=title, notes=notes)
+    local = apply_artifact_close_config(local_run, title=title, notes=notes)
+    if is_artifact_close_agent(title, notes):
+        return local
+    local = apply_rk_config(local, title=title, notes=notes)
     return apply_sd_config(local, title=title, notes=notes)
 
 
@@ -60,5 +72,8 @@ def apply_meeting_plan_runtime(
     title: str,
     notes: str,
 ) -> dict[str, Any]:
-    plan = apply_rk_plan_runtime(plan_data, title=title, notes=notes)
+    plan = apply_artifact_close_plan_runtime(plan_data, title=title, notes=notes)
+    if is_artifact_close_agent(title, notes, (plan or {}).get("goal") or ""):
+        return plan
+    plan = apply_rk_plan_runtime(plan, title=title, notes=notes)
     return apply_sd_plan_runtime(plan, title=title, notes=notes)

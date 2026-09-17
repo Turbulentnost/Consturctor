@@ -17,6 +17,10 @@ def test_is_rk_meeting_agent() -> None:
     assert is_rk_meeting_agent("Подготовка заседаний Ревизионной комиссии")
     assert is_rk_meeting_agent("ПЛ-01-001 реестр поручений")
     assert not is_rk_meeting_agent("Подготовка заседаний Совета директоров", "ПЛ-34-242")
+    assert not is_rk_meeting_agent(
+        "Проверка артефактов и предложение поручений к закрытию",
+        r"\\192.168.1.198\Files\24.Ревизионная комиссия",
+    )
 
 
 def test_rk_weekly_schedule() -> None:

@@ -49,7 +49,7 @@
     minmax(140px, 0.38fr);
 }
 
-.orch-grid:not(.orch-grid-today):not(:has(.orch-slot-bot-a, .orch-slot-bot-b, .orch-slot-bot-c)) {
+.orch-grid:not(.orch-grid-today):not(.orch-grid-subpage):not(:has(.orch-slot-bot-a, .orch-slot-bot-b, .orch-slot-bot-c)) {
   grid-template-rows:
     auto
     auto
@@ -221,18 +221,6 @@
   flex: 0 1 auto;
 }
 
-.orch-grid-util .icon-btn-help {
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 50%;
-  background: rgba(21, 101, 192, 0.1);
-  color: #1565c0;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-}
-
 .orch-slot-metrics {
   grid-column: 1 / 9;
   grid-row: 2;
@@ -399,19 +387,29 @@
 }
 
 .orch-grid.orch-grid-subpage .orch-grid-util {
-  grid-column: 1;
+  grid-column: 1 / -1;
   grid-row: 1;
 }
 
-.orch-grid.orch-grid-subpage .orch-slot-main {
-  grid-column: 1;
-  grid-row: 2 / 3;
+.orch-grid.orch-grid-subpage .orch-slot-main,
+.orch-grid.orch-grid-subpage .orch-slot-main.orch-span-all,
+.orch-grid.orch-grid-subpage .orch-slot-main.orch-heavy-embed-slot,
+.orch-grid.orch-grid-subpage .orch-agent-subpage-root {
+  grid-column: 1 / -1;
+  grid-row: 2 / -1;
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  align-self: stretch;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
 }
 
-.orch-grid.orch-grid-subpage .orch-slot-main.orch-heavy-embed-slot {
-  grid-row: 2 / 3;
+.orch-grid.orch-grid-subpage .orch-agent-subpage-root > * {
+  flex: 1 1 auto;
   min-height: 0;
-  align-self: stretch;
+  width: 100%;
 }
 
 .orch-slot-main.orch-heavy-embed-slot > .orch-heavy-embed,

@@ -12,6 +12,8 @@ export interface SpecSummaryTile {
   tone?: SpecSummaryTone
   progress?: number
   ring?: boolean
+  /** Red unread-notification dot on the tile icon. */
+  notify?: boolean
 }
 
 interface SpecV04ShellProps {

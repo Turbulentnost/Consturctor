@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { TODAY_RESULT_FILES } from '../tabs/grid/todayDemoData'
+import { useCallback, useEffect, useState } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
@@ -61,17 +60,11 @@ function isAgentFileOnDay(item: WorkflowFileItem, day: Date): boolean {
   return sameDay(stamp, day)
 }
 
-function isAgentResultFile(item: WorkflowFileItem): boolean {
-  if (!isUserFacingResultFile(item)) return false
-  const source = String(item.source || '').toLowerCase()
-  const origin = String(item.origin || '').toLowerCase()
-  return source === 'agent' || source === 'result' || origin.includes('agent') || origin.includes('result')
-}
-
 export interface TodayAgentResultsState {
   loading: boolean
   error: string
   items: TodayAgentResultItem[]
+  fetchedCount: number
 }
 
 /** Файлы, созданные агентами за выбранный день (период «Сегодня»). */
@@ -87,17 +80,10 @@ export function useTodayAgentResults(periodDay: Date, userId?: string): TodayAge
     setError('')
     try {
       const rows = await api.listPlatformFiles()
-      const todayRows = rows
+      const filtered = rows
         .filter((item) => isAgentFileOnDay(item, periodDay))
         .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
-      const filteredRows =
-        todayRows.length > 0
-          ? todayRows
-          : rows
-              .filter((item) => isAgentResultFile(item))
-              .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
-              .slice(0, 8)
-      const filtered = filteredRows.map(mapFile)
+        .map(mapFile)
       setItems(filtered)
       writeGridCache(cacheKey, filtered)
     } catch (err) {
@@ -141,27 +127,10 @@ export function useTodayAgentResults(periodDay: Date, userId?: string): TodayAge
     return () => window.clearInterval(timer)
   }, [load])
 
-  const resolvedItems = useMemo(() => {
-    if (items.length) return items
-    return TODAY_RESULT_FILES.map((file, index) => {
-      const stamp = new Date(periodDay)
-      stamp.setHours(9 + index * 2, 20, 0, 0)
-      return {
-        id: file.id,
-        name: file.name,
-        kind: file.kind,
-        tag: file.tag,
-        tagTone: file.tagTone,
-        agentTitle: file.agentTitle,
-        summary: file.preview,
-        createdAt: stamp.toISOString()
-      }
-    })
-  }, [items, periodDay])
-
   return {
     loading: loading && items.length === 0,
-    error: resolvedItems.length ? '' : error,
-    items: resolvedItems
+    error,
+    items,
+    fetchedCount: items.length
   }
 }

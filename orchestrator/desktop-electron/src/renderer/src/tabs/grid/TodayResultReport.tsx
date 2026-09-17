@@ -1,5 +1,6 @@
 import { Bell, CheckCircle2, FileSpreadsheet, Info } from 'lucide-react'
 import { MarkdownBody } from '../../components/agentfeed/MarkdownBody'
+import { isBrokenResultText } from '../../utils/cleanRunResult'
 
 const SECTION_HEAD =
   /(?:^|\n)[ \t]*(?:#{1,6}[ \t]*|\*\*)?(FILES|ACTIONS|NOTIFICATIONS|SCHEDULE|CLARIFY|RESULT|ФАЙЛЫ|ДЕЙСТВИЯ|УВЕДОМЛЕНИЯ|РЕЗУЛЬТАТ)\*?\*?[ \t]*:?[ \t]*(?:\n|$)/gi
@@ -267,15 +268,30 @@ function renderedLength(lead: string, sections: ReportSection[]): number {
 }
 
 export function TodayResultReport({ text }: { text: string }): React.JSX.Element {
+  if (isBrokenResultText(text)) {
+    return (
+      <article className="today-result-preview-doc today-result-report">
+        <p className="today-result-preview-plain">{text}</p>
+      </article>
+    )
+  }
   const { lead, sections } = parseSections(text)
   const sourceLen = (text || '').replace(/\s+/g, ' ').trim().length
   const parsedLen = renderedLength(lead, sections)
   if (sourceLen && parsedLen < sourceLen * 0.5) {
-    return <p className="today-result-preview-plain">{text}</p>
+    return (
+      <article className="today-result-preview-doc today-result-report">
+        <p className="today-result-preview-plain">{text}</p>
+      </article>
+    )
   }
   const blocks = leadBlocks(lead)
   if (!blocks.length && !sections.length) {
-    return <p className="today-result-preview-plain">{text}</p>
+    return (
+      <article className="today-result-preview-doc today-result-report">
+        <p className="today-result-preview-plain">{text}</p>
+      </article>
+    )
   }
   return (
     <article className="today-result-preview-doc today-result-report">

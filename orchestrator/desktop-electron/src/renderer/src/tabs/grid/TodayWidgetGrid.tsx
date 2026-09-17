@@ -70,12 +70,14 @@ function TodayWidgetChrome({
   id,
   editMode,
   locked,
+  notify,
   onToggleLock,
   onExpand
 }: {
   id: TodayWidgetId
   editMode: boolean
   locked: boolean
+  notify?: boolean
   onToggleLock: () => void
   onExpand: () => void
 }): React.JSX.Element {
@@ -85,12 +87,13 @@ function TodayWidgetChrome({
       className={[
         'today-widget-chrome',
         'today-widget-chrome-bar',
-        editMode ? 'today-widget-chrome-bar--edit' : ''
+        editMode ? 'today-widget-chrome-bar--edit' : '',
+        notify ? 'has-notify' : ''
       ]
         .filter(Boolean)
         .join(' ')}
       role="group"
-      aria-label={label}
+      aria-label={notify ? `${label}, есть уведомление` : label}
     >
       <span
         className="today-widget-drag-handle"
@@ -99,7 +102,10 @@ function TodayWidgetChrome({
       >
         <GripVertical size={15} strokeWidth={2} aria-hidden />
       </span>
-      <span className="today-widget-chrome-title">{label}</span>
+      <span className="today-widget-chrome-title">
+        {label}
+        {notify ? <i className="today-widget-notify-dot" title="Есть уведомление" aria-hidden /> : null}
+      </span>
       <button
         type="button"
         className="today-widget-expand-btn"
@@ -142,26 +148,41 @@ export function TodayWidgetGrid({
   onRequestEditMode,
   widgets,
   visibleWidgetIds,
-  rightRail
+  rightRail,
+  openWidgetId,
+  onOpenWidgetConsumed,
+  widgetAlerts,
+  onWidgetOpened
 }: {
   userId: string
   editMode: boolean
   layoutWithStatic: LayoutItem[]
-  fullLayout: LayoutItem[]
+  fullLayout?: LayoutItem[]
   locked: Partial<Record<TodayWidgetId, boolean>>
   onLayoutChange: (layout: Layout) => void
   onToggleLock: (id: TodayWidgetId) => void
-  onRequestEditMode: () => void
+  onRequestEditMode?: () => void
   widgets: Record<TodayWidgetId, React.ReactNode>
   visibleWidgetIds: TodayWidgetId[]
   rightRail?: React.ReactNode
+  openWidgetId?: TodayWidgetId | null
+  onOpenWidgetConsumed?: () => void
+  widgetAlerts?: Partial<Record<TodayWidgetId, boolean>>
+  onWidgetOpened?: (id: TodayWidgetId) => void
 }): React.JSX.Element {
   const canvasRef = useRef<HTMLDivElement>(null)
-  const layoutRef = useRef(fullLayout)
+  const layoutRef = useRef(fullLayout || layoutWithStatic)
   const layoutSessionRef = useRef(false)
   const layoutReadyRef = useRef(false)
   const [expandedWidgetId, setExpandedWidgetId] = useState<TodayWidgetId | null>(null)
   const [sessionLayout, setSessionLayout] = useState<LayoutItem[] | null>(null)
+
+  useEffect(() => {
+    if (!openWidgetId) return
+    setExpandedWidgetId(openWidgetId)
+    onWidgetOpened?.(openWidgetId)
+    onOpenWidgetConsumed?.()
+  }, [onOpenWidgetConsumed, onWidgetOpened, openWidgetId])
 
   const visibleLayout = useMemo(
     () => layoutWithStatic.filter((item) => visibleWidgetIds.includes(item.i as TodayWidgetId)),
@@ -178,8 +199,8 @@ export function TodayWidgetGrid({
   )
 
   useEffect(() => {
-    layoutRef.current = fullLayout
-  }, [fullLayout])
+    layoutRef.current = fullLayout || layoutWithStatic
+  }, [fullLayout, layoutWithStatic])
 
   useEffect(() => {
     if (!layoutSessionRef.current) setSessionLayout(null)
@@ -210,7 +231,7 @@ export function TodayWidgetGrid({
 
   const beginLayoutSession = useCallback(() => {
     layoutSessionRef.current = true
-    onRequestEditMode()
+    onRequestEditMode?.()
   }, [onRequestEditMode])
 
   const settleLayout = useCallback(
@@ -267,14 +288,18 @@ export function TodayWidgetGrid({
             id={id}
             editMode={editMode}
             locked={Boolean(locked[id])}
+            notify={Boolean(widgetAlerts?.[id])}
             onToggleLock={() => onToggleLock(id)}
-            onExpand={() => setExpandedWidgetId(id)}
+            onExpand={() => {
+              setExpandedWidgetId(id)
+              onWidgetOpened?.(id)
+            }}
           />
           <div className="today-widget-content">{widgets[id]}</div>
         </div>
       </div>
     ))
-  }, [editMode, locked, onToggleLock, visibleWidgetIds, widgets])
+  }, [editMode, locked, onToggleLock, onWidgetOpened, visibleWidgetIds, widgetAlerts, widgets])
 
   return (
     <>

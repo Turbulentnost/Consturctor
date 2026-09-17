@@ -34,6 +34,10 @@ _RK_REGISTRY_HINT = (
 
 def is_rk_meeting_agent(*parts: str) -> bool:
     blob = " ".join(str(part or "") for part in parts).casefold()
+    from app.services.workflows.artifact_close_playbook import is_artifact_close_agent
+
+    if is_artifact_close_agent(blob):
+        return False
     if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
         return False
     return any(hint in blob for hint in _RK_TITLE_HINTS)

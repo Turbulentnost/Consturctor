@@ -69,6 +69,7 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
   const role = String(task.role || '').trim().toLowerCase()
   const author = String(task.author || '').trim()
   const performer = String(task.performer || '').trim()
+  const createdAt = String(task.created_at || task.createdAt || task.begin || '').trim()
   const channel = String(task.channel || '').trim()
   const isDocflow = taskSource.includes('документооборот') || taskSource.includes('docflow')
   let sourceLabel = '1С ERP'
@@ -97,6 +98,7 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
     progress: done ? 100 : 40,
     author: author || undefined,
     performer: performer || undefined,
+    createdAt: createdAt || undefined,
     channel: channel || (isDocflow ? 'soap' : undefined),
     role: role || undefined
   }
@@ -278,17 +280,34 @@ export function mailPartyLabel(row: SpecMailRow): string {
   return row.sender
 }
 
-/** Compact deadline for narrow today tiles: `16.09`, not a clipped ISO string. */
+/** 1C «Создана»: `14.09.2026 20:13`. */
+export function formatDocflowCreated(raw: string): string {
+  const value = (raw || '').trim()
+  if (!value || value === '—' || value.startsWith('0001-01-01')) return '—'
+  const stamp = parseIso(value) || parseIso(value.replace(' ', 'T'))
+  if (!stamp) return value.length > 16 ? value.slice(0, 16) : value
+  const dd = String(stamp.getDate()).padStart(2, '0')
+  const mm = String(stamp.getMonth() + 1).padStart(2, '0')
+  const hh = String(stamp.getHours()).padStart(2, '0')
+  const mi = String(stamp.getMinutes()).padStart(2, '0')
+  return `${dd}.${mm}.${stamp.getFullYear()} ${hh}:${mi}`
+}
+
+/** Compact deadline: `16.09` this year, `16.09.2025` otherwise — year needed for overdue. */
 function formatTaskDeadline(raw: string): string {
   const value = (raw || '').trim()
   if (!value || value === '—' || value.startsWith('0001-01-01')) return '—'
   const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (iso) return `${iso[3]}.${iso[2]}`
+  if (iso) {
+    const year = Number(iso[1])
+    return year === new Date().getFullYear() ? `${iso[3]}.${iso[2]}` : `${iso[3]}.${iso[2]}.${year}`
+  }
   const stamp = parseIso(value) || parseIso(value.replace(' ', 'T'))
   if (!stamp) return value.length > 10 ? value.slice(0, 10) : value
   const dd = String(stamp.getDate()).padStart(2, '0')
   const mm = String(stamp.getMonth() + 1).padStart(2, '0')
-  return `${dd}.${mm}`
+  const year = stamp.getFullYear()
+  return year === new Date().getFullYear() ? `${dd}.${mm}` : `${dd}.${mm}.${year}`
 }
 
 function formatTurboTaskDeadline(raw: string): string {

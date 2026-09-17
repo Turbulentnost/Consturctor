@@ -217,15 +217,15 @@ export type OrchestratorErpLoad = {
   oneCAuthFailure: boolean
 }
 
+/** Open 1C tasks of this user (SOAP slice). «Сегодня» additionally keeps due-today / overdue. */
 export async function loadOrchestratorErpTasks(
   user: UserProfile,
   erpFio: string,
   opts?: { forceRefresh?: boolean }
 ): Promise<OrchestratorErpLoad> {
   const onecArgs = onecGatewayInvokeArgs(user, {
-    limit: 80,
     only_open: true,
-    today_and_overdue: true,
+    today_and_overdue: false,
     force_refresh: Boolean(opts?.forceRefresh)
   })
   const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 300_000)

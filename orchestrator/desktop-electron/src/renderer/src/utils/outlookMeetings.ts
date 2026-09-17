@@ -1,4 +1,4 @@
-import { addDays, mondayOf, type CalendarView } from './calendar'
+import { addDays, mondayOf, sameDay, type CalendarView } from './calendar'
 
 export function isOutlookFolderOwner(value: string | undefined): boolean {
   const text = String(value || '').trim().toLowerCase()
@@ -58,8 +58,12 @@ interface OutlookMeetingRaw {
   optional_attendees?: string
 }
 
-const CACHE_KEY = 'orchOutlookMeetings:v5'
+const CACHE_KEY = 'orchOutlookMeetings:v6'
 const REQUEST_TIMEOUT_MS = 180_000
+const inflight = new Map<
+  string,
+  Promise<{ ok: boolean; meetings: MeetingEvent[]; error?: string; cached: boolean }>
+>()
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0')
@@ -272,21 +276,49 @@ function requestOutlookMeetings(range: {
   })
 }
 
-/**
- * Return the user's meetings for the window a view needs, hitting Outlook at most
- * once per day (the "first launch of the day" fetch) unless `force` is set or the
- * cached window does not cover what is requested. Subsequent same-day reads for a
- * covered window are served from localStorage without touching Outlook COM.
- */
 export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()): number {
-  const y = anchor.getFullYear()
-  const m = anchor.getMonth()
-  const d = anchor.getDate()
-  return meetings.filter((item) => {
-    const start = parseMeetingTime(item.start)
-    if (!start) return false
-    return start.getFullYear() === y && start.getMonth() === m && start.getDate() === d
-  }).length
+  return meetings.filter((item) => meetingOverlapsLocalDay(item, anchor)).length
+}
+
+/** Meeting starts, ends or spans the local calendar day. */
+export function meetingOverlapsLocalDay(meeting: MeetingEvent, day: Date): boolean {
+  const start = parseMeetingTime(meeting.start)
+  if (!start) return false
+  if (sameDay(start, day)) return true
+  const end = parseMeetingTime(meeting.end)
+  if (end && sameDay(end, day)) return true
+  if (!end || end <= start) return false
+  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate())
+  const dayEnd = addDays(dayStart, 1)
+  return start < dayEnd && end > dayStart
+}
+
+/**
+ * «Предстоящие события» = те же совещания, что колонка выбранного дня
+ * на вкладке «Совещания» и плитка «События дня». Не подмешивать остаток недели.
+ */
+export function selectUpcomingEventMeetings(
+  meetings: MeetingEvent[],
+  periodDay: Date
+): MeetingEvent[] {
+  return meetings
+    .filter((meeting) => meetingOverlapsLocalDay(meeting, periodDay))
+    .sort((left, right) => left.start.localeCompare(right.start))
+}
+
+function meetingsFromCache(
+  cache: MeetingCache,
+  owner: string,
+  allVisible: boolean
+): MeetingEvent[] {
+  const list = dedupeMeetingEvents(cache.meetings)
+  if (!allVisible) return list
+  return list.filter((item) => meetingInvolvesPerson(item, owner))
+}
+
+function cacheCoversWindow(cache: MeetingCache, fromKey: string, toKey: string): boolean {
+  if (cache.from > fromKey || cache.to < toKey) return false
+  return cache.meetings.length > 0 || (cache.from === fromKey && cache.to === toKey)
 }
 
 export async function ensureOutlookMeetings(
@@ -299,35 +331,57 @@ export async function ensureOutlookMeetings(
   const toKey = dayKey(addDays(win.to, -1))
   const today = dayKey(new Date())
   const owner = (options.owner || '').trim()
+  const allVisible = Boolean(options.allVisible)
+  const inflightKey = `${fromKey}|${toKey}|${owner}|${Number(allVisible)}`
 
   if (!options.force) {
     const cache = readCache()
-    if (
-      cache &&
-      cache.day === today &&
-      cache.owner === owner &&
-      cache.from <= fromKey &&
-      cache.to >= toKey
-    ) {
+    if (cache && cache.day === today && cache.owner === owner && cacheCoversWindow(cache, fromKey, toKey)) {
       return {
         ok: true,
-        meetings: dedupeMeetingEvents(
-          cache.meetings.filter((item) => meetingInvolvesPerson(item, owner))
-        ),
+        meetings: meetingsFromCache(cache, owner, allVisible),
         error: '',
         cached: true
       }
     }
+    const pending = inflight.get(inflightKey)
+    if (pending) return pending
   }
 
-  const result = await requestOutlookMeetings({
-    dateFrom: fromKey,
-    dateTo: toKey,
-    forUser: options.allVisible ? owner : undefined,
-    allVisible: Boolean(options.allVisible)
-  })
-  if (result.ok) {
-    writeCache({ day: today, from: fromKey, to: toKey, owner, meetings: result.meetings })
+  const run = (async () => {
+    const result = await requestOutlookMeetings({
+      dateFrom: fromKey,
+      dateTo: toKey,
+      forUser: allVisible ? owner : undefined,
+      allVisible
+    })
+    if (result.ok) {
+      const prev = readCache()
+      if (
+        result.meetings.length === 0 &&
+        prev &&
+        prev.day === today &&
+        prev.owner === owner &&
+        prev.meetings.length > 0 &&
+        cacheCoversWindow(prev, fromKey, toKey)
+      ) {
+        return {
+          ok: true,
+          meetings: meetingsFromCache(prev, owner, allVisible),
+          error: '',
+          cached: true
+        }
+      }
+      writeCache({ day: today, from: fromKey, to: toKey, owner, meetings: result.meetings })
+    }
+    return { ...result, cached: false }
+  })()
+
+  if (!options.force) {
+    inflight.set(inflightKey, run)
+    void run.finally(() => {
+      if (inflight.get(inflightKey) === run) inflight.delete(inflightKey)
+    })
   }
-  return { ...result, cached: false }
+  return run
 }

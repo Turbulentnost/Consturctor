@@ -14,10 +14,10 @@
 | База знаний | partial | `api.listWorkflows()` (регламенты Constructor) |
 | KPI «Сегодня» (5 плиток) | live/partial | `useTodayKpiData` → `useSpecV04Sources` (см. ниже) |
 | Сегодня → «Результаты агентов» | live | `useTodayAgentResults` → `GET /api/v1/workflows/files` (`listPlatformFiles`), фильтр: `source=agent`, день = «Период»; в списке имена агентов, просмотр в модалке (`api.fetchFilePreview`) и скачивание `api.download` |
-| Сегодня → «Подготовленные решения» | live | `useTodayPreparedDecisions` (день = «Период», scope = пользователь): доска `useWorkplaceData` + `useRuns` (live HITL / `WAITING_HUMAN`) + `extractToolDecisions` по прогонам за день (`listAgentRuns` / `getAgentRunDetail`) + файлы агентов без вердикта (`listPlatformFiles`, как «Результаты дня»); подзаголовок — `intent`/`result` инструмента, `summary`/`agentTitle` файла или итог прогона (`run.summary` / `cleanRunResult`); пустой список без demo; mock `TODAY_PREPARED_DECISIONS` не используется |
+| Сегодня → «Подготовленные решения» | live | Только факт, что агенту потребовалось разрешение на операцию: `useDecisionCatalog` → `useTodayPreparedDecisions` (день = «Период»). HITL / вопрос / `WAITING_HUMAN` через `extractPermissionDecisions`. Итог прогона и файлы результата сюда не попадают. Доска грузится с `userId`. Пустой список без demo. |
 | Сегодня → «Проектные задачи» | live | Один кэш `turboTasks`: мне + сегодня/просроченные по проектам руководителя. Переключатель «Как руководитель» режет кэш без нового запроса. Колонки: задача / срок / статус. |
 | Сегодня → «Задачи из 1С» | live | `loadOrchestratorErpTasks` → `onec.docflow_tasks` (кэш SOAP). Колонки: содержимое / срок / статус. Переключатель «Задачи от меня» режет кэш по `role=author` / ФИО автора. |
-| Сегодня → «Предстоящие события» | live | `useSpecV04Sources` → `ensureOutlookMeetings`, фильтр по «Период» |
+| Сегодня → «Предстоящие события» | live | `useTodayOutlookMeetings` → Outlook неделя, в виджете только день «Период» (как «События дня» / колонка «Совещания») |
 | Сегодня / план дня | live | `useTodayPlanTimeline`: Outlook + доска агентов (без demo-fallback блоков) |
 | Глобальный поиск (row 1) | noop | локальный фильтр — TBD endpoint |
 | Помощь (?) | link | `https://wiki.turbo-don.ru` (заменить URL по решению) |
@@ -32,8 +32,8 @@
 |--------|----------|------------|
 | Выполнение дня | 1С today+overdue + слоты `schedule\|trigger\|event` | факт = выполненные 1С + успешные слоты (`ok`/`done`/`completed`) |
 | Задачи 1С | `onec.docflow_tasks` | план = все задачи среза; факт = «Выполнена». SOAP пока режет `executed`. |
-| Регламентные работы | `board.events` опубликованных агентов | план = уникальные агенты со слотом/event за день; факт = хотя бы один успешный запуск за день |
-| Проекты | `turboproject.get_user_portfolio` | число проектов без pin-заглушек; без кольца |
+| Регламентные работы | `board.events` + `nextRunAt` / `lastRunAt` | факт = агенты с успешным запуском за день; план = агенты, у которых сегодня есть слот расписания |
+| Проекты | `turboTasks` (сегодня + просроченные) | число проектных задач за день «Период»; подсказка — разбивка по проектам; без кольца |
 | События дня | `ensureOutlookMeetings` + `countMeetingsOnDay(periodDay)` | встречи Outlook на выбранный день; без кольца |
 | History journal count | mock | audit API — TBD |
 | Decisions comparison table | mock | payload агента — TBD |
@@ -49,7 +49,7 @@ TTL кэша: **10 мин** (`GRID_DATA_TTL_MS = 600_000`). Смена вкла�
 | `useWorkplaceData` (доска) | hook + module cache | да | да | да | `onBoardUpdated` (всегда reload) |
 | `useTodayOutlookMail` | hook + cache | — (`periodDay` в deps) | да | да | проба IMAP vs COM за сегодня, primary кэшируется 2 мин |
 | `useTodayAgentResults` | hook + cache | — | да | да | `files_updated`, poll 60 с |
-| `useTodayPreparedDecisions` | hook + cache | — | да | да | `files_updated`, `useRuns`, poll 60 с |
+| `useDecisionCatalog` / «Решения» и «Подготовленные решения» | hook + cache | да | да | да | `files_updated`, `useRuns`, poll 30 с |
 | `useTodayProjectTasks` | hook + cache | — | да | да | — |
 | `useTodayPlanTimeline` | hook + cache | — | да | да | — |
 

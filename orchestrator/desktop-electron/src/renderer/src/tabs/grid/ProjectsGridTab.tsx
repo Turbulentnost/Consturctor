@@ -328,7 +328,7 @@ export function ProjectsGridTab({
                             ? projectTasks.loading
                               ? '…'
                               : projectTasks.matchedCount || projectTasks.rows.length
-                            : '—'
+                            : p.tasks || '—'
                           : p.tasks}
                       </td>
                       <td>

@@ -1,6 +1,6 @@
 import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
-import { extractToolDecisions } from './decisionTools'
+import { extractPermissionDecisions } from './decisionTools'
 import { isInFlightRunStatus } from '../store/liveRun'
 
 const STORAGE_KEY = 'orchestrator.preparedDecisions.v1'
@@ -81,7 +81,7 @@ export async function findPendingToolRequest(
   if (!latest?.runId) return null
   const detail = await api.getAgentRunDetail(workflowId, latest.runId).catch(() => null)
   if (!detail || !isInFlightRunStatus(detail.item.status)) return null
-  const tools = extractToolDecisions(detail.events || [], {
+  const tools = extractPermissionDecisions(detail.events || [], {
     workflowId,
     agentName: '',
     runId: latest.runId,

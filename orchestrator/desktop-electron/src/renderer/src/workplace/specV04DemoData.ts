@@ -111,6 +111,7 @@ export interface SpecTaskRow {
   progress: number
   author?: string
   performer?: string
+  createdAt?: string
   channel?: string
   role?: string
   /** Turbo: мне / чужие в проектах, где я руководитель / и то и другое. */

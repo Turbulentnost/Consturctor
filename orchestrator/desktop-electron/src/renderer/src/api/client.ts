@@ -1772,6 +1772,15 @@ export class ApiClient {
   }
 
   // ---------- Files ----------
+  async getWorkflowFileText(workflowId: string, fileId: string): Promise<string> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/workflows/${workflowId}/files/${fileId}/text`,
+      { timeoutMs: 20_000 }
+    )
+    return String(data.text ?? data.extracted_text ?? data.summary ?? '').trim()
+  }
+
   async listPlatformFiles(): Promise<WorkflowFileItem[]> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/workflows/files', {
       timeoutMs: 20_000

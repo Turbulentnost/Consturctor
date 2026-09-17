@@ -522,6 +522,14 @@ def is_today_or_overdue(
     return began is not None and began.date() == day
 
 
+def _query_limit_xml(limit: int) -> str:
+    """0 = без потолка: как в 1С «Задачи мне / от меня», не 80/200/500."""
+    n = int(limit)
+    if n <= 0:
+        return ""
+    return f"<dm:limit>{n}</dm:limit>"
+
+
 def list_open_tasks(
     config: DokConfig,
     since: datetime | None,
@@ -529,7 +537,7 @@ def list_open_tasks(
     timeout: float,
     only_open: bool = True,
     user: dict[str, str] | None = None,
-    limit: int = 500,
+    limit: int = 0,
     filter_mode: Literal["byUser", "performer"] | None = "byUser",
     due_to: datetime | None = None,
 ) -> list[dict[str, Any]]:
@@ -550,7 +558,7 @@ def list_open_tasks(
         "<dm:type>DMBusinessProcessTask</dm:type>"
         "<dm:query>"
         f"{''.join(filters)}"
-        f"<dm:limit>{max(1, min(int(limit), 500))}</dm:limit>"
+        f"{_query_limit_xml(limit)}"
         "<dm:columnSet>name</dm:columnSet>"
         "<dm:columnSet>performer</dm:columnSet>"
         "<dm:columnSet>author</dm:columnSet>"
@@ -591,14 +599,54 @@ def normalize_person(value: str) -> str:
     return " ".join(value.lower().replace("ё", "е").split())
 
 
+def _person_key(value: str) -> str:
+    text = normalize_person(value).replace(".", " ").replace(",", " ")
+    for mark in ("ь", "ъ"):
+        text = text.replace(mark, "")
+    return " ".join(text.split())
+
+
+def _name_initials(parts: list[str]) -> list[str]:
+    return [part[0] for part in parts[1:] if part]
+
+
+def _is_initials_tail(parts: list[str]) -> bool:
+    return len(parts) >= 2 and all(len(part) == 1 for part in parts[1:])
+
+
+def person_matches(left: str, right: str) -> bool:
+    """Same person: exact FIO, «Фамилия И.О.» vs full name, ё/ь variants."""
+    left_key = _person_key(left)
+    right_key = _person_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_parts = left_key.split()
+    right_parts = right_key.split()
+    if len(left_parts) < 2 or len(right_parts) < 2 or left_parts[0] != right_parts[0]:
+        return False
+    if left_parts[1] == right_parts[1]:
+        return True
+    # «И.О.» vs full name: need both initials, otherwise «Е.» matches every Е*.
+    if _is_initials_tail(left_parts) or _is_initials_tail(right_parts):
+        left_init = _name_initials(left_parts)
+        right_init = _name_initials(right_parts)
+        if len(left_init) < 2 or len(right_init) < 2:
+            return False
+        n = min(len(left_init), len(right_init))
+        return left_init[:n] == right_init[:n]
+    return False
+
+
 def task_role_for_user(row: dict[str, Any], user_fio: str) -> str | None:
-    mine = normalize_person(user_fio)
+    mine = str(user_fio or "").strip()
     if not mine:
         return None
-    author = normalize_person(str(row.get("author") or ""))
-    performer = normalize_person(str(row.get("performer") or ""))
-    author_matches = author == mine
-    performer_matches = performer == mine
+    author = str(row.get("author") or "").strip()
+    performer = str(row.get("performer") or "").strip()
+    author_matches = bool(author) and person_matches(mine, author)
+    performer_matches = bool(performer) and person_matches(mine, performer)
     if author_matches and performer_matches:
         return ROLE_BOTH
     if performer_matches:
@@ -625,7 +673,7 @@ def _filter_ignored(rows: list[dict[str, Any]], user_name: str) -> bool:
 
 
 def fetch_open_dump(config: DokConfig, *, only_open: bool = True) -> dict[str, Any]:
-    """One unfiltered SOAP list — this DO ignores byUser/limit anyway."""
+    """One unfiltered SOAP list of all open tasks — no 80/200/500 ceiling."""
     started = time.perf_counter()
     timeout = max(float(config.timeout), _DEFAULT_LIST_TIMEOUT_SEC)
     logger.info("dok_soap dump start")
@@ -635,7 +683,7 @@ def fetch_open_dump(config: DokConfig, *, only_open: bool = True) -> dict[str, A
         timeout=timeout,
         only_open=only_open,
         user=None,
-        limit=500,
+        limit=0,
         filter_mode=None,
         due_to=None,
     )
@@ -663,6 +711,7 @@ def slice_dump_for_user(
 ) -> dict[str, Any]:
     today = date.today()
     rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for row in _dump_rows(dump):
         role = task_role_for_user(row, user_fio)
         if role is None:
@@ -671,6 +720,11 @@ def slice_dump_for_user(
         mapped["role"] = role
         mapped["source"] = source_for_role(role)
         mapped["channel"] = CHANNEL_SOAP
+        key = str(mapped.get("id") or mapped.get("number") or "").strip().casefold()
+        if key:
+            if key in seen:
+                continue
+            seen.add(key)
         rows.append(mapped)
     if today_and_overdue:
         rows = [row for row in rows if is_today_or_overdue(row, today=today)]
@@ -698,7 +752,8 @@ def fetch_inbox(
     user = find_user(config, user_fio)
     found_user_at = time.perf_counter()
     today = date.today()
-    since = None if today_and_overdue else datetime.now() - timedelta(days=max(int(since_days), 1))
+    # since_days больше не режет inbox: в 1С «Задачи мне / от меня» — все открытые.
+    since = None
     due_to = (
         datetime.combine(today, datetime.max.time()).replace(microsecond=0)
         if today_and_overdue
@@ -716,7 +771,7 @@ def fetch_inbox(
             timeout=timeout,
             only_open=only_open,
             user=user,
-            limit=80,
+            limit=0,
             filter_mode=mode,
             due_to=due,
         )
@@ -757,12 +812,7 @@ def fetch_inbox(
             raise last_error
         raise RuntimeError("Документооборот SOAP: не удалось отобрать задачи исполнителя")
     listed_at = time.perf_counter()
-    rows = [
-        row
-        for row in raw
-        if normalize_person(str(row.get("performer") or ""))
-        == normalize_person(user["name"])
-    ]
+    rows = [row for row in raw if task_role_for_user(row, user["name"])]
     if today_and_overdue:
         rows = [row for row in rows if is_today_or_overdue(row, today=today)]
     if rows and retrieve:

@@ -223,7 +223,7 @@ def _list_docflow_via_soap(
     if only_open:
         tasks = [row for row in tasks if not row.get("done")]
     if limit > 0:
-        tasks = tasks[: max(1, min(int(limit), 200))]
+        tasks = tasks[: int(limit)]
     return tasks, warning
 
 
@@ -233,12 +233,12 @@ def list_docflow_tasks(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     only_open: bool = False,
-    limit: int = 200,
+    limit: int = 0,
     today_and_overdue: bool = False,
     force_refresh: bool = False,
     auth_args: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    limit = max(1, min(int(limit or 200), 200))
+    limit = max(0, int(limit or 0))
     tasks, warning = _list_docflow_via_soap(
         fio,
         limit=limit,
@@ -309,7 +309,7 @@ def handle_docflow_tasks(
             date_from=None if today_and_overdue else start,
             date_to=None if today_and_overdue else finish,
             only_open=only_open,
-            limit=int(args.get("limit") or 200),
+            limit=int(args["limit"]) if args.get("limit") not in {None, ""} else 0,
             today_and_overdue=today_and_overdue,
             force_refresh=force_refresh,
             auth_args=args,
