@@ -92,9 +92,7 @@ export function parseTaskDueDate(deadline: string): Date | null {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, hours, minutes, timeMatch ? 0 : 59)
     return day
   }
-  const iso = parseIso(raw) || parseIso(raw.replace(' ', 'T'))
-  if (iso) return iso
-  const dotted = /^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?/.exec(raw)
+  const dotted = /^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?(?:\s|$|,)/.exec(raw)
   if (dotted) {
     const day = Number(dotted[1])
     const month = Number(dotted[2]) - 1
@@ -102,6 +100,8 @@ export function parseTaskDueDate(deadline: string): Date | null {
     if (year < 100) year += 2000
     return new Date(year, month, day, hours, minutes, timeMatch ? 0 : 59)
   }
+  const iso = parseIso(raw) || parseIso(raw.replace(' ', 'T'))
+  if (iso) return iso
   return null
 }
 

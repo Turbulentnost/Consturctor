@@ -1,9 +1,9 @@
 import type { CSSProperties } from 'react'
 import type { TodayPlanBlock } from './todayDemoData'
 
-export const PLAN_BLOCK_ROW_HEIGHT = 48
+export const PLAN_BLOCK_ROW_HEIGHT = 54
 export const PLAN_TRACK_PAD = 6
-export const PLAN_TRACK_ROW_GAP = 4
+export const PLAN_TRACK_ROW_GAP = 6
 
 export type PositionedPlanBlock = TodayPlanBlock & {
   row: number
@@ -61,6 +61,56 @@ export function layoutPlanTrack(blocks: TodayPlanBlock[]): PlanTrackLayout {
   }
 }
 
+function agentLaneKey(block: TodayPlanBlock): string {
+  return (
+    (block.detail?.workflowId || '').trim() ||
+    (block.detail?.agentName || '').trim() ||
+    (block.subtitle || '').trim() ||
+    (block.title || '').trim() ||
+    block.id
+  )
+}
+
+/**
+ * One horizontal lane per agent so color + row both identify the same agent.
+ * Within an agent lane, overlapping slots still pack into sub-rows.
+ */
+export function layoutPlanTrackByAgent(blocks: TodayPlanBlock[]): PlanTrackLayout {
+  if (!blocks.length) {
+    return { blocks: [], rowCount: 0, heightPx: planTrackHeightPx(0) }
+  }
+
+  const byAgent = new Map<string, TodayPlanBlock[]>()
+  for (const block of blocks) {
+    const key = agentLaneKey(block)
+    const list = byAgent.get(key)
+    if (list) list.push(block)
+    else byAgent.set(key, [block])
+  }
+
+  const placed: PositionedPlanBlock[] = []
+  let rowCursor = 0
+
+  for (const agentBlocks of byAgent.values()) {
+    const nested = layoutPlanTrack(agentBlocks)
+    for (const block of nested.blocks) {
+      placed.push({ ...block, row: rowCursor + block.row, rowCount: 0 })
+    }
+    rowCursor += Math.max(nested.rowCount, 1)
+  }
+
+  const rowCount = Math.max(rowCursor, 1)
+  for (const block of placed) {
+    block.rowCount = rowCount
+  }
+
+  return {
+    blocks: placed,
+    rowCount,
+    heightPx: planTrackHeightPx(rowCount)
+  }
+}
+
 export function planBlockStyle(
   block: PositionedPlanBlock,
   dayStart: number,
@@ -73,7 +123,7 @@ export function planBlockStyle(
 
   return {
     left: `max(0px, calc(${leftPct}% + 1px))`,
-    width: `max(28px, calc(${Math.max(widthPct, 2.2)}% - 2px))`,
+    width: `max(72px, calc(${Math.max(widthPct, 3.5)}% - 2px))`,
     top: `${topPx}px`,
     height: `${PLAN_BLOCK_ROW_HEIGHT}px`,
     bottom: 'auto',

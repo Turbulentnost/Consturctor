@@ -246,9 +246,19 @@ export function SpecBottomRow({ children }: { children: ReactNode }): React.JSX.
   return <div className="spec-v04-bottom-row">{children}</div>
 }
 
-export function SpecPanel({ title, extra, children }: { title?: string; extra?: ReactNode; children: ReactNode }): React.JSX.Element {
+export function SpecPanel({
+  title,
+  extra,
+  children,
+  className
+}: {
+  title?: string
+  extra?: ReactNode
+  children: ReactNode
+  className?: string
+}): React.JSX.Element {
   return (
-    <section className="wp-card spec-v04-panel">
+    <section className={`wp-card spec-v04-panel${className ? ` ${className}` : ''}`}>
       {title || extra ? (
         <header className="spec-v04-panel-head">
           {title ? <h3>{title}</h3> : null}
@@ -309,7 +319,8 @@ export function SpecAskOrchestratorBlock({
 }
 
 export function SpecQuickActions({
-  items
+  items,
+  layout = 'column'
 }: {
   items: Array<
     | string
@@ -321,9 +332,10 @@ export function SpecQuickActions({
         onClick?: () => void
       }
   >
+  layout?: 'column' | 'row'
 }): React.JSX.Element {
   return (
-    <ul className="spec-quick-actions">
+    <ul className={`spec-quick-actions${layout === 'row' ? ' spec-quick-actions--row' : ''}`}>
       {items.map((item) => {
         const label = typeof item === 'string' ? item : item.label
         const key = typeof item === 'string' ? item : item.id
@@ -334,7 +346,9 @@ export function SpecQuickActions({
           <li key={key}>
             <button
               type="button"
-              className={`spec-quick-action-btn${tone ? ` spec-quick-action--${tone}` : ''}`}
+              className={`spec-quick-action-btn${tone ? ` spec-quick-action--${tone}` : ''}${
+                layout === 'row' ? ' spec-quick-action-btn--badge' : ''
+              }`}
               onClick={onClick}
             >
               {icon ? <SpecQuickActionIcon kind={icon} /> : null}

@@ -14,13 +14,13 @@ echo Desktop: %CONSTRUCTOR_DESKTOP_ROOT%
 echo Vite:    %ORCH_VITE_PORT%
 
 powershell -NoProfile -Command ^
-  "try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:7812/health -TimeoutSec 3; if ($r.StatusCode -eq 200) { exit 0 } } catch {}; exit 1"
+  "try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:7812/health -TimeoutSec 30; if ($r.StatusCode -eq 200) { exit 0 } } catch {}; exit 1"
 if errorlevel 1 (
   echo Local backend :7812 is down — starting orchestrator\backend...
   start "Orchestrator backend" /D "%ORCH_BACKEND_ROOT%" cmd /c run_dev.bat
   echo Waiting for backend health...
   powershell -NoProfile -Command ^
-    "$deadline = (Get-Date).AddSeconds(45); while ((Get-Date) -lt $deadline) { try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:7812/health -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } } catch {}; Start-Sleep -Seconds 1 }; exit 1"
+    "$deadline = (Get-Date).AddSeconds(90); while ((Get-Date) -lt $deadline) { try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:7812/health -TimeoutSec 30; if ($r.StatusCode -eq 200) { exit 0 } } catch {}; Start-Sleep -Seconds 1 }; exit 1"
   if errorlevel 1 (
     echo Backend did not become ready on :7812. Start orchestrator\backend\run_dev.bat manually.
     pause

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -9,6 +11,11 @@ from dataclasses import dataclass
 import pyodbc
 
 from app.config import settings
+
+_conn_lock = threading.Lock()
+_cached_conn: pyodbc.Connection | None = None
+_cached_at = 0.0
+_CONN_TTL_SEC = 300.0
 
 _DEPARTMENT_JOIN_SQL = """
     LEFT JOIN dbo._Reference513 d1 WITH (NOLOCK)
@@ -184,8 +191,24 @@ def _login_timeout() -> int:
         return 45
 
 
+def _resolve_odbc_driver() -> str:
+    configured = (settings.erp_sql_driver or "").strip()
+    available = {name.casefold(): name for name in pyodbc.drivers()}
+    if configured and configured.casefold() in available:
+        return available[configured.casefold()]
+    for candidate in (
+        "ODBC Driver 18 for SQL Server",
+        "ODBC Driver 17 for SQL Server",
+        "SQL Server",
+    ):
+        key = candidate.casefold()
+        if key in available:
+            return available[key]
+    return configured or "SQL Server"
+
+
 def _build_connection_string() -> str:
-    driver = settings.erp_sql_driver
+    driver = _resolve_odbc_driver()
     timeout = _login_timeout()
     parts = [
         f"DRIVER={{{driver}}}",
@@ -212,7 +235,7 @@ def _build_connection_string() -> str:
     return ";".join(parts) + ";"
 
 
-def _connect() -> pyodbc.Connection:
+def _open_connection() -> pyodbc.Connection:
     timeout = _login_timeout()
     try:
         if _use_windows_impersonation():
@@ -229,6 +252,40 @@ def _connect() -> pyodbc.Connection:
         )
     except (pyodbc.Error, OSError) as exc:
         raise ErpSqlError(f"Failed to connect to erp_pm: {exc}") from exc
+
+
+def _invalidate_cached_connection() -> None:
+    global _cached_conn, _cached_at
+    if _cached_conn is not None:
+        try:
+            _cached_conn.close()
+        except (pyodbc.Error, OSError):
+            pass
+    _cached_conn = None
+    _cached_at = 0.0
+
+
+def _connect() -> pyodbc.Connection:
+    global _cached_conn, _cached_at
+    now = time.monotonic()
+    with _conn_lock:
+        if _cached_conn is not None and now - _cached_at < _CONN_TTL_SEC:
+            try:
+                cur = _cached_conn.cursor()
+                cur.execute("SELECT 1")
+                cur.fetchone()
+                return _cached_conn
+            except (pyodbc.Error, OSError):
+                _invalidate_cached_connection()
+        conn = _open_connection()
+        _cached_conn = conn
+        _cached_at = now
+        return conn
+
+
+def _release_connection(_conn: pyodbc.Connection) -> None:
+    """Keep pooled ODBC session alive (Windows impersonation is costly)."""
+    return
 
 
 def _row_department(row) -> str:
@@ -266,7 +323,7 @@ def get_position_by_fio(fio: str) -> str:
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to load position: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def ping() -> bool:
@@ -279,9 +336,15 @@ def ping() -> bool:
             cur.fetchone()
             return True
         finally:
-            conn.close()
+            _release_connection(conn)
     except (ErpSqlError, OSError, pyodbc.Error):
         return False
+
+
+def warmup() -> None:
+    """Startup probe: same as ping, used by app.main."""
+    if not ping():
+        raise ErpSqlError("ERP SQL warmup failed")
 
 
 def get_user_profile_by_fio(fio: str) -> ErpUserProfile:
@@ -343,7 +406,7 @@ def get_user_profile_by_fio(fio: str) -> ErpUserProfile:
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to load user profile: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def find_users_by_fio(fio: str) -> list[ErpUserRow]:
@@ -387,7 +450,7 @@ def find_users_by_fio(fio: str) -> list[ErpUserRow]:
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to query v8users: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def find_user_by_fio_relaxed(fio: str) -> ErpUserRow:
@@ -476,7 +539,7 @@ def find_user_by_id(user_id: str) -> ErpUserRow | None:
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to query v8users by id: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
@@ -520,7 +583,7 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to search v8users: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 @dataclass(frozen=True, slots=True)
@@ -577,7 +640,7 @@ def search_user_directory(search: str | None = None, limit: int = 200) -> list[E
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to search v8users directory: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def list_departments(limit: int = 500) -> list[str]:
@@ -600,7 +663,7 @@ def list_departments(limit: int = 500) -> list[str]:
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to list departments: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def _append_missing_heads(
@@ -824,4 +887,4 @@ def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], li
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to load subordinates: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)

@@ -1,3 +1,11 @@
+import {
+  docxPreviewDataUrl,
+  isDocxFileName,
+  isSpreadsheetFileName,
+  spreadsheetPreviewDataUrl,
+  spreadsheetPreviewFromBuffer
+} from '../../shared/officeSpreadsheetPreview'
+
 const BACKEND = String(import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:7812').replace(/\/+$/, '')
 
 function errorText(data: unknown, fallback: string): string {
@@ -115,6 +123,22 @@ function installBrowserApi(): void {
           bytes[3] === 0x46
         const isText =
           /\.(txt|md|csv|json|xml|html|htm|log)$/.test(name) || headerMime.startsWith('text/')
+        const fileLabel = String(opts.fileName || raw)
+        if (isSpreadsheetFileName(fileLabel)) {
+          const table = spreadsheetPreviewFromBuffer(buffer, fileLabel)
+          if (table) {
+            return {
+              ok: true,
+              kind: 'embed',
+              dataUrl: spreadsheetPreviewDataUrl(table, fileLabel),
+              mime: 'text/html'
+            }
+          }
+        }
+        if (isDocxFileName(fileLabel)) {
+          const dataUrl = await docxPreviewDataUrl(buffer, fileLabel)
+          if (dataUrl) return { ok: true, kind: 'embed', dataUrl, mime: 'text/html' }
+        }
         const isEmbed =
           isPdf ||
           headerMime.startsWith('image/') ||

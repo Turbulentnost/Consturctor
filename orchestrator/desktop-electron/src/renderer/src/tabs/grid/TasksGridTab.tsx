@@ -29,7 +29,41 @@ import {
   ORCH_CREATE_TASK,
   type CreateTaskChannel
 } from '../../workplace/workplaceNav'
+import { startOfDay, type AdminDateRange } from '../../admin/utils/dateRange'
+import type { SpecTaskRow } from '../../workplace/specV04DemoData'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { OrchDateRangePicker } from './OrchDateRangePicker'
+
+function taskRowDate(row: SpecTaskRow): Date | null {
+  return parseTaskDueDate(row.deadline)
+}
+
+function inDateRange(stamp: Date | null, range: AdminDateRange): boolean {
+  if (!stamp) return true
+  const day = startOfDay(stamp).getTime()
+  return day >= startOfDay(range.start).getTime() && day <= startOfDay(range.end).getTime()
+}
+
+function rangeFromTaskRows(rows: SpecTaskRow[]): AdminDateRange {
+  const today = startOfDay(new Date())
+  let min = today.getTime()
+  let max = today.getTime()
+  let found = false
+  for (const row of rows) {
+    const due = taskRowDate(row)
+    if (!due) continue
+    const t = startOfDay(due).getTime()
+    if (!found) {
+      min = t
+      max = t
+      found = true
+      continue
+    }
+    if (t < min) min = t
+    if (t > max) max = t
+  }
+  return { start: new Date(min), end: new Date(max) }
+}
 
 export function TasksGridTab({
   user,
@@ -42,10 +76,11 @@ export function TasksGridTab({
   const [tileFilter, setTileFilter] = useState(navTaskFilter ?? EMPTY_TASK_TILE_FILTER)
   const [query, setQuery] = useState('')
   const [barSource, setBarSource] = useState('')
-  const [barStatus, setBarStatus] = useState('')
   const [barProject, setBarProject] = useState('')
   const [barSort, setBarSort] = useState('urgent')
   const [barOverdue, setBarOverdue] = useState(false)
+  const [dateRange, setDateRange] = useState<AdminDateRange>(() => rangeFromTaskRows([]))
+  const [dateRangeTouched, setDateRangeTouched] = useState(false)
   useEffect(() => {
     if (navTaskFilter) setTileFilter(navTaskFilter)
   }, [navTaskFilter])
@@ -53,6 +88,10 @@ export function TasksGridTab({
     () => buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows),
     [data.erpTasks, data.turboTasks, data.processRows]
   )
+  useEffect(() => {
+    if (dateRangeTouched || !catalog.rows.length) return
+    setDateRange(rangeFromTaskRows(catalog.rows))
+  }, [catalog.rows, dateRangeTouched])
   const effectiveTile: TaskTileFilter = {
     source: (barSource as TaskSourceFilter) || tileFilter.source,
     overdueOnly: barOverdue || tileFilter.overdueOnly
@@ -61,8 +100,8 @@ export function TasksGridTab({
     const q = query.trim().toLowerCase()
     const filtered = filterTaskRows(catalog.rows, effectiveTile, catalog.erpIds, catalog.turboIds).filter(
       (row) => {
-        if (barStatus && row.status !== barStatus) return false
         if (barProject && row.project !== barProject) return false
+        if (!inDateRange(taskRowDate(row), dateRange)) return false
         if (q && !`${row.title} ${row.source} ${row.process} ${row.project}`.toLowerCase().includes(q)) {
           return false
         }
@@ -81,7 +120,7 @@ export function TasksGridTab({
       })
     }
     return [...filtered].sort(compareTasksByUrgency)
-  }, [catalog, effectiveTile, query, barStatus, barProject, barSort, barOverdue])
+  }, [catalog, effectiveTile, query, barProject, barSort, barOverdue, dateRange])
   const onTileSelect = (id: string): void => {
     setTileFilter((current) => applyTaskTileClick(current, id, isDeadTaskSource(data, id)))
   }
@@ -100,7 +139,9 @@ export function TasksGridTab({
       : showOneCReconnect && !taskRows.length
         ? 'Нужно подключить 1С.'
         : catalog.rows.length && !taskRows.length
-          ? 'Нет задач по выбранной плитке.'
+          ? dateRangeTouched
+            ? 'Нет задач за выбранный период.'
+            : 'Нет задач по выбранной плитке.'
         : soapBanner || turboBanner
           ? 'Нет открытых задач в таблице.'
           : sessionOneCEmptyText(data.erpFio)
@@ -156,13 +197,6 @@ export function TasksGridTab({
               ]
             },
             {
-              id: 'status',
-              value: barStatus,
-              emptyLabel: 'Статус: все',
-              onChange: setBarStatus,
-              options: toFilterOptions(uniqueFilterValues(catalog.rows.map((row) => row.status)))
-            },
-            {
               id: 'project',
               value: barProject,
               emptyLabel: 'Проект: все',
@@ -187,16 +221,30 @@ export function TasksGridTab({
           onReset={() => {
             setQuery('')
             setBarSource('')
-            setBarStatus('')
             setBarProject('')
             setBarSort('urgent')
             setBarOverdue(false)
+            setDateRangeTouched(false)
+            setDateRange(rangeFromTaskRows(catalog.rows))
             setTileFilter(EMPTY_TASK_TILE_FILTER)
           }}
         />
           ),
           main: (
-        <div className="spec-v04-table-wrap wp-card">
+        <div className="orch-tasks-main">
+        <div className="spec-table-toolbar orch-tasks-toolbar">
+          <div className="orch-process-tabs-tools">
+            <OrchDateRangePicker
+              value={dateRange}
+              label="Период"
+              onChange={(next) => {
+                setDateRangeTouched(true)
+                setDateRange(next)
+              }}
+            />
+          </div>
+        </div>
+        <div className="spec-v04-table-wrap spec-v04-table-wrap-tasks wp-card">
           {soapBanner ? (
             <p className="today-table-status today-table-error today-table-banner">{soapBanner}</p>
           ) : null}
@@ -214,22 +262,29 @@ export function TasksGridTab({
               {comPasswordSessionHint()}
             </p>
           ) : null}
-          <table className="spec-v04-table">
+          <table className="spec-v04-table spec-v04-table-tasks">
+            <colgroup>
+              <col className="spec-v04-col-check" />
+              <col className="spec-v04-col-task" />
+              <col className="spec-v04-col-source" />
+              <col className="spec-v04-col-process" />
+              <col className="spec-v04-col-deadline" />
+              <col className="spec-v04-col-progress" />
+            </colgroup>
             <thead>
               <tr>
-                <th />
-                <th>Задача</th>
-                <th>Источник</th>
-                <th>Процесс</th>
-                <th>Срок</th>
-                <th>Статус</th>
-                <th>Прогресс</th>
+                <th className="spec-v04-cell-check" />
+                <th className="spec-v04-cell-task">Задача</th>
+                <th className="spec-v04-cell-source">Источник</th>
+                <th className="spec-v04-cell-process">Процесс</th>
+                <th className="spec-v04-cell-deadline">Срок</th>
+                <th className="spec-v04-cell-progress">Прогресс</th>
               </tr>
             </thead>
             <tbody>
               {!taskRows.length ? (
                 <tr>
-                  <td colSpan={7} className="spec-v04-empty">
+                  <td colSpan={6} className="spec-v04-empty">
                     {showOneCReconnect ? (
                       <OneCReconnectInline
                         errorHint={reconnectHint}
@@ -247,25 +302,28 @@ export function TasksGridTab({
                   className={effectiveId === row.id ? 'selected' : ''}
                   onClick={() => setSelectedId(row.id)}
                 >
-                  <td>
+                  <td className="spec-v04-cell-check">
                     <input type="checkbox" onClick={(e) => e.stopPropagation()} />
                   </td>
-                  <td>
+                  <td className="spec-v04-cell-task">
                     <strong>{row.title}</strong>
                   </td>
-                  <td>{row.source}</td>
-                  <td>{row.process}</td>
-                  <td className={row.urgent ? 'spec-deadline-urgent' : undefined}>{row.deadline}</td>
-                  <td>
-                    <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
+                  <td className="spec-v04-cell-source">{row.source}</td>
+                  <td className="spec-v04-cell-process">{row.process}</td>
+                  <td
+                    className={`spec-v04-cell-deadline${row.urgent ? ' spec-deadline-urgent' : ''}`}
+                    title={row.deadline}
+                  >
+                    {row.deadline}
                   </td>
-                  <td>
+                  <td className="spec-v04-cell-progress">
                     <SpecProgress value={row.progress} />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
         </div>
           ),
           side: (

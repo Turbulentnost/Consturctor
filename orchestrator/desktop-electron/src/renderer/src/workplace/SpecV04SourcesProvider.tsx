@@ -27,7 +27,13 @@ import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from '.
 import { useWorkplaceData } from './WorkplaceBoard'
 import { summarizeDayLaunches } from './todayKpiLaunches'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
-import { fetchOrchestratorTaskSources, ORCH_SOURCE_ID } from './orchestratorTaskSources'
+import {
+  loadOrchestratorErpTasks,
+  loadOrchestratorOutlookMailWeek,
+  loadOrchestratorTurboPortfolio,
+  loadOrchestratorTurboTaskRows,
+  ORCH_SOURCE_ID
+} from './orchestratorTaskSources'
 import type { SpecV04SourcesState } from './useSpecV04Data'
 
 const EMPTY: SpecV04SourcesState = {
@@ -57,6 +63,7 @@ const EMPTY: SpecV04SourcesState = {
   meetingCountToday: 0,
   meetings: [],
   erpError: '',
+  erpLoading: false,
   erpSecondaryHint: '',
   sources: { erp: '—', turbo: '—', mail: '—' },
   turboNoSession: false,
@@ -86,6 +93,8 @@ export function SpecV04SourcesProvider({
   })
 
   const [sourcesLoading, setSourcesLoading] = useState(true)
+  const [erpLoading, setErpLoading] = useState(false)
+  const [turboLoading, setTurboLoading] = useState(false)
   const [turboNoSession, setTurboNoSession] = useState(false)
   const [error, setError] = useState('')
   const [erpTasks, setErpTasks] = useState<SpecTaskRow[]>([])
@@ -109,48 +118,75 @@ export function SpecV04SourcesProvider({
       return
     }
     let alive = true
-    ;(async () => {
-      if (!hasLoadedSourcesRef.current) setSourcesLoading(true)
-      setError('')
-      setTurboTasksError('')
-      setOneCAuthFailure(false)
-      try {
-        const bundle = await fetchOrchestratorTaskSources(user, erpFio, outlookMailbox, {
-          forceRefresh: takeHardRefresh()
-        })
-        if (!alive) return
+    const refreshOpts = { forceRefresh: takeHardRefresh() }
 
-        setErpTasks(bundle.erp.tasks)
-        setErpSource(bundle.erp.tasks.length ? bundle.erp.sourceLabel : bundle.erp.sourceLabel)
-        setErpError(bundle.erp.error)
-        setErpSecondaryHint(bundle.erp.erpSecondaryHint || '')
-        setOneCAuthFailure(bundle.erp.oneCAuthFailure)
-        const blockingErp = bundle.erp.error?.trim() || ''
+    if (!hasLoadedSourcesRef.current) {
+      setSourcesLoading(true)
+      setTurboLoading(true)
+    }
+    setError('')
+    setTurboTasksError('')
+    setOneCAuthFailure(false)
+    setErpLoading(true)
+
+    void loadOrchestratorErpTasks(user, erpFio, refreshOpts)
+      .then((erp) => {
+        if (!alive) return
+        setErpTasks(erp.tasks)
+        setErpSource(erp.tasks.length ? erp.sourceLabel : erp.sourceLabel)
+        setErpError(erp.error)
+        setErpSecondaryHint(erp.erpSecondaryHint || '')
+        setOneCAuthFailure(erp.oneCAuthFailure)
+        const blockingErp = erp.error?.trim() || ''
         if (blockingErp) {
           setError((prev) => (prev && prev.includes(blockingErp) ? prev : blockingErp))
         }
+      })
+      .catch((err) => {
+        if (!alive) return
+        setErpError(err instanceof Error ? err.message : 'Не удалось загрузить задачи 1С')
+      })
+      .finally(() => {
+        if (alive) setErpLoading(false)
+      })
 
-        setProjects(bundle.turbo.projects)
-        setTurboSource(bundle.turbo.sourceLabel)
-        setTurboNoSession(bundle.turbo.turboNoSession)
-        setTurboTasks(bundle.turboTasks.tasks)
-        setTurboTasksError(bundle.turboTasks.error || '')
-        if (bundle.turbo.hint?.trim() && !bundle.turbo.projects.length) {
-          setError((prev) => (prev ? `${prev} · ${bundle.turbo.hint}` : bundle.turbo.hint))
+    void (async () => {
+      try {
+        const turbo = await loadOrchestratorTurboPortfolio(user, erpFio)
+        if (!alive) return
+
+        setProjects(turbo.projects)
+        setTurboSource(turbo.sourceLabel)
+        setTurboNoSession(turbo.turboNoSession)
+        if (turbo.hint?.trim() && !turbo.projects.length) {
+          setError((prev) => (prev ? `${prev} · ${turbo.hint}` : turbo.hint))
         }
-        if (bundle.turboTasks.error?.trim() && bundle.turboTasks.tasks.length) {
+
+        const turboTasks = await loadOrchestratorTurboTaskRows(
+          user,
+          erpFio,
+          turbo.projects,
+          turbo.turboNoSession
+        )
+        if (!alive) return
+        setTurboTasks(turboTasks.tasks)
+        setTurboTasksError(turboTasks.error || '')
+        if (turboTasks.error?.trim() && turboTasks.tasks.length) {
           setErpSecondaryHint((prev) =>
-            prev ? `${prev} · Turbo: ${bundle.turboTasks.error}` : `Turbo: ${bundle.turboTasks.error}`
+            prev ? `${prev} · Turbo: ${turboTasks.error}` : `Turbo: ${turboTasks.error}`
           )
         }
 
-        setMailRows(bundle.mail.rows)
-        setMailSource(bundle.mail.sourceLabel)
+        const mail = await loadOrchestratorOutlookMailWeek(outlookMailbox)
+        if (!alive) return
+        setMailRows(mail.rows)
+        setMailSource(mail.sourceLabel)
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : 'Не удалось загрузить данные')
       } finally {
         if (alive) {
           hasLoadedSourcesRef.current = true
+          setTurboLoading(false)
           setSourcesLoading(false)
         }
       }
@@ -219,17 +255,18 @@ export function SpecV04SourcesProvider({
     (): SpecV04SourcesState => ({
       sourcesLoading,
       tableLoading,
-      loading: sourcesLoading || tableLoading,
+      loading: sourcesLoading || tableLoading || erpLoading,
       error,
       outlookMailbox,
       erpFio,
       erpError,
+      erpLoading,
       erpSecondaryHint,
       erpTasks,
       erpTaskCount: erpTasks.length,
       turboTasks,
       turboTaskCount: turboTasks.length,
-      turboLoading: sourcesLoading,
+      turboLoading,
       turboError: turboTasksError,
       allTaskCount,
       projects,
@@ -257,6 +294,8 @@ export function SpecV04SourcesProvider({
     [
       sourcesLoading,
       tableLoading,
+      erpLoading,
+      turboLoading,
       error,
       outlookMailbox,
       erpFio,

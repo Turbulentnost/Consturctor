@@ -18,12 +18,14 @@ import {
   processTabLoading,
   useSpecV04Sources
 } from '../../workplace/useSpecV04Data'
-import { isDeadProcessSource } from '../../workplace/tileFilters'
+import { isDeadProcessSource, parseTaskDueDate } from '../../workplace/tileFilters'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions'
 import { applyMeetingDoneToRow, isMeetingRowId } from '../../workplace/meetingCompletion'
 import { useMeetingCompletion } from '../../workplace/useMeetingCompletion'
 import { formatRunWhen, historySourceLabel, historyStatusLabel, historyStatusTone } from '../../pages/historyDetail'
+import { OrchDateRangePicker } from './OrchDateRangePicker'
+import { startOfDay, type AdminDateRange } from '../../admin/utils/dateRange'
 
 const DETAIL_TABS = [
   { id: 'general', label: 'Общее' },
@@ -43,6 +45,37 @@ const PROCESS_TABS = [
   { id: 'mail', label: 'Письма' },
   { id: 'meet', label: 'Совещания' }
 ]
+
+function processRowDate(row: SpecProcessRow): Date | null {
+  return parseTaskDueDate(row.deadline)
+}
+
+function inDateRange(stamp: Date | null, range: AdminDateRange): boolean {
+  if (!stamp) return true
+  const day = startOfDay(stamp).getTime()
+  return day >= startOfDay(range.start).getTime() && day <= startOfDay(range.end).getTime()
+}
+
+function rangeFromRows(rows: SpecProcessRow[]): AdminDateRange {
+  const today = startOfDay(new Date())
+  let min = today.getTime()
+  let max = today.getTime()
+  let found = false
+  for (const row of rows) {
+    const due = processRowDate(row)
+    if (!due) continue
+    const t = startOfDay(due).getTime()
+    if (!found) {
+      min = t
+      max = t
+      found = true
+      continue
+    }
+    if (t < min) min = t
+    if (t > max) max = t
+  }
+  return { start: new Date(min), end: new Date(max) }
+}
 
 function ProcessDetail({
   row,
@@ -252,27 +285,32 @@ export function ProcessesGridTab({
   const [tab, setTab] = useState(navProcessTab || 'all')
   const [query, setQuery] = useState('')
   const [barType, setBarType] = useState('')
-  const [barStatus, setBarStatus] = useState('')
   const [barSource, setBarSource] = useState('')
   const [barProject, setBarProject] = useState('')
+  const [dateRange, setDateRange] = useState<AdminDateRange>(() => rangeFromRows([]))
+  const [dateRangeTouched, setDateRangeTouched] = useState(false)
   useEffect(() => {
     if (navProcessTab) setTab(navProcessTab)
   }, [navProcessTab])
   const [rowMenuId, setRowMenuId] = useState('')
   const allRows = data.allProcessRows
+  useEffect(() => {
+    if (dateRangeTouched || !allRows.length) return
+    setDateRange(rangeFromRows(allRows))
+  }, [allRows, dateRangeTouched])
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
     return filterProcessRowsByTab(allRows, tab).filter((row) => {
       if (barType && row.type !== barType) return false
-      if (barStatus && row.status !== barStatus) return false
       if (barSource && row.source !== barSource) return false
       if (barProject && row.project !== barProject) return false
+      if (!inDateRange(processRowDate(row), dateRange)) return false
       if (q && !`${row.name} ${row.code} ${row.type} ${row.source} ${row.project}`.toLowerCase().includes(q)) {
         return false
       }
       return true
     })
-  }, [allRows, tab, query, barType, barStatus, barSource, barProject])
+  }, [allRows, tab, query, barType, barSource, barProject, dateRange])
   const displayRows = useMemo(
     () =>
       rows.map((row) =>
@@ -339,13 +377,6 @@ export function ProcessesGridTab({
               options: toFilterOptions(uniqueFilterValues(allRows.map((row) => row.type)))
             },
             {
-              id: 'status',
-              value: barStatus,
-              emptyLabel: 'Все статусы',
-              onChange: setBarStatus,
-              options: toFilterOptions(uniqueFilterValues(allRows.map((row) => row.status)))
-            },
-            {
               id: 'source',
               value: barSource,
               emptyLabel: 'Все источники',
@@ -363,9 +394,10 @@ export function ProcessesGridTab({
           onReset={() => {
             setQuery('')
             setBarType('')
-            setBarStatus('')
             setBarSource('')
             setBarProject('')
+            setDateRangeTouched(false)
+            setDateRange(rangeFromRows(allRows))
             setTab('all')
           }}
         />
@@ -374,9 +406,19 @@ export function ProcessesGridTab({
         <div className="orch-process-main">
         <div className="spec-table-toolbar orch-process-tabs">
           <SpecTableTabs tabs={tabs} active={tab} onChange={setTab} />
-          <select className="wp-select orch-process-tabs-sort" defaultValue="priority">
-            <option value="priority">Сортировка: По приоритету</option>
-          </select>
+          <div className="orch-process-tabs-tools">
+            <OrchDateRangePicker
+              value={dateRange}
+              label="Период"
+              onChange={(next) => {
+                setDateRangeTouched(true)
+                setDateRange(next)
+              }}
+            />
+            <select className="wp-select orch-process-tabs-sort" defaultValue="priority">
+              <option value="priority">Сортировка: По приоритету</option>
+            </select>
+          </div>
         </div>
         <div className="spec-v04-table-wrap wp-card">
           <table className="spec-v04-table">
@@ -387,7 +429,6 @@ export function ProcessesGridTab({
                 <th>Источник</th>
                 <th>Проект</th>
                 <th>Моя задача сегодня</th>
-                <th>Статус</th>
                 <th>Срок</th>
                 <th>Прогресс</th>
                 <th />
@@ -396,14 +437,14 @@ export function ProcessesGridTab({
             <tbody>
               {tableBusy ? (
                 <tr>
-                  <td colSpan={9} className="spec-v04-empty">
+                  <td colSpan={8} className="spec-v04-empty">
                     Загружаем регламентные процессы…
                   </td>
                 </tr>
               ) : null}
               {tableEmpty ? (
                 <tr>
-                  <td colSpan={9} className="spec-v04-empty">
+                  <td colSpan={8} className="spec-v04-empty">
                     {processTabLoading(data, tab) ? 'Подгружаем данные…' : 'Нет процессов в категории.'}
                   </td>
                 </tr>
@@ -424,9 +465,6 @@ export function ProcessesGridTab({
                   <td>{row.source}</td>
                   <td>{row.project}</td>
                   <td>{row.taskToday}</td>
-                  <td>
-                    <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
-                  </td>
                   <td className={row.deadlineUrgent ? 'spec-deadline-urgent' : undefined}>{row.deadline}</td>
                   <td>
                     <SpecProgress value={row.progress} />
@@ -491,31 +529,9 @@ export function ProcessesGridTab({
         ) : (
           <div className="wp-card spec-v04-muted">Выберите процесс в таблице</div>
         ),
-        botA: (
-        <SpecPanel title="Проекты и проектные задачи">
-          {data.projects.length ? (
-            <table className="spec-v04-table spec-v04-table-compact">
-              <tbody>
-                {data.projects.slice(0, 3).map((p) => (
-                  <tr key={p.id}>
-                    <td>{p.name}</td>
-                    <td>{p.code}</td>
-                    <td>{p.tasks} задач</td>
-                    <td>
-                      <SpecProgress value={p.progress} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="spec-v04-muted">Портфель TurboProject пуст или недоступен.</p>
-          )}
-        </SpecPanel>
-        ),
         botB: (
-        <SpecPanel title="Быстрые действия">
-          <SpecQuickActions items={quickActions} />
+        <SpecPanel title="Быстрые действия" className="orch-quick-actions-panel">
+          <SpecQuickActions items={quickActions} layout="row" />
         </SpecPanel>
         )
       }}

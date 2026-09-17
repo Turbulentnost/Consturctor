@@ -25,6 +25,13 @@ import {
 } from './ensureBackend'
 import { loadExternalOdataEnv } from './odataExternalEnv'
 import {
+  docxPreviewDataUrl,
+  isDocxFileName,
+  isSpreadsheetFileName,
+  spreadsheetPreviewDataUrl,
+  spreadsheetPreviewFromBuffer
+} from '../shared/officeSpreadsheetPreview'
+import {
   clearComSessionSecret,
   getComSessionSecret,
   setComSessionSecret,
@@ -390,6 +397,17 @@ async function handleReadLocalFilePreview(_evt: unknown, filePath: string): Prom
   const kind = localFilePreviewKind(ext, mime)
   try {
     const buffer = readFileSync(resolved.path)
+    const officePreview = await officeRemotePreview(buffer, basename(resolved.path))
+    if (officePreview?.ok && officePreview.kind === 'embed') {
+      return {
+        ok: true,
+        path: resolved.path,
+        size,
+        mime: officePreview.mime,
+        kind: 'embed',
+        dataUrl: officePreview.dataUrl
+      }
+    }
     if (kind === 'text') {
       return { ok: true, path: resolved.path, size, mime, kind: 'text', text: buffer.toString('utf-8') }
     }
@@ -710,8 +728,32 @@ async function handleFetchDataUrl(
 type RemoteFilePreviewResult =
   | { ok: true; kind: 'text'; text: string; mime: string }
   | { ok: true; kind: 'embed'; dataUrl: string; mime: string }
+  | { ok: true; kind: 'table'; headers: string[]; rows: string[][]; mime: string }
   | { ok: true; kind: 'external'; hint: string; mime: string }
   | { ok: false; error: string; tooLarge?: boolean }
+
+async function officeRemotePreview(
+  buffer: Buffer,
+  fileName: string
+): Promise<RemoteFilePreviewResult | null> {
+  const name = fileName || 'file'
+  if (isSpreadsheetFileName(name)) {
+    const table = spreadsheetPreviewFromBuffer(buffer, name)
+    if (!table) return null
+    return {
+      ok: true,
+      kind: 'embed',
+      dataUrl: spreadsheetPreviewDataUrl(table, name),
+      mime: 'text/html'
+    }
+  }
+  if (isDocxFileName(name)) {
+    const dataUrl = await docxPreviewDataUrl(buffer, name)
+    if (!dataUrl) return null
+    return { ok: true, kind: 'embed', dataUrl, mime: 'text/html' }
+  }
+  return null
+}
 
 function sniffPreviewMeta(
   buffer: Buffer,
@@ -750,9 +792,13 @@ async function handleFetchFilePreview(
     if (buffer.length > LOCAL_FILE_PREVIEW_MAX_BYTES) {
       return { ok: false, tooLarge: true, error: 'Файл слишком большой для предпросмотра' }
     }
+    const fileName = opts.fileName || url
+    const officePreview = await officeRemotePreview(buffer, fileName)
+    if (officePreview) return officePreview
+
     const { mime, kind } = sniffPreviewMeta(
       buffer,
-      opts.fileName || url,
+      fileName,
       response.headers.get('content-type') || ''
     )
     if (kind === 'text') {
