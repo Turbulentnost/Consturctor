@@ -206,6 +206,8 @@ def test_sidecar_prompt_calendar_control_uses_chairman() -> None:
     assert "Совещания" in text
     assert "people=" in text
     assert "do not read your own" in text
+    assert "Предложение" in text
+    assert "HITL" in text
     assert "create_event" in text
 
 

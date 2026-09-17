@@ -492,11 +492,13 @@ ARTIFACT_CLOSE_HINT = (
 CALENDAR_CONTROL_HINT = (
     "This is calendar control / morning briefing, not a meeting-series job. "
     "Morning: users.current, outlook.read_calendar for today, outlook.search_mail once "
-    "(query отпуск), calendar.show_meetings, then ## WORK_RESULT and TESTS: PASS. "
+    "(query отпуск), calendar.show_meetings. If slots overlap or a window exists, "
+    "add «Предложение» and call outlook.create_event — wait for HITL approval. "
+    "Do not ask the same via askQuestion. Then ## WORK_RESULT with the oral list. "
     "If search_mail returned 0 messages, absences are empty — do not call it again. "
-    "Do not ask what the agent should do. Do not call create_event in the morning. "
+    "Do not ask what the agent should do. "
     "Evening after 16:00 MSK: same reads for tomorrow, show keep/add/cancel, "
-    "create_event only after HITL to shift existing meetings. "
+    "propose shifts and call create_event the same way — still wait for HITL. "
     "After WORK_RESULT call no more tools."
 )
 

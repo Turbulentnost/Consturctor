@@ -60,7 +60,8 @@ def calendar_control_schedule_draft() -> dict[str, Any]:
                 "kind": "interval",
                 "message": (
                     "16:00: проверка календаря ПСД на завтра, окна 09:00–18:00 "
-                    "кроме обеда, сдвиг уже стоящих встреч."
+                    "кроме обеда. Предложить сдвиг и вызвать create_event — "
+                    "запись только после разрешения."
                 ),
                 "interval_value": 1.0,
                 "interval_unit": "days",
@@ -81,11 +82,13 @@ def calendar_control_playbook_draft() -> dict[str, Any]:
             "Держать календарь Председателя совета директоров "
             f"({PSD_CHAIRMAN_FIO}) в Outlook без окон в рабочее время "
             "(кроме обеда 12:00–13:00) и готовить его к дню устным списком встреч. "
+            "При пересечении или окне — предложить сдвиг и вызвать "
+            "outlook.create_event: запись только после разрешения человека. "
             "Письменный план дня не готовить."
         ),
         "result": (
-            "Утром — устный список совещаний ПСД и карточка keep. "
-            "Вечером — карточка сдвигов и запись в календарь ПСД только после HITL."
+            "Утром — устный список и при пересечении/окне предложение куда перенести. "
+            "Вечером — карточка предложений. Сдвиг в Outlook только после HITL."
         ),
         "when_to_run": (
             "Будни 08:30 — устный список на сегодня. "
@@ -141,15 +144,16 @@ def calendar_control_playbook_draft() -> dict[str, Any]:
             },
             {
                 "id": "s5",
-                "title": "Утро: WORK_RESULT. Вечер: сдвиг после HITL",
+                "title": "Утро и вечер: список, предложение, create_event после HITL",
                 "tool": "outlook.create_event",
                 "system": "outlook",
                 "entity": "calendar_event",
                 "operation": "create",
                 "required_params": [],
                 "done_when": (
-                    "Утро — только список. Вечер — сдвиг уже стоящих встреч "
-                    f"в ящике «{PSD_MEETINGS_FOLDER}» только после HITL."
+                    "В WORK_RESULT есть список и, если есть пересечение или окно, "
+                    "предложение сдвига. create_event вызван только после карточки HITL "
+                    "или отклонён человеком."
                 ),
             },
         ],
@@ -182,10 +186,19 @@ def calendar_control_playbook_instructions() -> str:
         "больничный/отсутствие/списком ФИО.\n"
         "4. calendar.show_meetings — сегодняшние встречи ПСД, mark=keep, "
         "полная тема, attendees[].\n"
-        "5. Сразу ## WORK_RESULT: устный список (время, тема, кто нужен). "
-        "ACTIONS. TESTS: PASS.\n"
-        "Нельзя утром: create_event, askQuestion, web_search, imap.*, "
-        "второй search_mail, вопрос «что должен делать агент».\n"
+        "5. Если два слота пересекаются или есть окно — сначала блок «Предложение» "
+        "(какую встречу, с какого времени, на какое свободное окно и почему: "
+        "разовую сдвигать, регулярную оставлять; длительность та же; "
+        "окно в 09:00–18:00 кроме обеда 12:00–13:00), затем "
+        f"outlook.create_event (organizer={PSD_CHAIRMAN_FIO}). "
+        "Разрешение спрашивает карточка HITL — askQuestion для этого не нужен. "
+        "Без подтверждения в календарь не писать. Если пересечений и окон нет — "
+        "create_event не вызывать.\n"
+        "6. ## WORK_RESULT: полный устный список (время, тема, кто нужен) "
+        "и «Предложение». ACTIONS. TESTS: PASS.\n"
+        "Нельзя утром: askQuestion, web_search, imap.*, "
+        "второй search_mail, вопрос «что должен делать агент», "
+        "create_event без HITL.\n"
         "\n"
         "ВЕЧЕР:\n"
         "1. users.current\n"
@@ -195,12 +208,14 @@ def calendar_control_playbook_instructions() -> str:
         "4. при необходимости — тот же ящик «Совещания» с people[] других участников\n"
         "5. Окно = промежуток между встречами в 09:00–18:00. Обед 12:00–13:00 "
         "и хвост после последней встречи до 18:00 окном не считать.\n"
-        "6. Закрывать окна сдвигом уже стоящих встреч раньше, длительности "
-        "не менять, новые совещания не выдумывать.\n"
-        "7. calendar.show_meetings: keep / add-green / cancel-red\n"
-        f"8. outlook.create_event только после HITL, organizer="
-        f"{PSD_CHAIRMAN_FIO}, только сдвиг или названная человеком встреча\n"
-        "9. ## WORK_RESULT и TESTS: PASS. Дальше инструменты не вызывать.\n"
+        "6. Окна и пересечения — предложить сдвиг уже стоящих встреч раньше. "
+        "Длительности не менять, новые совещания не выдумывать.\n"
+        "7. calendar.show_meetings: keep / add-green (предложение) / cancel-red\n"
+        f"8. outlook.create_event (organizer={PSD_CHAIRMAN_FIO}) на предложенный "
+        "сдвиг или на встречу, которую назвал человек. Жди HITL. "
+        "Без разрешения не считать запись сделанной.\n"
+        "9. ## WORK_RESULT: список + «Предложение» + итог HITL. TESTS: PASS. "
+        "Дальше инструменты не вызывать.\n"
         "\n"
         "Если calendars[].status не meetings/own/shared/visible — напиши "
         "«нет доступа к ящику Совещания» и остановись. Не подставляй личный "
@@ -209,6 +224,9 @@ def calendar_control_playbook_instructions() -> str:
         "Суббота, воскресенье и праздники РФ 2026 (1–8 янв, 23 фев, 8 мар, "
         "1 и 9 мая, 12 июн, 4 ноя) — сказать «нерабочий день» и остановиться. "
         "web_search не нужен.\n"
+        "\n"
+        "Сдвиг: вызови outlook.create_event и дождись разрешения HITL. "
+        "Не пиши в календарь молча и не спрашивай то же через askQuestion.\n"
         "\n"
         "Нельзя: imap.list_unread / imap.search; писать в календарь без HITL; "
         "рассылать приглашения вручную; выдумывать встречи; готовить xlsx/Word "
@@ -267,8 +285,14 @@ def apply_calendar_control_plan_runtime(
     runtime["tools"] = calendar_control_runtime_tools()
     plan["runtime"] = runtime
     plan["steps"] = seed["steps"]
-    if not (plan.get("goal") or "").strip():
-        plan["goal"] = seed["goal"]
+    plan["goal"] = seed["goal"]
+    plan["constraints"] = [
+        "При пересечении или окне — предложить какую встречу куда перенести "
+        "и вызвать outlook.create_event. Запись только после HITL.",
+        "Утром не задавать askQuestion и не повторять search_mail.",
+        "Не готовить письменный план дня.",
+        "Не писать в Outlook без разрешения человека.",
+    ]
     if not (plan.get("title") or "").strip():
         plan["title"] = title or seed["title"]
     return plan

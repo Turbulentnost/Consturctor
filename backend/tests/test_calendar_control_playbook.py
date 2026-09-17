@@ -50,6 +50,10 @@ def test_apply_calendar_control_config_sets_chairman() -> None:
     instructions = str(local.get("playbook", {}).get("instructions") or "")
     assert PSD_CHAIRMAN_FIO in instructions
     assert "people=" in instructions
+    assert "Предложение" in instructions
+    assert "HITL" in instructions
+    assert "create_event" in instructions
+    assert "без HITL" in instructions
     assert local.get("schedule_draft", {}).get("triggers")
     assert "outlook.read_calendar" in (local.get("tools") or [])
     steps = local.get("playbook", {}).get("steps") or []
@@ -64,6 +68,7 @@ def test_apply_calendar_control_plan_runtime() -> None:
     )
     assert (plan.get("runtime") or {}).get("kind") == "calendar_control"
     assert any(step.get("tool") == "users.current" for step in plan.get("steps") or [])
+    assert any("предложить" in str(item).casefold() for item in plan.get("constraints") or [])
 
 
 def test_refresh_meeting_agent_view_calendar_control() -> None:
