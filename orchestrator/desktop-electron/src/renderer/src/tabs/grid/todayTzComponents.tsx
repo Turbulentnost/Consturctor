@@ -11,7 +11,8 @@ import {
   type TodayPlanBlock,
   type TodayPlanBlockDetail
 } from './todayDemoData'
-import { layoutPlanTrack, planBlockStyle, type PositionedPlanBlock } from './planBlockLayout'
+import { layoutPlanTrack, layoutPlanTrackByAgent, planBlockStyle, type PositionedPlanBlock } from './planBlockLayout'
+import { useTodayWidgetExpanded } from './TodayWidgetExpandContext'
 
 const DAY_START = TODAY_PLAN_DAY_START
 const DAY_END = TODAY_PLAN_DAY_END
@@ -186,7 +187,7 @@ function PlanTimelineBlock({
       ) : null}
       <div className="today-plan-block-body">
         <span className="today-plan-block-time">{timeLabel}</span>
-        <strong className="today-plan-block-title">{block.title}</strong>
+        <span className="today-plan-block-title">{block.title}</span>
       </div>
     </button>
   )
@@ -196,17 +197,19 @@ function PlanTrack({
   blocks,
   lunchBlock,
   laneClass,
+  layoutMode = 'overlap',
   onSelectBlock
 }: {
   blocks: TodayPlanBlock[]
   lunchBlock?: TodayPlanBlock
   laneClass: string
+  layoutMode?: 'overlap' | 'by-agent'
   onSelectBlock: (block: TodayPlanBlock) => void
 }): React.JSX.Element {
   const layout = useMemo(() => {
     const merged = lunchBlock ? [...blocks, lunchBlock] : blocks
-    return layoutPlanTrack(merged)
-  }, [blocks, lunchBlock])
+    return layoutMode === 'by-agent' ? layoutPlanTrackByAgent(merged) : layoutPlanTrack(merged)
+  }, [blocks, lunchBlock, layoutMode])
 
   return (
     <div
@@ -405,9 +408,76 @@ export function TodayPlanPanel({
 }): React.JSX.Element {
   const plan = useTodayPlanTimeline(periodDay, { userId, fio })
   const [selectedBlock, setSelectedBlock] = useState<TodayPlanBlock | null>(null)
+  const expanded = useTodayWidgetExpanded()
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const timelineRef = useRef<HTMLDivElement>(null)
+  const zoomRef = useRef(1)
+  const zoomRafRef = useRef(0)
+  const zoomUiRafRef = useRef(0)
+  const [zoomUi, setZoomUi] = useState(1)
+
+  const applyZoomStyles = (value: number): void => {
+    const timeline = timelineRef.current
+    if (!timeline) return
+    const pct = `${value * 100}%`
+    timeline.style.width = pct
+    timeline.style.minWidth = pct
+    timeline.style.setProperty('--plan-zoom', String(value))
+  }
+
+  const resetZoom = (): void => {
+    zoomRef.current = 1
+    applyZoomStyles(1)
+    setZoomUi(1)
+  }
+
+  useEffect(() => {
+    if (!expanded) resetZoom()
+  }, [expanded])
+
+  useEffect(() => {
+    if (!expanded) return
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    const onWheel = (event: WheelEvent): void => {
+      if (event.ctrlKey) return
+      event.preventDefault()
+      event.stopPropagation()
+      const current = zoomRef.current
+      const factor = event.deltaY < 0 ? 1.08 : 1 / 1.08
+      const next = Math.min(2.4, Math.max(1, Number((current * factor).toFixed(3))))
+      if (Math.abs(next - current) < 0.001) return
+
+      const rect = viewport.getBoundingClientRect()
+      const offsetX = event.clientX - rect.left
+      const offsetY = event.clientY - rect.top
+      const contentX = (viewport.scrollLeft + offsetX) / current
+      const contentY = (viewport.scrollTop + offsetY) / current
+
+      zoomRef.current = next
+      if (zoomRafRef.current) cancelAnimationFrame(zoomRafRef.current)
+      zoomRafRef.current = requestAnimationFrame(() => {
+        applyZoomStyles(next)
+        viewport.scrollLeft = contentX * next - offsetX
+        viewport.scrollTop = contentY * next - offsetY
+        if (zoomUiRafRef.current) cancelAnimationFrame(zoomUiRafRef.current)
+        zoomUiRafRef.current = requestAnimationFrame(() => setZoomUi(next))
+      })
+    }
+
+    viewport.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      viewport.removeEventListener('wheel', onWheel)
+      if (zoomRafRef.current) cancelAnimationFrame(zoomRafRef.current)
+      if (zoomUiRafRef.current) cancelAnimationFrame(zoomUiRafRef.current)
+    }
+  }, [expanded])
 
   return (
-    <section className="wp-card today-plan-card today-plan-tz">
+    <section
+      className={`wp-card today-plan-card today-plan-tz${expanded ? ' is-expanded' : ''}`}
+    >
       <header className="today-plan-head">
         <div className="today-plan-head-main">
           <span className="today-plan-head-icon">
@@ -420,36 +490,52 @@ export function TodayPlanPanel({
               <p className="today-plan-head-note">{plan.meetingsError}</p>
             ) : null}
             {plan.loading ? <p className="today-plan-head-note">Загружаем календарь…</p> : null}
+            {expanded ? (
+              <p className="today-plan-head-note">Колесико мыши — масштаб области под курсором</p>
+            ) : null}
           </div>
         </div>
-        <button type="button" className="today-plan-open">
-          Открыть полный план →
-        </button>
+        <div className="today-plan-head-actions">
+          {expanded && zoomUi > 1.01 ? (
+            <button type="button" className="today-plan-zoom-reset" onClick={resetZoom}>
+              {Math.round(zoomUi * 100)}%
+            </button>
+          ) : null}
+          <button type="button" className="today-plan-open">
+            Открыть полный план →
+          </button>
+        </div>
       </header>
 
-      <div className="today-plan-timeline">
-        <div className="today-plan-hours">
-          {TODAY_TIMELINE_HOURS.map((hour) => (
-            <span key={hour}>{String(hour).padStart(2, '0')}:00</span>
-          ))}
-        </div>
-        <div className="today-plan-lanes">
-          <div className="today-plan-lane">
-            <span className="today-plan-lane-label">Совещания</span>
-            <PlanTrack
-              blocks={plan.meetingBlocks}
-              lunchBlock={plan.lunchBlock}
-              laneClass="today-plan-track-meetings"
-              onSelectBlock={setSelectedBlock}
-            />
+      <div
+        ref={viewportRef}
+        className={`today-plan-timeline-viewport${expanded ? ' is-zoomable' : ''}`}
+      >
+        <div ref={timelineRef} className="today-plan-timeline">
+          <div className="today-plan-hours">
+            {TODAY_TIMELINE_HOURS.map((hour) => (
+              <span key={hour}>{String(hour).padStart(2, '0')}:00</span>
+            ))}
           </div>
-          <div className="today-plan-lane">
-            <span className="today-plan-lane-label">ИИ-агенты</span>
-            <PlanTrack
-              blocks={plan.aiBlocks}
-              laneClass="today-plan-track-ai"
-              onSelectBlock={setSelectedBlock}
-            />
+          <div className="today-plan-lanes">
+            <div className="today-plan-lane">
+              <span className="today-plan-lane-label">Совещания</span>
+              <PlanTrack
+                blocks={plan.meetingBlocks}
+                lunchBlock={plan.lunchBlock}
+                laneClass="today-plan-track-meetings"
+                onSelectBlock={setSelectedBlock}
+              />
+            </div>
+            <div className="today-plan-lane">
+              <span className="today-plan-lane-label">ИИ-агенты</span>
+              <PlanTrack
+                blocks={plan.aiBlocks}
+                laneClass="today-plan-track-ai"
+                layoutMode="by-agent"
+                onSelectBlock={setSelectedBlock}
+              />
+            </div>
           </div>
         </div>
       </div>

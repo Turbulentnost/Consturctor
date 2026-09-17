@@ -20,7 +20,30 @@ export const TODAY_PLAN_DAY_START = 9
 export const TODAY_PLAN_DAY_END = 18
 
 const MEETING_TONES: TodayPlanBlock['tone'][] = ['pink', 'purple', 'sky', 'orange', 'teal']
-const AI_TONES: TodayPlanBlock['tone'][] = ['sky', 'teal', 'orange', 'blue', 'mint']
+/** Stable palette so each ИИ-агент keeps one color across all of its blocks. */
+const AI_TONES: TodayPlanBlock['tone'][] = [
+  'sky',
+  'teal',
+  'orange',
+  'blue',
+  'mint',
+  'purple',
+  'pink'
+]
+
+function hashToneKey(value: string): number {
+  let hash = 0
+  const text = value.trim().toLowerCase()
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0
+  }
+  return hash
+}
+
+function toneForAgent(agentKey: string): TodayPlanBlock['tone'] {
+  const key = agentKey.trim() || 'agent'
+  return AI_TONES[hashToneKey(key) % AI_TONES.length]
+}
 
 export const TODAY_LUNCH_BLOCK: TodayPlanBlock = {
   id: 'lunch',
@@ -104,11 +127,7 @@ function meetingToBlock(meeting: MeetingEvent, index: number): TodayPlanBlock | 
   }
 }
 
-function agentEventToBlock(
-  event: CalendarEvent,
-  agentTitle: string,
-  index: number
-): TodayPlanBlock | null {
+function agentEventToBlock(event: CalendarEvent, agentTitle: string): TodayPlanBlock | null {
   const start = parseIso(event.startAt)
   if (!start) return null
   const end = new Date(start.getTime() + 60 * 60 * 1000)
@@ -117,13 +136,15 @@ function agentEventToBlock(
   const status = (event.status || '').trim()
   const source = (event.source || '').trim()
   const runId = (event.runId || '').trim()
+  const workflowId = (event.workflowId || '').trim()
+  const agentKey = workflowId || agentTitle || displayTitle
   return {
     id: `ai:${event.id || event.runId || `${event.workflowId}-${event.startAt}`}`,
     startHour: decimalHour(start),
     endHour: decimalHour(end),
     title: displayTitle,
     subtitle: agentTitle,
-    tone: AI_TONES[index % AI_TONES.length],
+    tone: toneForAgent(agentKey),
     who: 'ai',
     kind: 'reg',
     lane: 'ai',
@@ -133,7 +154,7 @@ function agentEventToBlock(
       agentName: agentTitle,
       status: status || undefined,
       source: source || undefined,
-      workflowId: event.workflowId || undefined,
+      workflowId: workflowId || undefined,
       runId: runId || undefined,
       note: (event.title || '').trim() && event.title !== displayTitle ? event.title : undefined
     }
@@ -143,19 +164,19 @@ function agentEventToBlock(
 function nextRunToBlock(
   workflowId: string,
   nextRunAt: string,
-  agentTitle: string,
-  index: number
+  agentTitle: string
 ): TodayPlanBlock | null {
   const start = parseIso(nextRunAt)
   if (!start) return null
   const end = new Date(start.getTime() + 60 * 60 * 1000)
+  const agentKey = workflowId || agentTitle || 'ИИ-агент'
   return {
     id: `ai-next:${workflowId}-${nextRunAt}`,
     startHour: decimalHour(start),
     endHour: decimalHour(end),
     title: agentTitle || 'ИИ-агент',
     subtitle: 'Плановый запуск',
-    tone: AI_TONES[index % AI_TONES.length],
+    tone: toneForAgent(agentKey),
     who: 'ai',
     kind: 'reg',
     lane: 'ai',
@@ -181,8 +202,8 @@ function aiBlocksForDay(board: WorkflowBoard, periodDay: Date): TodayPlanBlock[]
   const blocks: TodayPlanBlock[] = []
   const seen = new Set<string>()
 
-  dayEvents.forEach((event, index) => {
-    const block = agentEventToBlock(event, titleById.get(event.workflowId) || 'ИИ-агент', index)
+  dayEvents.forEach((event) => {
+    const block = agentEventToBlock(event, titleById.get(event.workflowId) || 'ИИ-агент')
     if (!block) return
     const key = `${event.workflowId}:${Math.floor(block.startHour * 60)}`
     if (seen.has(key)) return
@@ -190,16 +211,14 @@ function aiBlocksForDay(board: WorkflowBoard, periodDay: Date): TodayPlanBlock[]
     blocks.push(block)
   })
 
-  let slot = dayEvents.length
   for (const agent of workflows) {
     const next = parseIso(agent.nextRunAt || '')
     if (!next || !isOnLocalDay(next, periodDay)) continue
     const key = `${agent.id}:${Math.floor(decimalHour(next) * 60)}`
     if (seen.has(key)) continue
     seen.add(key)
-    const block = nextRunToBlock(agent.id, agent.nextRunAt, agent.title, slot)
+    const block = nextRunToBlock(agent.id, agent.nextRunAt, agent.title)
     if (block) blocks.push(block)
-    slot += 1
   }
 
   return blocks.sort((a, b) => a.startHour - b.startHour)

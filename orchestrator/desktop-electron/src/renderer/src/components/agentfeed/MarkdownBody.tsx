@@ -19,14 +19,14 @@ function isTableRow(line: string): boolean {
 
 function inline(text: string): ReactNode[] {
   const nodes: ReactNode[] = []
-  const pattern = /(\*\*(.+?)\*\*|`([^`]+)`)/g
+  const pattern = /(\*\*([^*]+?)\*\*|`([^`]+)`)/g
   let last = 0
   let match: RegExpExecArray | null
   let key = 0
   while ((match = pattern.exec(text))) {
     if (match.index > last) nodes.push(text.slice(last, match.index))
-    if (match[2]) nodes.push(<strong key={`b-${key}`}>{match[2]}</strong>)
-    else if (match[3]) nodes.push(<code key={`c-${key}`}>{match[3]}</code>)
+    if (match[2] !== undefined) nodes.push(<strong key={`b-${key}`}>{match[2]}</strong>)
+    else if (match[3] !== undefined) nodes.push(<code key={`c-${key}`}>{match[3]}</code>)
     last = match.index + match[0].length
     key += 1
   }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
 import { resolveLayoutOverlaps } from './gridReflow'
 
-export const TAB_CHROME_STORAGE_KEY = 'orch-tab-chrome-v10'
+export const TAB_CHROME_STORAGE_KEY = 'orch-tab-chrome-v11'
 export const TAB_CHROME_COLS = 16
 export const TAB_CHROME_MAX_ROWS = 12
 /** KPI body widgets — same 8×6 snap as вкладка «Сегодня». */
@@ -102,8 +102,7 @@ export const DEFAULT_WIDE_MAIN_LAYOUT: LayoutItem[] = [
 export const DEFAULT_PROCESS_LAYOUT: LayoutItem[] = [
   { i: 'main', x: 0, y: 0, w: 12, h: 10, minW: 6, minH: 4, maxW: 16, maxH: 12 },
   { i: 'side', x: 12, y: 0, w: 4, h: 10, minW: 4, minH: 4, maxW: 16, maxH: 12 },
-  { i: 'botA', x: 0, y: 10, w: 8, h: 2, minW: 4, minH: 1, maxW: 16, maxH: 4 },
-  { i: 'botB', x: 8, y: 10, w: 8, h: 2, minW: 4, minH: 1, maxW: 16, maxH: 4 }
+  { i: 'botB', x: 0, y: 10, w: 16, h: 2, minW: 6, minH: 1, maxW: 16, maxH: 4 }
 ]
 
 /**

@@ -138,27 +138,46 @@
 
 .tab-chrome-content .spec-table-toolbar,
 .tab-chrome-content .orch-process-tabs {
-  flex: 0 0 40px;
-  max-height: 40px;
+  flex: 0 0 auto;
+  max-height: none;
   min-height: 40px;
 }
 
-.orch-process-main {
+.orch-process-main,
+.orch-tasks-main {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
 }
 
+.orch-tasks-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 40px;
+  margin: 0;
+  padding: 0 2px 4px;
+  overflow: visible;
+}
+
+.orch-tasks-main > .spec-v04-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
 .orch-process-tabs {
-  flex: 0 0 40px;
-  max-height: 40px;
+  flex: 0 0 auto;
+  max-height: none;
   min-height: 40px;
   margin: 0;
   padding: 0 2px;
   align-items: center;
-  flex-wrap: nowrap;
-  overflow: hidden;
+  flex-wrap: wrap;
+  gap: 8px;
+  overflow: visible;
 }
 
 .orch-process-tabs .spec-table-tabs {
@@ -175,12 +194,97 @@
   white-space: nowrap;
 }
 
+.orch-process-tabs-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
 .orch-process-tabs-sort {
   flex: 0 0 auto;
   height: 28px;
 }
 
+.spec-v04-table-tasks {
+  table-layout: fixed;
+}
+
+.spec-v04-table-tasks col.spec-v04-col-check {
+  width: 40px;
+}
+
+.spec-v04-table-tasks col.spec-v04-col-task {
+  width: 34%;
+}
+
+.spec-v04-table-tasks col.spec-v04-col-source {
+  width: 14%;
+}
+
+.spec-v04-table-tasks col.spec-v04-col-process {
+  width: 10%;
+}
+
+.spec-v04-table-tasks col.spec-v04-col-deadline {
+  width: 76px;
+}
+
+.spec-v04-table-tasks .spec-v04-cell-task strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spec-v04-table-tasks .spec-v04-cell-source,
+.spec-v04-table-tasks .spec-v04-cell-process {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spec-v04-table-tasks .spec-v04-cell-deadline {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 0;
+}
+
+.spec-v04-table-tasks .spec-v04-cell-progress {
+  width: auto;
+  min-width: 120px;
+}
+
+.spec-v04-table-tasks .spec-progress {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.spec-v04-table-tasks .spec-progress-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 8px;
+}
+
+.spec-v04-table-tasks .spec-progress span {
+  flex: 0 0 auto;
+}
+
 .orch-process-main > .spec-v04-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.tab-chrome-content .orch-process-main,
+.tab-chrome-content .orch-tasks-main {
+  overflow: hidden;
+}
+
+.tab-chrome-content > .spec-v04-table-wrap {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
@@ -576,4 +680,128 @@
   color: var(--content-muted, #6b7785);
   font-size: 11px;
   cursor: pointer;
+}
+
+.orch-date-range {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.orch-date-range-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--card-border, #d5deea);
+  background: #fff;
+  color: var(--content-primary, #10141a);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.orch-date-range-trigger:hover,
+.orch-date-range.is-open .orch-date-range-trigger {
+  border-color: rgba(21, 101, 192, 0.45);
+  background: #f5f9ff;
+}
+
+.orch-date-range-label {
+  color: var(--content-muted, #6b7785);
+  font-weight: 600;
+}
+
+.orch-date-range-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 80;
+  width: 280px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #dde6ef;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 35, 62, 0.12);
+}
+
+.orch-date-range-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.orch-date-range-head strong {
+  font-size: 13px;
+  color: #243044;
+}
+
+.orch-date-range-nav {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: #eef3f8;
+  color: #42586f;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.orch-date-range-nav:hover {
+  background: #e3ebf4;
+}
+
+.orch-date-range-weekdays,
+.orch-date-range-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.orch-date-range-weekdays span {
+  text-align: center;
+  font-size: 11px;
+  color: #8a96a8;
+  padding: 4px 0;
+}
+
+.orch-date-range-grid button {
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #243044;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.orch-date-range-grid button.muted {
+  color: #b0b8c4;
+}
+
+.orch-date-range-grid button.in-range {
+  background: #e8f1fb;
+}
+
+.orch-date-range-grid button.edge {
+  background: #1565c0;
+  color: #fff;
+  font-weight: 700;
+}
+
+.orch-date-range-grid button.today:not(.edge) {
+  box-shadow: inset 0 0 0 1px #1565c0;
+}
+
+.orch-date-range-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #8a96a8;
+  text-align: center;
 }

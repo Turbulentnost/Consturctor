@@ -26,7 +26,9 @@ async def _erp_reachable() -> bool:
         return _ping_cache[1]
     reachable = False
     try:
-        reachable = await asyncio.wait_for(asyncio.to_thread(ping), timeout=3.0)
+        # Windows impersonation + legacy ODBC can take ~20s on first connect.
+        ping_timeout = min(45.0, max(25.0, float(settings.erp_sql_timeout or 45)))
+        reachable = await asyncio.wait_for(asyncio.to_thread(ping), timeout=ping_timeout)
     except TimeoutError:
         logger.warning("ERP health check timed out")
     except ErpSqlError:

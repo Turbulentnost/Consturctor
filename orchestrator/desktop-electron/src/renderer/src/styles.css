@@ -11769,11 +11769,12 @@ button.spec-v04-tile {
   align-items: center;
 }
 .spec-v04-table-wrap {
-  overflow-x: auto;
+  overflow: auto;
 }
 .spec-v04-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
 }
 .spec-v04-table th,
@@ -11781,11 +11782,25 @@ button.spec-v04-tile {
   padding: 10px 12px;
   text-align: left;
   border-bottom: 1px solid rgba(16, 20, 26, 0.08);
+  background-color: #fff;
 }
 .spec-v04-table th {
   font-weight: 600;
   color: var(--content-muted);
   font-size: 12px;
+}
+.spec-v04-table thead {
+  isolation: isolate;
+}
+.spec-v04-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: var(--card, #fff);
+  box-shadow: 0 1px 0 rgba(16, 20, 26, 0.08);
+}
+.spec-v04-table tbody tr.selected td {
+  background-color: rgba(21, 101, 192, 0.06);
 }
 .spec-v04-empty {
   text-align: center;
@@ -12129,9 +12144,6 @@ button.spec-v04-tile {
 .spec-v04-table tbody tr {
   cursor: pointer;
 }
-.spec-v04-table tbody tr.selected {
-  background: rgba(21, 101, 192, 0.06);
-}
 .spec-v04-table-compact th,
 .spec-v04-table-compact td {
   padding: 8px 10px;
@@ -12398,6 +12410,17 @@ button.spec-v04-tile {
   flex-direction: column;
   gap: 4px;
 }
+.spec-quick-actions--row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: stretch;
+}
+.spec-quick-actions--row > li {
+  flex: 1 1 200px;
+  min-width: 160px;
+  max-width: none;
+}
 .spec-quick-action-btn {
   width: 100%;
   text-align: left;
@@ -12416,6 +12439,38 @@ button.spec-v04-tile {
   box-shadow: 0 1px 3px rgba(16, 20, 26, 0.05);
   transition: filter 0.15s ease, transform 0.1s ease;
   font-family: inherit;
+}
+.spec-quick-action-btn--badge {
+  min-height: 48px;
+  padding: 10px 16px 10px 12px;
+  border-radius: 14px;
+  font-size: 13px;
+  gap: 10px;
+  box-shadow: 0 2px 8px rgba(16, 20, 26, 0.06);
+}
+.spec-quick-action-btn--badge .spec-quick-action-ico {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  flex-shrink: 0;
+}
+.spec-quick-action-btn--badge .spec-quick-action-ico .spec-tile-ico,
+.spec-quick-action-btn--badge .spec-quick-action-ico .spec-filter-ico,
+.spec-quick-action-btn--badge .spec-quick-action-ico .spec-launch-play {
+  width: 15px;
+  height: 15px;
+}
+.orch-quick-actions-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding-block: 4px;
+}
+.orch-quick-actions-panel .spec-quick-actions--row {
+  flex: 1;
+  align-content: center;
 }
 .spec-quick-action-label {
   flex: 1;

@@ -228,7 +228,7 @@ export async function loadOrchestratorErpTasks(
     today_and_overdue: false,
     force_refresh: Boolean(opts?.forceRefresh)
   })
-  const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 300_000)
+  const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 90_000)
   const dfParsed = parseErpToolTasks(dfRes, erpFio)
   const tasks = dfParsed.rows
   const sourceLabel = tasks.length ? dfParsed.source || 'документооборот' : dfParsed.source || '—'
