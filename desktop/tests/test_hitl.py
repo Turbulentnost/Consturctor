@@ -42,6 +42,8 @@ def test_read_tools_do_not_ask_hitl() -> None:
     assert not needs_confirmation("onec.odata_catalog")
     assert not needs_confirmation("onec.erp_assignments")
     assert not needs_confirmation("onec.download_artifact")
+    assert not needs_confirmation("office.read_file")
+    assert not needs_confirmation("excel.read_workbook")
     assert not needs_confirmation("onecdownload_artifact")
     assert not needs_confirmation("onec.erp_write_probe")
     assert not needs_confirmation("users.list")

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../api/client'
 import type { InboxNotification, UserProfile } from '../api/types'
 import logoUrl from '../assets/logo.png'
@@ -43,8 +43,23 @@ export function UserMenu({
   const [inboxOpen, setInboxOpen] = useState(false)
   const [items, setItems] = useState<InboxNotification[]>([])
   const [loading, setLoading] = useState(false)
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>({})
   const ref = useRef<HTMLDivElement>(null)
+  const bellRef = useRef<HTMLButtonElement>(null)
+  const inboxOpenRef = useRef(false)
   const isAdminContext = variant === 'admin'
+
+  function placeInboxPanel(): void {
+    const rect = bellRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setPanelStyle({
+      position: 'fixed',
+      top: Math.round(rect.bottom + 8),
+      right: Math.round(Math.max(8, window.innerWidth - rect.right)),
+      left: 'auto',
+      zIndex: 80
+    })
+  }
 
   useEffect(() => {
     function onDocClick(e: MouseEvent): void {
@@ -56,6 +71,24 @@ export function UserMenu({
     document.addEventListener('mousedown', onDocClick)
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [])
+
+  useEffect(() => {
+    inboxOpenRef.current = inboxOpen
+    if (!inboxOpen) return
+    placeInboxPanel()
+    const onResize = (): void => placeInboxPanel()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [inboxOpen])
+
+  useEffect(() => {
+    const unsub = window.api.onInboxChanged?.(() => {
+      void api.unreadNotificationCount().then(onUnreadChange).catch(() => undefined)
+      if (!inboxOpenRef.current) return
+      void api.listNotifications().then(setItems).catch(() => undefined)
+    })
+    return () => unsub?.()
+  }, [onUnreadChange])
 
   useEffect(() => {
     function onOpenFromSettings(): void {
@@ -158,7 +191,12 @@ export function UserMenu({
   return (
     <div className="user-menu user-menu--admin" ref={ref}>
       <div className="notify-wrap">
-        <button className="icon-btn" title="Уведомления" onClick={() => void openInbox()}>
+        <button
+          ref={bellRef}
+          className="icon-btn"
+          title="Уведомления"
+          onClick={() => void openInbox()}
+        >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
             <path
               d="M6 9a6 6 0 1112 0c0 4.5 1.2 6 2 6.8.3.3.1.9-.4.9H4.4c-.5 0-.7-.6-.4-.9C4.8 15 6 13.5 6 9z"
@@ -177,6 +215,12 @@ export function UserMenu({
             onClearAll={() => void clearAll()}
             onClearOne={(id) => void clearOne(id)}
             onOpen={openItem}
+            onStop={(item) => {
+              if (!item.workflowId) return
+              onStopRun?.(item.workflowId, item.runId)
+            }}
+            canStop={(item) => Boolean(item.workflowId && isRunLive?.(item.workflowId, item.runId))}
+            panelStyle={panelStyle}
           />
         ) : null}
       </div>

@@ -120,10 +120,10 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
                 title="Чтение Excel",
                 description=(
                     "Читает данные листа .xlsx/.xlsm (заголовки и строки). "
-                    "Только книги Excel. Тексты, регламент и notes.txt — "
-                    "встроенным Read, не этим инструментом. "
-                    "filename — имя или путь из excel.list_files, "
-                    "включая materials/attachments/."
+                    "Только книги Excel. Word/PDF/картинки — office.read_file. "
+                    "Тексты и notes.txt — встроенным Read. "
+                    "filename — имя из excel.list_files или saved_path после "
+                    "onec.download_artifact."
                 ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.LOCAL,
@@ -210,15 +210,31 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
             existing = workspace.resolve(raw, must_exist=True)
         except WorkspaceError:
             existing = None
+        if existing is None:
+            from app.tools.ac.readable_files import artifact_cache_dir, is_allowed_external
+
+            outside = Path(raw)
+            if outside.is_absolute() and outside.is_file() and is_allowed_external(outside):
+                existing = outside.resolve()
+            else:
+                cached = artifact_cache_dir() / Path(raw).name
+                if cached.is_file():
+                    existing = cached.resolve()
         if existing is not None:
             if _is_excel_name(existing.name):
                 return existing
-            relative = existing.relative_to(workspace.directory.resolve()).as_posix()
+            try:
+                relative = existing.relative_to(workspace.directory.resolve()).as_posix()
+            except ValueError:
+                relative = existing.name
+            from app.tools.ac.readable_files import read_tool_for_suffix
+
+            other = read_tool_for_suffix(existing.suffix)
+            hint = f" Этот файл — {other}." if other else " Тексты читай встроенным Read."
             return self._fail(
                 "NOT_EXCEL",
                 f"Файл на месте: {relative}. Это не Excel "
-                f"({existing.suffix or 'без расширения'}). "
-                "Тексты и регламент читай встроенным Read; "
+                f"({existing.suffix or 'без расширения'}).{hint} "
                 "excel.read_workbook — только для .xlsx/.xlsm.",
             )
         if _is_excel_name(raw) or not Path(raw.replace("\\", "/")).suffix:
@@ -237,9 +253,11 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
                 title="Создание Excel",
                 description=(
                     "Создаёт или перезаписывает оформленный .xlsx: баннер, тема, "
-                    "цветная шапка, зебра, автофильтр, ширины колонок. "
+                    "цветная шапка, зебра, автофильтр, перенос текста в ячейке, "
+                    "высота строк по содержимому, ширины колонок. "
                     "Голую таблицу не пишет. title/kpis усиливают шапку, "
-                    "без title берётся имя файла."
+                    "без title берётся имя файла. В ячейке \\n или <br> — "
+                    "явный разрыв строки; длинный текст переносится сам."
                 ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,

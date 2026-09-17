@@ -29,8 +29,14 @@ logger = logging.getLogger(__name__)
 
 
 def _trace(message: str) -> None:
-    print(message, flush=True)
-    logger.info(message)
+    try:
+        print(message, flush=True)
+    except OSError:
+        pass
+    try:
+        logger.info(message)
+    except OSError:
+        pass
 
 # Локальные оверрайды должности и отдела по подстроке ФИО (без учёта ь/ъ).
 _POSITION_OVERRIDES: tuple[tuple[str, str], ...] = (
@@ -286,10 +292,10 @@ def _to_user_out(
             department=department or "",
             position=position or "",
         )
+        out = app_users.to_user_out(app_user)
     except Exception as exc:
         logger.exception("Failed to upsert app user id=%s", user_id)
         raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
-    out = app_users.to_user_out(app_user)
     if name_mail:
         return out.model_copy(update={"name_mail": name_mail})
     return out
@@ -323,7 +329,7 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
         raise AuthError("Неверный логин или пароль", status_code=401) from exc
     except AmbiguousUserError as exc:
         raise AuthError("Найдено несколько пользователей с таким ФИО", status_code=409) from exc
-    except ErpSqlError as exc:
+    except (ErpSqlError, OSError) as exc:
         logger.exception("ERP SQL error during login")
         if gateway:
             try:

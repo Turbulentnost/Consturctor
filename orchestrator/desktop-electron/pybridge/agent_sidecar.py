@@ -133,9 +133,11 @@ from app.sdk_agent.files import (  # noqa: E402
 )
 from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E402
 from app.sdk_agent.prompt import (  # noqa: E402
+    build_continue_run_prompt,
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
     build_sdk_prompt,
+    text_has_finished_work_result,
 )
 from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
 
@@ -167,6 +169,7 @@ _READ_EXACT = frozenset(
         "calendar.show_meetings",
         "excel.list_files",
         "excel.read_workbook",
+        "office.read_file",
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
@@ -211,21 +214,11 @@ def _is_read_tool(name: str) -> bool:
     return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
 
 
-_WORK_RESULT_DONE_RE = re.compile(r"#{0,6}[ \t]*WORK[ _]?RESULT\b", re.I)
-_FILES_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*FILES\b", re.I)
-_ACTIONS_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*ACTIONS\b", re.I)
+_MAX_WORK_CONTINUES = 2
 
 
 def _text_has_finished_work_result(text: str) -> bool:
-    raw = text or ""
-    upper = raw.upper()
-    if "TESTS: FAIL" in upper or "TESTS:FAIL" in upper:
-        return False
-    if "TESTS: PASS" not in upper and "TESTS:PASS" not in upper:
-        return False
-    if _WORK_RESULT_DONE_RE.search(raw):
-        return True
-    return bool(_FILES_SECTION_RE.search(raw) and _ACTIONS_SECTION_RE.search(raw))
+    return text_has_finished_work_result(text)
 
 
 def needs_confirmation(name: str) -> bool:
@@ -385,6 +378,10 @@ KEEP_KNOWLEDGE_FILE_SPEC: dict[str, Any] = {
 KEEP_FILE_HINT = (
     "Files in materials/attachments are per-run inputs: read them now, they are already "
     "stored as temporary for this run only. "
+    "Word (.docx), PDF and images: office.read_file with filename or saved_path from "
+    "onec.download_artifact. Excel: excel.read_workbook. "
+    "Scans and photos are passed to Cursor SDK vision in the tool result — "
+    "do not use built-in Read or Grep on docx/pdf/xlsx/jpg and do not look for OCR. "
     "Call keepKnowledgeFile ONLY for a stable document that is identical and reusable on "
     "every later run (fixed catalog, regulation table, standing schedule). "
     "Do not keep a per-run input that changes each run (for example a yearly meetings file "
@@ -525,6 +522,7 @@ _SD_MEETING_TOOLS = {
     "onec.docflow_tasks",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_meeting_summary",
     "report.export_document",
     "users.current",
@@ -545,6 +543,7 @@ _RK_MEETING_TOOLS = {
     "onec.sql_query",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_task_report",
     "report.build_meeting_summary",
     "report.export_document",
@@ -780,6 +779,17 @@ def _whitelist_tool_names(record: Any) -> list[str]:
                 continue
             add(step.get("tool") or step.get("tool_name"))
             add_all(step.get("tool_candidates"))
+    if names and any(
+        item in seen
+        for item in (
+            "onec.download_artifact",
+            "excel.read_workbook",
+            "onec.erp_assignments",
+            "onec.list_attachments",
+            "onec.read_attachment",
+        )
+    ):
+        add("office.read_file")
     if names:
         return names
     add_all(local.get("tools"))
@@ -3000,6 +3010,39 @@ class Sidecar:
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
             self._store_agent_id(workflow_id, agent_id)
+            continues = 0
+            while (
+                status == "ok"
+                and agent_id
+                and not active.stop.is_set()
+                and not _text_has_finished_work_result(answer)
+                and continues < _MAX_WORK_CONTINUES
+            ):
+                continues += 1
+                log(f"work result missing for {workflow_id}, continue {continues}")
+                on_event = self._forward_events(active, events)
+                on_event(
+                    {
+                        "type": "status",
+                        "text": "Продолжаю запуск до WORK_RESULT — уже прочитанные файлы не открываю снова.",
+                    }
+                )
+                result = bridge.run(
+                    prompt=build_continue_run_prompt(),
+                    workflow_id=workflow_id,
+                    cwd=run_cwd,
+                    resume_agent_id=agent_id,
+                    tools=_tool_specs_for_workflow(workflow),
+                    on_event=on_event,
+                    on_question=active.gate.ask_question,
+                    should_stop=active.stop.is_set,
+                    confirm_writes=True,
+                )
+                nxt = str(result.get("answer") or "").strip()
+                if nxt:
+                    answer = nxt
+                agent_id = str(result.get("agent_id") or agent_id).strip()
+                self._store_agent_id(workflow_id, agent_id)
             if status == "ok" and not _text_has_finished_work_result(answer):
                 status = "error"
                 tail = answer.strip()

@@ -63,8 +63,15 @@ http_logger = logging.getLogger("app.http")
 
 
 def _http_trace(message: str) -> None:
-    print(message, flush=True)
-    http_logger.info(message)
+    try:
+        print(message, flush=True)
+    except OSError:
+        # Aborted Windows console / closed pipe: do not fail the request.
+        pass
+    try:
+        http_logger.info(message)
+    except OSError:
+        pass
 
 
 @asynccontextmanager

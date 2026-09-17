@@ -50,3 +50,5 @@ def test_materialize_fetches_when_base64_omitted(tmp_path, monkeypatch) -> None:
     )
     assert result["path"].endswith("scan.pdf")
     assert open(result["path"], "rb").read() == b"from-url"
+    assert result["read_with"] == "office.read_file"
+    assert "office.read_file" in result["next_step"]

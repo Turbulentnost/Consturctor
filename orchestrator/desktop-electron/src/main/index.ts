@@ -234,17 +234,6 @@ function broadcastAgentEvent(message: AgentSidecarMessage): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('agent:event', message)
   }
-  if (
-    (message.type === 'result' || message.type === 'error') &&
-    String(message.source || '') === 'trigger'
-  ) {
-    showToast({
-      title: 'Запуск закончен',
-      body: 'Плановый запуск агента завершён.',
-      workflowId: String(message.workflowId || ''),
-      runId: String(message.runId || '')
-    })
-  }
 }
 
 const agentSidecar = new AgentSidecar(CONFIG.backendUrl, broadcastAgentEvent)
@@ -268,9 +257,12 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
     })
   } else if (kind === 'run_agent') {
     const runId = `run-${Date.now()}`
+    const agentTitle = String(command.title || '').trim()
     showToast({
-      title: 'Запуск начался',
-      body: 'Плановый запуск агента. Можно остановить из этого уведомления.',
+      title: agentTitle ? `Запуск начался · ${agentTitle}` : 'Запуск начался',
+      body: agentTitle
+        ? `Агент «${agentTitle}» запущен. Можно остановить из этого уведомления.`
+        : 'Плановый запуск агента. Можно остановить из этого уведомления.',
       workflowId,
       runId,
       canStop: true

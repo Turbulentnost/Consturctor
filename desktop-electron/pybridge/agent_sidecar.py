@@ -142,6 +142,7 @@ _READ_EXACT = frozenset(
         "calendar.show_meetings",
         "excel.list_files",
         "excel.read_workbook",
+        "office.read_file",
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
@@ -370,6 +371,10 @@ KEEP_KNOWLEDGE_FILE_SPEC: dict[str, Any] = {
 KEEP_FILE_HINT = (
     "Files in materials/attachments are per-run inputs: read them now, they are already "
     "stored as temporary for this run only. "
+    "Word (.docx), PDF and images: office.read_file with filename or saved_path from "
+    "onec.download_artifact. Excel: excel.read_workbook. "
+    "Scans and photos are passed to Cursor SDK vision in the tool result — "
+    "do not use built-in Read or Grep on docx/pdf/xlsx/jpg and do not look for OCR. "
     "Call keepKnowledgeFile ONLY for a stable document that is identical and reusable on "
     "every later run (fixed catalog, regulation table, standing schedule). "
     "Do not keep a per-run input that changes each run (for example a yearly meetings file "
@@ -505,6 +510,7 @@ _SD_MEETING_TOOLS = {
     "onec.docflow_tasks",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_meeting_summary",
     "report.export_document",
     "users.current",
@@ -525,6 +531,7 @@ _RK_MEETING_TOOLS = {
     "onec.sql_query",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_task_report",
     "report.build_meeting_summary",
     "report.export_document",
@@ -745,6 +752,17 @@ def _whitelist_tool_names(record: Any) -> list[str]:
                 continue
             add(step.get("tool") or step.get("tool_name"))
             add_all(step.get("tool_candidates"))
+    if names and any(
+        item in seen
+        for item in (
+            "onec.download_artifact",
+            "excel.read_workbook",
+            "onec.erp_assignments",
+            "onec.list_attachments",
+            "onec.read_attachment",
+        )
+    ):
+        add("office.read_file")
     if names:
         return names
     add_all(local.get("tools"))

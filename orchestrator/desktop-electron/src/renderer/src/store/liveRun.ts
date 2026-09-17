@@ -58,6 +58,32 @@ export function isLiveRunState(state: {
   return state.running || Boolean(state.pendingQuestion) || Boolean(state.pendingHitl)
 }
 
+type LiveMatchEntry = {
+  background?: boolean
+  backendRunId?: string
+  workflowId?: string
+  state: {
+    running: boolean
+    pendingQuestion: unknown
+    pendingHitl: unknown
+    activeRunId?: string | null
+  }
+}
+
+/** Inbox / toast run ids can be backend, local SDK, or the workflow fallback. */
+export function liveEntryMatchesRun<T extends LiveMatchEntry>(
+  live: T | undefined,
+  runId = ''
+): live is T {
+  if (!live || live.background || !isLiveRunState(live.state)) return false
+  const requested = runId.trim()
+  if (!requested) return true
+  const known = [live.backendRunId, live.state.activeRunId, live.workflowId]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  return known.includes(requested)
+}
+
 /** Backend in-flight AgentRun.status is `started`; the board maps it to `running`. */
 export function isInFlightRunStatus(status: string): boolean {
   const raw = (status || '').trim().toLowerCase()

@@ -1,6 +1,9 @@
+import { Download } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { formatFileWhen } from '../../pages/filesGrouping'
 import type { TodayAgentResultItem } from '../../workplace/useTodayAgentResults'
+import { TodayResultReport } from './TodayResultReport'
 import {
   loadResultFilePreview,
   resultAgentLabel,
@@ -9,10 +12,10 @@ import {
 
 function PreviewBody({ preview }: { preview: ResultFilePreview | null }): React.JSX.Element {
   if (!preview) {
-    return <p className="today-table-status">Открываем результат…</p>
+    return <p className="today-result-preview-status">Открываем результат…</p>
   }
   if (preview.kind === 'error') {
-    return <p className="today-table-status today-table-error">{preview.message}</p>
+    return <p className="today-result-preview-status today-table-error">{preview.message}</p>
   }
   if (preview.kind === 'table') {
     return (
@@ -44,7 +47,7 @@ function PreviewBody({ preview }: { preview: ResultFilePreview | null }): React.
     }
     return <img className="today-result-preview-img" src={preview.dataUrl} alt="" />
   }
-  return <pre className="today-result-preview-text">{preview.text}</pre>
+  return <TodayResultReport text={preview.text} />
 }
 
 export function TodayResultPreviewModal({
@@ -84,6 +87,8 @@ export function TodayResultPreviewModal({
     }
   }, [file])
 
+  const bodyKind = preview?.kind || 'loading'
+
   return createPortal(
     <div className="modal-overlay today-result-preview-overlay" onClick={onClose} role="presentation">
       <div
@@ -93,24 +98,31 @@ export function TodayResultPreviewModal({
         aria-labelledby={titleId}
         onClick={(event) => event.stopPropagation()}
       >
-        <header className="today-plan-detail-head">
-          <h4 className="modal-title" id={titleId}>
-            {resultAgentLabel(file)}
-          </h4>
+        <header className="today-result-preview-head">
+          <div className="today-result-preview-titles">
+            <p className="today-result-preview-kicker">Результат агента</p>
+            <h4 className="modal-title" id={titleId}>
+              {resultAgentLabel(file)}
+            </h4>
+            {file.createdAt ? (
+              <p className="today-result-preview-when spec-v04-muted">{formatFileWhen(file.createdAt)}</p>
+            ) : null}
+          </div>
           <button type="button" className="today-plan-detail-close" onClick={onClose} aria-label="Закрыть">
             ×
           </button>
         </header>
-        <div className="today-result-preview-body">
+        <div className={`today-result-preview-body is-${bodyKind}`}>
           <PreviewBody preview={preview} />
         </div>
-        <div className="modal-actions">
+        <div className="today-result-preview-actions">
           <button
             type="button"
-            className="btn-light"
+            className="btn-primary"
             disabled={downloading || (!file.downloadUrl && !(file.summary || '').trim())}
             onClick={onDownload}
           >
+            <Download size={16} strokeWidth={2} aria-hidden />
             {downloading ? 'Скачивание…' : 'Скачать отчёт'}
           </button>
           <button type="button" className="btn-light" onClick={onClose}>

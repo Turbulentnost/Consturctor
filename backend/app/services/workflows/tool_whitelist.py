@@ -4,6 +4,23 @@ from __future__ import annotations
 
 from typing import Any
 
+_OFFICE_READ_TRIGGERS = frozenset(
+    {
+        "onec.download_artifact",
+        "excel.read_workbook",
+        "excel.list_files",
+        "onec.erp_assignments",
+        "onec.list_attachments",
+        "onec.read_attachment",
+    }
+)
+
+
+def _ensure_office_reader(names: list[str], add) -> None:
+    if names and any(item in _OFFICE_READ_TRIGGERS for item in names):
+        add("office.read_file")
+
+
 # Cursor SDK built-ins. Published / demo-with-draft agents should not wander the workspace.
 CURSOR_BUILTIN_TOOLS = frozenset(
     {
@@ -77,15 +94,18 @@ def collect_runtime_whitelist(
             add(step.get("tool") or step.get("tool_name"))
             add_all(step.get("tool_candidates"))
 
+    _ensure_office_reader(names, add)
     if names:
         return names
 
     runtime = plan_data.get("runtime") if isinstance(plan_data.get("runtime"), dict) else {}
     add_all(runtime.get("tools"))
+    _ensure_office_reader(names, add)
     if names:
         return names
 
     add_all(data.get("tools"))
+    _ensure_office_reader(names, add)
     return names
 
 

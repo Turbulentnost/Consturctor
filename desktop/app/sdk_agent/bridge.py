@@ -761,6 +761,8 @@ class CursorSdkBridge:
 
     @staticmethod
     def _should_externalize_result(result: dict[str, Any], raw_bytes: int) -> bool:
+        if result.get("vision") and result.get("vision_pages"):
+            return False
         if raw_bytes > LARGE_TOOL_RESULT_BYTES:
             return True
         for value in result.values():

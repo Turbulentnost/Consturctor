@@ -21,6 +21,7 @@ export type TodayAgentResultItem = {
   runId?: string
   agentTitle?: string
   summary?: string
+  createdAt?: string
 }
 
 function fileKind(name: string): 'doc' | 'pdf' | 'xls' | 'csv' {
@@ -43,7 +44,8 @@ function mapFile(item: WorkflowFileItem): TodayAgentResultItem {
     workflowId: item.workflowId,
     runId: item.runId,
     agentTitle: item.agentTitle || undefined,
-    summary: item.summary || undefined
+    summary: item.summary || undefined,
+    createdAt: item.createdAt || undefined
   }
 }
 
@@ -141,16 +143,21 @@ export function useTodayAgentResults(periodDay: Date, userId?: string): TodayAge
 
   const resolvedItems = useMemo(() => {
     if (items.length) return items
-    return TODAY_RESULT_FILES.map((file) => ({
-      id: file.id,
-      name: file.name,
-      kind: file.kind,
-      tag: file.tag,
-      tagTone: file.tagTone,
-      agentTitle: file.agentTitle,
-      summary: file.preview
-    }))
-  }, [items])
+    return TODAY_RESULT_FILES.map((file, index) => {
+      const stamp = new Date(periodDay)
+      stamp.setHours(9 + index * 2, 20, 0, 0)
+      return {
+        id: file.id,
+        name: file.name,
+        kind: file.kind,
+        tag: file.tag,
+        tagTone: file.tagTone,
+        agentTitle: file.agentTitle,
+        summary: file.preview,
+        createdAt: stamp.toISOString()
+      }
+    })
+  }, [items, periodDay])
 
   return {
     loading: loading && items.length === 0,

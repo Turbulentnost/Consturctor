@@ -325,6 +325,7 @@ def test_published_assignment_agent_gets_odata_and_excel_tools() -> None:
     assert "onec.erp_assignments" in tools
     assert "onec.erp_assignments_write" in tools
     assert "excel.read_workbook" in tools
+    assert "office.read_file" in tools
     assert "onec.erp_tasks_current" not in tools
 
 
@@ -356,6 +357,7 @@ def test_tools_registered() -> None:
     assert "onec.erp_assignments" in names
     assert "onec.erp_assignments_write" in names
     assert "onec.download_artifact" in names
+    assert "office.read_file" in names
     assert "onec.download_artifact" in ONEC_TOOLS
     assert "onec.download_artifact" not in ONEC_WRITE_TOOLS
     read_tool = next(item for item in list_tools() if item["name"] == "onec.erp_assignments")

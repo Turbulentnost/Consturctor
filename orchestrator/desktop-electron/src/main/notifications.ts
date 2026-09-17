@@ -101,6 +101,7 @@ export function showToast(payload: ToastPayload): void {
   const workflowId = (payload.workflowId || '').trim()
   const canStop = Boolean(payload.canStop || isStartRunTitle(title))
   if (isFinishRunTitle(title)) closeStartToast(workflowId)
+  notifyWindows('inbox:changed', { id: workflowId || title })
   if (!Notification.isSupported()) {
     notifyWindows('notification:open', payload)
     return

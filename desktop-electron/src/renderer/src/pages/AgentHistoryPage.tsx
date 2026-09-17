@@ -110,12 +110,13 @@ function isHistoryResult(text: string): boolean {
 }
 
 function historyRunStatus(run: { status: string; answer?: string; summary?: string }): string {
+  const result = (run.answer || run.summary || '').trim()
+  if (/запуск завершился без\s+#*\s*WORK[ _]?RESULT/i.test(result)) return 'error'
   const status = (run.status || '').trim().toLowerCase()
   if (status === 'started' || status === 'running') return status
   if (status === 'ok') return 'ok'
   if (status === 'error') return 'error'
   if (status === 'canceled' || status === 'cancelled') return 'canceled'
-  const result = (run.answer || run.summary || '').trim()
   if (isHistoryResult(result)) return 'ok'
   return 'canceled'
 }

@@ -299,8 +299,6 @@ export function Sidebar({
         )}
       </div>
 
-      {!collapsed && !showAdminNav ? <div className="pilot-badge">Пилот · 2 агента</div> : null}
-
       <nav className="nav">
         {items.map((item) => {
           const isActive = item.key === active

@@ -20,12 +20,14 @@ from app.sdk_agent.files import (
 )
 from app.sdk_agent.prompt import (
     AGENTS_MD,
+    build_continue_run_prompt,
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
     build_followup_sdk_prompt,
     build_regulation_sdk_prompt,
     build_sdk_prompt,
     inferred_design_answers,
+    strip_to_work_result,
     text_has_finished_work_result,
 )
 from app.sdk_agent.tool_adapter import (
@@ -83,6 +85,8 @@ def test_sdk_prompt_contains_plan_and_tool_instruction() -> None:
     prompt = build_sdk_prompt(record, "проверь сейчас")
     assert "AGENTS.md" in prompt
     assert "materials/agent.md" in prompt
+    assert "не читай его" in prompt
+    assert "второй круг" in prompt
     assert "проверь сейчас" in prompt
     assert "Проверять сроки проектов" not in prompt
     assert "Прочитать проекты TurboProject" not in prompt
@@ -263,6 +267,7 @@ def test_run_sdk_prompt_does_not_dump_tool_catalog() -> None:
     record = WorkflowRecord(id="wf-1", title="Контроль сроков", phase="done")
     prompt = build_sdk_prompt(record, "проверь сейчас")
     assert "AGENTS.md" in prompt
+    assert "не читай его" in prompt
     assert "на русском" in prompt
     assert "customTools" not in prompt
     assert "web_search" not in prompt
@@ -406,6 +411,7 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert "INTERVIEW_QUESTION_MODEL_PARAMS" in text
     assert "testsPassReady" in text
     assert "isFinishedWorkResult" in text
+    assert "looksLikeWorkResultTemplate" in text
     assert "stopState" in text
     assert "WORK[ _]?RESULT" in text
     assert "hasResultSections" in text
@@ -446,6 +452,25 @@ def test_finished_work_result_accepts_files_actions_without_header() -> None:
     assert text_has_finished_work_result("размышление## WORK_RESULT\nИтог\nTESTS: PASS")
     assert not text_has_finished_work_result("Сейчас вызову 1С. TESTS: PASS потом.")
     assert not text_has_finished_work_result("## WORK_RESULT\nИтог\nTESTS: FAIL")
+    assert not text_has_finished_work_result("Заверши ## WORK_RESULT и TESTS: PASS.")
+    assert not text_has_finished_work_result(
+        "## WORK_RESULT\n<кратко: что сделано и главный итог процесса>\nTESTS: PASS"
+    )
+    follow = build_continue_run_prompt()
+    assert "Не начинай сначала" in follow
+    assert "не читай их снова" in follow
+
+
+def test_strip_to_work_result_keeps_sentence_split_by_marker() -> None:
+    raw = (
+        "Планирую совещания председателя\n"
+        "## WORK_RESULT\n"
+        "и его календарь до конца года.\n"
+        "TESTS: PASS\n"
+    )
+    text = strip_to_work_result(raw)
+    assert "Планирую совещания председателя" in text
+    assert "и его календарь до конца года." in text
 
 
 def test_sdk_design_tool_specs_include_constructor_tools() -> None:
@@ -953,7 +978,7 @@ def test_seed_workflow_files_materializes_manifest(tmp_path: Path) -> None:
     assert manifest.is_file()
     assert (tmp_path / "materials" / "001_reglament.txt").read_bytes() == b"original"
     assert (tmp_path / "materials" / "001_reglament.txt.txt").read_text(encoding="utf-8")
-    assert "materials/manifest.json" in hint
+    assert "materials/" in hint
     assert "askQuestion" in hint
     assert "БАЗА ДОКУМЕНТОВ" not in hint
 

@@ -32,6 +32,7 @@ def test_whitelist_from_draft_steps_not_domain_pack() -> None:
         "excel.list_files",
         "onec.erp_assignments",
         "onec.erp_assignments_write",
+        "office.read_file",
     ]
     assert "onec.odata_get" not in names
     assert "read" not in names
@@ -73,6 +74,7 @@ def test_published_plan_prefers_playbook_whitelist() -> None:
     assert "onec.erp_assignments" in tools
     assert "onec.erp_assignments_write" in tools
     assert "excel.edit_workbook" in tools
+    assert "office.read_file" in tools
     assert "onec.odata_get" not in tools
     assert "onec.sql_query" not in tools
     assert "turboproject" not in tools

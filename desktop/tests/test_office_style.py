@@ -161,6 +161,91 @@ def test_export_document_styles_word_table(tmp_path: Path) -> None:
     assert fill.upper() == "1B4F72"
 
 
+def test_normalize_excel_newlines_keeps_windows_paths() -> None:
+    from app.tools.ac.office_style import _normalize_excel_newlines
+
+    assert _normalize_excel_newlines("C:\\new\\file.xlsx") == "C:\\new\\file.xlsx"
+    assert _normalize_excel_newlines("Первая\\nВторая") == "Первая\nВторая"
+    assert _normalize_excel_newlines("строка<br>ещё") == "строка\nещё"
+
+
+def test_create_workbook_wraps_long_and_multiline_cells(tmp_path: Path) -> None:
+    from openpyxl import load_workbook
+
+    from app.tools.ac.office_style import data_start_row
+
+    long_text = (
+        "Служебное расследование по ТОО «Вымпел»: проверить комплект "
+        "исходных данных и подготовить справку для заказчика с перечнем "
+        "недостающих документов и сроком устранения замечаний."
+    )
+    resolver = AgentWorkspaceResolver(tmp_path)
+    created = ExcelCreateWorkbookTool(resolver).execute(
+        {
+            "workflow_id": "wf-style",
+            "filename": "tracker.xlsx",
+            "headers": ["ID", "Поручение (результат/артефакт)"],
+            "rows": [
+                ["ACT-00001", long_text],
+                ["ACT-00002", "Первая строка\\nВторая строка\\nТретья строка"],
+            ],
+        }
+    )
+    assert created.ok
+    workbook = load_workbook(Path(created.output_data["path"]))
+    try:
+        sheet = workbook.active
+        start = data_start_row(workbook, sheet)
+        long_cell = sheet.cell(start + 1, 2)
+        multi_cell = sheet.cell(start + 2, 2)
+        assert long_cell.alignment.wrap_text is True
+        assert multi_cell.alignment.wrap_text is True
+        assert "\n" in str(multi_cell.value)
+        assert "\\n" not in str(multi_cell.value)
+        assert (sheet.row_dimensions[start + 1].height or 0) > 18
+        assert (sheet.row_dimensions[start + 2].height or 0) > 18
+    finally:
+        workbook.close()
+
+
+def test_office_format_restyle_wraps_existing_sheet(tmp_path: Path) -> None:
+    from openpyxl import Workbook, load_workbook
+
+    resolver = AgentWorkspaceResolver(tmp_path)
+    workspace = resolver.for_agent("wf-style")
+    path = workspace.resolve("plain.xlsx")
+    book = Workbook()
+    try:
+        sheet = book.active
+        sheet["A1"] = "ID"
+        sheet["B1"] = "Поручение"
+        sheet["A2"] = "1"
+        sheet["B2"] = (
+            "Договор на поставку оборудования и сопроводительных документов "
+            "с указанием сроков поставки, монтажа и пусконаладки."
+        )
+        book.save(path)
+    finally:
+        book.close()
+
+    restyled = OfficeFormatDocumentTool(resolver).execute(
+        {
+            "workflow_id": "wf-style",
+            "filename": "plain.xlsx",
+            "theme": "navy",
+            "title": "Журнал",
+        }
+    )
+    assert restyled.ok
+    workbook = load_workbook(path)
+    try:
+        cell = workbook.active["B2"]
+        assert cell.alignment.wrap_text is True
+        assert (workbook.active.row_dimensions[2].height or 0) > 18
+    finally:
+        workbook.close()
+
+
 def test_office_format_word_from_sections(tmp_path: Path) -> None:
     import importlib.util
 

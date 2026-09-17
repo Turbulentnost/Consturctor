@@ -419,6 +419,11 @@ function byKnownName(name: string, args: Record<string, unknown>): ToolExplanati
     'browser.click': ['Клик в браузере', 'нажать элемент на странице', 'Нажимает на странице'],
     'browser.type_text': ['Ввод в браузере', 'ввести текст на странице', 'Вводит текст на странице'],
     'excel.read_workbook': ['Чтение Excel', 'прочитать книгу Excel', 'Читает Excel'],
+    'office.read_file': [
+      'Чтение Word, PDF и картинок',
+      'прочитать Word, PDF или картинку',
+      'Читает документ',
+    ],
     'excel.list_files': ['Файлы агента', 'посмотреть файлы в папке агента', 'Смотрит файлы агента'],
     'office.format_document': [
       'Оформление документа',

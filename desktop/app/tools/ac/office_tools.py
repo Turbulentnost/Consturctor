@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.tools.ac.agent_workspace import AgentWorkspaceResolver, WorkspaceError
 from app.tools.ac.base import BaseTool
+from app.tools.ac.office_read import register_office_read_tools
 from app.tools.ac.office_style import (
     as_kpis,
     as_sections,
@@ -44,7 +45,9 @@ class OfficeFormatDocumentTool(BaseTool):
                 description=(
                     "Создаёт или переоформляет Excel (.xlsx) / Word (.docx) "
                     "корпоративным шаблоном: тема, титул, KPI, шапка таблицы, "
-                    "зебра, статусы, колонтитулы. "
+                    "зебра, статусы, перенос текста в ячейке Excel, колонтитулы. "
+                    "В Excel длинный текст переносится сам; \\n или <br> в ячейке "
+                    "дают явный разрыв строки. "
                     "Если файла ещё нет — передай headers/rows (Excel) или "
                     "sections/table (Word). Если файл уже есть и данных нет — "
                     "только применит оформление. "
@@ -249,6 +252,7 @@ def register_office_tools(
     *,
     skip_existing: bool = False,
 ) -> None:
+    register_office_read_tools(registry, resolver, skip_existing=skip_existing)
     tool = OfficeFormatDocumentTool(resolver)
     if skip_existing and registry.has_tool(tool.definition.name):
         return

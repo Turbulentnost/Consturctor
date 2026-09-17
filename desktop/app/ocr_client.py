@@ -12,32 +12,66 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_URL = "http://192.168.1.157:1239"
+_DEFAULT_URL = "http://192.168.1.157:1234"
 _DEFAULT_MODEL = "ministral-3-14b-instruct-2512"
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+_LAST_ERROR = ""
+
+
+def last_ocr_error() -> str:
+    return _LAST_ERROR
 
 
 def ocr_file(path: str | Path) -> str:
+    global _LAST_ERROR
+    _LAST_ERROR = ""
     source = Path(path)
     suffix = source.suffix.lower()
     if not source.is_file():
+        _LAST_ERROR = f"файл не найден: {source.name}"
         return ""
     if suffix == ".pdf":
         return _ocr_pdf(source)
     if suffix in IMAGE_SUFFIXES:
         return _ocr_image(source)
+    _LAST_ERROR = f"OCR не умеет {suffix or 'этот тип файла'}"
+    return ""
+
+
+def _env_value(key: str) -> str:
+    found = (os.environ.get(key) or "").strip()
+    if found:
+        return found
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[1] / ".env",
+        here.parents[2] / "backend" / ".env",
+    ]
+    for env_path in candidates:
+        if not env_path.is_file():
+            continue
+        try:
+            for raw in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name, value = line.split("=", 1)
+                if name.strip() == key:
+                    return value.strip().strip('"').strip("'")
+        except OSError:
+            continue
     return ""
 
 
 def _ocr_url() -> str:
-    base = (os.environ.get("LM_STUDIO_BASE_URL") or _DEFAULT_URL).strip().rstrip("/")
+    base = (_env_value("LM_STUDIO_BASE_URL") or _DEFAULT_URL).strip().rstrip("/")
     return f"{base}/v1/chat/completions"
 
 
 def _ocr_model() -> str:
     return (
-        os.environ.get("LM_STUDIO_OCR_MODEL")
-        or os.environ.get("LM_STUDIO_MODEL")
+        _env_value("LM_STUDIO_OCR_MODEL")
+        or _env_value("LM_STUDIO_MODEL")
         or _DEFAULT_MODEL
     ).strip()
 
@@ -53,6 +87,7 @@ def _ocr_pdf(path: Path) -> str:
     try:
         import fitz
     except ImportError:
+        _set_error("нет pymupdf, страницы PDF для OCR не снять")
         return ""
     with tempfile.TemporaryDirectory(prefix="ocr-pdf-") as tmp:
         images: list[tuple[int, Path]] = []
@@ -116,6 +151,7 @@ def _recognize(images: list[tuple[int, Path]]) -> str:
             model,
             ascii(str(exc)),
         )
+        _set_error(f"LM Studio недоступен ({url}): {_short_exc(exc)}")
         return ""
     choices = data.get("choices") if isinstance(data, dict) else None
     message = choices[0].get("message") if isinstance(choices, list) and choices else {}
@@ -127,7 +163,24 @@ def _recognize(images: list[tuple[int, Path]]) -> str:
             str(part.get("text") or "") if isinstance(part, dict) else str(part)
             for part in text
         )
-    return str(text or "").strip()
+    text = str(text or "").strip()
+    if not text:
+        _set_error(f"LM Studio ответил пусто ({url}, модель {model})")
+    return text
+
+
+def _set_error(message: str) -> None:
+    global _LAST_ERROR
+    _LAST_ERROR = (message or "").strip()
+
+
+def _short_exc(exc: BaseException) -> str:
+    text = str(exc or "").strip() or exc.__class__.__name__
+    if "All connection attempts failed" in text or "ConnectError" in exc.__class__.__name__:
+        return "нет соединения"
+    if "timed out" in text.lower() or "Timeout" in exc.__class__.__name__:
+        return "таймаут"
+    return text[:180]
 
 
 def _to_png(source: Path, dest: Path) -> None:

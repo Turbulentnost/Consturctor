@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import type { InboxNotification } from '../api/types'
 import { useRuns } from '../store/runs'
 import { isLiveRunState, liveRunProgress } from '../store/liveRun'
@@ -41,6 +41,7 @@ interface NotificationInboxProps {
   onOpen?: (item: InboxNotification) => void
   onStop?: (item: InboxNotification) => void
   canStop?: (item: InboxNotification) => boolean
+  panelStyle?: CSSProperties
 }
 
 export function NotificationInbox({
@@ -49,7 +50,9 @@ export function NotificationInbox({
   onClearAll,
   onClearOne,
   onOpen,
-  onStop
+  onStop,
+  canStop,
+  panelStyle
 }: NotificationInboxProps): React.JSX.Element {
   const runs = useRuns()
   const [now, setNow] = useState(() => Date.now())
@@ -59,8 +62,9 @@ export function NotificationInbox({
       .map((entry) => {
         const startedAt = entry.state.runningSinceMs || now
         const runId = entry.state.activeRunId || entry.backendRunId || entry.workflowId
+        const agentTitle = (entry.title || '').trim() || 'ИИ-агент'
         const statusText = liveStatusText({
-          title: entry.title || 'ИИ-агент',
+          title: agentTitle,
           pendingHitl: Boolean(entry.state.pendingHitl),
           pendingQuestion: Boolean(entry.state.pendingQuestion),
           phase: String(entry.state.timing?.phase || 'idle')
@@ -75,8 +79,8 @@ export function NotificationInbox({
         const elapsed = durationLabel(Math.max(0, now - startedAt))
         return {
           id: `live:${entry.workflowId}:${runId}`,
-          title: 'Запуск начался',
-          body: `${statusText} · ${elapsed}`,
+          title: agentTitle,
+          body: `Запуск начался · ${elapsed}`,
           unread: false,
           senderFio: '',
           createdAt: new Date(startedAt).toISOString(),
@@ -84,10 +88,24 @@ export function NotificationInbox({
           runId,
           progress,
           statusText,
-          canStop: Boolean(onStop && entry.workflowId)
+          canStop: Boolean(
+            onStop &&
+              entry.workflowId &&
+              (!canStop ||
+                canStop({
+                  id: `live:${entry.workflowId}:${runId}`,
+                  title: agentTitle,
+                  body: '',
+                  unread: false,
+                  senderFio: '',
+                  createdAt: '',
+                  workflowId: entry.workflowId,
+                  runId
+                }))
+          )
         }
       })
-  }, [now, onStop, runs.entries])
+  }, [canStop, now, onStop, runs.entries])
 
   const visibleItems = useMemo(() => {
     const liveWorkflowIds = new Set(liveItems.map((item) => item.workflowId))
@@ -100,7 +118,7 @@ export function NotificationInbox({
     return () => window.clearInterval(timer)
   }, [liveItems.length])
   return (
-    <div className="notify-panel">
+    <div className="notify-panel" style={panelStyle}>
       <div className="notify-panel-head">
         <div className="notify-panel-title">Уведомления</div>
         {visibleItems.length > 0 && (

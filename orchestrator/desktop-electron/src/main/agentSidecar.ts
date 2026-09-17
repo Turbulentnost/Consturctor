@@ -3,7 +3,14 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { app } from 'electron'
 
-const CURSOR_ENV_KEYS = ['CURSOR_API_KEY', 'CURSOR_API_BASE_URL', 'CURSOR_SDK_MODEL'] as const
+const CURSOR_ENV_KEYS = [
+  'CURSOR_API_KEY',
+  'CURSOR_API_BASE_URL',
+  'CURSOR_SDK_MODEL',
+  'LM_STUDIO_BASE_URL',
+  'LM_STUDIO_MODEL',
+  'LM_STUDIO_OCR_MODEL'
+] as const
 
 function parseEnvFile(path: string): Record<string, string> {
   const out: Record<string, string> = {}

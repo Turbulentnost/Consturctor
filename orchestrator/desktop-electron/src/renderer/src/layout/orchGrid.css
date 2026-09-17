@@ -393,6 +393,56 @@
   z-index: 100;
 }
 
+.orch-grid.orch-grid-subpage {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.orch-grid.orch-grid-subpage .orch-grid-util {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.orch-grid.orch-grid-subpage .orch-slot-main {
+  grid-column: 1;
+  grid-row: 2 / 3;
+}
+
+.orch-grid.orch-grid-subpage .orch-slot-main.orch-heavy-embed-slot {
+  grid-row: 2 / 3;
+  min-height: 0;
+  align-self: stretch;
+}
+
+.orch-slot-main.orch-heavy-embed-slot > .orch-heavy-embed,
+.orch-heavy-embed.orch-agent-subpage {
+  flex: 1 1 0;
+  align-self: stretch;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.orch-heavy-embed.orch-agent-subpage > * {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+}
+
+.orch-agent-subpage .agent-studio {
+  padding: 8px 8px 12px;
+}
+
+.orch-agent-subpage .wf-page {
+  padding-top: 0;
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+}
+
 .orch-legacy-fullpage {
   flex: 1;
   min-height: 0;

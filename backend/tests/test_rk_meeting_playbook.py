@@ -36,6 +36,7 @@ def test_infer_revision_commission_kind() -> None:
     tools = default_tools_for_kind("revision_commission")
     assert "onec.erp_tasks_current" in tools
     assert "workspace.powershell_run" in tools
+    assert "office.read_file" in tools
 
 
 def test_apply_rk_config_sets_schedule_and_tools() -> None:
@@ -70,3 +71,4 @@ def test_tools_for_published_rk_agent() -> None:
     tools = _tools_for_published_plan(plan, row)
     assert "report.build_task_report" in tools
     assert "excel.read_workbook" in tools
+    assert "office.read_file" in tools

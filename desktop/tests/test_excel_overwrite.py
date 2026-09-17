@@ -92,3 +92,31 @@ def test_read_workbook_finds_attachment_by_basename(tmp_path: Path) -> None:
     assert read.ok
     assert read.output_data["filename"] == "002_report.xlsx"
     assert read.output_data["row_count"] >= 1
+
+
+def test_read_workbook_from_artifact_cache(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    resolver = AgentWorkspaceResolver(tmp_path)
+    created = ExcelCreateWorkbookTool(resolver).execute(
+        {
+            "workflow_id": "wf-excel",
+            "filename": "tracker.xlsx",
+            "headers": ["a"],
+            "rows": [[7]],
+        }
+    )
+    assert created.ok
+    from app.tools.ac.readable_files import artifact_cache_dir
+
+    cache = artifact_cache_dir()
+    cache.mkdir(parents=True)
+    dest = cache / "tracker.xlsx"
+    Path(created.output_data["path"]).replace(dest)
+
+    read = ExcelReadWorkbookTool(resolver).execute(
+        {"workflow_id": "wf-excel", "filename": str(dest)}
+    )
+    assert read.ok
+    assert read.output_data["filename"] == "tracker.xlsx"
+    flat = [cell for row in read.output_data["rows"] for cell in row]
+    assert 7 in flat or "a" in flat

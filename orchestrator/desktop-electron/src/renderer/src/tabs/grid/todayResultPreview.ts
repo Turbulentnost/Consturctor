@@ -11,7 +11,8 @@ export function resultAgentLabel(file: TodayAgentResultItem): string {
 export function uniqueAgentResults(items: TodayAgentResultItem[]): TodayAgentResultItem[] {
   const seen = new Set<string>()
   const out: TodayAgentResultItem[] = []
-  for (const item of items) {
+  const ranked = [...items].sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
+  for (const item of ranked) {
     const key = (item.agentTitle || '').trim().toLowerCase() || item.workflowId || item.id
     if (seen.has(key)) continue
     seen.add(key)
@@ -77,6 +78,15 @@ function previewFromText(file: TodayAgentResultItem, text: string): ResultFilePr
 
 const RESULT_READY_TEXT = 'Отчёт сформирован.\nПолный текст доступен после скачивания.'
 
+function pickPreviewText(fromRun: string, summary: string): string {
+  const cleaned = (fromRun || '').trim()
+  const local = (summary || '').trim()
+  if (!cleaned) return local
+  const truncated = cleaned.length < 48 || /^(и|а|но|или)\b/i.test(cleaned)
+  if (truncated && local.length > cleaned.length) return local
+  return cleaned
+}
+
 async function loadRunResultText(file: TodayAgentResultItem): Promise<string> {
   if (!file.workflowId || !file.runId) return ''
   try {
@@ -94,27 +104,26 @@ async function loadRunResultText(file: TodayAgentResultItem): Promise<string> {
 }
 
 export async function loadResultFilePreview(file: TodayAgentResultItem): Promise<ResultFilePreview> {
-  const local = (file.summary || '').trim()
-  if (local) return previewFromText(file, local)
-
   const fromRun = await loadRunResultText(file)
-  if (fromRun) return previewFromText(file, fromRun)
-
+  const stub = pickPreviewText(fromRun, file.summary || '')
+  const stubIsShort = !stub || stub.length < 80 || /^(и|а|но|или)\b/i.test(stub)
   const canPreviewInline = file.kind === 'pdf' || file.kind === 'csv'
-  if (file.downloadUrl && canPreviewInline) {
+  if (file.downloadUrl && (canPreviewInline || stubIsShort)) {
     try {
       const remote = await api.fetchFilePreview(file.downloadUrl, file.name)
       if (remote.ok && remote.kind === 'embed') {
         return { kind: 'embed', dataUrl: remote.dataUrl, mime: remote.mime }
       }
-      if (remote.ok && remote.kind === 'text') {
-        return previewFromText(file, remote.text)
+      if (remote.ok && remote.kind === 'text' && remote.text.trim()) {
+        const remoteText = remote.text.trim()
+        if (!stub || remoteText.length >= stub.length) return previewFromText(file, remoteText)
       }
     } catch {
       /* show ready-state below */
     }
   }
 
+  if (stub) return previewFromText(file, stub)
   if (file.downloadUrl) return { kind: 'text', text: RESULT_READY_TEXT }
   return { kind: 'error', message: 'Результат ещё не доступен для просмотра' }
 }

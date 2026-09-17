@@ -52,6 +52,7 @@ _READ_EXACT = frozenset(
         "calendar.show_meetings",
         "excel.list_files",
         "excel.read_workbook",
+        "office.read_file",
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",

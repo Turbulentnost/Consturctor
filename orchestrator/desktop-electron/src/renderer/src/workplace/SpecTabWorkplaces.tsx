@@ -337,8 +337,9 @@ export function ProjectsTabWorkplace({
               </div>
               <p className="spec-v04-muted">Роль: {selected.role}. Срок: {selected.deadline}.</p>
               <h4>
-                Открытых задач в MPP: {selected.tasks}
-                {projectTasks.showingAllAssignees ? ' · все исполнители' : ''}
+                {projectTasks.loading
+                  ? 'Загружаем мои открытые задачи…'
+                  : `Моих открытых задач: ${projectTasks.matchedCount || projectTasks.rows.length || 0}`}
               </h4>
               <SpecProgress value={selected.progress} />
               {projectTasks.loading ? (
@@ -364,7 +365,7 @@ export function ProjectsTabWorkplace({
                   </tbody>
                 </table>
               ) : (
-                <p className="spec-v04-muted">Нет задач в MPP по фильтру</p>
+                <p className="spec-v04-muted">Нет моих открытых задач в проекте</p>
               )}
               <footer className="spec-detail-actions">
                 <button type="button" className="btn-ghost">

@@ -7,6 +7,7 @@ import {
   useTodayAgentResults
 } from '../../workplace/useTodayAgentResults'
 import { TodayResultPreviewModal } from './TodayResultPreviewModal'
+import { formatFileWhen } from '../../pages/filesGrouping'
 import { resultAgentLabel, uniqueAgentResults } from './todayResultPreview'
 
 export function TodayResultsPanel({
@@ -63,6 +64,9 @@ export function TodayResultsPanel({
             <li key={file.id} className="today-results-item">
               <div className="today-results-meta">
                 <strong>{agentName}</strong>
+                {file.createdAt ? (
+                  <small className="today-results-date spec-v04-muted">{formatFileWhen(file.createdAt)}</small>
+                ) : null}
               </div>
               <div className="today-results-actions">
                 <button

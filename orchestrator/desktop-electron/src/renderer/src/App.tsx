@@ -30,6 +30,7 @@ import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
 import { FilesPage } from './pages/FilesPage'
 import { OrchGridShell } from './layout/OrchGridShell'
+import { OrchSlotMain } from './layout/GridSlots'
 import type { WorkplaceTabKey } from './layout/tabRegistry'
 import { ProcessesGridTab } from './tabs/grid/ProcessesGridTab'
 import { TasksGridTab } from './tabs/grid/TasksGridTab'
@@ -42,7 +43,7 @@ import { KpiGridTab } from './tabs/grid/KpiGridTab'
 import { DecisionsGridTab } from './tabs/grid/DecisionsGridTab'
 import { HistoryGridTab } from './tabs/grid/HistoryGridTab'
 import { RunProvider, useRuns } from './store/runs'
-import { isInFlightRunStatus, isLiveRunState } from './store/liveRun'
+import { isInFlightRunStatus, liveEntryMatchesRun } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
@@ -380,11 +381,16 @@ function AppShell(): React.JSX.Element {
     }
     void refresh()
     const timer = setInterval(refresh, 20000)
+    const unsub = window.api.onInboxChanged?.(() => {
+      void refresh()
+      void runs.hydrateLive()
+    })
     return () => {
       alive = false
       clearInterval(timer)
+      unsub?.()
     }
-  }, [user])
+  }, [user, runs.hydrateLive])
 
   useEffect(() => {
     const unsubscribe = window.api.onChatEvent?.(() => setChatRefreshAt(Date.now()))
@@ -702,11 +708,7 @@ function AppShell(): React.JSX.Element {
     }
     const nextTitle = title || 'ИИ-агент'
     const live = runs.entries[workflowId]
-    const liveSameRun =
-      live &&
-      isLiveRunState(live.state) &&
-      (!runId || !live.backendRunId || live.backendRunId === runId)
-    if (live && liveSameRun) {
+    if (liveEntryMatchesRun(live, runId)) {
       setView({ kind: 'agentrun', workflowId, title: nextTitle || live.title, autoStart: false })
       return
     }
@@ -743,8 +745,22 @@ function AppShell(): React.JSX.Element {
     }
     const fromBody = /Агент «([^»]+)»/.exec(body || '')?.[1] || ''
     const agentTitle = fromBody || (/запуск/i.test(title) ? '' : title)
+    const nextTitle = agentTitle || runs.entries[workflowId]?.title || 'ИИ-агент'
+    if (/запуск начался|начат плановый запуск/i.test(title)) {
+      setView({ kind: 'agentrun', workflowId, title: nextTitle, autoStart: false })
+      if (runId) {
+        runs.noteRunning(workflowId, nextTitle, runId)
+        void runs.attachHistoryFeed(workflowId)
+      }
+      return
+    }
     if (/запуск закончен/i.test(title) && runId) {
-      setView({ kind: 'history', workflowId, title: agentTitle || 'ИИ-агент', runId })
+      if (liveEntryMatchesRun(runs.entries[workflowId], runId)) {
+        setView({ kind: 'agentrun', workflowId, title: nextTitle, autoStart: false })
+        return
+      }
+      setLastTab('history')
+      setView({ kind: 'history', workflowId, title: nextTitle, runId })
       void api
         .getWorkflow(workflowId)
         .then((record) => {
@@ -930,22 +946,44 @@ function AppShell(): React.JSX.Element {
   }
 
   const workplaceGrid = !isAdminMode && view.kind === 'tab' && isWorkplaceTabKey(view.key)
+  const workplaceSubpage =
+    !isAdminMode &&
+    (view.kind === 'history' ||
+      view.kind === 'agentrun' ||
+      view.kind === 'passport' ||
+      view.kind === 'schedule')
   const tabKey = workplaceGrid && view.kind === 'tab' ? view.key : null
+  const workplaceShellKey: WorkplaceTabKey | null = tabKey
+    ? tabKey
+    : workplaceSubpage
+      ? view.kind === 'history'
+        ? 'history'
+        : isWorkplaceTabKey(lastTab)
+          ? lastTab
+          : 'today'
+      : null
   const content = isAdminMode ? renderAdminContent() : renderUserContent()
   // #region agent log
-  fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'post-fix',hypothesisId:'H2',location:'App.tsx:unified-tree',message:'render unified provider tree',data:{workplaceGrid,isAdminMode,tabKey,viewKind:view.kind},timestamp:Date.now()})}).catch(()=>{})
+  fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'post-fix',hypothesisId:'H2',location:'App.tsx:unified-tree',message:'render unified provider tree',data:{workplaceGrid,workplaceSubpage,isAdminMode,tabKey,viewKind:view.kind},timestamp:Date.now()})}).catch(()=>{})
   // #endregion
 
   return (
     <GridDataRefreshProvider userId={activeUser.id}>
       <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
         <DebugSourcesLifetime />
-        {workplaceGrid && tabKey ? (
+        {workplaceShellKey ? (
           <div className="app-root orch-app-root">
             <OrchGridShell
-              activeKey={tabKey}
+              activeKey={workplaceShellKey}
+              subpage={workplaceSubpage}
               gridClassName={
-                tabKey === 'today' ? 'orch-grid-today' : tabKey === 'kpi' ? 'orch-grid-kpi' : ''
+                workplaceSubpage
+                  ? ''
+                  : workplaceShellKey === 'today'
+                    ? 'orch-grid-today'
+                    : workplaceShellKey === 'kpi'
+                      ? 'orch-grid-kpi'
+                      : ''
               }
               user={activeUser}
               avatarUrl={avatarUrl}
@@ -953,7 +991,7 @@ function AppShell(): React.JSX.Element {
               onUnreadChange={setUnread}
               onLogout={onLogout}
               showLogout={showLogout}
-              lightSidebar={tabKey === 'today'}
+              lightSidebar={workplaceShellKey === 'today'}
               activeThreadId=""
               chatRefreshAt={chatRefreshAt}
               onNavigate={(key) => {
@@ -971,7 +1009,13 @@ function AppShell(): React.JSX.Element {
               onSwitchAdminView={switchAdminView}
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
             >
-              {renderUserContent()}
+              {workplaceSubpage ? (
+                <OrchSlotMain spanAll heavyEmbed>
+                  <div className="orch-heavy-embed orch-agent-subpage">{renderUserFullscreen()}</div>
+                </OrchSlotMain>
+              ) : (
+                renderUserContent()
+              )}
             </OrchGridShell>
             <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
           </div>

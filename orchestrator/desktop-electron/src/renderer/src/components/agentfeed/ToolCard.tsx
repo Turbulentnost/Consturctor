@@ -84,7 +84,7 @@ export function ToolCard({ item, liftMeetings = false }: ToolCardProps): React.J
   const expandable = structured || hasResult || request.length > 0
   const [open, setOpen] = useState(false)
   const [touched, setTouched] = useState(false)
-  const shown = touched ? open : structured || (!item.done && request.length > 0)
+  const shown = touched ? open : structured
 
   if (meetings.length > 0 && liftMeetings && item.tool === CALENDAR_PLAN) {
     const status = item.error ? item.summary || 'Ошибка' : 'В результате'

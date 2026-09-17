@@ -40,10 +40,18 @@ const JUNK_PHRASES = [
 const JUNK_LINE_START =
   /^(сначала |сейчас |далее |затем |потом )?(прочитаю|читаю|вызову|открою журнал|проверю журнал|проверю вложен)/i
 
-// First-person process narration ("Снимаю свежие карточки", "открываю календари")
-// belongs to «Ход работы», never to «Результат».
-const NARRATION_START =
-  /^(сначала |сейчас |далее |затем |потом |теперь |параллельно )*(снимаю|сниму|снял|открываю|открою|открыл|смотрю|посмотрю|читаю|прочитаю|проверяю|проверю|запрашиваю|запрошу|загружаю|загружу|беру|возьму|собираю|соберу|анализирую|сверяю|сверю|уточняю|уточню|планирую|формирую|составляю|начинаю|перехожу|вызываю)\b/i
+const PROCESS_PREFIX = /^(сначала |сейчас |далее |затем |потом |теперь |параллельно )+/i
+
+// Tool-ish first person: "Открываю календари", "Снимаю карточки".
+const PROCESS_VERBS =
+  /^(снимаю|сниму|снял|открываю|открою|открыл|смотрю|посмотрю|читаю|прочитаю|запрашиваю|запрошу|загружаю|загружу|беру|возьму|начинаю|перехожу|вызываю)(?=$|[\s,.;:!?«»"'()])/i
+
+// Same verbs are often the actual deliverable ("Планирую совещания…").
+// Treat as narration only with an explicit process prefix.
+const RESULT_LIKE_VERBS =
+  /^(проверяю|проверю|собираю|соберу|анализирую|сверяю|сверю|уточняю|уточню|планирую|формирую|составляю)(?=$|[\s,.;:!?«»"'()])/i
+
+const CONTINUATION_START = /^(и|а|но|или|чтобы|для|его|её|ее|их|этого|этой|этом)\b/i
 
 const NAMED_HEADINGS = ['RESULT', 'Результат', 'Итог']
 
@@ -59,11 +67,35 @@ export function isPlaceholderResult(text: string): boolean {
 
 const WORK_RESULT_RE = /^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\b.*$/im
 
+function lastUsefulPrefix(before: string): string {
+  const text = (before || '').trim()
+  if (!text) return ''
+  const paras = text
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  for (let i = paras.length - 1; i >= 0; i -= 1) {
+    if (!isMostlyJunk(paras[i])) return paras[i].replace(/[ \t]+/g, ' ').trim()
+  }
+  return paras[paras.length - 1] || text
+}
+
 export function stripToWorkResult(text: string): string {
   const raw = text || ''
   const match = WORK_RESULT_RE.exec(raw)
   if (!match || match.index === undefined) return raw.trim()
-  return raw.slice(match.index).trim()
+  const before = raw.slice(0, match.index).trim()
+  const after = raw.slice(match.index).trim()
+  const body = stripWorkResultChrome(after)
+  if (before && body && isContinuationFragment(body)) {
+    const prefix = lastUsefulPrefix(before)
+    if (prefix) return `${prefix} ${body}`.replace(/[ \t]+/g, ' ').trim()
+  }
+  if (before && body && body.length < 48 && before.length > body.length * 2) {
+    const useful = stripJunkParagraphs(before) || lastUsefulPrefix(before)
+    if (useful && useful.length > body.length) return useful
+  }
+  return after
 }
 
 export function hasWorkResultMarker(text: string): boolean {
@@ -107,6 +139,21 @@ function extractNamedSection(text: string, heading: string): string {
   return (match?.[1] || '').trim()
 }
 
+function isNarrationLine(line: string): boolean {
+  const stripped = (line || '').replace(/^[.\s—-]+/, '').trim()
+  if (!stripped) return false
+  if (PROCESS_VERBS.test(stripped)) return true
+  const withoutPrefix = stripped.replace(PROCESS_PREFIX, '')
+  if (withoutPrefix === stripped) return false
+  return PROCESS_VERBS.test(withoutPrefix) || RESULT_LIKE_VERBS.test(withoutPrefix)
+}
+
+function isContinuationFragment(text: string): boolean {
+  const value = (text || '').trim()
+  if (!value) return false
+  return CONTINUATION_START.test(value)
+}
+
 function isJunkLine(line: string): boolean {
   const raw = (line || '').trim()
   const stripped = raw.replace(/^[.\s—-]+/, '')
@@ -118,7 +165,7 @@ function isJunkLine(line: string): boolean {
   if (/^tests:\s*(pass|fail)/i.test(raw)) return true
   if (JUNK_PHRASES.some((marker) => text.includes(marker))) return true
   if (JUNK_LINE_START.test(raw)) return true
-  if (NARRATION_START.test(stripped)) return true
+  if (isNarrationLine(stripped)) return true
   if (/^[a-z][a-z0-9_.]{2,48}$/.test(text)) return true
   if (text.startsWith('{') && (text.includes('"tool"') || text.includes('constructor'))) return true
   if (text.includes('odata') && (text.includes('недоступ') || text.includes('ошиб') || text.includes('читаю'))) {
@@ -127,15 +174,35 @@ function isJunkLine(line: string): boolean {
   return false
 }
 
+function nextKeptLine(lines: string[], from: number): string {
+  for (let i = from; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim()
+    if (trimmed && !isJunkLine(trimmed)) return trimmed
+  }
+  return ''
+}
+
 function stripJunkParagraphs(text: string): string {
   const blocks = (text || '').split(/\n{2,}/)
   const kept: string[] = []
   for (const block of blocks) {
     const lines = block.split('\n')
-    const useful = lines.filter((line) => {
-      const trimmed = line.trim()
-      return !trimmed || !isJunkLine(trimmed)
-    })
+    const useful: string[] = []
+    for (let i = 0; i < lines.length; i += 1) {
+      const trimmed = lines[i].trim()
+      if (!trimmed) {
+        useful.push(lines[i])
+        continue
+      }
+      if (!isJunkLine(trimmed)) {
+        useful.push(lines[i])
+        continue
+      }
+      // Dropping "Планирую совещания…" must not leave "и его календарь…".
+      if (isContinuationFragment(nextKeptLine(lines, i + 1))) {
+        useful.push(lines[i])
+      }
+    }
     const keptLines = useful.filter((line) => line.trim())
     const sourceLines = lines.filter((line) => line.trim())
     if (!keptLines.length) continue
@@ -159,6 +226,15 @@ function preferLongerResult(named: string, full: string): string {
   return short
 }
 
+function looksTruncatedResult(text: string, source: string): boolean {
+  const body = (text || '').trim()
+  const full = (source || '').trim()
+  if (!full) return false
+  if (!body) return true
+  if (isContinuationFragment(body) && full.length > body.length) return true
+  return body.length < 48 && full.length > body.length * 2
+}
+
 function cleanText(raw: string): string {
   const stripped = stripToolFences(raw)
   if (!stripped || isPlaceholderResult(stripped)) return ''
@@ -176,6 +252,10 @@ function cleanText(raw: string): string {
     }
   }
   let body = preferLongerResult(named, full)
+  const light = stripResultHeading(stripWorkResultChrome(stripToWorkResult(stripped)))
+  if (looksTruncatedResult(body, light)) {
+    body = preferLongerResult(body, light)
+  }
   if (!body || isPlaceholderResult(body)) return ''
   if (body.length < 8 && isMostlyJunk(stripped)) return ''
   return presentAgentText(body).trim()
@@ -215,15 +295,16 @@ function fromEvents(events: AgentRunnerEvent[], allowAssistantFallback = true): 
     const cleaned = cleanText(eventText(event))
     if (cleaned) last = cleaned
   }
-  if (last) return last
-  if (!allowAssistantFallback) return ''
+  const truncated = !last || isContinuationFragment(last) || last.length < 48
+  if (last && !truncated) return last
+  if (!allowAssistantFallback) return last
   for (const event of events) {
     const type = String(event.type || '').toLowerCase()
     if (type !== 'assistant' && type !== 'agent_message') continue
     const raw = eventText(event)
     if (isMostlyJunk(raw)) continue
     const cleaned = cleanText(raw)
-    if (cleaned) last = cleaned
+    if (cleaned && cleaned.length > last.length) last = cleaned
   }
   return last
 }
@@ -254,11 +335,14 @@ export function cleanRunResult(input: {
     statusKey === 'failed'
   if (!terminatedBad && hasWorkResultMarker(rawAnswer)) {
     const fromStored = cleanText(rawAnswer)
-    if (fromStored) return { text: fromStored, emptyHint: '' }
+    if (fromStored && !isContinuationFragment(fromStored) && fromStored.length >= 48) {
+      return { text: fromStored, emptyHint: '' }
+    }
   }
-  const fromEvent = fromEvents(events, !terminatedBad && !rawAnswer)
-  // For cancelled/errored runs the raw answer is usually partial narration, not a result.
   const fromAnswer = terminatedBad ? '' : cleanText(rawAnswer)
+  const allowAssistant =
+    !terminatedBad && (!fromAnswer || isContinuationFragment(fromAnswer) || fromAnswer.length < 48)
+  const fromEvent = fromEvents(events, allowAssistant)
   const text = preferLongerResult(fromEvent, fromAnswer) || fromEvent || fromAnswer
   if (!text) return { text: '', emptyHint: emptyHint(input.status || '', rawAnswer) }
   return { text, emptyHint: '' }

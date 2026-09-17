@@ -1,7 +1,8 @@
 """Корпоративное оформление Excel и Word — как у document tools в ChatGPT.
 
 Создание и переоформление идут через одни и те же темы: шапка, зебра,
-фильтр, KPI-плашки, статусы, колонтитулы. Данные не выдумываются.
+фильтр, перенос текста в ячейке, KPI-плашки, статусы, колонтитулы.
+Данные не выдумываются.
 """
 
 from __future__ import annotations
@@ -25,6 +26,13 @@ _STATUS_HEADERS = re.compile(r"статус|status|состояние|итог",
 _MONEY_HEADERS = re.compile(r"сумм|руб|стоим|бюджет|amount|price|money", re.I)
 _PERCENT_HEADERS = re.compile(r"%|доля|процент|percent", re.I)
 _DATE_HEADERS = re.compile(r"дат|срок|period|deadline|когда", re.I)
+_HTML_BREAK = re.compile(r"<br\s*/?>", re.I)
+_DRIVE_PATH = re.compile(r"[A-Za-z]:\\")
+_WRAP_LINE_PT = 15.0
+_WRAP_PAD_PT = 6.0
+_MAX_WRAP_LINES = 10
+_MIN_DATA_ROW_PT = 18.0
+_MAX_DATA_ROW_PT = 156.0
 
 
 @dataclass(frozen=True)
@@ -277,8 +285,15 @@ def apply_excel_sheet_style(
     white_fill = PatternFill("solid", fgColor="FFFFFF")
     header_font = Font(name="Calibri", bold=True, color=palette.header_font, size=11)
     data_font = Font(name="Calibri", size=11, color="1C2833")
-    wrap = Alignment(vertical="center", wrap_text=True)
+    wrap = Alignment(vertical="top", wrap_text=True)
     header_align = Alignment(vertical="center", wrap_text=True, horizontal="center")
+
+    if detected:
+        for row in range(detected, last_row + 1):
+            for col in range(1, last_col + 1):
+                cell = worksheet.cell(row, col)
+                if isinstance(cell.value, str):
+                    cell.value = _normalize_excel_newlines(cell.value)
 
     headers = [
         _cell_text(worksheet.cell(detected, col).value)
@@ -289,7 +304,6 @@ def apply_excel_sheet_style(
         _recolor_banner(worksheet, detected, last_col, palette, title)
 
     if detected:
-        worksheet.row_dimensions[detected].height = 22
         for col in range(1, last_col + 1):
             cell = worksheet.cell(detected, col)
             cell.fill = header_fill
@@ -297,7 +311,6 @@ def apply_excel_sheet_style(
             cell.alignment = header_align
             cell.border = thin
         for row in range(detected + 1, last_row + 1):
-            worksheet.row_dimensions[row].height = 18
             stripe = alt_fill if (row - detected) % 2 == 0 else white_fill
             for col in range(1, last_col + 1):
                 cell = worksheet.cell(row, col)
@@ -315,7 +328,9 @@ def apply_excel_sheet_style(
         worksheet.print_title_rows = f"{detected}:{detected}"
         _set_header_row(workbook, worksheet, detected)
 
-    _autosize_columns(worksheet, last_col, last_row)
+    _autosize_columns(worksheet, last_col, last_row, header_row=detected)
+    if detected:
+        _autosize_wrapped_rows(worksheet, detected, last_col, last_row)
     worksheet.sheet_properties.tabColor = palette.primary
     worksheet.sheet_view.showGridLines = False
     worksheet.page_setup.orientation = "landscape"
@@ -488,7 +503,9 @@ def _write_banner(
     title_cell = worksheet.cell(1, 1, title_text)
     title_cell.fill = PatternFill("solid", fgColor=theme.primary)
     title_cell.font = Font(name="Calibri", bold=True, size=16, color=theme.title_font)
-    title_cell.alignment = Alignment(vertical="center", horizontal="left", indent=1)
+    title_cell.alignment = Alignment(
+        vertical="center", horizontal="left", indent=1, wrap_text=True
+    )
     worksheet.row_dimensions[1].height = 28
     for col in range(1, width + 1):
         worksheet.cell(1, col).fill = PatternFill("solid", fgColor=theme.primary)
@@ -727,7 +744,20 @@ def _excel_value(value: Any) -> Any:
         return ""
     if isinstance(value, (int, float, bool, date, datetime)):
         return value
-    return value
+    return _normalize_excel_newlines(str(value))
+
+
+def _normalize_excel_newlines(value: Any) -> Any:
+    """Собрать настоящие переносы: \\n из JSON, <br>, CRLF. Пути Windows не трогаем."""
+    if not isinstance(value, str):
+        return value
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = _HTML_BREAK.sub("\n", text)
+    if "\\n" not in text:
+        return text
+    if _DRIVE_PATH.search(text) or text.startswith("\\\\"):
+        return text
+    return text.replace("\\n", "\n")
 
 
 def _cell_text(value: Any) -> str:
@@ -740,15 +770,87 @@ def _cell_text(value: Any) -> str:
     return str(value)
 
 
-def _autosize_columns(worksheet: Any, last_col: int, last_row: int) -> None:
+def _autosize_columns(
+    worksheet: Any, last_col: int, last_row: int, header_row: int = 1
+) -> None:
     from openpyxl.utils import get_column_letter
 
+    start = max(int(header_row or 1), 1)
     for col in range(1, last_col + 1):
-        longest = 8
-        for row in range(1, last_row + 1):
-            value = worksheet.cell(row, col).value
-            longest = max(longest, min(len(_cell_text(value)), 48))
-        worksheet.column_dimensions[get_column_letter(col)].width = min(42, longest + 3)
+        longest_line = 8
+        longest_total = 0
+        has_break = False
+        for row in range(start, last_row + 1):
+            text = _cell_text(worksheet.cell(row, col).value)
+            if not text:
+                continue
+            longest_total = max(longest_total, len(text))
+            if "\n" in text:
+                has_break = True
+            for line in text.split("\n"):
+                longest_line = max(longest_line, len(line))
+        wrap_needed = has_break or longest_total > 42
+        if wrap_needed:
+            width = min(56.0, max(28.0, min(longest_line + 2, 48)))
+        else:
+            width = min(32.0, longest_line + 2.5)
+        worksheet.column_dimensions[get_column_letter(col)].width = width
+
+
+def _column_width(worksheet: Any, col: int) -> float:
+    from openpyxl.utils import get_column_letter
+
+    dim = worksheet.column_dimensions.get(get_column_letter(col))
+    width = getattr(dim, "width", None) if dim is not None else None
+    try:
+        return float(width) if width else 10.0
+    except (TypeError, ValueError):
+        return 10.0
+
+
+def _wrapped_line_count(text: str, col_width: float) -> int:
+    usable = max(6, int(float(col_width) * 0.85))
+    lines = 0
+    for part in (text or "").split("\n"):
+        length = len(part)
+        if length <= 0:
+            lines += 1
+            continue
+        lines += max(1, (length + usable - 1) // usable)
+    return max(1, lines)
+
+
+def _autosize_wrapped_rows(
+    worksheet: Any, header_row: int, last_col: int, last_row: int
+) -> None:
+    widths = [_column_width(worksheet, col) for col in range(1, last_col + 1)]
+    header_lines = 1
+    for col in range(1, last_col + 1):
+        header_lines = max(
+            header_lines,
+            _wrapped_line_count(
+                _cell_text(worksheet.cell(header_row, col).value),
+                widths[col - 1],
+            ),
+        )
+    worksheet.row_dimensions[header_row].height = max(
+        22.0, min(48.0, 8.0 + 14.0 * min(header_lines, 3))
+    )
+    for row in range(header_row + 1, last_row + 1):
+        needed = 1
+        for col in range(1, last_col + 1):
+            needed = max(
+                needed,
+                _wrapped_line_count(
+                    _cell_text(worksheet.cell(row, col).value),
+                    widths[col - 1],
+                ),
+            )
+        lines = min(needed, _MAX_WRAP_LINES)
+        height = _WRAP_PAD_PT + _WRAP_LINE_PT * lines
+        worksheet.row_dimensions[row].height = max(
+            _MIN_DATA_ROW_PT, min(_MAX_DATA_ROW_PT, height)
+        )
 
 
 def _apply_number_format(cell: Any, header: str) -> None:

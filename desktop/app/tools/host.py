@@ -149,8 +149,18 @@ def _write_artifact_bytes(name: str, content: bytes, result: dict[str, Any]) -> 
     out.pop("content_base64", None)
     out["file"] = str(dest)
     out["path"] = str(dest)
+    out["saved_path"] = str(dest)
     out["result_file"] = str(dest)
     out["filename"] = dest.name
+    from app.tools.ac.readable_files import read_tool_for_suffix
+
+    reader = read_tool_for_suffix(dest.suffix)
+    if reader:
+        out["read_with"] = reader
+        out["next_step"] = (
+            f"Прочитай файл через {reader} (filename={dest.name!r} или saved_path). "
+            "Встроенные Read и Grep для Word/PDF/Excel/картинок не вызывай — они зависают."
+        )
     return out
 
 

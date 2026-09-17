@@ -43,6 +43,7 @@ export const TOOL_LABELS: Record<string, string> = {
   'onec.docflow_tasks': 'Задачи документооборота',
   'excel.list_files': 'Файлы агента',
   'excel.read_workbook': 'Чтение Excel',
+  'office.read_file': 'Чтение Word, PDF и картинок',
   'excel.create_workbook': 'Создание Excel',
   'excel.edit_workbook': 'Изменение Excel',
   'office.format_document': 'Оформление Excel/Word',

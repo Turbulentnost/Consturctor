@@ -257,8 +257,9 @@ def seed_agents_md(cwd: str) -> str:
 
 def workspace_file_pointer() -> str:
     return (
-        "Прочитай AGENTS.md, materials/agent.md и materials/manifest.json. "
-        "Детали в этих файлах, не в этом сообщении."
+        "Правила уже в AGENTS.md, паспорт — в materials/agent.md. "
+        "Не читай их повторно и не делай второй круг по manifest. "
+        "Сразу вызывай инструменты Constructor."
     )
 
 
@@ -342,7 +343,8 @@ def seed_workflow_files(api: ApiClient, workflow_id: str, cwd: str) -> str:
             "Если нужен файл, спроси через askQuestion с needsFile=true."
         )
     return (
-        "Прочитай materials/manifest.json, затем нужные файлы. "
+        "Нужные документы уже в materials/ и в manifest.json. "
+        "Не делай второй круг чтения манифеста. "
         "Если документа нет, спроси через askQuestion с needsFile=true."
     )
 

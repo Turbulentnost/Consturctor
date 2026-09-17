@@ -56,6 +56,7 @@ def rk_runtime_tools() -> list[str]:
         "onec.sql_query",
         "excel.list_files",
         "excel.read_workbook",
+        "office.read_file",
         "report.build_task_report",
         "report.build_meeting_summary",
         "report.export_document",
@@ -215,9 +216,11 @@ def rk_playbook_instructions() -> str:
         "   • при необходимости `onec.search_documents` / `onec.get_document_card` по РК.\n"
         "3. Протоколы на проверку: `onec.meeting_protocols` с meeting_kind=rk и датой заседания "
         "(или date_from/date_to). Карточку — `onec.odata_get` по ref_key из ответа.\n"
-        "4. Вложения 1С: `onec.list_attachments` → `onec.read_attachment`.\n"
+        "4. Вложения 1С: `onec.list_attachments` → `onec.read_attachment` "
+        "или `onec.download_artifact` + `office.read_file` (Word/PDF/картинки). "
+        "Встроенные Read и Grep не вызывай.\n"
         "5. Excel-реестр: сначала `excel.list_files` + `excel.read_workbook` из "
-        "materials/attachments; если файла нет — `workspace.powershell_run` только "
+        "materials/attachments; Word/PDF рядом — `office.read_file`; если файла нет — `workspace.powershell_run` только "
         f"для чтения/копирования из {_RK_REGISTRY_HINT} или {_RK_SHARE_HINT} "
         "(без записи в сеть и без правки Excel).\n"
         "6. Сверь чек-лист ТЗ §15:\n"

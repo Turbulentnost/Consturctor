@@ -209,11 +209,11 @@ export function AgentHistoryPage({
 
         <div className="agent-studio-main">
           {showLiveFeed && live ? (
-            <div className="wf-feed-wrap">
+            <div className="history-live-pane">
               {onOpenLive && (
                 <div className="history-live-bar">
-                  <span>Агент выполняется — ход событий обновляется вживую.</span>
-                  <button className="btn-primary" type="button" onClick={onOpenLive}>
+                  <p>Агент выполняется — ход событий обновляется вживую.</p>
+                  <button className="history-live-bar-btn" type="button" onClick={onOpenLive}>
                     Перейти
                   </button>
                 </div>

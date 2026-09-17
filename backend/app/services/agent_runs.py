@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -13,6 +14,10 @@ OVERLAP_CANCEL_ANSWER = "Агент уже выполняется"
 SDK_DEAD_ANSWER = "Cursor SDK не отвечает"
 STALE_STARTED_ANSWER = "Запуск не завершился за отведённое время."
 USER_CANCEL_ANSWER = "Остановлено пользователем"
+MISSING_WORK_RESULT_ANSWER = (
+    "Запуск завершился без ## WORK_RESULT и TESTS: PASS — "
+    "агент остановился после подготовительных шагов."
+)
 
 _INCOMPLETE_ANSWERS = frozenset(
     {
@@ -22,6 +27,12 @@ _INCOMPLETE_ANSWERS = frozenset(
         USER_CANCEL_ANSWER.casefold(),
     }
 )
+_WORK_RESULT_HEADER_RE = re.compile(r"(?m)^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\b", re.I)
+_MISSING_WORK_RESULT_RE = re.compile(
+    r"запуск завершился без\s+#*\s*WORK[ _]?RESULT",
+    re.I,
+)
+_TESTS_FAIL_RE = re.compile(r"TESTS:\s*FAIL", re.I)
 
 logger = logging.getLogger(__name__)
 
@@ -145,16 +156,18 @@ def has_run_result(answer: str) -> bool:
     return bool((answer or "").strip()) and not _is_incomplete_answer(answer)
 
 
+def _is_missing_work_result_answer(answer: str) -> bool:
+    return bool(_MISSING_WORK_RESULT_RE.search(answer or ""))
+
+
 def is_successful_work_answer(answer: str) -> bool:
+    """True only for a real WORK_RESULT header, not a mention in an error text."""
     text = (answer or "").strip()
-    if not text or _is_incomplete_answer(text):
+    if not text or _is_incomplete_answer(text) or _is_missing_work_result_answer(text):
         return False
-    folded = text.casefold()
-    if "work_result" in folded:
-        return True
-    if "tests: pass" in folded.replace(" ", ""):
-        return True
-    return False
+    if _TESTS_FAIL_RE.search(text):
+        return False
+    return bool(_WORK_RESULT_HEADER_RE.search(text))
 
 
 def effective_run_status(status: str, answer: str = "", *, in_flight: bool = False) -> str:
@@ -164,6 +177,8 @@ def effective_run_status(status: str, answer: str = "", *, in_flight: bool = Fal
         return "started"
     if _is_incomplete_answer(answer):
         return "canceled"
+    if _is_missing_work_result_answer(answer):
+        return "error"
     if is_successful_work_answer(answer):
         return "ok"
     if raw in {"canceled", "cancelled"}:
@@ -797,6 +812,8 @@ def _to_out(row: AgentRun, *, include_events: bool = False) -> AgentRunOut:
     status = row.status or ""
     if in_flight and str(timing.get("open_segment") or "") == "human":
         status = "waiting_human"
+    elif not in_flight:
+        status = effective_run_status(status, row.answer or "", in_flight=False)
     return AgentRunOut(
         id=row.id,
         workflow_id=row.workflow_id,

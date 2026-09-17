@@ -227,7 +227,7 @@ def _connect() -> pyodbc.Connection:
             autocommit=True,
             timeout=timeout,
         )
-    except pyodbc.Error as exc:
+    except (pyodbc.Error, OSError) as exc:
         raise ErpSqlError(f"Failed to connect to erp_pm: {exc}") from exc
 
 
@@ -271,14 +271,17 @@ def get_position_by_fio(fio: str) -> str:
 
 def ping() -> bool:
     """Return True if ERP SQL is reachable."""
-    conn = _connect()
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT 1")
-        cur.fetchone()
-        return True
-    finally:
-        conn.close()
+        conn = _connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            return True
+        finally:
+            conn.close()
+    except (ErpSqlError, OSError, pyodbc.Error):
+        return False
 
 
 def get_user_profile_by_fio(fio: str) -> ErpUserProfile:

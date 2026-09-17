@@ -35,6 +35,7 @@ def test_tool_is_registered() -> None:
     assert "onec.download_artifact" in ONEC_TOOLS
     names = {item["name"] for item in list_tools()}
     assert "onec.download_artifact" in names
+    assert "office.read_file" in names
     tool = next(item for item in list_tools() if item["name"] == "onec.download_artifact")
     assert tool.get("execution") == "server"
     assert tool.get("entity") == "file"

@@ -29,18 +29,28 @@ def is_admin_user(fio: str) -> bool:
     return _fio_key(fio) in ADMIN_FIO_KEYS
 
 
+def _avatar_version(user: AppUser) -> str:
+    stamp = getattr(user, "updated_at", None)
+    if stamp is None:
+        return ""
+    try:
+        return f"?v={int(stamp.timestamp())}"
+    except (OSError, ValueError, OverflowError, TypeError):
+        return ""
+
+
 def avatar_url_for(user: AppUser | None) -> str | None:
     if user is None or not user.avatar_path:
         return None
-    path = Path(user.avatar_path)
-    if not path.is_absolute():
-        path = settings.avatar_storage_dir / path
-    if not path.is_file():
+    try:
+        path = Path(user.avatar_path)
+        if not path.is_absolute():
+            path = settings.avatar_storage_dir / path
+        if not path.is_file():
+            return None
+    except OSError:
         return None
-    version = ""
-    if getattr(user, "updated_at", None) is not None:
-        version = f"?v={int(user.updated_at.timestamp())}"
-    return f"/api/v1/auth/users/{user.id}/avatar{version}"
+    return f"/api/v1/auth/users/{user.id}/avatar{_avatar_version(user)}"
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

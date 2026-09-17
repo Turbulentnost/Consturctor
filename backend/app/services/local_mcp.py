@@ -483,7 +483,9 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "Ищет Catalog_ТД_ПорученияПрисоединенныеФайлы и "
                 "Catalog_ТД_ПротоколПрисоединенныеФайлы. "
                 "Байты: OData Base64, том на диске, hs/dtw/files или UNC. "
-                "В ответе filename, saved_path и content_base64. Сервер, только чтение."
+                "В ответе filename, saved_path и content_base64. Сервер, только чтение. "
+                "Дальше: Word/PDF/картинки — office.read_file, Excel — excel.read_workbook. "
+                "Встроенный Read по saved_path не вызывай."
             ),
             "execution": "server",
             "input_schema": {
@@ -962,6 +964,19 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "sheet": _prop("string", "Имя листа. Пусто — первый"),
             "max_rows": _prop("integer", "Максимум строк"),
         }),
+        (
+            "office.read_file",
+            "Текст из Word (.docx) и PDF с текстовым слоем. "
+            "Скан или картинку передаёт в зрение модели Cursor SDK. "
+            "filename или saved_path после onec.download_artifact. "
+            "Не вызывай встроенные Read/Grep для этих файлов. Excel — excel.read_workbook.",
+            {
+                "filename": _prop("string", "Имя, путь в папке агента или saved_path из onec.download_artifact"),
+                "path": _prop("string", "То же, что filename"),
+                "max_chars": _prop("integer", "Обрезать текст"),
+                "max_pages": _prop("integer", "Для PDF: сколько страниц с начала"),
+            },
+        ),
         ("excel.create_workbook", "Создать или перезаписать .xlsx в папке агента. Если файл уже есть — перезапишет, отдельный overwrite не нужен.", {
             "filename": _prop("string", "Имя файла, например report.xlsx"),
             "headers": _prop("array", "Заголовки колонок", items={"type": "string"}),
@@ -1295,6 +1310,7 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "browser.scroll": ("web", "web_page", "execute", [], [], "none"),
     "excel.list_files": ("desktop", "file", "list", [], ["files"], "none"),
     "excel.read_workbook": ("desktop", "spreadsheet", "read", ["filename"], ["rows"], "count"),
+    "office.read_file": ("desktop", "document", "read", ["filename"], ["text", "vision_pages"], "none"),
     "excel.create_workbook": ("desktop", "spreadsheet", "export", ["filename"], ["file"], "none"),
     "excel.edit_workbook": ("desktop", "spreadsheet", "update", ["filename"], ["file"], "none"),
     "workspace.powershell_run": ("desktop", "shell", "execute", ["command"], ["text"], "none"),

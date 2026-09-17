@@ -36,6 +36,8 @@ interface OrchGridShellProps {
   onSwitchAdminView?: (mode: 'admin' | 'user') => void
   toast?: ReactNode
   gridClassName?: string
+  /** Hide workplace title/search — used for agent run/history overlays. */
+  subpage?: boolean
   children: ReactNode
 }
 
@@ -61,6 +63,7 @@ export function OrchGridShell({
   onSwitchAdminView,
   toast,
   gridClassName = '',
+  subpage = false,
   children
 }: OrchGridShellProps): React.JSX.Element {
   const meta = TAB_REGISTRY[activeKey]
@@ -68,6 +71,7 @@ export function OrchGridShell({
   const isToday = activeKey === 'today'
   const displayTitle = isToday ? todayGreeting(user.fio || '') : title
   const displaySub = isToday ? meta?.subtitle || '' : meta?.subtitle || ''
+  const gridMods = [gridClassName, subpage ? 'orch-grid-subpage' : ''].filter(Boolean).join(' ')
 
   return (
     <div className="orch-grid-frame">
@@ -84,25 +88,29 @@ export function OrchGridShell({
         />
       </div>
 
-      <div className={`orch-grid${gridClassName ? ` ${gridClassName}` : ''}`}>
-      <header className={`orch-grid-title${isToday ? ' orch-grid-title-today' : ''}`}>
-        <span className="orch-grid-title-icon" aria-hidden>
-          <NavIcon page={activeKey} />
-        </span>
-        <div>
-          <h1 className="page-title">{displayTitle}</h1>
-          {displaySub ? <p className="orch-grid-sub">{displaySub}</p> : null}
-        </div>
-      </header>
+      <div className={`orch-grid${gridMods ? ` ${gridMods}` : ''}`}>
+      {subpage ? null : (
+        <>
+          <header className={`orch-grid-title${isToday ? ' orch-grid-title-today' : ''}`}>
+            <span className="orch-grid-title-icon" aria-hidden>
+              <NavIcon page={activeKey} />
+            </span>
+            <div>
+              <h1 className="page-title">{displayTitle}</h1>
+              {displaySub ? <p className="orch-grid-sub">{displaySub}</p> : null}
+            </div>
+          </header>
 
-      <div className="orch-grid-header-actions">{meta?.headerActions}</div>
+          <div className="orch-grid-header-actions">{meta?.headerActions}</div>
 
-      <div className="orch-grid-search" role="search">
-        <div className="global-search">
-          <span className="global-search-icon" aria-hidden />
-          <input placeholder="Поиск по процессам, документам, задачам, проектам…" aria-label="Поиск" />
-        </div>
-      </div>
+          <div className="orch-grid-search" role="search">
+            <div className="global-search">
+              <span className="global-search-icon" aria-hidden />
+              <input placeholder="Поиск по процессам, документам, задачам, проектам…" aria-label="Поиск" />
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="orch-grid-util">
         <button

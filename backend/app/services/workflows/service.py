@@ -2553,6 +2553,7 @@ def _onec_domain_tools(blob: str) -> list[str]:
         "onec.erp_assignments",
         "onec.erp_assignments_write",
         "onec.download_artifact",
+        "office.read_file",
         "users.subordinates",
         "turboproject",
     ]
