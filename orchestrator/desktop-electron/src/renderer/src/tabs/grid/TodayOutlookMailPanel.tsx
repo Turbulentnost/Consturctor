@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { SpecPanel, SpecPill } from '../../workplace/specV04Components'
 import type { SpecMailRow } from '../../workplace/specV04DemoData'
+import { mailPartyLabel } from '../../workplace/specV04Mappers'
 import { useTodayWidgetExpanded } from './TodayWidgetExpandContext'
 import { TodayFileIcon } from './todayFileIcon'
 
@@ -76,7 +77,6 @@ function OutlookReadingPane({ row }: { row: SpecMailRow }): React.JSX.Element {
               </div>
             ) : null}
             <div className="today-outlook-reading-tags">
-              <SpecPill tone={row.priTone}>{row.priority}</SpecPill>
               <SpecPill tone={row.stTone}>{row.status}</SpecPill>
             </div>
           </div>
@@ -155,7 +155,7 @@ export function TodayOutlookMailPanel({
       if (loading) {
         return (
           <tr>
-            <td colSpan={5} className="today-table-status">
+            <td colSpan={4} className="today-table-status">
               Загружаем…
             </td>
           </tr>
@@ -164,7 +164,7 @@ export function TodayOutlookMailPanel({
       if (error) {
         return (
           <tr>
-            <td colSpan={5} className="today-table-status today-table-error">
+            <td colSpan={4} className="today-table-status today-table-error">
               {error}
             </td>
           </tr>
@@ -173,8 +173,8 @@ export function TodayOutlookMailPanel({
       if (!tableRows.length) {
         return (
           <tr>
-            <td colSpan={5} className="today-table-status">
-              Нет писем во входящих за выбранный день
+            <td colSpan={4} className="today-table-status">
+              Нет писем мне и от меня за выбранный день
             </td>
           </tr>
         )
@@ -182,16 +182,13 @@ export function TodayOutlookMailPanel({
       return tableRows.map((row) => (
         <tr key={row.id}>
           <td>
-            <TodayCellText text={row.sender} />
+            <TodayCellText text={mailPartyLabel(row)} />
           </td>
           <td>
             <TodayCellText text={row.subject} />
           </td>
           <td>
             <TodayCellText text={row.time} />
-          </td>
-          <td>
-            <SpecPill tone={row.priTone}>{row.priority}</SpecPill>
           </td>
           <td>
             <SpecPill tone={row.stTone}>{row.status}</SpecPill>
@@ -209,10 +206,9 @@ export function TodayOutlookMailPanel({
           <table className="today-mini-table">
             <thead>
               <tr>
-                <th>Отправитель</th>
+                <th>От / Кому</th>
                 <th>Тема</th>
                 <th>Время</th>
-                <th>Приоритет</th>
                 <th>Статус</th>
               </tr>
             </thead>
@@ -230,7 +226,7 @@ export function TodayOutlookMailPanel({
           <div className="today-outlook-list-toolbar">
             <div className="today-outlook-folder-row">
               <Mail size={16} strokeWidth={2} aria-hidden />
-              <span className="today-outlook-folder">Входящие</span>
+              <span className="today-outlook-folder">Входящие и отправленные</span>
               <span className="today-outlook-folder-count">{rows.length}</span>
             </div>
             {hint ? <span className="today-outlook-folder-hint">{hint}</span> : null}
@@ -267,7 +263,7 @@ export function TodayOutlookMailPanel({
                   ? 'Загружаем…'
                   : filter === 'unread'
                     ? 'Нет непрочитанных писем'
-                    : error || 'Нет писем во входящих за выбранный день'}
+                    : error || 'Нет писем мне и от меня за выбранный день'}
               </p>
             ) : (
               <ul className="today-outlook-list-rows">
@@ -293,7 +289,7 @@ export function TodayOutlookMailPanel({
                             <Paperclip size={12} strokeWidth={2} className="today-outlook-flag-clip" aria-hidden />
                           ) : null}
                         </span>
-                        <span className="today-outlook-list-sender">{row.sender}</span>
+                        <span className="today-outlook-list-sender">{mailPartyLabel(row)}</span>
                         <span className="today-outlook-list-subject-wrap">
                           <span className="today-outlook-list-subject">{row.subject}</span>
                           <span className="today-outlook-list-preview">{mailPreview(row)}</span>

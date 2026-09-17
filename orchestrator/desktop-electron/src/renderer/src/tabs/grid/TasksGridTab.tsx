@@ -109,7 +109,11 @@ export function TasksGridTab({
     : ''
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   useEffect(() => {
-    if (data.erpLoading || !showOneCReconnect || data.comPasswordInSession) return
+    if (data.comPasswordInSession) {
+      setOnecDialogOpen(false)
+      return
+    }
+    if (data.erpLoading || !showOneCReconnect) return
     setOnecDialogOpen(true)
   }, [data.erpLoading, showOneCReconnect, data.comPasswordInSession])
   const [selectedId, setSelectedId] = useState('')

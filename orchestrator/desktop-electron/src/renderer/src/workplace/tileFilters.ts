@@ -33,9 +33,49 @@ export function isDocflowToMe(row: { role?: string }): boolean {
   return role === 'executor' || role === 'both' || role === ''
 }
 
-export function isDocflowFromMe(row: { role?: string }): boolean {
+export function isTurboTaskToMe(row: { turboScope?: string }): boolean {
+  return row.turboScope !== 'managed'
+}
+
+export function isTurboTaskAsManager(row: { turboScope?: string }): boolean {
+  return row.turboScope === 'managed' || row.turboScope === 'both'
+}
+
+export function isDocflowFromMe(row: { role?: string; author?: string }, actorFio = ''): boolean {
   const role = docflowRoleOf(row)
-  return role === 'author' || role === 'both'
+  if (role === 'author' || role === 'both') return true
+  const author = String(row.author || '').trim()
+  const actor = actorFio.trim()
+  if (!author || !actor) return false
+  const authorKey = author.toLowerCase()
+  const actorKey = actor.toLowerCase()
+  if (authorKey === actorKey || authorKey.includes(actorKey) || actorKey.includes(authorKey)) {
+    return true
+  }
+  const surname = actorKey.split(/\s+/)[0] || ''
+  return Boolean(surname && authorKey.includes(surname))
+}
+
+/** «Иванов Иван Иванович» / «Иванов И.И.» → «Иванов И.И.». */
+export function formatSurnameInitials(fio: string): string {
+  const raw = String(fio || '').trim()
+  if (!raw || raw === '—') return '—'
+  const compact = raw.replace(/\s+/g, ' ')
+  const already = compact.match(/^(\S+)\s+([A-Za-zА-Яа-яЁё])\.\s*([A-Za-zА-Яа-яЁё])\.?$/)
+  if (already) return `${already[1]} ${already[2].toUpperCase()}.${already[3].toUpperCase()}.`
+  const parts = compact.replace(/\./g, ' ').split(/\s+/).filter(Boolean)
+  if (!parts.length) return '—'
+  if (parts.length === 1) return parts[0]
+  const initials = parts.slice(1, 3).map((part) => `${part[0].toUpperCase()}.`)
+  return `${parts[0]} ${initials.join('')}`
+}
+
+export function isTaskDueOnDay(row: { deadline?: string }, day: Date): boolean {
+  const raw = String(row.deadline || '').trim()
+  if (!raw || raw === '—') return true
+  const due = parseTaskDueDate(raw)
+  if (!due) return true
+  return sameDay(due, day)
 }
 
 export function parseTaskDueDate(deadline: string): Date | null {

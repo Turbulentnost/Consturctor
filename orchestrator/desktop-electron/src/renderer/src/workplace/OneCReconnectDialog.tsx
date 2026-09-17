@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { api } from '../api/client'
 import { agentClient } from '../api/agent'
 import type { UserProfile } from '../api/types'
-import { comCredentials, setComCredentials } from '../store/session'
+import { comCredentials, rememberPreference, setComCredentials } from '../store/session'
 import { erpActorComUsername, erpActorFio } from './userContext'
 import { isDoubleOneCAuthHint, userFacingOneCError } from './onecSessionHints'
 import { useBumpComCredentialsRevision } from './ComCredentialsRevisionContext'
@@ -64,7 +64,7 @@ export function OneCReconnectDialog({
     setBusy(true)
     try {
       const mail = nameMail.trim()
-      setComCredentials(login, password, mail)
+      setComCredentials(login, password, mail, { persist: rememberPreference() })
       bumpRevision()
       const token = api.getToken()
       await agentClient

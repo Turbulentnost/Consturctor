@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 import re
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -356,22 +358,25 @@ def _is_appointment_folder(folder: Any) -> bool:
         return False
 
 
-def _iter_visible_calendar_folders(outlook: Any, namespace: Any) -> list[tuple[str, Any]]:
+def _iter_visible_calendar_folders(
+    outlook: Any, namespace: Any, own_name: str = ""
+) -> list[tuple[str, Any, bool]]:
     """Свой календарь + все календари из панели Outlook (в т.ч. «Совещания»)."""
-    found: list[tuple[str, Any]] = []
+    found: list[tuple[str, Any, bool]] = []
     seen: set[str] = set()
+    own_label = (own_name or "").strip() or "Календарь"
 
-    def add(folder: Any, label: str) -> None:
+    def add(folder: Any, label: str, is_own: bool = False) -> None:
         if folder is None:
             return
         key = _folder_entry_id(folder) or f"{label}:{id(folder)}"
         if key in seen:
             return
         seen.add(key)
-        found.append((label, folder))
+        found.append((label, folder, is_own))
 
     try:
-        add(_own_calendar_folder(namespace), "Календарь")
+        add(_own_calendar_folder(namespace), own_label, True)
     except OutlookAccessError:
         pass
 
@@ -399,7 +404,7 @@ def _iter_visible_calendar_folders(outlook: Any, namespace: Any) -> list[tuple[s
         _log_progress(f"step=store_calendars skipped: {exc}")
 
     extra: list[tuple[str, Any]] = []
-    for label, folder in found:
+    for label, folder, _is_own in found:
         try:
             for sub in folder.Folders:
                 if _is_appointment_folder(sub):
@@ -434,6 +439,8 @@ def person_match_needles(person: str) -> list[str]:
 
 def event_involves_person(event: dict, person: str) -> bool:
     """Встреча относится к пользователю системы: организатор или участник."""
+    if event.get("own_calendar"):
+        return True
     name = (person or "").strip()
     if not name:
         return True
@@ -734,7 +741,7 @@ def read_calendar(input_data: dict) -> dict:
     filter_user = (
         _safe_str(input_data.get("for_user") or input_data.get("filter_user") or "").strip()
     )
-    all_visible = _truthy(input_data.get("all_visible")) or bool(filter_user)
+    all_visible = _truthy(input_data.get("all_visible"))
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -753,11 +760,11 @@ def read_calendar(input_data: dict) -> dict:
         checked_count = 0
         calendars: list[dict] = []
         if all_visible:
-            folders = _iter_visible_calendar_folders(outlook, namespace)
+            folders = _iter_visible_calendar_folders(outlook, namespace, own_name)
             if not folders:
-                folders = [("Календарь", _own_calendar_folder(namespace))]
+                folders = [(own_name or "Календарь", _own_calendar_folder(namespace), True)]
             _log_progress(f"step=visible_calendars count={len(folders)}")
-            for label, folder in folders:
+            for label, folder, is_own in folders:
                 remaining_results = max_results - len(events)
                 remaining_scan = max_scan_items - checked_count
                 if remaining_results <= 0 or remaining_scan <= 0:
@@ -767,20 +774,33 @@ def read_calendar(input_data: dict) -> dict:
                 except Exception as exc:
                     calendars.append({"person": label, "status": f"items:{exc}", "count": 0})
                     continue
-                chunk, scanned = _collect_calendar_range(
-                    items,
-                    start_at,
-                    end_at,
-                    max_results=remaining_results,
-                    max_scan_items=remaining_scan,
-                    include_body=include_body,
-                    calendar_owner=label,
-                )
+                try:
+                    chunk, scanned = _collect_calendar_range(
+                        items,
+                        start_at,
+                        end_at,
+                        max_results=remaining_results,
+                        max_scan_items=remaining_scan,
+                        include_body=include_body,
+                        calendar_owner=label,
+                        own_calendar=is_own,
+                    )
+                except Exception as exc:
+                    _log_progress(f"step=calendar_skip folder={label}: {exc}")
+                    calendars.append({"person": label, "status": f"skip:{exc}", "count": 0})
+                    continue
                 checked_count += scanned
                 events.extend(chunk)
-                calendars.append({"person": label, "status": "visible", "count": len(chunk)})
+                calendars.append(
+                    {
+                        "person": label,
+                        "status": "own" if is_own else "visible",
+                        "count": len(chunk),
+                    }
+                )
                 _log_progress(
-                    f"step=calendar_ok folder={label} events={len(chunk)} scanned={scanned}"
+                    f"step=calendar_ok folder={label} own={int(is_own)} "
+                    f"events={len(chunk)} scanned={scanned}"
                 )
             events = _dedupe_calendar_events(events)
             if filter_user:
@@ -847,6 +867,7 @@ def read_calendar(input_data: dict) -> dict:
                 max_scan_items=remaining_scan,
                 include_body=include_body,
                 calendar_owner=owner,
+                own_calendar=status == "own" or str(status).startswith("fallback_own"),
             )
             checked_count += scanned
             events.extend(chunk)
@@ -1379,6 +1400,7 @@ def _collect_calendar_range(
     max_scan_items: int,
     include_body: bool,
     calendar_owner: str = "",
+    own_calendar: bool = False,
 ) -> tuple[list[dict], int]:
     """Прочитать календарь окнами по месяцу, без годового Restrict и без Count."""
     events: list[dict] = []
@@ -1406,6 +1428,7 @@ def _collect_calendar_range(
                     remaining_scan,
                     include_body=include_body,
                     calendar_owner=calendar_owner,
+                    own_calendar=own_calendar,
                 )
             except Exception as exc:
                 if _is_mapi_not_found(exc):
@@ -1424,6 +1447,7 @@ def _collect_calendar_range(
                 remaining_scan,
                 include_body=include_body,
                 calendar_owner=calendar_owner,
+                own_calendar=own_calendar,
             )
             return chunk, scanned
         checked_count += scanned
@@ -1442,6 +1466,7 @@ def _collect_calendar_events(
     max_scan_items: int,
     include_body: bool = False,
     calendar_owner: str = "",
+    own_calendar: bool = False,
 ) -> tuple[list[dict], int]:
     """Собрать события календаря из COM collection в указанном диапазоне."""
     events = []
@@ -1475,6 +1500,7 @@ def _collect_calendar_events(
                 "end": _iso_com_datetime(event_end),
                 "location": _safe_str(getattr(event, "Location", "")),
                 "calendar_owner": calendar_owner,
+                "own_calendar": bool(own_calendar),
                 "organizer": _read_guarded_property(event, PR_SENT_REPRESENTING_NAME_W),
                 "required_attendees": _read_guarded_property(event, PR_DISPLAY_TO_W),
                 "optional_attendees": _read_guarded_property(event, PR_DISPLAY_CC_W),
@@ -1518,7 +1544,8 @@ def _collect_mail_messages(
         sender = _read_guarded_property(message, PR_SENDER_NAME_W)
         recipients = _read_guarded_property(message, PR_DISPLAY_TO_W)
         sent_representing = _read_guarded_property(message, PR_SENT_REPRESENTING_NAME_W)
-        timestamp = _safe_str(message_time)
+        # Same as calendar: keep Outlook wall-clock, do not leak a fake +00:00.
+        timestamp = _iso_com_datetime(message_time)
         item = {
             "entry_id": _safe_str(getattr(message, "EntryID", "")),
             "subject": subject,
@@ -1559,6 +1586,168 @@ def _mail_attachment_names(message: Any) -> list[dict[str, str]]:
         except Exception:
             continue
     return names
+
+
+def _resolve_mail_item(namespace: Any, entry_id: str) -> Any:
+    """Найти письмо Outlook по EntryID и дать понятную ошибку, если оно недоступно."""
+    if not entry_id:
+        raise OutlookComError("ENTRY_ID_REQUIRED: нужен entry_id письма")
+    try:
+        item = namespace.GetItemFromID(entry_id)
+    except Exception as exc:
+        raise OutlookAccessError(f"Не удалось открыть письмо по entry_id: {exc}") from exc
+    if item is None:
+        raise OutlookAccessError("Письмо по entry_id не найдено")
+    return item
+
+
+def _mail_detail_payload(message: Any, *, include_body: bool = True) -> dict[str, Any]:
+    """Собрать безопасный payload письма для UI."""
+    body = _safe_str(getattr(message, "Body", ""))
+    sender = _read_guarded_property(message, PR_SENDER_NAME_W)
+    sent_by = _read_guarded_property(message, PR_SENT_REPRESENTING_NAME_W)
+    unread = bool(getattr(message, "UnRead", False))
+    attachments = []
+    try:
+        raw_attachments = getattr(message, "Attachments", None)
+        count = int(getattr(raw_attachments, "Count", 0) or 0)
+    except Exception:
+        count = 0
+        raw_attachments = None
+    for index in range(1, count + 1):
+        try:
+            att = raw_attachments.Item(index)
+            file_name = _safe_str(getattr(att, "FileName", ""))
+            if not file_name or re.match(r"image\d+\.(png|jpe?g|gif|bmp)$", file_name, re.I):
+                continue
+            attachments.append(
+                {
+                    "index": index,
+                    "file_name": file_name,
+                    "display_name": file_name,
+                    "size": int(getattr(att, "Size", 0) or 0) or None,
+                }
+            )
+        except Exception:
+            continue
+    return {
+        "entry_id": _safe_str(getattr(message, "EntryID", "")),
+        "subject": _safe_str(getattr(message, "Subject", "")),
+        "sender": sender or sent_by,
+        "body": body if include_body else "",
+        "body_preview": body[:BODY_PREVIEW_LIMIT],
+        "unread": unread,
+        "attachments": attachments,
+    }
+
+
+def fetch_mail_message(input_data: dict) -> dict:
+    """Прочитать письмо Outlook по EntryID."""
+    def _read(win32com_client: Any) -> dict:
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = outlook.GetNamespace("MAPI")
+        entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+        message = _resolve_mail_item(namespace, entry_id)
+        payload = _mail_detail_payload(message, include_body=True)
+        payload["source"] = "outlook_com"
+        return payload
+
+    return _run_com_read(_read, "Ошибка чтения письма Outlook")
+
+
+def mark_mail_read(input_data: dict) -> dict:
+    """Изменить статус прочтения письма Outlook."""
+    unread = bool(input_data.get("unread"))
+
+    def _write(win32com_client: Any) -> dict:
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = outlook.GetNamespace("MAPI")
+        entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+        message = _resolve_mail_item(namespace, entry_id)
+        try:
+            message.UnRead = unread
+            message.Save()
+        except Exception as exc:
+            raise OutlookAccessError(f"Не удалось изменить статус письма: {exc}") from exc
+        return {
+            "ok": True,
+            "entry_id": entry_id,
+            "unread": unread,
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка изменения статуса письма Outlook")
+
+
+def display_mail_message(input_data: dict) -> dict:
+    """Открыть письмо или черновик ответа в Outlook."""
+    mode = _safe_str(input_data.get("mode") or "open").strip().casefold()
+
+    def _write(win32com_client: Any) -> dict:
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = outlook.GetNamespace("MAPI")
+        entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+        message = _resolve_mail_item(namespace, entry_id)
+        if mode == "reply":
+            draft = message.Reply()
+        elif mode == "reply_all":
+            draft = message.ReplyAll()
+        elif mode == "forward":
+            draft = message.Forward()
+        else:
+            message.Display(False)
+            return {"ok": True, "entry_id": entry_id, "mode": "open", "source": "outlook_com"}
+        draft.Display(False)
+        return {
+            "ok": True,
+            "entry_id": entry_id,
+            "mode": mode,
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка открытия письма Outlook")
+
+
+def save_mail_attachment(input_data: dict) -> dict:
+    """Сохранить вложение письма Outlook на диск."""
+    attachment_index = _clamp_int(
+        input_data.get("attachment_index") or input_data.get("index"),
+        1,
+        1,
+        100,
+    )
+    save_dir = _safe_str(input_data.get("save_dir") or "").strip()
+
+    def _write(win32com_client: Any) -> dict:
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = outlook.GetNamespace("MAPI")
+        entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+        message = _resolve_mail_item(namespace, entry_id)
+        attachments = getattr(message, "Attachments", None)
+        if attachments is None:
+            raise OutlookAccessError("У письма нет вложений")
+        try:
+            attachment = attachments.Item(attachment_index)
+        except Exception as exc:
+            raise OutlookAccessError(f"Вложение #{attachment_index} не найдено: {exc}") from exc
+        file_name = _safe_str(getattr(attachment, "FileName", "")).strip() or f"attachment-{attachment_index}"
+        base_dir = Path(save_dir) if save_dir else Path(tempfile.gettempdir()) / "Constructor" / "outlook"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        target = base_dir / file_name
+        try:
+            attachment.SaveAsFile(str(target))
+        except Exception as exc:
+            raise OutlookAccessError(f"Не удалось сохранить вложение: {exc}") from exc
+        return {
+            "ok": True,
+            "entry_id": entry_id,
+            "attachment_index": attachment_index,
+            "saved_path": str(target),
+            "file_name": file_name,
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка сохранения вложения Outlook")
 
 
 def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:

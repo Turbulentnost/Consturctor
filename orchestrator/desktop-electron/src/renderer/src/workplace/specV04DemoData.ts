@@ -109,6 +109,12 @@ export interface SpecTaskRow {
   executor: string
   who: string
   progress: number
+  author?: string
+  performer?: string
+  channel?: string
+  role?: string
+  /** Turbo: мне / чужие в проектах, где я руководитель / и то и другое. */
+  turboScope?: 'mine' | 'managed' | 'both'
 }
 
 export const DEMO_TASK_ROWS: SpecTaskRow[] = [
@@ -176,6 +182,9 @@ export interface SpecProjectRow {
   progress: number
   risk: string
   riskTone: SpecPillTone
+  fileId?: string
+  manager?: string
+  url?: string
 }
 
 export const DEMO_PROJECT_ROWS: SpecProjectRow[] = [

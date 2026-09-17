@@ -296,8 +296,6 @@ export function useTodayPlanTimeline(
       meetingBlocks = TODAY_PLAN_MEETING_MOCKS
       aiBlocks = TODAY_PLAN_AI_MOCKS
     } else {
-      if (!meetingBlocks.length) meetingBlocks = TODAY_PLAN_MEETING_MOCKS
-      if (!aiBlocks.length) aiBlocks = TODAY_PLAN_AI_MOCKS
       if (loading) {
         if (!meetingBlocks.length && stableMeetingsRef.current.length) {
           meetingBlocks = stableMeetingsRef.current
@@ -311,8 +309,7 @@ export function useTodayPlanTimeline(
     if (meetingBlocks.length) stableMeetingsRef.current = meetingBlocks
     if (aiBlocks.length) stableAiRef.current = aiBlocks
 
-    const usingPlanMocks =
-      TODAY_PLAN_PREFER_MOCKS || meetingBlocks.every((block) => block.id.startsWith('mock-'))
+    const usingPlanMocks = TODAY_PLAN_PREFER_MOCKS
 
     return {
       loading: TODAY_PLAN_PREFER_MOCKS ? false : loading,

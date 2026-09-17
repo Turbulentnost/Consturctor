@@ -24,6 +24,12 @@ import {
   pingBackendHealth
 } from './ensureBackend'
 import { loadExternalOdataEnv } from './odataExternalEnv'
+import {
+  clearComSessionSecret,
+  getComSessionSecret,
+  setComSessionSecret,
+  type ComSessionSecret
+} from './comSessionSecret'
 import { getUpdateStatus, installAvailableUpdate, requestUpdateCheck, startUpdater, stopUpdater } from './updater'
 
 interface RequestOptions {
@@ -709,6 +715,71 @@ async function handleFetchDataUrl(
   }
 }
 
+type RemoteFilePreviewResult =
+  | { ok: true; kind: 'text'; text: string; mime: string }
+  | { ok: true; kind: 'embed'; dataUrl: string; mime: string }
+  | { ok: true; kind: 'external'; hint: string; mime: string }
+  | { ok: false; error: string; tooLarge?: boolean }
+
+function sniffPreviewMeta(
+  buffer: Buffer,
+  fileName: string,
+  headerType: string
+): { mime: string; kind: 'text' | 'embed' | 'external' } {
+  if (buffer.length >= 4 && buffer.subarray(0, 4).toString('ascii') === '%PDF') {
+    return { mime: 'application/pdf', kind: 'embed' }
+  }
+  const image = sniffImageMime(buffer, headerType)
+  if (image) return { mime: image, kind: 'embed' }
+  let ext = extname(fileName || '').toLowerCase()
+  if (!ext) {
+    try {
+      ext = extname(new URL(fileName).pathname).toLowerCase()
+    } catch {
+      ext = ''
+    }
+  }
+  const headerMime = headerType.split(';')[0].trim().toLowerCase()
+  const mime = MIME_BY_EXT[ext] || headerMime || 'application/octet-stream'
+  return { mime, kind: localFilePreviewKind(ext, mime) }
+}
+
+async function handleFetchFilePreview(
+  _evt: unknown,
+  opts: { url: string; fileName?: string; token?: string | null }
+): Promise<RemoteFilePreviewResult> {
+  const url = absoluteBackendUrl(opts.url)
+  const headers: Record<string, string> = {}
+  if (opts.token) headers.Authorization = `Bearer ${opts.token}`
+  try {
+    const response = await fetch(url, { headers })
+    if (!response.ok) return { ok: false, error: `Ошибка загрузки (${response.status})` }
+    const buffer = Buffer.from(await response.arrayBuffer())
+    if (buffer.length > LOCAL_FILE_PREVIEW_MAX_BYTES) {
+      return { ok: false, tooLarge: true, error: 'Файл слишком большой для предпросмотра' }
+    }
+    const { mime, kind } = sniffPreviewMeta(
+      buffer,
+      opts.fileName || url,
+      response.headers.get('content-type') || ''
+    )
+    if (kind === 'text') {
+      return { ok: true, kind: 'text', text: buffer.toString('utf-8'), mime }
+    }
+    if (kind === 'embed') {
+      return { ok: true, kind: 'embed', dataUrl: `data:${mime};base64,${buffer.toString('base64')}`, mime }
+    }
+    return {
+      ok: true,
+      kind: 'external',
+      hint: 'Документ этого формата лучше открыть после скачивания',
+      mime
+    }
+  } catch {
+    return { ok: false, error: 'Не удалось загрузить файл' }
+  }
+}
+
 async function handleDownload(
   _evt: unknown,
   opts: { url: string; defaultName?: string; token?: string | null }
@@ -953,9 +1024,30 @@ function registerMainIpcHandlers(): void {
       : null,
     devGatewaySecrets: CONFIG.devGateway
   }))
+  ipcHandle(
+    'session:setComSecret',
+    (
+      _evt,
+      payload: (Partial<ComSessionSecret> & { persist?: boolean }) | null
+    ) => {
+      const persist = Boolean(payload?.persist)
+      const next = setComSessionSecret(payload, persist)
+      agentSidecar.setSessionCredentials(
+        next ? { login: next.login, password: next.password } : { login: '', password: '' }
+      )
+      return { ok: true }
+    }
+  )
+  ipcHandle('session:getComSecret', () => getComSessionSecret(agentSidecar.sessionCredentials()))
+  ipcHandle('session:clearComSecret', () => {
+    clearComSessionSecret()
+    agentSidecar.setSessionCredentials({ login: '', password: '' })
+    return { ok: true }
+  })
   ipcHandle('api:request', handleRequest)
   ipcHandle('api:upload', handleUpload)
   ipcHandle('api:fetchDataUrl', handleFetchDataUrl)
+  ipcHandle('api:fetchFilePreview', handleFetchFilePreview)
   ipcHandle('api:download', handleDownload)
   ipcHandle('api:saveLocalFile', handleSaveLocalFile)
   ipcHandle('api:exportPdf', handleExportPdf)

@@ -31,6 +31,7 @@ from app.services.turboproject import (
     get_project_tasks,
     build_project_payload,
     invoke_turboproject,
+    _person_name_matches,
     is_phrase_query,
     is_project_name_query,
     turboproject_configured,
@@ -414,6 +415,49 @@ def test_get_user_portfolio_filters_index_without_cards(monkeypatch) -> None:
     assert [item["file_id"] for item in result["projects"]] == [10, 11]
 
 
+def test_person_name_matches_fio_then_surname() -> None:
+    full = "Ильченко Екатерина Александровна"
+    assert _person_name_matches(full, "Ильченко Е.А.")
+    assert _person_name_matches(full, "Ильченко Екатерина")
+    assert not _person_name_matches(full, "Ильченко")
+    assert _person_name_matches(full, "Ильченко", mode="surname")
+    assert not _person_name_matches(full, "Ищенко", mode="surname")
+
+
+def test_get_user_portfolio_falls_back_to_surname(monkeypatch) -> None:
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
+        assert path == "/api/projects/files"
+        return {
+            "items": [
+                {
+                    "id": 10,
+                    "has_1c": True,
+                    "original_name": "A.mpp",
+                    "rukovoditel_1c": "Ильченко",
+                    "project": {"name": "Только фамилия"},
+                },
+                {
+                    "id": 11,
+                    "has_1c": True,
+                    "original_name": "B.mpp",
+                    "rukovoditel_1c": "Другой",
+                    "project": {"name": "Чужой"},
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._index_cache_by_key", {})
+
+    result = get_user_portfolio({"employee": "Ильченко Екатерина Александровна"})
+    assert result["matched_projects_count"] == 1
+    assert [item["file_id"] for item in result["projects"]] == [10]
+
+
 def test_get_project_reads_one_card_and_selects_fields(monkeypatch) -> None:
     calls: list[str] = []
 
@@ -554,6 +598,92 @@ def test_get_project_tasks_filters_by_session_employee_fio(monkeypatch) -> None:
     )
 
     assert [item["id"] for item in result["tasks"]] == [2]
+
+
+def test_get_project_tasks_falls_back_to_surname_when_fio_missing(monkeypatch) -> None:
+    yesterday = (datetime.now() - timedelta(days=3)).date().isoformat()
+
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
+        assert path == "/api/projects/files/363"
+        return {
+            "tasks": [
+                {
+                    "id": 1,
+                    "name": "Чужая",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Соломичева С.В."}],
+                },
+                {
+                    "id": 2,
+                    "name": "Регламент ПСД",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Ильченко"}],
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
+
+    result = get_project_tasks(
+        {
+            "project_id": 363,
+            "status": "open",
+            "employee": "Ильченко Екатерина Александровна",
+        }
+    )
+    assert [item["id"] for item in result["tasks"]] == [2]
+
+
+def test_get_project_tasks_prefers_full_fio_over_surname(monkeypatch) -> None:
+    yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
+
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
+        assert path == "/api/projects/files/363"
+        return {
+            "tasks": [
+                {
+                    "id": 1,
+                    "name": "Полное ФИО",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Ильченко Екатерина Александровна"}],
+                },
+                {
+                    "id": 2,
+                    "name": "Только фамилия",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Ильченко"}],
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
+
+    result = get_project_tasks(
+        {
+            "project_id": 363,
+            "status": "open",
+            "employee": "Ильченко Екатерина Александровна",
+        }
+    )
+    assert [item["id"] for item in result["tasks"]] == [1]
 
 
 def test_get_project_tasks_assignee_from_nested_resource(monkeypatch) -> None:

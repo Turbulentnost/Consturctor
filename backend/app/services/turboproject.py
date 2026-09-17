@@ -666,11 +666,10 @@ def _people_values(item: dict[str, Any]) -> list[str]:
     return [str(value).strip() for value in values if str(value or "").strip()]
 
 
-def _matches_person(item: dict[str, Any], person: str) -> bool:
+def _matches_person(item: dict[str, Any], person: str, *, mode: str = "fio") -> bool:
     if not person:
         return True
-    needle = person.casefold()
-    return any(needle in value.casefold() for value in _people_values(item))
+    return any(_person_name_matches(person, value, mode=mode) for value in _people_values(item))
 
 
 def _matches_manager(item: dict[str, Any], manager: str) -> bool:
@@ -789,10 +788,13 @@ def _filtered_index_projects(args: dict[str, Any]) -> tuple[list[dict[str, Any]]
         item
         for item in projects
         if _matches_status(item, status)
-        and _matches_owner(item, owner)
         and _matches_department(item, department)
         and _matches_date_range(item, date_from, date_to)
     ]
+    if owner:
+        projects = _prefer_person_hits(
+            projects, lambda item, mode: _matches_person(item, owner, mode=mode)
+        )
     sort_by = _string_filter(args, "sort_by", "sort").casefold()
     if sort_by in {"finish_date", "date"}:
         projects.sort(key=lambda item: (_project_date(item) or datetime.max, item.get("project_name") or ""))
@@ -932,17 +934,21 @@ def _initials_match_name_parts(initials: list[str], name_parts: list[str]) -> bo
     return all(initials[index] == name_parts[index][0] for index in range(needed))
 
 
-def _person_name_matches(actor: str, candidate: str) -> bool:
+def _person_name_matches(actor: str, candidate: str, *, mode: str = "fio") -> bool:
     actor_key = _normalize_person_key(actor)
     cand_key = _normalize_person_key(candidate)
     if not actor_key or not cand_key:
         return False
+    actor_parts = actor_key.split()
+    cand_parts = cand_key.split()
+    if mode == "surname":
+        return bool(actor_parts and cand_parts and actor_parts[0] == cand_parts[0])
     if actor_key == cand_key:
         return True
     if actor_key in cand_key or cand_key in actor_key:
-        return True
-    actor_parts = actor_key.split()
-    cand_parts = cand_key.split()
+        shorter = actor_key if len(actor_key) <= len(cand_key) else cand_key
+        if len(shorter.split()) >= 2:
+            return True
     if len(actor_parts) >= 2 and len(cand_parts) >= 2:
         if actor_parts[0] == cand_parts[0] and actor_parts[1] == cand_parts[1]:
             return True
@@ -956,7 +962,18 @@ def _person_name_matches(actor: str, candidate: str) -> bool:
         surname, initials = cand_init
         if surname == actor_parts[0] and _initials_match_name_parts(initials, actor_parts[1:]):
             return True
-    return bool(actor_parts and cand_parts and actor_parts[0] == cand_parts[0])
+    return False
+
+
+def _prefer_person_hits(
+    items: list[Any],
+    predicate: Callable[[Any, str], bool],
+) -> list[Any]:
+    """Keep FIO hits; if none, fall back to surname-only matches."""
+    fio_hits = [item for item in items if predicate(item, "fio")]
+    if fio_hits:
+        return fio_hits
+    return [item for item in items if predicate(item, "surname")]
 
 
 def _resource_id_values(payload: dict[str, Any]) -> set[str]:
@@ -1029,6 +1046,8 @@ def _task_assigned_to(
     raw_task: dict[str, Any],
     assignee_fio: str,
     resource_ids: set[str],
+    *,
+    mode: str = "fio",
 ) -> bool:
     assignments = raw_task.get("assignments") or []
     if not assignments:
@@ -1041,7 +1060,7 @@ def _task_assigned_to(
             if rid and rid in resource_ids:
                 return True
         name = _assignment_resource_name(assignment)
-        if assignee_fio and name and _person_name_matches(assignee_fio, name):
+        if assignee_fio and name and _person_name_matches(assignee_fio, name, mode=mode):
             return True
     return False
 
@@ -1124,7 +1143,9 @@ def list_project_index(args: dict[str, Any] | None = None) -> dict[str, Any]:
     if query:
         projects = [item for item in projects if _matches_query(item, query)]
     if manager:
-        projects = [item for item in projects if _matches_manager(item, manager)]
+        projects = _prefer_person_hits(
+            projects, lambda item, mode: _matches_person(item, manager, mode=mode)
+        )
     if overdue_only:
         return {
             "summary": (
@@ -1174,8 +1195,12 @@ def get_project_card(args: dict[str, Any] | None = None) -> dict[str, Any]:
     projects = [build_project_payload(summary, details)]
     if query and not _matches_query(projects[0], query):
         projects = []
-    if manager and not _matches_manager(projects[0] if projects else {}, manager):
-        projects = []
+    if manager and projects:
+        card = projects[0]
+        if not _matches_person(card, manager, mode="fio") and not _matches_person(
+            card, manager, mode="surname"
+        ):
+            projects = []
     if overdue_only:
         projects = [
             item
@@ -1312,17 +1337,28 @@ def get_project_tasks(args: dict[str, Any] | None = None) -> dict[str, Any]:
     details = _get_card(project_id, token, creds=creds)
     raw_tasks = details.get("tasks") or []
     tasks = _task_rows(details)
-    filtered = []
+    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for raw_task, task in zip(raw_tasks, tasks, strict=False):
         if task.get("is_summary"):
             continue
         if not _matches_task_status(task, status):
             continue
-        if filter_assignees and not _task_assigned_to(raw_task, assignee_fio, resource_ids):
-            continue
         if overdue_only and int(task.get("delay_days") or 0) <= 0:
             continue
-        filtered.append(task)
+        candidates.append((raw_task, task))
+    if filter_assignees:
+        fio_hits = [
+            task
+            for raw_task, task in candidates
+            if _task_assigned_to(raw_task, assignee_fio, resource_ids, mode="fio")
+        ]
+        filtered = fio_hits or [
+            task
+            for raw_task, task in candidates
+            if _task_assigned_to(raw_task, assignee_fio, resource_ids, mode="surname")
+        ]
+    else:
+        filtered = [task for _raw_task, task in candidates]
     filtered.sort(key=lambda item: (-(int(item.get("delay_days") or 0)), item.get("finish_date") or ""))
     page, next_cursor = _page(filtered, limit=limit, cursor=cursor)
     return {
@@ -1521,7 +1557,24 @@ def get_workload_summary(args: dict[str, Any] | None = None) -> dict[str, Any]:
     employee = _string_filter(payload, "employee_id", "employee", "resource")
     token, creds = _login_for_args(payload)
     projects, _, _ = _filtered_index_projects(payload)
-    employees: dict[str, dict[str, Any]] = {}
+    fio_employees: dict[str, dict[str, Any]] = {}
+    surname_employees: dict[str, dict[str, Any]] = {}
+
+    def _add_workload(bucket: dict[str, dict[str, Any]], name: str, project_id: Any, task: dict[str, Any]) -> None:
+        item = bucket.setdefault(
+            name,
+            {
+                "employee": name,
+                "tasks_count": 0,
+                "overdue_tasks_count": 0,
+                "projects_count": 0,
+                "project_ids": set(),
+            },
+        )
+        item["tasks_count"] += 1
+        if _delay_days(task.get("finish_date")) > 0 and float(task.get("percent_complete") or 0.0) < 1.0:
+            item["overdue_tasks_count"] += 1
+        item["project_ids"].add(project_id)
 
     def consume(index_item: dict[str, Any], details: dict[str, Any]) -> None:
         project_id = index_item.get("file_id")
@@ -1529,27 +1582,21 @@ def get_workload_summary(args: dict[str, Any] | None = None) -> dict[str, Any]:
             if task.get("is_summary"):
                 continue
             for assignment in task.get("assignments") or []:
-                name = str(assignment.get("resource_name") or "").strip()
-                if not name or (employee and not _matches_text(name, employee)):
+                name = _assignment_resource_name(assignment)
+                if not name:
                     continue
-                item = employees.setdefault(
-                    name,
-                    {
-                        "employee": name,
-                        "tasks_count": 0,
-                        "overdue_tasks_count": 0,
-                        "projects_count": 0,
-                        "project_ids": set(),
-                    },
-                )
-                item["tasks_count"] += 1
-                if _delay_days(task.get("finish_date")) > 0 and float(task.get("percent_complete") or 0.0) < 1.0:
-                    item["overdue_tasks_count"] += 1
-                item["project_ids"].add(project_id)
+                if not employee:
+                    _add_workload(fio_employees, name, project_id, task)
+                    continue
+                if _person_name_matches(employee, name, mode="fio"):
+                    _add_workload(fio_employees, name, project_id, task)
+                elif _person_name_matches(employee, name, mode="surname"):
+                    _add_workload(surname_employees, name, project_id, task)
 
     scanned, timed_out = _scan_project_cards(
         projects, token, creds=creds, scan_limit=scan_limit, consume=consume
     )
+    employees = fio_employees or surname_employees
     rows = []
     for item in employees.values():
         project_ids = sorted(item.pop("project_ids"))
@@ -1639,7 +1686,8 @@ def list_project_cards(args: dict[str, Any] | None = None) -> dict[str, Any]:
     summary = _get_index_files(token, creds=creds)
     items = summary.get("items") or []
     with_1c = [item for item in items if item.get("has_1c")]
-    projects: list[dict[str, Any]] = []
+    fio_projects: list[dict[str, Any]] = []
+    surname_projects: list[dict[str, Any]] = []
     for item in with_1c:
         current_id = item.get("id")
         if not current_id:
@@ -1648,16 +1696,21 @@ def list_project_cards(args: dict[str, Any] | None = None) -> dict[str, Any]:
         project = build_project_payload(item, details)
         if query and not _matches_query(project, query):
             continue
-        if manager and not _matches_manager(project, manager):
-            continue
         if overdue_only and not (
             project["task_stats"]["overdue_tasks_count"]
             or project["task_stats"]["overdue_milestones_count"]
         ):
             continue
-        projects.append(project)
-        if limit and len(projects) >= limit:
+        if manager:
+            if _matches_person(project, manager, mode="fio"):
+                fio_projects.append(project)
+            elif _matches_person(project, manager, mode="surname"):
+                surname_projects.append(project)
+        else:
+            fio_projects.append(project)
+        if len(fio_projects) >= limit:
             break
+    projects = fio_projects[:limit] if fio_projects else surname_projects[:limit]
     return {
         "summary": f"TurboProject: {len(projects)} проект(ов) с 1С из {len(items)}",
         "total_projects": len(items),

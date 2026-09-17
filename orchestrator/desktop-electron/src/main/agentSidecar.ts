@@ -275,6 +275,16 @@ export class AgentSidecar {
     this.configure(this.lastToken)
   }
 
+  sessionCredentials(): { login: string; password: string } {
+    return { login: this.lastLogin, password: this.lastPassword }
+  }
+
+  setSessionCredentials(credentials?: { login?: string; password?: string }): void {
+    if (!credentials) return
+    if (credentials.login !== undefined) this.lastLogin = String(credentials.login || '')
+    if (credentials.password !== undefined) this.lastPassword = String(credentials.password || '')
+  }
+
   status(): AgentSidecarStatus {
     const { sidecar, desktopRoot } = this.resolvePaths()
     const python = this.lastPaths.python || this.pythonCommand()

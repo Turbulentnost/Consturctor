@@ -279,6 +279,15 @@ export function agentLaunchesToday(agent: WorkplaceAgent, today = new Date()): b
   return Boolean(next && sameDay(next, today))
 }
 
+export {
+  filterDayLaunchEvents,
+  isAutoLaunchSource,
+  isKpiPlanBoardAgent,
+  isSuccessfulLaunchStatus,
+  summarizeDayLaunches
+} from './todayKpiLaunches'
+export type { DayLaunchSummary } from './todayKpiLaunches'
+
 export function buildWorkplaceAgents(board: WorkflowBoard, personal?: PersonalAgentSeed | null): WorkplaceAgent[] {
   const today = new Date()
   const todayEvents = board.events.filter((event) => {

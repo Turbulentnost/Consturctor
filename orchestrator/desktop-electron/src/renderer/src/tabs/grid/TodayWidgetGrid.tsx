@@ -141,7 +141,8 @@ export function TodayWidgetGrid({
   onToggleLock,
   onRequestEditMode,
   widgets,
-  visibleWidgetIds
+  visibleWidgetIds,
+  rightRail
 }: {
   userId: string
   editMode: boolean

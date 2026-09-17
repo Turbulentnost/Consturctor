@@ -11,7 +11,10 @@ import {
   clearComCredentials,
   comCredentials,
   clearSession,
+  hasComPassword,
   loadSession,
+  rememberPreference,
+  restoreComCredentials,
   saveSession,
   setComCredentials,
   setDevGatewayCredentials,
@@ -236,6 +239,11 @@ function AppShell(): React.JSX.Element {
           })
           bumpComCredentialsRevision()
         }
+        const secret = await window.api.getComSecret?.().catch(() => null)
+        if (secret?.password) {
+          restoreComCredentials(secret, { persist: rememberPreference() })
+          bumpComCredentialsRevision()
+        }
         const stored = loadSession()
         if (stored?.accessToken) {
           if (!isOrchestratorToken(stored.accessToken)) {
@@ -245,7 +253,7 @@ function AppShell(): React.JSX.Element {
             try {
               const profile = await api.me(8_000)
               setUser(profile)
-              // JWT has no 1C password — workplace shows OneCReconnectDialog, not LoginPage / DOK_HTTP_USER.
+              // Password comes from login (safeStorage / sidecar), not from JWT.
               setModeForUser(profile)
             } catch {
               clearSession(true)
@@ -265,6 +273,23 @@ function AppShell(): React.JSX.Element {
       done = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!user || hasComPassword()) return
+    let alive = true
+    void window.api
+      .getComSecret?.()
+      .then((secret) => {
+        if (!alive || !secret?.password) return
+        if (restoreComCredentials(secret, { persist: rememberPreference() })) {
+          bumpComCredentialsRevision()
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [user?.id, comCredsRevision, bumpComCredentialsRevision])
 
   useEffect(() => {
     if (!user) {
@@ -470,7 +495,9 @@ function AppShell(): React.JSX.Element {
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = '', typedLogin = ''): void {
     api.setToken(result.accessToken || null)
-    setComCredentials(typedLogin || result.user.fio, password, result.user.nameMail)
+    setComCredentials(typedLogin || result.user.fio, password, result.user.nameMail, {
+      persist: remember
+    })
     bumpComCredentialsRevision()
     setRequireComLogin(false)
     void agentClient

@@ -94,11 +94,6 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "query": _prop("string", "Текст поиска в теме или отправителе"),
                     "user": _prop("string", "Ящик. Пусто — ящик сессии"),
                     "limit": _prop("integer", "Сколько писем вернуть", default=50),
-                    "since": _prop("string", "С даты YYYY-MM-DD (SINCE), синонимы date/date_from"),
-                    "before": _prop("string", "До даты YYYY-MM-DD не включая (BEFORE=date+1)"),
-                    "date": _prop("string", "День YYYY-MM-DD — то же что since"),
-                    "date_from": _prop("string", "Синоним since"),
-                    "date_to": _prop("string", "Синоним before, день включительно"),
                 },
             },
         },
@@ -967,16 +962,12 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "sheet": _prop("string", "Имя листа. Пусто — первый"),
             "max_rows": _prop("integer", "Максимум строк"),
         }),
-        ("excel.create_workbook", "Создать или перезаписать оформленный .xlsx в папке агента (баннер, шапка, зебра, фильтр, тема). Голую таблицу не пишет. Если файл уже есть — перезапишет. title/kpis усиливают шапку.", {
+        ("excel.create_workbook", "Создать или перезаписать .xlsx в папке агента. Если файл уже есть — перезапишет, отдельный overwrite не нужен.", {
             "filename": _prop("string", "Имя файла, например report.xlsx"),
             "headers": _prop("array", "Заголовки колонок", items={"type": "string"}),
             "rows": _prop("array", "Строки таблицы: список списков или объектов"),
-            "title": _prop("string", "Заголовок отчёта над таблицей. Пусто — имя файла"),
-            "subtitle": _prop("string", "Подзаголовок или период"),
-            "theme": _prop("string", "Тема оформления: navy, forest, graphite, wine, sand"),
-            "kpis": _prop("array", "Плашки над таблицей: [{label, value, hint}]"),
         }),
-        ("excel.edit_workbook", "Изменить .xlsx в папке агента. Можно operations или сразу headers+rows (тогда файл перезапишется и оформится).", {
+        ("excel.edit_workbook", "Изменить .xlsx в папке агента. Можно operations или сразу headers+rows (тогда файл перезапишется).", {
             "filename": _prop("string", "Имя файла в папке агента"),
             "operations": _prop(
                 "array",
@@ -984,8 +975,6 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             ),
             "headers": _prop("array", "Если нет operations — заголовки для полной перезаписи"),
             "rows": _prop("array", "Если нет operations — строки для полной перезаписи"),
-            "theme": _prop("string", "Тема оформления после правки"),
-            "title": _prop("string", "Заголовок, если файл перезаписывается"),
         }),
         ("workspace.powershell_run", "PowerShell только в папке агента.", {
             "command": _prop("string", "Команда PowerShell без выхода из папки агента"),
@@ -1019,39 +1008,15 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("report.build_schedule_recommendations", "Текст рекомендаций по графику из календаря (не файл). Для файла используй report.export_document.", {}),
         (
             "report.export_document",
-            "Сохранить готовый отчёт файлом (Word .docx с оформлением, иначе Markdown) в папке агента. "
+            "Сохранить готовый отчёт файлом (Word .docx, иначе Markdown) в папке агента. "
             "Единственный инструмент для 'отчёт Word/документ файл' из любых собранных данных. "
-            "Возвращает file (путь). Текст разделов пиши сам в sections. theme/kpis — оформление.",
+            "Возвращает file (путь). Текст разделов пиши сам в sections.",
             {
                 "filename": _prop("string", "Имя файла без пути; расширение подставится"),
                 "title": _prop("string", "Заголовок документа"),
                 "summary": _prop("string", "Короткое резюме в начале"),
                 "sections": _prop("array", "Разделы [{heading, body}]; body - готовый текст"),
                 "table": _prop("object", "Необязательная таблица {headers:[...], rows:[[...]]}"),
-                "theme": _prop("string", "Тема оформления: navy, forest, graphite, wine, sand"),
-                "kpis": _prop("array", "Плашки в начале: [{label, value, hint}]"),
-            },
-            ["filename"],
-        ),
-        (
-            "office.format_document",
-            "Оформить Excel или Word как в ChatGPT: тема, титул, KPI, таблица, колонтитулы. "
-            "Новый файл — headers/rows (xlsx) или sections/table (docx). "
-            "Существующий файл без данных — только переоформление. "
-            "excel.create_workbook и report.export_document уже оформляют сами.",
-            {
-                "filename": _prop("string", "Имя файла в папке агента, .xlsx или .docx"),
-                "format": _prop("string", "xlsx или docx, если нет в имени"),
-                "theme": _prop("string", "navy, forest, graphite, wine или sand"),
-                "title": _prop("string", "Заголовок на баннере"),
-                "subtitle": _prop("string", "Подзаголовок или период"),
-                "sheet": _prop("string", "Имя листа Excel"),
-                "headers": _prop("array", "Заголовки Excel", items={"type": "string"}),
-                "rows": _prop("array", "Строки Excel"),
-                "summary": _prop("string", "Резюме Word"),
-                "sections": _prop("array", "Разделы Word [{heading, body}]"),
-                "table": _prop("object", "Таблица Word {headers, rows}"),
-                "kpis": _prop("array", "Плашки [{label, value, hint}]"),
             },
             ["filename"],
         ),
@@ -1341,14 +1306,6 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "report.build_meeting_summary": ("desktop", "report", "generate", [], ["text"], "none"),
     "report.build_schedule_recommendations": ("desktop", "report", "generate", [], ["text"], "none"),
     "report.export_document": ("desktop", "report", "export", ["filename"], ["file"], "none"),
-    "office.format_document": (
-        "desktop",
-        "document",
-        ("export", "update"),
-        ["filename"],
-        ["file"],
-        "none",
-    ),
     "users.current": ("constructor", "user", "read", [], ["user"], "none"),
     "users.list": ("constructor", "user", "list", [], ["users"], "count"),
     "users.subordinates": ("constructor", "subordinate", "list", [], ["users"], "count"),

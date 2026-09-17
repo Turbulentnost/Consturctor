@@ -308,6 +308,21 @@ def test_free_slots_skip_busy_work_hours() -> None:
     assert all(not (item["start"] <= "2026-08-20T10:00" < item["end"]) for item in slots)
 
 
+def test_event_involves_person_keeps_own_calendar_without_attendees() -> None:
+    from app.tools.ac.workers.outlook_com_actions import event_involves_person
+
+    assert event_involves_person(
+        {
+            "own_calendar": True,
+            "calendar_owner": "Календарь",
+            "organizer": "",
+            "required_attendees": "",
+            "subject": "Планерка",
+        },
+        "Комаркова Анна Владимировна",
+    )
+
+
 def test_event_involves_person_by_organizer_and_attendees() -> None:
     from app.tools.ac.workers.outlook_com_actions import event_involves_person
 
@@ -357,10 +372,45 @@ def test_restrict_filters_put_russian_locale_first() -> None:
 
 
 def test_iso_com_datetime_normalizes_naive_and_text() -> None:
+    from datetime import timezone
+
     from app.tools.ac.workers.outlook_com_actions import _iso_com_datetime
 
     assert _iso_com_datetime(datetime(2026, 9, 3, 14, 0, 0)) == "2026-09-03T14:00:00"
     assert _iso_com_datetime("2026-09-03 14:00:00") == "2026-09-03T14:00:00"
+    # pywintypes often tags a local ReceivedTime as UTC; keep the wall-clock.
+    assert (
+        _iso_com_datetime(datetime(2026, 9, 16, 9, 38, 0, tzinfo=timezone.utc))
+        == "2026-09-16T09:38:00"
+    )
+
+
+def test_collect_mail_messages_uses_iso_received_time() -> None:
+    from datetime import timezone
+
+    from app.tools.ac.workers.outlook_com_actions import _collect_mail_messages
+
+    class _Message:
+        Subject = "КП"
+        Body = ""
+        ReceivedTime = datetime(2026, 9, 16, 9, 38, 0, tzinfo=timezone.utc)
+        EntryID = "e-mail-1"
+        UnRead = True
+
+    rows, scanned = _collect_mail_messages(
+        [_Message()],
+        folder_name="Inbox",
+        date_attr="ReceivedTime",
+        direction="inbox",
+        query=None,
+        start_at=datetime(2026, 9, 16, 0, 0, 0),
+        end_at=datetime(2026, 9, 16, 23, 59, 59),
+        max_results=10,
+        max_scan_items=20,
+    )
+    assert scanned == 1
+    assert rows[0]["datetime"] == "2026-09-16T09:38:00"
+    assert rows[0]["received_at"] == "2026-09-16T09:38:00"
 
 
 def test_collect_range_retries_restrict_when_us_filter_is_empty() -> None:

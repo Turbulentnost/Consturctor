@@ -42,6 +42,7 @@ export interface MeetingEvent {
   organizer: string
   attendees: string
   owner: string
+  ownCalendar?: boolean
 }
 
 interface OutlookMeetingRaw {
@@ -51,12 +52,13 @@ interface OutlookMeetingRaw {
   end?: string
   location?: string
   calendar_owner?: string
+  own_calendar?: boolean
   organizer?: string
   required_attendees?: string
   optional_attendees?: string
 }
 
-const CACHE_KEY = 'orchOutlookMeetings:v4'
+const CACHE_KEY = 'orchOutlookMeetings:v5'
 const REQUEST_TIMEOUT_MS = 180_000
 
 function pad2(n: number): string {
@@ -70,13 +72,27 @@ function dayKey(day: Date): string {
 /**
  * Parse an Outlook COM datetime string into a local Date.
  *
- * COM returns values like "2026-09-03 14:00:00+00:00" (space separator) or a
- * plain "2026-09-03 14:00:00" (local, no offset). `new Date` is picky about the
- * space form, so we normalize it to the ISO "T" form and fall back gracefully.
+ * COM / pywintypes often stringify a *local* ReceivedTime as
+ * "2026-09-03 14:00:00+00:00". `new Date` then treats +00:00 as UTC and the
+ * tile shows a shifted clock. Read the wall-clock and ignore that fake offset.
  */
 export function parseMeetingTime(raw: string): Date | null {
   const value = (raw || '').trim()
   if (!value) return null
+  const com = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:Z|[+-]00:00)?$/
+  )
+  if (com) {
+    const stamp = new Date(
+      Number(com[1]),
+      Number(com[2]) - 1,
+      Number(com[3]),
+      Number(com[4]),
+      Number(com[5]),
+      Number(com[6] || 0)
+    )
+    if (!Number.isNaN(stamp.getTime())) return stamp
+  }
   const direct = new Date(value)
   if (!Number.isNaN(direct.getTime())) return direct
   const iso = value.replace(' ', 'T')
@@ -101,6 +117,7 @@ export function parseMeetingTime(raw: string): Date | null {
 
 /** Keep meetings that belong to the logged-in system user (ФИО из 1С). */
 export function meetingInvolvesPerson(meeting: MeetingEvent, person: string): boolean {
+  if (meeting.ownCalendar || isOutlookFolderOwner(meeting.owner)) return true
   const name = (person || '').trim()
   if (!name) return true
   const hay = [meeting.organizer, meeting.attendees, meeting.subject, meeting.owner]
@@ -152,7 +169,8 @@ function normalizeMeeting(raw: OutlookMeetingRaw, index: number): MeetingEvent {
     location: (raw.location || '').trim(),
     organizer: (raw.organizer || '').trim(),
     attendees,
-    owner: (raw.calendar_owner || '').trim()
+    owner: (raw.calendar_owner || '').trim(),
+    ownCalendar: Boolean(raw.own_calendar) || isOutlookFolderOwner(raw.calendar_owner)
   }
 }
 
@@ -274,7 +292,7 @@ export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()
 export async function ensureOutlookMeetings(
   view: CalendarView,
   anchor: Date,
-  options: { force?: boolean; owner?: string } = {}
+  options: { force?: boolean; owner?: string; allVisible?: boolean } = {}
 ): Promise<{ ok: boolean; meetings: MeetingEvent[]; error?: string; cached: boolean }> {
   const win = meetingWindow(view, anchor)
   const fromKey = dayKey(win.from)
@@ -305,8 +323,8 @@ export async function ensureOutlookMeetings(
   const result = await requestOutlookMeetings({
     dateFrom: fromKey,
     dateTo: toKey,
-    forUser: owner,
-    allVisible: true
+    forUser: options.allVisible ? owner : undefined,
+    allVisible: Boolean(options.allVisible)
   })
   if (result.ok) {
     writeCache({ day: today, from: fromKey, to: toKey, owner, meetings: result.meetings })

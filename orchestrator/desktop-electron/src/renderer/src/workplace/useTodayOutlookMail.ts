@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { TODAY_MAIL_ROWS } from '../tabs/grid/todayDemoData'
 import type { SpecMailRow } from './specV04DemoData'
 import { outlookMessageToMailRow } from './specV04Mappers'
 import { fetchOutlookMailForDay, formatMailReceivedLabel, formatMailTime } from '../utils/outlookMail'
@@ -28,7 +27,7 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
 
   useEffect(() => {
     let alive = true
-    const cacheKey = `today-outlook-mail:${dayKey}`
+    const cacheKey = `today-outlook-mail-inout:${dayKey}`
     if (!shouldRunGridFetch(cacheKey, generation)) {
       const cached = readGridCache<{ error: string; source: string; rows: SpecMailRow[] }>(cacheKey)
       if (cached) {
@@ -41,51 +40,80 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
     }
     setLoading(true)
     setError('')
-    void fetchOutlookMailForDay(periodDay, { folder: 'Inbox', maxResults: 50 })
-      .then((res) => {
+    void (async () => {
+      try {
+        const inbox = await fetchOutlookMailForDay(periodDay, { folder: 'Inbox', maxResults: 40 })
         if (!alive) return
-        if (!res.ok) {
+        const sent = await fetchOutlookMailForDay(periodDay, { folder: 'Sent', maxResults: 40 })
+        if (!alive) return
+        const inboxOk = inbox.ok
+        const sentOk = sent.ok
+        if (!inboxOk && !sentOk) {
           setRows([])
           setSource('')
-          setError(res.error || 'Outlook недоступен')
+          setError(inbox.error || sent.error || 'Outlook недоступен')
           return
         }
-        const nextSource = res.source || 'outlook_com'
-        const nextRows = res.messages.map((msg, index) => {
-          const row = outlookMessageToMailRow(msg, index)
-          return {
-            ...row,
-            time: formatMailTime(row.time),
-            receivedLabel: formatMailReceivedLabel(row.time)
+        const combined = [
+          ...(inboxOk ? inbox.messages : []),
+          ...(sentOk ? sent.messages : [])
+        ].sort((left, right) =>
+          String(right.datetime || right.sent_at || right.received_at || '').localeCompare(
+            String(left.datetime || left.sent_at || left.received_at || '')
+          )
+        )
+        const mapped = combined.map(
+          (msg, index) => {
+            const row = outlookMessageToMailRow(msg, index)
+            return {
+              ...row,
+              time: formatMailTime(String(msg.datetime || msg.received_at || msg.sent_at || row.time)),
+              receivedLabel: formatMailReceivedLabel(
+                String(msg.datetime || msg.received_at || msg.sent_at || row.time)
+              )
+            }
           }
+        )
+        const seen = new Set<string>()
+        const nextRows = mapped.filter((row) => {
+          const key = row.id
+          if (!key || seen.has(key)) return false
+          seen.add(key)
+          return true
         })
+        const nextSource = [inboxOk ? 'Inbox' : '', sentOk ? 'Sent' : '']
+          .filter(Boolean)
+          .join('+') || inbox.source || sent.source || 'outlook_com'
+        const nextError =
+          inboxOk && sentOk
+            ? ''
+            : [!inboxOk ? inbox.error : '', !sentOk ? sent.error : ''].filter(Boolean).join(' · ')
         setSource(nextSource)
         setRows(nextRows)
-        writeGridCache(cacheKey, { error: '', source: nextSource, rows: nextRows })
-      })
-      .catch((err) => {
+        setError(nextRows.length ? '' : nextError)
+        writeGridCache(cacheKey, { error: nextRows.length ? '' : nextError, source: nextSource, rows: nextRows })
+      } catch (err) {
         if (!alive) return
         setRows([])
         setSource('')
         setError(err instanceof Error ? err.message : 'Ошибка загрузки почты')
-      })
-      .finally(() => {
+      } finally {
         if (alive) setLoading(false)
-      })
+      }
+    })()
     return () => {
       alive = false
     }
   }, [dayKey, generation, periodDay])
 
   const resolvedRows = useMemo(() => {
-    if (rows.length) return rows
-    return TODAY_MAIL_ROWS
+    return rows
   }, [rows])
 
   return {
-    loading: loading && rows.length === 0,
+    loading: loading && resolvedRows.length === 0,
     error: resolvedRows.length ? '' : error,
-    source: resolvedRows.length && !rows.length ? 'demo' : source,
+    source,
     rows: resolvedRows
   }
 }

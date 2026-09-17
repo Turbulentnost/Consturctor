@@ -3747,8 +3747,10 @@ class Sidecar:
         days_forward = command.get("daysForward")
         if isinstance(days_forward, int) and days_forward > 0:
             input_data["days_forward"] = days_forward
-        if for_user or command.get("allVisible"):
+        if command.get("allVisible"):
             input_data["max_scan_items"] = 2000
+        elif for_user:
+            input_data["max_scan_items"] = 500
 
         def _work() -> None:
             try:
@@ -3763,6 +3765,10 @@ class Sidecar:
                     + date_from
                     + " to="
                     + date_to
+                    + " for_user="
+                    + for_user
+                    + " all_visible="
+                    + str(bool(command.get("allVisible")))
                 )
                 emit(
                     {

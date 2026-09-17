@@ -4,7 +4,7 @@ import type { UserProfile } from '../api/types'
 import { turboProjectTaskToTodayRow } from './specV04Mappers'
 import type { TodayProjectTaskRow } from './useTodayProjectTasks'
 import { turboProjectInvokeArgs } from './userContext'
-import { turboTaskAssignedToActor } from './turboAssigneeMatch'
+import { filterTurboTasksByActor } from './turboAssigneeMatch'
 import { isTechnicalTurboMessage } from './turboSession'
 
 export type TurboProjectOpenTaskRow = TodayProjectTaskRow
@@ -83,9 +83,7 @@ export function useTurboProjectOpenTasks(
         const all = raw.filter(
           (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
         )
-        const mine = erpFio.trim()
-          ? all.filter((task) => turboTaskAssignedToActor(task, erpFio))
-          : all
+        const mine = erpFio.trim() ? filterTurboTasksByActor(all, erpFio) : all
         const fallbackAll = Boolean(assigneeOnly && mine.length === 0 && all.length > 0)
         const list = assigneeOnly && !fallbackAll ? mine : all
         setShowingAllAssignees(fallbackAll)

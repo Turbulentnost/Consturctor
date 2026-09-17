@@ -2064,6 +2064,19 @@ export class ApiClient {
     return res.ok && res.dataUrl ? res.dataUrl : null
   }
 
+  async fetchFilePreview(
+    url: string,
+    fileName = ''
+  ): Promise<
+    | { ok: true; kind: 'text'; text: string; mime: string }
+    | { ok: true; kind: 'embed'; dataUrl: string; mime: string }
+    | { ok: true; kind: 'external'; hint: string; mime: string }
+    | { ok: false; error: string; tooLarge?: boolean }
+  > {
+    if (!url) return { ok: false, error: 'Нет ссылки на файл' }
+    return window.api.fetchFilePreview({ url, fileName, token: this.resolveToken() })
+  }
+
   // ---------- Download ----------
   async download(url: string, defaultName: string): Promise<boolean> {
     const res = await window.api.download({ url, defaultName, token: this.resolveToken() })

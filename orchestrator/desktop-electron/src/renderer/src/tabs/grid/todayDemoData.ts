@@ -275,14 +275,61 @@ export type TodayResultFile = {
   kind: 'doc' | 'pdf' | 'xls' | 'csv'
   tag: string
   tagTone: SpecPillTone
+  agentTitle: string
+  preview: string
 }
 
 export const TODAY_RESULT_FILES: TodayResultFile[] = [
-  { id: 'f1', name: 'Повестка_совещания_CRM.docx', kind: 'doc', tag: 'ИИ', tagTone: 'purple' },
-  { id: 'f2', name: 'Сравнение_КП_поставщиков.pdf', kind: 'pdf', tag: 'ИИ', tagTone: 'purple' },
-  { id: 'f3', name: 'Отчёт_по_задачам_1С.xlsx', kind: 'xls', tag: 'ИИ', tagTone: 'purple' },
-  { id: 'f4', name: 'Проект_решения_акт_работ.docx', kind: 'doc', tag: 'ИИ', tagTone: 'purple' },
-  { id: 'f5', name: 'Лог_вызовов_агентов.csv', kind: 'csv', tag: 'ИИ', tagTone: 'purple' }
+  {
+    id: 'f1',
+    name: 'Повестка_совещания_CRM.docx',
+    kind: 'doc',
+    tag: 'ИИ',
+    tagTone: 'purple',
+    agentTitle: 'Агент совещаний',
+    preview:
+      'Повестка совещания по проекту CRM\nДата: 17.09.2026\nУчастники: коммерция, внедрение, заказчик\n\n1. Статус внедрения и открытые риски\n2. Сравнение коммерческих предложений поставщиков\n3. Сроки опытной эксплуатации\n4. Решения и поручения'
+  },
+  {
+    id: 'f2',
+    name: 'Сравнение_КП_поставщиков.pdf',
+    kind: 'pdf',
+    tag: 'ИИ',
+    tagTone: 'purple',
+    agentTitle: 'Агент аналитики',
+    preview:
+      'Сравнение коммерческих предложений\nПроект: внедрение CRM\n\nПоставщик | Срок | Стоимость | Сопровождение\nАльфа | 8 недель | 2,4 млн | 12 мес.\nБета | 10 недель | 2,1 млн | 6 мес.\nГамма | 6 недель | 2,8 млн | 12 мес.\n\nРекомендация: Альфа — баланс срока, цены и сопровождения.'
+  },
+  {
+    id: 'f3',
+    name: 'Отчёт_по_задачам_1С.xlsx',
+    kind: 'xls',
+    tag: 'ИИ',
+    tagTone: 'purple',
+    agentTitle: 'Агент задач 1С',
+    preview:
+      'Задача;Срок;Статус\nСогласовать отпуск Иванова;18.09;В работе\nПодписать акт работ;19.09;Просрочено\nПроверить спецификацию закупки;20.09;Новая\nЗакрыть поручение по CRM;22.09;В работе'
+  },
+  {
+    id: 'f4',
+    name: 'Проект_решения_акт_работ.docx',
+    kind: 'doc',
+    tag: 'ИИ',
+    tagTone: 'purple',
+    agentTitle: 'Агент решений',
+    preview:
+      'Проект решения\nТема: согласование акта выполненных работ\n\nПредлагается утвердить акт по договору сопровождения 1С, принять работы без замечаний и передать документ на подпись ответственному.\n\nОснование: закрытые задачи периода и отсутствие открытых претензий со стороны заказчика.'
+  },
+  {
+    id: 'f5',
+    name: 'Лог_вызовов_агентов.csv',
+    kind: 'csv',
+    tag: 'ИИ',
+    tagTone: 'purple',
+    agentTitle: 'Агент мониторинга',
+    preview:
+      'Время,Агент,Результат\n09:32,Агент задач 1С,Отчёт сформирован\n10:18,Агент совещаний,Повестка готова\n13:41,Агент аналитики,Сравнение КП\n16:55,Агент решений,Черновик решения'
+  }
 ]
 
 export const TODAY_MAIL_ROWS: SpecMailRow[] = [
@@ -503,5 +550,7 @@ export const TODAY_PREPARED_DECISIONS: TodayPreparedDecision[] = [
 
 export const TODAY_TIMELINE_HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 
-/** В dev всегда показываем демо-план (скрин/фокус не сбивает раскладку). */
-export const TODAY_PLAN_PREFER_MOCKS = import.meta.env.DEV
+/** Явный opt-in для демо-плана, если нужен локальный макет вместо COM. */
+export const TODAY_PLAN_PREFER_MOCKS = ['1', 'true', 'yes', 'on'].includes(
+  String(import.meta.env.VITE_TODAY_PLAN_PREFER_MOCKS || '').trim().toLowerCase()
+)

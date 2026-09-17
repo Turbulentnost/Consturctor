@@ -146,7 +146,9 @@ export function useTodayAgentResults(periodDay: Date, userId?: string): TodayAge
       name: file.name,
       kind: file.kind,
       tag: file.tag,
-      tagTone: file.tagTone
+      tagTone: file.tagTone,
+      agentTitle: file.agentTitle,
+      summary: file.preview
     }))
   }, [items])
 
