@@ -1979,6 +1979,39 @@ def _ensure_result_files_from_answer(
     return created
 
 
+def _work_result_body(answer: str) -> str:
+    raw = (answer or "").strip()
+    match = re.search(r"#{0,6}[ \t]*WORK[ _]?RESULT\b", raw, re.I)
+    return raw[match.start() :].strip() if match else raw
+
+
+def _persist_work_result_if_needed(
+    api: ApiClient | None,
+    workflow_id: str,
+    run_cwd: str,
+    answer: str,
+    run_id: str = "",
+    existing: list[str] | None = None,
+) -> list[str]:
+    """If the run produced WORK_RESULT but no file, store the oral result for Files."""
+    if existing or api is None or not (workflow_id or "").strip():
+        return []
+    if not _text_has_finished_work_result(answer):
+        return []
+    body = _work_result_body(answer)
+    if not body:
+        return []
+    folder = Path(run_cwd) if run_cwd else None
+    if folder is None:
+        return []
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    path = folder / f"Результат_{stamp}.md"
+    path.write_text(body, encoding="utf-8")
+    _upload_run_outputs(api, workflow_id, [str(path)], run_id=run_id)
+    return [str(path)]
+
+
 def _upload_run_attachments(
     api: ApiClient,
     workflow_id: str,
@@ -3113,19 +3146,28 @@ class Sidecar:
         )
         active.history_finished = True
         try:
-            _persist_run_outputs(
+            output_paths = _persist_run_outputs(
                 self._api,
                 workflow_id,
                 run_cwd,
                 run_id=str(run_ref or active.run_id).strip(),
             )
-            _ensure_result_files_from_answer(
-                self._api,
-                workflow_id,
-                run_cwd,
-                answer,
-                run_id=str(run_ref or active.run_id).strip(),
-            )
+            if not output_paths:
+                output_paths = _ensure_result_files_from_answer(
+                    self._api,
+                    workflow_id,
+                    run_cwd,
+                    answer,
+                    run_id=str(run_ref or active.run_id).strip(),
+                )
+            if not output_paths:
+                _persist_work_result_if_needed(
+                    self._api,
+                    workflow_id,
+                    run_cwd,
+                    answer,
+                    run_id=str(run_ref or active.run_id).strip(),
+                )
         except Exception as exc:  # noqa: BLE001
             log("run output sweep failed: " + repr(exc))
         try:
