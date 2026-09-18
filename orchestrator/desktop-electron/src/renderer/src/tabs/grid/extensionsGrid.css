@@ -832,8 +832,9 @@
   z-index: 10060;
 }
 
-.registry-create-dialog {
-  width: min(900px, calc(100vw - 36px));
+.modal-card.registry-create-dialog {
+  width: min(1120px, calc(100vw - 48px));
+  max-width: min(1120px, calc(100vw - 48px));
   max-height: min(90vh, 860px);
   padding: 0;
   gap: 0;
@@ -904,8 +905,8 @@
 
 .registry-create-grid {
   display: grid;
-  grid-template-columns: 1.1fr 1fr;
-  gap: 10px 12px;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 10px 16px;
 }
 
 .registry-create-field {
