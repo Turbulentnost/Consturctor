@@ -8,12 +8,22 @@ export const TAB_CHROME_MAX_ROWS = 12
 /** KPI body widgets — same 8×6 snap as вкладка «Сегодня». */
 export const KPI_TAB_GRID_COLS = 8
 export const KPI_TAB_GRID_ROWS = 6
+/** Реестр поручений: рабочее поле 8×6 (col×row). */
+export const REGISTRY_TAB_GRID_COLS = 8
+export const REGISTRY_TAB_GRID_ROWS = 6
 
 export function tabChromeGridDimensions(tabId: string): { cols: number; maxRows: number } {
   if (tabId === 'kpi') {
     return { cols: KPI_TAB_GRID_COLS, maxRows: KPI_TAB_GRID_ROWS }
   }
+  if (tabId === 'assignments_registry') {
+    return { cols: REGISTRY_TAB_GRID_COLS, maxRows: REGISTRY_TAB_GRID_ROWS }
+  }
   return { cols: TAB_CHROME_COLS, maxRows: TAB_CHROME_MAX_ROWS }
+}
+
+export function tabUsesSnapGrid(tabId: string): boolean {
+  return tabId === 'kpi' || tabId === 'assignments_registry'
 }
 export const TAB_CHROME_MARGIN: [number, number] = [5, 5]
 export const TAB_CHROME_MIN_ROW = 48
@@ -99,6 +109,32 @@ export const DEFAULT_WIDE_MAIN_LAYOUT: LayoutItem[] = [
   { i: 'main', x: 0, y: 0, w: 16, h: 12, minW: 8, minH: 4, maxW: 16, maxH: 12 }
 ]
 
+/** 8×6: таблица 6×6, карточка поручения 2×6. */
+export const DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT: LayoutItem[] = [
+  {
+    i: 'main',
+    x: 0,
+    y: 0,
+    w: 6,
+    h: 6,
+    minW: 4,
+    minH: 4,
+    maxW: REGISTRY_TAB_GRID_COLS,
+    maxH: REGISTRY_TAB_GRID_ROWS
+  },
+  {
+    i: 'side',
+    x: 6,
+    y: 0,
+    w: 2,
+    h: 6,
+    minW: 2,
+    minH: 4,
+    maxW: REGISTRY_TAB_GRID_COLS,
+    maxH: REGISTRY_TAB_GRID_ROWS
+  }
+]
+
 export const DEFAULT_PROCESS_LAYOUT: LayoutItem[] = [
   { i: 'main', x: 0, y: 0, w: 12, h: 10, minW: 6, minH: 4, maxW: 16, maxH: 12 },
   { i: 'side', x: 12, y: 0, w: 4, h: 10, minW: 4, minH: 4, maxW: 16, maxH: 12 },
@@ -124,7 +160,11 @@ export const DEFAULT_DECISIONS_LAYOUT: LayoutItem[] = [
 ]
 
 function storageKey(tabId: string, userId: string): string {
-  return `${TAB_CHROME_STORAGE_KEY}:${tabId}:${userId.trim() || 'default'}`
+  const uid = userId.trim() || 'default'
+  if (tabId === 'assignments_registry') {
+    return `${TAB_CHROME_STORAGE_KEY}:assignments_registry-v2:${uid}`
+  }
+  return `${TAB_CHROME_STORAGE_KEY}:${tabId}:${uid}`
 }
 
 function defaultMeta(ids: string[]): Record<string, TabChromeMeta> {
@@ -301,19 +341,28 @@ function readPersist(tabId: string, userId: string, defaults: LayoutItem[], ids:
     if (!raw) {
       return {
         layout: defaults.map((item) => ({ ...item })),
-        meta: tabId === 'kpi' ? kpiEnsureAllWidgetsVisible(defaultMeta(ids), ids) : defaultMeta(ids)
+        meta:
+          tabId === 'kpi' || tabId === 'assignments_registry'
+            ? kpiEnsureAllWidgetsVisible(defaultMeta(ids), ids)
+            : defaultMeta(ids)
       }
     }
     const parsed = JSON.parse(raw) as TabChromePersist
     const meta = sanitizeMeta(parsed.meta, ids)
     return {
       layout: sanitizeLayoutFromStorage(parsed.layout, defaults, grid),
-      meta: tabId === 'kpi' ? kpiEnsureAllWidgetsVisible(meta, ids) : meta
+      meta:
+        tabId === 'kpi' || tabId === 'assignments_registry'
+          ? kpiEnsureAllWidgetsVisible(meta, ids)
+          : meta
     }
   } catch {
     return {
       layout: defaults.map((item) => ({ ...item })),
-      meta: tabId === 'kpi' ? kpiEnsureAllWidgetsVisible(defaultMeta(ids), ids) : defaultMeta(ids)
+      meta:
+        tabId === 'kpi' || tabId === 'assignments_registry'
+          ? kpiEnsureAllWidgetsVisible(defaultMeta(ids), ids)
+          : defaultMeta(ids)
     }
   }
 }

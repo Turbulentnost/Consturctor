@@ -184,12 +184,31 @@ def _login_timeout() -> int:
         return 45
 
 
-def _build_connection_string() -> str:
+_preferred_sql_server: str | None = None
+
+
+def _sql_server_candidates() -> list[str]:
+    """Keep ERP_SQL_SERVER from .env; retry with LAN IP if short name ii1 hangs on SSPI."""
+    primary = (settings.erp_sql_server or "ii1").strip()
+    out: list[str] = []
+    if primary:
+        out.append(primary)
+    if primary.casefold() == "ii1":
+        out.append("192.168.1.157")
+    ordered = list(dict.fromkeys(out))
+    preferred = (_preferred_sql_server or "").strip()
+    if preferred and preferred in ordered:
+        return [preferred] + [host for host in ordered if host != preferred]
+    return ordered
+
+
+def _build_connection_string(*, server: str | None = None) -> str:
     driver = settings.erp_sql_driver
     timeout = _login_timeout()
+    host = (server or settings.erp_sql_server or "ii1").strip()
     parts = [
         f"DRIVER={{{driver}}}",
-        f"SERVER={settings.erp_sql_server}",
+        f"SERVER={host}",
         f"DATABASE={settings.erp_sql_database}",
         f"Connection Timeout={timeout}",
     ]
@@ -212,23 +231,30 @@ def _build_connection_string() -> str:
     return ";".join(parts) + ";"
 
 
+def _connect_once(server: str, timeout: int) -> pyodbc.Connection:
+    global _preferred_sql_server
+    conn_str = _build_connection_string(server=server)
+    if _use_windows_impersonation():
+        with _windows_impersonation(settings.erp_sql_user, settings.erp_sql_password):
+            conn = pyodbc.connect(conn_str, autocommit=True, timeout=timeout)
+    else:
+        conn = pyodbc.connect(conn_str, autocommit=True, timeout=timeout)
+    _preferred_sql_server = server.strip()
+    return conn
+
+
 def _connect() -> pyodbc.Connection:
     timeout = _login_timeout()
-    try:
-        if _use_windows_impersonation():
-            with _windows_impersonation(settings.erp_sql_user, settings.erp_sql_password):
-                return pyodbc.connect(
-                    _build_connection_string(),
-                    autocommit=True,
-                    timeout=timeout,
-                )
-        return pyodbc.connect(
-            _build_connection_string(),
-            autocommit=True,
-            timeout=timeout,
-        )
-    except pyodbc.Error as exc:
-        raise ErpSqlError(f"Failed to connect to erp_pm: {exc}") from exc
+    last_exc: pyodbc.Error | None = None
+    for server in _sql_server_candidates():
+        try:
+            return _connect_once(server, timeout)
+        except pyodbc.Error as exc:
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise ErpSqlError(f"Failed to connect to erp_pm: {last_exc}") from last_exc
+    raise ErpSqlError("Failed to connect to erp_pm: no ERP_SQL_SERVER configured")
 
 
 def _row_department(row) -> str:
@@ -267,6 +293,11 @@ def get_position_by_fio(fio: str) -> str:
         raise ErpSqlError(f"Failed to load position: {exc}") from exc
     finally:
         conn.close()
+
+
+def warmup() -> None:
+    """Startup check: connect once so /health erp_reachable reflects ODBC."""
+    _connect().close()
 
 
 def ping() -> bool:

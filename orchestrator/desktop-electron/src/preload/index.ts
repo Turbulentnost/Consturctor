@@ -94,6 +94,23 @@ const api = {
   }): Promise<string[]> => ipcRenderer.invoke('dialog:openFile', options),
   openPath: (filePath: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('shell:openPath', filePath),
+  printToPdf: (opts: {
+    html?: string
+    landscape?: boolean
+    openAfter?: boolean
+    defaultName?: string
+  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('print:to-pdf', opts),
+  printPreview: (opts: {
+    html?: string
+    landscape?: boolean
+  }): Promise<{ ok: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('print:preview', opts),
+  printDialog: (opts: {
+    html?: string
+    landscape?: boolean
+  }): Promise<{ ok: boolean; canceled?: boolean; error?: string }> =>
+    ipcRenderer.invoke('print:dialog', opts),
   readLocalFilePreview: (
     filePath: string
   ): Promise<

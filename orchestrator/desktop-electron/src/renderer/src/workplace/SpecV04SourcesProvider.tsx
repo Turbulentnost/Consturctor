@@ -48,6 +48,11 @@ const EMPTY: SpecV04SourcesState = {
   projectCount: 0,
   mailRows: [],
   mailCount: 0,
+  mailLoading: false,
+  mailImapPrimary: false,
+  mailComError: '',
+  mailImapError: '',
+  mailImapStatus: '',
   processRows: [],
   todayProcessRows: [],
   boardEvents: [],
@@ -56,7 +61,9 @@ const EMPTY: SpecV04SourcesState = {
   meetingCount: 0,
   meetingCountToday: 0,
   meetings: [],
+  meetingsLoading: false,
   erpError: '',
+  erpLoading: false,
   erpSecondaryHint: '',
   sources: { erp: '—', turbo: '—', mail: '—' },
   turboNoSession: false,
@@ -98,6 +105,10 @@ export function SpecV04SourcesProvider({
   const [turboSource, setTurboSource] = useState('—')
   const [mailRows, setMailRows] = useState<SpecMailRow[]>([])
   const [mailSource, setMailSource] = useState('—')
+  const [mailComError, setMailComError] = useState('')
+  const [mailImapError, setMailImapError] = useState('')
+  const [mailImapPrimary, setMailImapPrimary] = useState(false)
+  const [mailImapStatus, setMailImapStatus] = useState('')
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
   const [oneCAuthFailure, setOneCAuthFailure] = useState(false)
   const hasLoadedSourcesRef = useRef(false)
@@ -136,7 +147,9 @@ export function SpecV04SourcesProvider({
         setTurboTasks(bundle.turboTasks.tasks)
         setTurboTasksError(bundle.turboTasks.error || '')
         if (bundle.turbo.hint?.trim() && !bundle.turbo.projects.length) {
-          setError((prev) => (prev ? `${prev} · ${bundle.turbo.hint}` : bundle.turbo.hint))
+          setTurboTasksError((prev) =>
+            prev ? `${prev} · ${bundle.turbo.hint}` : bundle.turbo.hint
+          )
         }
         if (bundle.turboTasks.error?.trim() && bundle.turboTasks.tasks.length) {
           setErpSecondaryHint((prev) =>
@@ -146,6 +159,10 @@ export function SpecV04SourcesProvider({
 
         setMailRows(bundle.mail.rows)
         setMailSource(bundle.mail.sourceLabel)
+        setMailComError(bundle.mail.comError || '')
+        setMailImapError(bundle.mail.imapError || '')
+        setMailImapPrimary(Boolean(bundle.mail.imapPrimary))
+        setMailImapStatus(bundle.mail.imapStatus || '')
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : 'Не удалось загрузить данные')
       } finally {
@@ -224,6 +241,7 @@ export function SpecV04SourcesProvider({
       outlookMailbox,
       erpFio,
       erpError,
+      erpLoading: sourcesLoading,
       erpSecondaryHint,
       erpTasks,
       erpTaskCount: erpTasks.length,
@@ -236,6 +254,11 @@ export function SpecV04SourcesProvider({
       projectCount: projects.length,
       mailRows,
       mailCount: mailRows.length,
+      mailLoading: sourcesLoading,
+      mailImapPrimary,
+      mailComError,
+      mailImapError,
+      mailImapStatus,
       processRows: regRows,
       todayProcessRows,
       boardEvents: board.events,
@@ -244,6 +267,7 @@ export function SpecV04SourcesProvider({
       meetingCount: meetings.length,
       meetingCountToday,
       meetings,
+      meetingsLoading: false,
       sources: {
         erp: erpSource || ORCH_SOURCE_ID.erpPm,
         turbo: turboSource || ORCH_SOURCE_ID.turboProject,
@@ -268,6 +292,10 @@ export function SpecV04SourcesProvider({
       turboTasksError,
       projects,
       mailRows,
+      mailComError,
+      mailImapError,
+      mailImapPrimary,
+      mailImapStatus,
       regRows,
       todayProcessRows,
       board.events,

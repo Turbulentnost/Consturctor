@@ -86,12 +86,15 @@ export function SpecSummaryTiles({
         ]
           .filter(Boolean)
           .join(' ')
+        const tooltip =
+          tile.tooltip ||
+          [tile.label, tile.hint].filter((part) => part && part !== tile.value).join(' · ')
         const body = (
           <>
             <div className="spec-v04-tile-top">
               <div className="spec-v04-tile-label-row">
                 <SpecTileIcon id={tile.id} />
-                <span className="spec-v04-tile-label" title={tile.label}>
+                <span className="spec-v04-tile-label" title={tooltip}>
                   {tile.label}
                 </span>
               </div>
@@ -129,6 +132,7 @@ export function SpecSummaryTiles({
               type="button"
               className={classNames}
               aria-pressed={active}
+              title={tooltip}
               onClick={() => onSelect?.(tile.id)}
             >
               {body}
@@ -136,7 +140,7 @@ export function SpecSummaryTiles({
           )
         }
         return (
-          <article key={tile.id} className={classNames}>
+          <article key={tile.id} className={classNames} title={tooltip}>
             {body}
           </article>
         )

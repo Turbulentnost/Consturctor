@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -16,12 +16,18 @@ from app.services.imap_tools import ImapToolError, imap_configured, invoke_imap
 from app.services.onec_artifacts import ArtifactError, load_artifact_file
 from app.services.onec_tools import ONEC_TOOLS, OnecToolError, invoke_onec, odata_configured
 from app.services.tool_names import resolve_tool_name
+from app.services.gateway_proxy import (
+    gateway_proxy_enabled,
+    proxy_tool_invoke,
+    tool_should_proxy,
+)
 from app.services.turboproject import (
     TURBOPROJECT_TOOLS,
     TurboProjectError,
     invoke_turboproject,
     turboproject_configured,
 )
+from app.clients.erp_sql import ErpSqlError, ping as erp_ping
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -149,15 +155,79 @@ async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
     }
 
 
+def _bearer_token(request: Request) -> str:
+    raw = request.headers.get("Authorization") or ""
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return ""
+
+
+async def _local_erp_reachable() -> bool:
+    try:
+        from app.config import settings
+
+        ping_timeout = max(15.0, float(settings.erp_sql_timeout or 45) + 10.0)
+        return await asyncio.wait_for(asyncio.to_thread(erp_ping), timeout=ping_timeout)
+    except (TimeoutError, ErpSqlError, Exception):
+        return False
+
+
+async def _invoke_with_gateway_fallback(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+    bearer_token: str,
+) -> dict[str, Any]:
+    from app.services.docflow_tasks import docflow_url_ready
+
+    skip_gateway_first = tool_name == "onec.docflow_tasks" and docflow_url_ready()
+    proxy_first = (
+        not skip_gateway_first
+        and gateway_proxy_enabled()
+        and tool_should_proxy(tool_name)
+        and tool_name.startswith("onec.")
+        and not await _local_erp_reachable()
+    )
+    if proxy_first and bearer_token:
+        try:
+            return proxy_tool_invoke(
+                tool_name=tool_name,
+                arguments=arguments,
+                bearer_token=bearer_token,
+            )
+        except HTTPException as prox_exc:
+            if prox_exc.status_code not in (401, 403, 503):
+                raise
+
+    try:
+        return await asyncio.to_thread(_dispatch_server_tool, tool_name, arguments, auth)
+    except HTTPException as exc:
+        if (
+            exc.status_code == 502
+            and gateway_proxy_enabled()
+            and tool_should_proxy(tool_name)
+            and bearer_token
+        ):
+            return proxy_tool_invoke(
+                tool_name=tool_name,
+                arguments=arguments,
+                bearer_token=bearer_token,
+            )
+        raise
+
+
 @router.post("/invoke")
 async def invoke_named_tool(
     body: ToolInvokeBody,
+    request: Request,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     name = str(body.tool or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="tool is required")
-    return await asyncio.to_thread(_dispatch_server_tool, name, body.arguments, auth)
+    return await _invoke_with_gateway_fallback(
+        name, body.arguments, auth, _bearer_token(request)
+    )
 
 
 @router.get("/onec-artifacts/{file_id}")
@@ -187,9 +257,12 @@ async def download_onec_artifact(
 async def invoke_tool(
     tool_name: str,
     body: ToolInvokeBody,
+    request: Request,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    return await asyncio.to_thread(_dispatch_server_tool, tool_name, body.arguments, auth)
+    return await _invoke_with_gateway_fallback(
+        tool_name, body.arguments, auth, _bearer_token(request)
+    )
 
 
 def _invoke_users_tool(

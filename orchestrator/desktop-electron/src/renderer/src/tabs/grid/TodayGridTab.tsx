@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
-import type { TodayWidgetId } from './useTodayWidgetLayout'
+import { TODAY_WIDGET_IDS, type TodayWidgetId } from './useTodayWidgetLayout'
+import { TodayOutlookMailPanel } from './TodayOutlookMailPanel'
 import { SpecAskOrchestratorBlock, SpecPanel, SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useTodayKpiData } from '../../workplace/useTodayKpiData'
@@ -11,7 +12,7 @@ import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
 import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecSessionHints'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import { erpActorFio } from '../../workplace/userContext'
-import { isOutlookMailFromMe, mailPartyLabel } from '../../workplace/specV04Mappers'
+import { isOutlookMailFromMe } from '../../workplace/specV04Mappers'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
 import { parseMeetingTime } from '../../utils/outlookMeetings'
 import { sameDay } from '../../utils/calendar'
@@ -22,7 +23,9 @@ import {
   isDocflowToMe,
   isTaskDueOnDay,
   isTurboTaskAsManager,
-  isTurboTaskToMe
+  isTurboTaskToMe,
+  applyTodayKpiTileClick,
+  EMPTY_TODAY_KPI_TILE
 } from '../../workplace/tileFilters'
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
 import { TodayResultsPanel } from './TodayResultsPanel'
@@ -47,7 +50,6 @@ function MiniTableCard({
   loading,
   error,
   emptyText,
-  hint,
   emptyExtra,
   headerAction,
   tableClassName
@@ -59,7 +61,6 @@ function MiniTableCard({
   /** Shown above the table (KPI/banner), never as a fake data row. */
   error?: string
   emptyText?: string
-  hint?: string
   emptyExtra?: React.ReactNode
   headerAction?: React.ReactNode
   tableClassName?: string
@@ -92,15 +93,11 @@ function MiniTableCard({
     ))
   })()
 
-  const titleExtra = (
-    <span className="today-mini-table-head">
-      {headerAction}
-      {hint ? <span className="spec-v04-muted today-table-hint">{hint}</span> : null}
-    </span>
-  )
-
   return (
-    <SpecPanel title={title} extra={headerAction || hint ? titleExtra : undefined}>
+    <SpecPanel
+      title={title}
+      extra={headerAction ? <div className="today-mini-card-actions">{headerAction}</div> : undefined}
+    >
       {error && !loading ? (
         <p className="today-table-status today-table-error today-table-banner">{error}</p>
       ) : null}
@@ -143,32 +140,33 @@ export function TodayGridTab({
   const [periodDay, setPeriodDay] = useState(startOfToday)
   const { data, tiles } = useTodayKpiData(user, periodDay)
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
-  const [onecFromMe, setOnecFromMe] = useState(false)
-  const [outlookFromMe, setOutlookFromMe] = useState(false)
-  const [projectAsManager, setProjectAsManager] = useState(false)
+  const [kpiTiles, setKpiTiles] = useState(EMPTY_TODAY_KPI_TILE)
+  const onecFromMe = kpiTiles.onecFromMe
+  const outlookFromMe = kpiTiles.outlookFromMe
+  const projectAsManager = kpiTiles.projectAsManager
+  const canvasRef = useRef<HTMLDivElement | null>(null)
   const outlookMail = useTodayOutlookMail(periodDay)
   const preparedDecisions = useTodayPreparedDecisions(periodDay, user.id)
   const projectTasks = useTodayProjectTasks(periodDay, data)
   const erpFio = erpActorFio(user)
 
   const mailRows = useMemo(() => {
-    return outlookMail.rows
-      .filter((row) => (outlookFromMe ? isOutlookMailFromMe(row) : !isOutlookMailFromMe(row)))
-      .slice(0, 4)
+    return outlookMail.rows.filter((row) =>
+      outlookFromMe ? isOutlookMailFromMe(row) : !isOutlookMailFromMe(row)
+    )
   }, [outlookFromMe, outlookMail.rows])
   const projectRows = useMemo(() => {
-    return projectTasks.rows
-      .filter((row) => (projectAsManager ? isTurboTaskAsManager(row) : isTurboTaskToMe(row)))
-      .slice(0, 4)
+    return projectTasks.rows.filter((row) =>
+      projectAsManager ? isTurboTaskAsManager(row) : isTurboTaskToMe(row)
+    )
   }, [projectAsManager, projectTasks.rows])
   const taskRows = useMemo(() => {
-    const filtered = data.erpTasks.filter((row) => {
+    return data.erpTasks.filter((row) => {
       if (onecFromMe) {
         return isDocflowFromMe(row, erpFio) && isTaskDueOnDay(row, periodDay)
       }
       return isDocflowToMe(row)
     })
-    return filtered.slice(0, 4)
   }, [data.erpTasks, onecFromMe, erpFio, periodDay])
   const meetingRows = useMemo(() => {
     return data.meetings
@@ -177,7 +175,6 @@ export function TodayGridTab({
         return start ? sameDay(start, periodDay) : false
       })
       .sort((left, right) => left.start.localeCompare(right.start))
-      .slice(0, 4)
       .map((meeting) => {
         const start = parseMeetingTime(meeting.start)
         const time =
@@ -196,6 +193,22 @@ export function TodayGridTab({
 
   const ask = (message: string): void => {
     onAskOrchestrator(message, 'Вкладка «Сегодня»')
+  }
+
+  const kpiFocusWidgetIds = useMemo(() => {
+    const allowed = new Set<string>(TODAY_WIDGET_IDS)
+    return kpiTiles.activeIds.filter((id): id is TodayWidgetId => allowed.has(id))
+  }, [kpiTiles.activeIds])
+
+  useEffect(() => {
+    const targetId = kpiFocusWidgetIds[0]
+    if (!targetId || !canvasRef.current) return
+    const node = canvasRef.current.querySelector(`[data-widget-id="${targetId}"]`)
+    node?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [kpiFocusWidgetIds])
+
+  const onKpiTileSelect = (id: string): void => {
+    setKpiTiles((current) => applyTodayKpiTileClick(current, id))
   }
 
   const showOneCReconnect =
@@ -217,6 +230,7 @@ export function TodayGridTab({
   }, [data.sourcesLoading, showOneCReconnect, data.comPasswordInSession])
 
   const {
+    layout,
     layoutWithStatic,
     locked,
     editMode,
@@ -245,44 +259,12 @@ export function TodayGridTab({
       ),
       outlook: (
         <TodayWindow>
-        <MiniTableCard
-          title="Письма из Outlook"
-          tableClassName="today-mini-table-mail"
-          headerAction={
-            <label className="today-from-me-toggle">
-              <input
-                type="checkbox"
-                checked={outlookFromMe}
-                onChange={(event) => setOutlookFromMe(event.target.checked)}
-              />
-              <span>От меня</span>
-            </label>
-          }
-          hint={
-            [
-              outlookFromMe ? 'кэш Outlook · отправленные' : 'кэш Outlook · входящие',
-              outlookMail.source
-                ? `Outlook COM · ${outlookMail.source}`
-                : data.outlookMailbox || ''
-            ]
-              .filter(Boolean)
-              .join(' · ') || undefined
-          }
-          loading={outlookMail.loading}
-          error={outlookMail.error}
-          emptyText={
-            outlookFromMe ? 'Нет писем от меня за выбранный день' : 'Нет писем мне за выбранный день'
-          }
-          columns={['От / Кому', 'Тема', 'Время', 'Статус']}
-          rows={mailRows.map((row) => [
-            <TodayCellText key={`${row.id}-c`} text={mailPartyLabel(row)} />,
-            <TodayCellText key={`${row.id}-sub`} text={row.subject} />,
-            <TodayCellText key={`${row.id}-t`} text={row.time} />,
-            <SpecPill key={`${row.id}-st`} tone={row.stTone}>
-              {row.status}
-            </SpecPill>
-          ])}
-        />
+          <TodayOutlookMailPanel
+            rows={outlookMail.rows}
+            compactRows={mailRows}
+            loading={outlookMail.loading}
+            error={outlookMail.error}
+          />
         </TodayWindow>
       ),
       onec: (
@@ -293,14 +275,20 @@ export function TodayGridTab({
             onecFromMe ? 'today-mini-table-tasks today-mini-table-from-me' : 'today-mini-table-to-me'
           }
           headerAction={
-            <span className="today-onec-head">
+            <>
               <label className="today-from-me-toggle">
                 <input
                   type="checkbox"
                   checked={onecFromMe}
-                  onChange={(event) => setOnecFromMe(event.target.checked)}
+                  onChange={(event) =>
+                    setKpiTiles((current) => ({
+                      ...current,
+                      onecFromMe: event.target.checked,
+                      activeIds: ['onec']
+                    }))
+                  }
                 />
-                <span>Задачи от меня</span>
+                <span className="today-from-me-toggle-label">Задачи от меня</span>
               </label>
               <button
                 type="button"
@@ -311,7 +299,7 @@ export function TodayGridTab({
               >
                 <RefreshCw size={14} aria-hidden />
               </button>
-            </span>
+            </>
           }
           loading={data.sourcesLoading}
           error={
@@ -329,15 +317,6 @@ export function TodayGridTab({
               : onecFromMe
                 ? 'Нет задач от вас на выбранный день'
                 : 'Нет задач на сегодня и просроченных'
-          }
-          hint={
-            [
-              onecFromMe ? 'кэш ДО · автор · срок сегодня' : '',
-              data.erpSecondaryHint,
-              data.sources.erp !== '—' ? data.sources.erp : ''
-            ]
-              .filter(Boolean)
-              .join(' · ') || undefined
           }
           emptyExtra={onecReconnectBlock}
           columns={onecFromMe ? ['Задача', 'Исполнитель', 'Статус'] : ['Задача', 'Статус']}
@@ -373,9 +352,15 @@ export function TodayGridTab({
               <input
                 type="checkbox"
                 checked={projectAsManager}
-                onChange={(event) => setProjectAsManager(event.target.checked)}
+                onChange={(event) =>
+                  setKpiTiles((current) => ({
+                    ...current,
+                    projectAsManager: event.target.checked,
+                    activeIds: ['projects']
+                  }))
+                }
               />
-              <span>Как руководитель</span>
+              <span className="today-from-me-toggle-label">Как руководитель</span>
             </label>
           }
           loading={projectTasks.loading}
@@ -386,14 +371,6 @@ export function TodayGridTab({
               : projectAsManager
                 ? 'Нет задач на сегодня и просроченных в ваших проектах'
                 : 'Нет задач на сегодня и просроченных'
-          }
-          hint={
-            [
-              projectAsManager ? 'кэш Turbo · руководитель' : 'кэш Turbo · исполнитель',
-              data.sources.turbo !== '—' ? data.sources.turbo : ''
-            ]
-              .filter(Boolean)
-              .join(' · ') || undefined
           }
           columns={['Задача', 'Срок', 'Статус']}
           rows={projectRows.map((row) => [
@@ -538,7 +515,11 @@ export function TodayGridTab({
     <>
       <OrchSlotMetrics>
         <div className="orch-today-tiles">
-          <SpecSummaryTiles tiles={tiles} />
+          <SpecSummaryTiles
+            tiles={tiles}
+            activeId={kpiTiles.activeIds}
+            onSelect={onKpiTileSelect}
+          />
         </div>
       </OrchSlotMetrics>
 
@@ -553,16 +534,21 @@ export function TodayGridTab({
       </OrchSlotFilters>
 
       <OrchSlotTodayCanvas>
-        <TodayWidgetGrid
-          userId={user.id || ''}
-          editMode={editMode}
-          layoutWithStatic={layoutWithStatic}
-          visibleWidgetIds={visibleWidgetIds}
-          locked={locked}
-          onLayoutChange={onLayoutChange}
-          onToggleLock={toggleWidgetLock}
-          widgets={todayWidgets}
-        />
+        <div ref={canvasRef} className="today-widget-grid-host-wrap">
+          <TodayWidgetGrid
+            userId={user.id || ''}
+            editMode={editMode}
+            layoutWithStatic={layoutWithStatic}
+            fullLayout={layout}
+            visibleWidgetIds={visibleWidgetIds}
+            locked={locked}
+            onLayoutChange={onLayoutChange}
+            onToggleLock={toggleWidgetLock}
+            onRequestEditMode={() => setEditMode(true)}
+            widgets={todayWidgets}
+            kpiFocusWidgetIds={kpiFocusWidgetIds}
+          />
+        </div>
       </OrchSlotTodayCanvas>
       <OneCReconnectDialog
         open={onecDialogOpen}

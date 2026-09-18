@@ -26,7 +26,9 @@ async def _erp_reachable() -> bool:
         return _ping_cache[1]
     reachable = False
     try:
-        reachable = await asyncio.wait_for(asyncio.to_thread(ping), timeout=3.0)
+        # Impersonation + SSPI to erp_pm can exceed 3s on LAN; align with ODBC login timeout.
+        ping_timeout = max(15.0, float(settings.erp_sql_timeout or 45) + 10.0)
+        reachable = await asyncio.wait_for(asyncio.to_thread(ping), timeout=ping_timeout)
     except TimeoutError:
         logger.warning("ERP health check timed out")
     except ErpSqlError:
@@ -35,6 +37,12 @@ async def _erp_reachable() -> bool:
         logger.warning("Unexpected ERP health check error", exc_info=True)
     _ping_cache = (now, bool(reachable))
     return bool(reachable)
+
+
+@router.get("/health/live")
+async def health_live() -> dict[str, str]:
+    """Uvicorn is up — no erp_pm ODBC (for dev scripts / desktop startup)."""
+    return {"status": "ok"}
 
 
 @router.get("/health", response_model=HealthResponse)

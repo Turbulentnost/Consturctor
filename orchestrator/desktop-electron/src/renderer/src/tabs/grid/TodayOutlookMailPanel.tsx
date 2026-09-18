@@ -10,6 +10,13 @@ import {
 import { SpecPanel, SpecPill } from '../../workplace/specV04Components'
 import type { SpecMailRow } from '../../workplace/specV04DemoData'
 import { mailPartyLabel } from '../../workplace/specV04Mappers'
+import {
+  displayOutlookMail,
+  hasOutlookEntryId,
+  markOutlookMailRead,
+  saveOutlookAttachment
+} from '../../utils/outlookMailActions'
+import { openAttachmentExternally } from '../../utils/mailAttachmentPreview'
 import { useTodayWidgetExpanded } from './TodayWidgetExpandContext'
 import { TodayFileIcon } from './todayFileIcon'
 
@@ -36,30 +43,73 @@ function TodayCellText({ text }: { text: string }): React.JSX.Element {
   )
 }
 
-function OutlookCommandBar(): React.JSX.Element {
+function OutlookCommandBar({
+  row,
+  busy,
+  onAction
+}: {
+  row: SpecMailRow | null
+  busy: string
+  onAction: (mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open') => void
+}): React.JSX.Element {
+  const canAct = Boolean(row && hasOutlookEntryId(row))
   return (
     <div className="today-outlook-command-bar" role="toolbar" aria-label="Действия с письмом">
-      <button type="button" className="today-outlook-cmd today-outlook-cmd-primary">
+      <button
+        type="button"
+        className="today-outlook-cmd today-outlook-cmd-primary"
+        disabled={!canAct || Boolean(busy)}
+        onClick={() => onAction('reply')}
+      >
         <Reply size={16} strokeWidth={2} aria-hidden />
-        Ответить
+        {busy === 'reply' ? '…' : 'Ответить'}
       </button>
-      <button type="button" className="today-outlook-cmd">
+      <button
+        type="button"
+        className="today-outlook-cmd"
+        disabled={!canAct || Boolean(busy)}
+        onClick={() => onAction('reply_all')}
+      >
         <ReplyAll size={16} strokeWidth={2} aria-hidden />
-        Ответить всем
+        {busy === 'reply_all' ? '…' : 'Ответить всем'}
       </button>
-      <button type="button" className="today-outlook-cmd">
+      <button
+        type="button"
+        className="today-outlook-cmd"
+        disabled={!canAct || Boolean(busy)}
+        onClick={() => onAction('forward')}
+      >
         <Forward size={16} strokeWidth={2} aria-hidden />
-        Переслать
+        {busy === 'forward' ? '…' : 'Переслать'}
+      </button>
+      <button
+        type="button"
+        className="today-outlook-cmd"
+        disabled={!canAct || Boolean(busy)}
+        onClick={() => onAction('read')}
+      >
+        <Mail size={16} strokeWidth={2} aria-hidden />
+        {busy === 'read' ? '…' : 'Прочитано'}
       </button>
     </div>
   )
 }
 
-function OutlookReadingPane({ row }: { row: SpecMailRow }): React.JSX.Element {
+function OutlookReadingPane({
+  row,
+  busy,
+  onAction,
+  onOpenAttachment
+}: {
+  row: SpecMailRow
+  busy: string
+  onAction: (mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open') => void
+  onOpenAttachment: (fileName: string, index: number) => void
+}): React.JSX.Element {
   const attachments = row.attachments || []
   return (
     <article className="today-outlook-reading">
-      <OutlookCommandBar />
+      <OutlookCommandBar row={row} busy={busy} onAction={onAction} />
       <div className="today-outlook-reading-card">
         <header className="today-outlook-reading-head">
           <div className="today-outlook-avatar" aria-hidden>
@@ -89,10 +139,18 @@ function OutlookReadingPane({ row }: { row: SpecMailRow }): React.JSX.Element {
               Вложения ({attachments.length})
             </div>
             <ul className="today-outlook-attachments">
-              {attachments.map((file) => (
+              {attachments.map((file, index) => (
                 <li key={file.name} className="today-outlook-attachment">
-                  <TodayFileIcon name={file.name} size={32} />
-                  <span title={file.name}>{file.name}</span>
+                  <button
+                    type="button"
+                    className="today-outlook-attachment-btn"
+                    disabled={Boolean(busy)}
+                    title={`Открыть ${file.name}`}
+                    onClick={() => onOpenAttachment(file.name, index + 1)}
+                  >
+                    <TodayFileIcon name={file.name} size={32} />
+                    <span>{file.name}</span>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -115,17 +173,21 @@ export function TodayOutlookMailPanel({
   compactRows,
   loading,
   error,
-  hint
+  hint,
+  onPatchRow
 }: {
   rows: SpecMailRow[]
   compactRows: SpecMailRow[]
   loading?: boolean
   error?: string
   hint?: string
+  onPatchRow?: (id: string, patch: Partial<SpecMailRow>) => void
 }): React.JSX.Element {
   const expanded = useTodayWidgetExpanded()
   const [selectedId, setSelectedId] = useState(rows[0]?.id || '')
   const [filter, setFilter] = useState<'all' | 'unread'>('all')
+  const [busy, setBusy] = useState('')
+  const [actionNote, setActionNote] = useState('')
 
   useEffect(() => {
     if (!rows.length) {
@@ -148,6 +210,54 @@ export function TodayOutlookMailPanel({
   )
 
   const unreadCount = useMemo(() => rows.filter((row) => row.unread).length, [rows])
+
+  const runMailAction = async (
+    mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open'
+  ): Promise<void> => {
+    if (!selected || busy) return
+    if (!hasOutlookEntryId(selected)) {
+      setActionNote('Действие доступно только для писем Outlook COM')
+      return
+    }
+    setBusy(mode)
+    try {
+      if (mode === 'read') {
+        const res = await markOutlookMailRead(selected, false)
+        if (res.ok) {
+          onPatchRow?.(selected.id, { unread: false, status: 'Прочитано', stTone: 'blue' })
+          setActionNote('Отмечено прочитанным')
+        } else setActionNote(res.error || 'Ошибка')
+        return
+      }
+      const displayMode = mode === 'open' ? 'open' : mode
+      const res = await displayOutlookMail(selected, displayMode)
+      setActionNote(res.ok ? 'Открыто в Outlook' : res.error || 'Ошибка')
+    } finally {
+      setBusy('')
+      window.setTimeout(() => setActionNote(''), 4000)
+    }
+  }
+
+  const openAttachment = async (fileName: string, index: number): Promise<void> => {
+    if (!selected || busy) return
+    if (!hasOutlookEntryId(selected)) {
+      setActionNote('Вложения — только Outlook COM')
+      return
+    }
+    setBusy('attachment')
+    try {
+      const saved = await saveOutlookAttachment(selected, index)
+      if (!saved.ok) {
+        setActionNote(saved.error)
+        return
+      }
+      const opened = await openAttachmentExternally(saved.path)
+      setActionNote(opened.ok ? `Открыто: ${fileName}` : opened.error || 'Ошибка')
+    } finally {
+      setBusy('')
+      window.setTimeout(() => setActionNote(''), 4000)
+    }
+  }
 
   if (!expanded) {
     const tableRows = compactRows
@@ -198,10 +308,7 @@ export function TodayOutlookMailPanel({
     })()
 
     return (
-      <SpecPanel
-        title="Письма из Outlook"
-        extra={hint ? <span className="spec-v04-muted today-table-hint">{hint}</span> : undefined}
-      >
+      <SpecPanel title="Письма из Outlook">
         <div className="spec-v04-table-wrap today-table-scroll">
           <table className="today-mini-table">
             <thead>
@@ -305,7 +412,17 @@ export function TodayOutlookMailPanel({
         </aside>
         <section className="today-outlook-pane">
           {selected ? (
-            <OutlookReadingPane row={selected} />
+            <>
+              {actionNote ? (
+                <p className="today-outlook-action-note spec-v04-muted">{actionNote}</p>
+              ) : null}
+              <OutlookReadingPane
+                row={selected}
+                busy={busy}
+                onAction={(mode) => void runMailAction(mode)}
+                onOpenAttachment={(name, index) => void openAttachment(name, index)}
+              />
+            </>
           ) : (
             <div className="today-outlook-empty-pane">
               <Mail size={40} strokeWidth={1.5} aria-hidden />

@@ -101,8 +101,17 @@ async def lifespan(_app: FastAPI):
                 from app.modules.chat.bus.outbound import consume_outbound
 
                 consume_outbound(dispatch_event)
-            except Exception:
-                logger.warning("chat outbound consumer not started", exc_info=True)
+            except Exception as exc:
+                # RabbitMQ optional on dev PC (docker compose constructor-rabbit).
+                if "ConnectionRefusedError" in type(exc).__name__ or "AMQPConnectionError" in type(
+                    exc
+                ).__name__:
+                    logger.info(
+                        "Chat outbound skipped (RabbitMQ not on 127.0.0.1:5672). "
+                        "Run: docker compose up -d constructor-rabbit"
+                    )
+                else:
+                    logger.warning("chat outbound consumer not started", exc_info=True)
 
         import threading
 

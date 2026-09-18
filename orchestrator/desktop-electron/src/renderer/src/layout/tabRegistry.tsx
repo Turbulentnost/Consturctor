@@ -19,6 +19,8 @@ export type WorkplaceTabKey =
   | 'kpi'
   | 'history'
   | 'knowledge'
+  | 'extensions'
+  | 'assignments_registry'
 
 export interface TabRegistryEntry {
   title: string
@@ -81,5 +83,13 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
     title: PAGE_LABELS.knowledge,
     subtitle: 'Регламенты, шаблоны, инструкции и связанные материалы',
     headerActions: <SpecQuickLaunchButton />
+  },
+  extensions: {
+    title: 'Расширения',
+    subtitle: 'Дополнительные вкладки для вашей панели навигации'
+  },
+  assignments_registry: {
+    title: 'Реестр поручений',
+    subtitle: 'Журнал поручений АСТ00: контроль сроков, статусов и проверка закрытия через ИИ'
   }
 }

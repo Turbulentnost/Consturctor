@@ -9,6 +9,8 @@ export interface SpecSummaryTile {
   label: string
   value: string
   hint?: string
+  /** Подсказка при наведении на плитку (если не задана — label + hint). */
+  tooltip?: string
   tone?: SpecSummaryTone
   progress?: number
   ring?: boolean

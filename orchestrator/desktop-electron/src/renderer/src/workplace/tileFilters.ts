@@ -5,7 +5,14 @@ import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from '.
 import type { SpecV04SourcesState } from './useSpecV04Data'
 import type { WorkplaceKpiAgentRow } from './workplaceKpiTypes'
 
-export type TaskSourceFilter = 'all' | 'onec' | 'onec-from-me' | 'proj' | 'reg'
+export type TaskSourceFilter =
+  | 'all'
+  | 'onec'
+  | 'onec-from-me'
+  | 'proj'
+  | 'proj-mine'
+  | 'proj-mgr'
+  | 'reg'
 
 export type TaskTileFilter = {
   source: TaskSourceFilter
@@ -17,7 +24,15 @@ export const EMPTY_TASK_TILE_FILTER: TaskTileFilter = { source: 'all', overdueOn
 /** Today tile «Задачи из 1С»: source=onec → role executor|both (see isDocflowToMe). */
 export const TODAY_ONEC_TASK_FILTER: TaskTileFilter = { source: 'onec', overdueOnly: false }
 
-const TASK_SOURCE_IDS = new Set<string>(['all', 'onec', 'onec-from-me', 'proj', 'reg'])
+const TASK_SOURCE_IDS = new Set<string>([
+  'all',
+  'onec',
+  'onec-from-me',
+  'proj',
+  'proj-mine',
+  'proj-mgr',
+  'reg'
+])
 
 function norm(value: string | undefined): string {
   return String(value || '').trim().toLowerCase()
@@ -175,6 +190,8 @@ function matchesTaskSource(
   if (source === 'all') return true
   const origin = taskOrigin(row, erpIds, turboIds)
   if (source === 'proj' || source === 'reg') return origin === source
+  if (source === 'proj-mine') return origin === 'proj' && isTurboTaskToMe(row)
+  if (source === 'proj-mgr') return origin === 'proj' && isTurboTaskAsManager(row)
   if (origin !== 'onec') return false
   if (source === 'onec') return isDocflowToMe(row)
   if (source === 'onec-from-me') return isDocflowFromMe(row)
@@ -198,7 +215,7 @@ export function isDeadTaskSource(data: SpecV04SourcesState, id: string): boolean
   if (id === 'onec' || id === 'onec-from-me') {
     return Boolean(data.erpError) && !data.erpTaskCount && !data.erpLoading
   }
-  if (id === 'proj') {
+  if (id === 'proj' || id === 'proj-mine' || id === 'proj-mgr') {
     return Boolean(data.turboError) && !data.turboTaskCount && !data.turboLoading
   }
   return false
@@ -224,6 +241,95 @@ export function applyTaskTileClick(
     return { ...current, source: 'all' }
   }
   return { ...current, source: clickedId as TaskSourceFilter }
+}
+
+export type TodayKpiTileState = {
+  activeIds: string[]
+  onecFromMe: boolean
+  projectAsManager: boolean
+  outlookFromMe: boolean
+}
+
+export const EMPTY_TODAY_KPI_TILE: TodayKpiTileState = {
+  activeIds: ['all'],
+  onecFromMe: false,
+  projectAsManager: false,
+  outlookFromMe: false
+}
+
+/** KPI «Сегодня»: переключение «мне / от меня» и фокус виджета по клику на плитку. */
+export function applyTodayKpiTileClick(
+  current: TodayKpiTileState,
+  clickedId: string
+): TodayKpiTileState {
+  const toggle = (id: string): string[] => {
+    if (current.activeIds.includes(id)) return ['all']
+    return [id]
+  }
+  switch (clickedId) {
+    case 'all':
+    case 'day':
+      return { ...EMPTY_TODAY_KPI_TILE }
+    case 'onec':
+      return {
+        activeIds: toggle('onec'),
+        onecFromMe: false,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'onec-from-me':
+      return {
+        activeIds: ['onec'],
+        onecFromMe: true,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'proj-mine':
+      return {
+        activeIds: ['projects'],
+        onecFromMe: current.onecFromMe,
+        projectAsManager: false,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'proj-mgr':
+      return {
+        activeIds: ['projects'],
+        onecFromMe: current.onecFromMe,
+        projectAsManager: true,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'outlook':
+      return {
+        activeIds: toggle('outlook'),
+        onecFromMe: current.onecFromMe,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: false
+      }
+    case 'outlook-from-me':
+      return {
+        activeIds: ['outlook'],
+        onecFromMe: current.onecFromMe,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: true
+      }
+    case 'events':
+    case 'ev':
+      return {
+        activeIds: toggle('events'),
+        onecFromMe: current.onecFromMe,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'reg':
+      return {
+        activeIds: toggle('results'),
+        onecFromMe: current.onecFromMe,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: current.outlookFromMe
+      }
+    default:
+      return current
+  }
 }
 
 export function taskTileActiveIds(filter: TaskTileFilter): string[] {

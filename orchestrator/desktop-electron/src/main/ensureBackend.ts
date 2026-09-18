@@ -14,8 +14,13 @@ export function isLoopback(url: string): boolean {
   }
 }
 
-export async function pingHealth(baseUrl: string, timeoutMs = 3000): Promise<boolean> {
-  const url = `${baseUrl.replace(/\/+$/, '')}/health`
+export async function pingHealth(
+  baseUrl: string,
+  timeoutMs = 1500,
+  opts?: { erp?: boolean }
+): Promise<boolean> {
+  const suffix = opts?.erp ? '/health' : '/health/live'
+  const url = `${baseUrl.replace(/\/+$/, '')}${suffix}`
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
     return response.ok
@@ -49,24 +54,18 @@ function resolveBackendRoot(): string | null {
 }
 
 function spawnLocalBackend(backendRoot: string): void {
-  const bat = join(backendRoot, 'run_dev.bat')
-  const child = existsSync(bat)
-    ? spawn('cmd.exe', ['/c', bat], {
-        cwd: backendRoot,
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        env: { ...process.env }
-      })
-    : spawn('py', ['-3.12', '-m', 'app.main'], {
-        cwd: backendRoot,
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        env: { ...process.env }
-      })
+  const child = spawn('py', ['-3.12', '-m', 'app.main'], {
+    cwd: backendRoot,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: {
+      ...process.env,
+      AUTH_SKIP_SESSION_LOCK: process.env.AUTH_SKIP_SESSION_LOCK || '1'
+    }
+  })
   child.unref()
-  console.log(`Starting local backend from ${backendRoot}`)
+  console.log(`Starting local backend (background, no window) from ${backendRoot}`)
 }
 
 /**
@@ -86,14 +85,22 @@ export async function ensureLocalBackend(backendUrl: string): Promise<boolean> {
     console.warn('Local backend is down and backend/ folder was not found next to the app')
     return false
   }
+  if (process.env.ORCH_NO_BACKEND_SPAWN === '1') {
+    const up = await pingHealth(backendUrl, 1500)
+    if (!up) {
+      console.warn(
+        'ORCH_NO_BACKEND_SPAWN=1 — backend not on loopback. Run orchestrator\\backend\\run_dev.bat'
+      )
+    }
+    return up
+  }
   spawnLocalBackend(root)
-  const deadline = Date.now() + 25_000
-  while (Date.now() < deadline) {
-    if (await pingHealth(backendUrl, 2000)) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (await pingHealth(backendUrl, 1500)) {
       console.log(`Backend ready: ${backendUrl}`)
       return true
     }
-    await sleep(400)
+    await sleep(500)
   }
   console.warn(`Backend did not become ready at ${backendUrl}`)
   return false

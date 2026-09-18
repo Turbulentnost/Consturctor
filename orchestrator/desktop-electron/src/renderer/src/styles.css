@@ -3966,7 +3966,7 @@ input {
  * squashing tool cards into thin strips instead of scrolling.
  */
 .agent-feed > * {
-  flex: 0 0 auto;
+  flex-shrink: 0;
 }
 .agent-feed-empty {
   color: var(--content-muted);
@@ -7322,6 +7322,9 @@ button.feed-tool-head:hover {
   gap: 14px;
   overflow: hidden;
 }
+.wf-page.wf-page--orchestrator .wf-left {
+  border-radius: 14px;
+}
 .wf-topbar {
   display: flex;
   align-items: center;
@@ -7370,21 +7373,19 @@ button.feed-tool-head:hover {
 .wf-feed-wrap .agent-feed {
   padding-left: 0;
   padding-right: 6px;
-  padding-bottom: 8px;
+  padding-bottom: var(--wf-dock-space);
 }
 .wf-dock {
   width: min(640px, 100%);
-  position: static;
-  left: auto;
-  transform: none;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
   right: auto;
-  bottom: auto;
+  bottom: 36px;
   z-index: 3;
   display: flex;
   flex-direction: column;
   gap: 0;
-  align-self: center;
-  flex-shrink: 0;
 }
 .wf-dock-clarify {
   width: 100%;
@@ -11040,7 +11041,7 @@ button.feed-tool-head:hover {
   position: fixed;
   right: 24px;
   bottom: 24px;
-  z-index: 80;
+  z-index: 10050;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -11048,12 +11049,11 @@ button.feed-tool-head:hover {
 }
 .chat-dock-btn {
   border: none;
-  background: #0877ed;
+  background: #1565c0;
   color: #fff;
-  border-radius: 8px;
-  height: 42px;
-  min-width: 76px;
-  padding: 0 16px;
+  border-radius: 999px;
+  height: 48px;
+  padding: 0 18px;
   font-weight: 700;
   box-shadow: 0 8px 24px rgba(13, 59, 115, 0.28);
   position: relative;
@@ -11074,13 +11074,12 @@ button.feed-tool-head:hover {
   justify-content: center;
 }
 .chat-dock-panel {
-  width: min(360px, calc(100vw - 32px));
-  max-height: min(520px, calc(100vh - 96px));
+  width: 340px;
+  max-height: 420px;
   overflow: auto;
   background: #fff;
-  border: 1px solid #d9e5f2;
-  border-radius: 8px;
-  padding: 14px;
+  border-radius: 16px;
+  padding: 12px;
   box-shadow: 0 12px 40px rgba(6, 20, 40, 0.18);
   display: flex;
   flex-direction: column;
@@ -11099,9 +11098,63 @@ button.feed-tool-head:hover {
 .chat-dock-action {
   width: 100%;
 }
+.chat-dock-hint,
+.chat-dock-list p {
+  color: var(--content-muted);
+  font-size: 12px;
+  margin: 0;
+}
+.chat-dock-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-subtle, #e3eaf2);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+.chat-dock-list > li + li {
+  border-top: 1px solid var(--border-subtle, #e3eaf2);
+}
+.chat-dock-list-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: background 0.15s ease;
+}
+.chat-dock-list-row:hover {
+  background: #f4f8fc;
+}
+.chat-dock-list-row:active {
+  background: #eaf2fa;
+}
+.chat-dock-list-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--content-primary, #0f172a);
+  line-height: 1.3;
+}
+.chat-dock-list-sub {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--content-muted, #64748b);
+}
 .chat-dock-form {
   display: flex;
   gap: 8px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle, #e3eaf2);
 }
 .chat-dock-form input {
   flex: 1;

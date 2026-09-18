@@ -326,20 +326,41 @@ def _enrich_assignment_names(
     *,
     customer: str = "",
     customer_key: str = "",
+    raw_rows: list[dict[str, Any]] | None = None,
 ) -> None:
-    executor_keys: list[str] = []
-    for item in items:
+    user_keys: list[str] = []
+    header_fields = (
+        ("Руководитель_Key", "customer"),
+        ("СекретарьРК_Key", "secretary"),
+        ("КтоДоложитОЗавершенииМероприятий_Key", "reporter"),
+    )
+    rows = raw_rows or []
+    for index, item in enumerate(items):
         if customer and not item.get("customer"):
             item["customer"] = customer
         if customer_key and not item.get("customer_key"):
             item["customer_key"] = customer_key
+        row = rows[index] if index < len(rows) else {}
+        for key_field, attr in header_fields:
+            if item.get(attr) and str(item.get(attr)).strip() not in {"", "—"}:
+                continue
+            guid = str(row.get(key_field) or item.get(f"{attr}_key") or "")
+            if _looks_like_guid(guid):
+                user_keys.append(guid)
         for line in item.get("lines") or []:
             if isinstance(line, dict) and not line.get("executor"):
-                executor_keys.append(str(line.get("executor_key") or ""))
-    if not executor_keys:
+                user_keys.append(str(line.get("executor_key") or ""))
+    if not user_keys:
         return
-    names = _user_names_by_keys(executor_keys)
-    for item in items:
+    names = _user_names_by_keys(user_keys)
+    for index, item in enumerate(items):
+        row = rows[index] if index < len(rows) else {}
+        for key_field, attr in header_fields:
+            if item.get(attr) and str(item.get(attr)).strip() not in {"", "—"}:
+                continue
+            guid = str(row.get(key_field) or "")
+            if guid in names:
+                item[attr] = names[guid]
         for line in item.get("lines") or []:
             if not isinstance(line, dict) or line.get("executor"):
                 continue
@@ -402,7 +423,9 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
     for row in raw_rows:
         files = _fetch_files(str(row.get("Ref_Key") or "")) if include_files else []
         items.append(_normalize_assignment(row, files=files))
-    _enrich_assignment_names(items, customer=customer, customer_key=customer_key)
+    _enrich_assignment_names(
+        items, customer=customer, customer_key=customer_key, raw_rows=raw_rows
+    )
     summary = f"Porucheniya 1C: {len(items)}"
     if customer:
         summary += f" (zakazchik {customer})"

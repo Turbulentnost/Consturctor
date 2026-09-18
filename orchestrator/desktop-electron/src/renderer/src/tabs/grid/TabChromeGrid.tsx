@@ -9,6 +9,7 @@ import {
   TAB_CHROME_MARGIN,
   TAB_CHROME_MAX_ROWS,
   tabChromeGridDimensions,
+  tabUsesSnapGrid,
   computeTabChromeMetrics,
   TAB_CHROME_SNAP_MIN_ROW,
   isTileWidgetId,
@@ -279,8 +280,8 @@ export function TabChromeGrid({
   const canvasRef = useRef<HTMLDivElement>(null)
   const { cols: gridCols, maxRows: gridMaxRows } = tabChromeGridDimensions(tabId)
   const layoutRows = Math.max(1, ...layoutWithStatic.map((item) => item.y + item.h), 1)
-  const usedRows = tabId === 'kpi' ? gridMaxRows : Math.min(gridMaxRows, layoutRows)
-  const snapGrid = tabId === 'kpi'
+  const snapGrid = tabUsesSnapGrid(tabId)
+  const usedRows = snapGrid ? gridMaxRows : Math.min(gridMaxRows, layoutRows)
   const metricsOptions = useMemo(
     () =>
       snapGrid

@@ -8,6 +8,10 @@ FastAPI-сервис между desktop и внешними системами (
 
 ### Аутентификация 1С
 
+Типичный dev на ПК без VPN до `erp_pm`: desktop с `BACKEND_URL=http://127.0.0.1:7812`, в `backend/.env` — `AUTH_ERP_GATEWAY_URL=http://192.168.1.157:7812`, `AUTH_SKIP_ERP_SQL=0`. Локальный backend сначала пробует SQL (`ERP_SQL_*`); если ODBC недоступен — проксирует вход на constructor-gateway. На экране входа — ФИО и **пароль пользователя 1C**.
+
+Полностью локальный SQL (VPN до `ii1`): можно оставить `AUTH_ERP_GATEWAY_URL` пустым — вход только через `dbo.v8users`.
+
 1. `POST /api/v1/auth/login` с `{ fio, password }`.
 2. Поиск пользователя в `dbo.v8users` (точное совпадение `Name` или `Descr`).
 3. Проверка пароля по полю `Data` — модуль [`tools/onec/password.py`](tools/onec/password.py).
@@ -32,11 +36,12 @@ FastAPI-сервис между desktop и внешними системами (
 
 | Переменная | Смысл |
 |------------|--------|
-| `ERP_SQL_SERVER=ii1` | Внутренний хост (= `192.168.1.157`), не localhost |
+| `ERP_SQL_SERVER=ii1` | Внутренний хост (= `192.168.1.157`), TCP **1433**, не localhost |
 | `ERP_SQL_DATABASE=erp_pm` | База 1С |
-| `ERP_SQL_TRUSTED_CONNECTION=yes` | Windows Auth |
+| `ERP_SQL_TRUSTED_CONNECTION=no` | SQL login (`ERP_SQL_USER`/`ERP_SQL_PASSWORD`, read-only от DBA) |
+| `AUTH_ERP_GATEWAY_URL` | Fallback login на LAN gateway (`192.168.1.157:7812`), если локальный ERP SQL недоступен |
 
-Только чтение. Сырой IP вместо hostname ломает Trusted Connection.
+Только чтение. Сырой IP вместо hostname ломает Windows Auth (если включите `Trusted_Connection=yes`).
 
 ### App Postgres
 
@@ -67,7 +72,7 @@ API: `http://127.0.0.1:7812`
 docker compose up -d constructor-redis constructor-worker constructor-beat
 ```
 
-Postgres остаётся `constructor-pg` на `:5435`. Redis с хоста: `REDIS_URL=redis://127.0.0.1:6382/0`.
+Postgres на сервере: `192.168.1.157:5435` (`constructor-pg`). Redis: `REDIS_URL=redis://192.168.1.157:6382/0` (или локальный `:6382`, если поднят `run_redis_dev.bat`).
 На Windows worker можно поднять без Docker: `celery -A app.celery_app worker` и `celery -A app.celery_app beat` (нужен Redis).
 
 | Метод | Путь | Назначение |

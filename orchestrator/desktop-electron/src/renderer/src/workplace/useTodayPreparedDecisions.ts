@@ -24,8 +24,6 @@ import {
   subtitleFromToolDecision
 } from '../tabs/grid/todayAgentActionSummary'
 import type { TodayAgentResultItem } from './useTodayAgentResults'
-import { TODAY_PREPARED_DECISIONS } from '../tabs/grid/todayDemoData'
-
 export type TodayPreparedDecisionRow = {
   id: string
   title: string
@@ -484,35 +482,12 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
     return merged.slice(0, MAX_ROWS)
   }, [waitingRows, resultRows, toolRows, fileRows])
 
-  const resolvedItems = useMemo(() => {
-    if (items.length) return items
-    return TODAY_PREPARED_DECISIONS.map((row) => ({
-      id: row.id,
-      title: row.title,
-      status: row.status,
-      statusTone: row.statusTone,
-      statusIcon:
-        row.status === 'Согласовано' || row.status === 'Готово'
-          ? ('✓' as const)
-          : row.status === 'На проверке' || row.status === 'В работе'
-            ? ('!' as const)
-            : ('…' as const),
-      tag: row.tag,
-      tagTone: row.tagTone,
-      subtitle: '',
-      workflowId: '',
-      agentName: '',
-      kind: 'file' as const,
-      at: ''
-    }))
-  }, [items])
-
   const loading = (agentsLoading || loadingDetails) && items.length === 0
   const combinedError = agentsError || error
 
   return {
     loading,
-    error: resolvedItems.length ? '' : combinedError,
-    items: resolvedItems
+    error: combinedError,
+    items
   }
 }

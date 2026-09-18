@@ -17,10 +17,10 @@ export function outlookMailboxAddress(user: UserProfile | null): string {
 
 /** ФИО / логин 1С для COM и erp_tasks (данные с экрана входа). */
 export function erpActorFio(user: UserProfile | null): string {
-  const fromCom = (comCredentials().login || '').trim()
-  if (fromCom) return fromCom
   const fromProfile = (user?.fio || savedFio() || '').trim()
   if (fromProfile) return fromProfile
+  const fromCom = (comCredentials().login || '').trim()
+  if (fromCom) return fromCom
   const fromDev = devGatewayCredentials().fio
   if (fromDev) return fromDev
   return String(import.meta.env.VITE_MY_NAME ?? '').trim()
@@ -39,15 +39,39 @@ export function erpActorComUsername(user: UserProfile | null): string {
   return erpActorFio(user)
 }
 
+function foldFioForCompare(value: string): string {
+  return value.trim().toLocaleLowerCase('ru').replace(/ё/g, 'е')
+}
+
+function devGatewayMatchesActor(user: UserProfile | null): boolean {
+  const dev = devGatewayCredentials()
+  if (!dev.nameMail && !dev.password) return false
+  const actorFio = erpActorFio(user).trim()
+  if (!dev.fio) return !actorFio
+  if (!actorFio) return true
+  return foldFioForCompare(dev.fio) === foldFioForCompare(actorFio)
+}
+
 /** Latin 1C login for TurboProject / Outlook — never FIO. */
 export function turboNameMailSlug(user: UserProfile | null): string {
   const fromSession = (comCredentials().nameMail || '').trim().toLowerCase()
   if (fromSession) return fromSession
   const fromProfile = (user?.nameMail || '').trim().toLowerCase()
   if (fromProfile) return fromProfile
-  const fromDev = devGatewayCredentials().nameMail
-  if (fromDev) return fromDev
+  if (devGatewayMatchesActor(user)) {
+    const fromDev = devGatewayCredentials().nameMail
+    if (fromDev) return fromDev
+  }
   return String(import.meta.env.VITE_MY_NAME_MAIL ?? '').trim().toLowerCase()
+}
+
+function turboSessionPassword(user: UserProfile | null): string {
+  const session = gatewaySessionPassword()
+  if (session) return session
+  if (devGatewayMatchesActor(user)) {
+    return devGatewayCredentials().password
+  }
+  return ''
 }
 
 /** Gateway onec.* invoke: только логин и пароль с экрана входа, без .env / OData. */
@@ -79,7 +103,7 @@ export function turboProjectInvokeArgs(
   extra: Record<string, unknown> = {}
 ): Record<string, unknown> {
   const employee = erpActorFio(user)
-  const password = gatewaySessionPassword()
+  const password = turboSessionPassword(user)
   const nameMail = turboNameMailSlug(user)
   const email = nameMail ? `${nameMail}@${TURBO_DON_MAIL_DOMAIN}` : ''
   const args: Record<string, unknown> = {
@@ -97,7 +121,11 @@ export function turboProjectInvokeArgs(
 
 /** Live Turbo session: latin login + password from the login screen (not gateway stub). */
 export function hasTurboSessionCredentials(user: UserProfile | null): boolean {
-  return Boolean(turboNameMailSlug(user) && gatewaySessionPassword())
+  const password = turboSessionPassword(user)
+  if (!password) return false
+  if (turboNameMailSlug(user)) return true
+  // Backend resolves latin slug from ФИО + пароль 1С (TurboProject login probe).
+  return Boolean(erpActorFio(user))
 }
 
 /** COM onec.* via sidecar: FIO + session password (Usr= in COM is FIO, not nameMail). */

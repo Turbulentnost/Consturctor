@@ -36,11 +36,26 @@ def _session_auth(auth_args: dict[str, Any] | None) -> tuple[str, str, str, str]
     return typed, fio, latin, password
 
 
+def _soap_service_attempt() -> list[tuple[str, str]]:
+    """Gateway/CLI: SOAP with DOK_HTTP_* / ERP_* when desktop did not send a password."""
+    from app.tools.onec.dok_soap import load_config, soap_configured
+
+    if not soap_configured():
+        return []
+    try:
+        config = load_config(require_user=False)
+    except (RuntimeError, ValueError, OSError):
+        return []
+    if config.user and config.password:
+        return [(config.user, config.password)]
+    return []
+
+
 def _soap_login_attempts(auth_args: dict[str, Any] | None) -> list[tuple[str, str]]:
-    """Only credentials from the desktop session. Never OData / .env service accounts."""
+    """Session password first; optional service pair when invoke omitted password (LAN gateway)."""
     typed, fio, latin, password = _session_auth(auth_args)
     if not password:
-        return []
+        return _soap_service_attempt()
     attempts: list[tuple[str, str]] = []
     seen: set[str] = set()
     for user in (typed, fio, latin):

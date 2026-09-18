@@ -19,6 +19,7 @@ from app.services.turboproject import (
     LIST_TOOL_NAME,
     SEARCH_PROJECTS_TOOL_NAME,
     TOOL_NAME,
+    TurboProjectError,
     TURBOPROJECT_TOOLS,
     build_overdue_milestones,
     build_overdue_tasks,
@@ -35,6 +36,7 @@ from app.services.turboproject import (
     is_project_name_query,
     turboproject_configured,
     _payload_turbo_credentials,
+    _resolve_turbo_credentials,
     list_project_index,
     list_projects,
     unique_resource_names,
@@ -178,6 +180,40 @@ def test_payload_turbo_credentials_from_session_fields() -> None:
 def test_payload_turbo_credentials_from_name_mail_slug() -> None:
     creds = _payload_turbo_credentials({"name_mail": "m.zhalybin", "password": "secret"})
     assert creds == ("m.zhalybin@turbo-don.ru", "secret")
+
+
+def test_resolve_turbo_credentials_skips_settings_for_other_employee(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.turboproject.settings.my_name", "Жалыбин Максим")
+    monkeypatch.setattr("app.services.turboproject.settings.my_name_mail", "m.zhalybin")
+    monkeypatch.setattr("app.services.turboproject.settings.my_password", "secret")
+    monkeypatch.setattr("app.services.turboproject.settings.turboproject_password", "")
+    monkeypatch.setattr("app.services.turboproject.settings.turboproject_email", "")
+    monkeypatch.setattr("app.services.turboproject.settings.erp_login", "")
+    monkeypatch.setattr(
+        "app.services.turboproject.discover_name_mail_slug",
+        lambda *_a, **_k: "",
+    )
+    with pytest.raises(TurboProjectError, match="Ильченко"):
+        _resolve_turbo_credentials(
+            {"employee": "Ильченко Екатерина Александровна", "password": "1c-pwd"}
+        )
+
+
+def test_resolve_turbo_credentials_discovers_slug_from_session_password(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.turboproject.settings.my_name", "")
+    monkeypatch.setattr("app.services.turboproject.settings.my_name_mail", "")
+    monkeypatch.setattr("app.services.turboproject.settings.my_password", "")
+    monkeypatch.setattr("app.services.turboproject.settings.turboproject_password", "")
+    monkeypatch.setattr("app.services.turboproject.settings.turboproject_email", "")
+    monkeypatch.setattr(
+        "app.services.turboproject.discover_name_mail_slug",
+        lambda fio, _pwd: "e.ilchenko" if "Ильченко" in fio else "",
+    )
+    email, password = _resolve_turbo_credentials(
+        {"employee": "Ильченко Екатерина Александровна", "password": "1c-pwd"}
+    )
+    assert email == "e.ilchenko@turbo-don.ru"
+    assert password == "1c-pwd"
 
 
 def test_turboproject_configured_when_api_base_set(monkeypatch) -> None:

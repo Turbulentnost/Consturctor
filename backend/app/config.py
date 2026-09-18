@@ -10,8 +10,10 @@ WORKSPACE_ROOT = BACKEND_ROOT.parent.parent
 
 
 class Settings(BaseSettings):
+    # Только backend/.env для ERP/JWT/ODATA — не смешиваем с корневым .env репозитория (MY_*).
+    # Переменные процесса (run_dev.bat) по-прежнему имеют приоритет.
     model_config = SettingsConfigDict(
-        env_file=(WORKSPACE_ROOT / ".env", BACKEND_ROOT / ".env"),
+        env_file=str(BACKEND_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -60,7 +62,7 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+psycopg://constructor:constructor@192.168.1.157:5435/constructor"
     )
-    redis_url: str = "redis://127.0.0.1:6382/0"
+    redis_url: str = "redis://192.168.1.157:6382/0"
     rabbitmq_url: str = "amqp://constructor:constructor@127.0.0.1:5672/"
     chat_support_user_ids: str = ""
     chat_encryption_key: str = ""
@@ -111,6 +113,8 @@ class Settings(BaseSettings):
     # Dev: do not compare JWT sid to Redis (LAN vs localhost BACKEND_URL mismatch).
     auth_skip_session_lock: bool = False
     auth_bypass_user_id: str = ""
+    # TurboProject / Outlook slug when bypass skips erp_pm SQL (MY_NAME_MAIL in .env).
+    my_name_mail: str = ""
     onec_sql_allowlist: str = ""
     onec_odata_entity_allowlist: str = ""
     # Before privileged OData, check the signed-in employee's BSP rights in erp_pm.

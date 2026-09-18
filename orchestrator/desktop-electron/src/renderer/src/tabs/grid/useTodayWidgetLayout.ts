@@ -226,13 +226,16 @@ function layoutGeomEqual(left: LayoutItem[], right: LayoutItem[]): boolean {
 
 export function applyTodayLayoutStaticFlags(
   layout: LayoutItem[],
-  _editMode: boolean,
+  editMode: boolean,
   locked: Partial<Record<TodayWidgetId, boolean>>
 ): LayoutItem[] {
-  return layout.map((item) => ({
-    ...item,
-    static: Boolean(locked[item.i as TodayWidgetId])
-  }))
+  return layout.map((item) => {
+    const isStatic = !editMode || Boolean(locked[item.i as TodayWidgetId])
+    const next: LayoutItem = { ...item }
+    if (isStatic) next.static = true
+    else delete next.static
+    return next
+  })
 }
 
 export function useTodayWidgetLayout(userId: string): {
@@ -347,7 +350,8 @@ export function useTodayWidgetLayout(userId: string): {
   const layoutWithStatic = useMemo(() => {
     const flagged = applyTodayLayoutStaticFlags(layout, editMode, locked)
     if (editMode) return flagged
-    return flagged.filter((item) => visible[item.i as TodayWidgetId] !== false)
+    const filtered = flagged.filter((item) => visible[item.i as TodayWidgetId] !== false)
+    return filtered.length ? filtered : flagged
   }, [layout, editMode, locked, visible])
 
   return {

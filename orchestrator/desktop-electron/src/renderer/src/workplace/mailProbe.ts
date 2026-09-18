@@ -347,12 +347,15 @@ export function mailListEmptyHint(input: {
   loading: boolean
   imapPrimary: boolean
   mailbox: string
-  imapStatus: string
+  imapStatus?: string
 }): string {
   if (input.loading) return 'Загружаем письма…'
+  const status = input.imapStatus?.trim() || ''
   if (input.imapPrimary) {
-    return `Нет писем в IMAP. ${input.imapStatus}`
+    return status ? `Нет писем в IMAP. ${status}` : 'Нет писем в IMAP.'
   }
   const box = input.mailbox ? ` Ящик: ${input.mailbox}.` : ''
-  return `Нет писем за неделю (Outlook COM).${box} ${input.imapStatus}`
+  return status
+    ? `Нет писем за неделю (Outlook COM).${box} ${status}`
+    : `Нет писем за неделю (Outlook COM).${box}`.trim()
 }

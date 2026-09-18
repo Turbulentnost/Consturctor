@@ -142,7 +142,8 @@ export function TodayWidgetGrid({
   onRequestEditMode,
   widgets,
   visibleWidgetIds,
-  rightRail
+  rightRail,
+  kpiFocusWidgetIds
 }: {
   userId: string
   editMode: boolean
@@ -155,6 +156,8 @@ export function TodayWidgetGrid({
   widgets: Record<TodayWidgetId, React.ReactNode>
   visibleWidgetIds: TodayWidgetId[]
   rightRail?: React.ReactNode
+  /** Подсветка виджета после клика по KPI-плитке. */
+  kpiFocusWidgetIds?: TodayWidgetId[]
 }): React.JSX.Element {
   const canvasRef = useRef<HTMLDivElement>(null)
   const layoutRef = useRef(fullLayout)
@@ -190,8 +193,11 @@ export function TodayWidgetGrid({
     if (!node) return
 
     const measure = (): void => {
-      const viewportHeight = node.parentElement?.clientHeight ?? node.clientHeight
-      const height = Math.max(viewportHeight, GRID_MIN_CANVAS_HEIGHT)
+      const parentH = node.parentElement?.clientHeight ?? 0
+      const selfH = node.clientHeight ?? 0
+      const viewportHeight = parentH > 0 ? parentH : selfH
+      const height =
+        viewportHeight > 0 ? viewportHeight : Math.max(parentH, selfH, GRID_MIN_CANVAS_HEIGHT)
       const width = node.clientWidth
       const layoutRows = editMode
         ? Math.max(TODAY_GRID_MAX_ROWS, extentRows)
@@ -210,8 +216,8 @@ export function TodayWidgetGrid({
 
   const beginLayoutSession = useCallback(() => {
     layoutSessionRef.current = true
-    onRequestEditMode()
-  }, [onRequestEditMode])
+    if (!editMode) onRequestEditMode()
+  }, [editMode, onRequestEditMode])
 
   const settleLayout = useCallback(
     (next: Layout, priorityIds: string[]) => {
@@ -250,6 +256,8 @@ export function TodayWidgetGrid({
     [colWidth, marginX, marginY, rowHeight]
   )
 
+  const focusSet = useMemo(() => new Set(kpiFocusWidgetIds || []), [kpiFocusWidgetIds])
+
   const children = useMemo(() => {
     return visibleWidgetIds.map((id) => (
       <div key={id} className="today-widget-grid-item">
@@ -257,7 +265,8 @@ export function TodayWidgetGrid({
           className={[
             'today-widget-shell',
             editMode ? 'today-widget-shell--edit' : '',
-            locked[id] ? 'today-widget-shell--locked' : ''
+            locked[id] ? 'today-widget-shell--locked' : '',
+            focusSet.has(id) ? 'today-widget-shell--kpi-focus' : ''
           ]
             .filter(Boolean)
             .join(' ')}
@@ -274,7 +283,7 @@ export function TodayWidgetGrid({
         </div>
       </div>
     ))
-  }, [editMode, locked, onToggleLock, visibleWidgetIds, widgets])
+  }, [editMode, focusSet, locked, onToggleLock, visibleWidgetIds, widgets])
 
   return (
     <>
@@ -293,6 +302,7 @@ export function TodayWidgetGrid({
         data-user-id={userId || 'default'}
       >
         <GridLayout
+          key={editMode ? 'today-grid-edit' : 'today-grid-view'}
           className="today-widget-grid"
           style={{
             height: editMode ? canvasHeight : '100%',
@@ -325,10 +335,10 @@ export function TodayWidgetGrid({
           onResizeStop={(layout, _oldItem, newItem) => {
             settleLayout(layout, newItem?.i ? [newItem.i] : [])
           }}
-          draggableHandle=".today-widget-drag-handle"
+          draggableHandle=".today-widget-chrome-bar--edit, .today-widget-drag-handle"
           draggableCancel=".today-widget-expand-btn, .today-widget-lock-btn"
-          isDraggable
-          isResizable
+          isDraggable={editMode}
+          isResizable={editMode}
           isBounded
           compactType={null}
           preventCollision={false}

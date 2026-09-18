@@ -7,14 +7,9 @@ app.setPath('userData', join(app.getPath('appData'), DESKTOP_APP_NAME))
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.orchestrator.desktop')
 }
-import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, copyFileSync } from 'node:fs'
-import {
-  installToastActivation,
-  NotificationGuard,
-  setStopRunHandler,
-  showToast,
-  type ToastPayload
-} from './notifications'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, copyFileSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
 import {
   LOCAL_BACKEND_DEFAULT,
@@ -24,13 +19,12 @@ import {
   pingBackendHealth
 } from './ensureBackend'
 import { loadExternalOdataEnv } from './odataExternalEnv'
+import { getUpdateStatus, installAvailableUpdate, requestUpdateCheck, startUpdater, stopUpdater } from './updater'
 import {
   clearComSessionSecret,
   getComSessionSecret,
-  setComSessionSecret,
-  type ComSessionSecret
+  setComSessionSecret
 } from './comSessionSecret'
-import { getUpdateStatus, installAvailableUpdate, requestUpdateCheck, startUpdater, stopUpdater } from './updater'
 
 interface RequestOptions {
   method?: string
@@ -93,28 +87,23 @@ function preferLocalBackend(env: Record<string, string>): boolean {
   return !app.isPackaged
 }
 
-/** Profile .env often keeps stale 127.0.0.1; in dev prefer cwd `.env` and ORCH_PREFER_LOCAL. */
+/** Explicit BACKEND_URL wins — erp_pm login/search stay on gateway when configured. */
 function resolveBackendUrl(env: Record<string, string>): string {
   const cwdEnvPath = join(process.cwd(), '.env')
   const cwdEnv =
     !app.isPackaged && existsSync(cwdEnvPath) ? parseEnvFile(cwdEnvPath) : ({} as Record<string, string>)
 
+  const explicit = (
+    process.env.BACKEND_URL ||
+    env.BACKEND_URL ||
+    cwdEnv.BACKEND_URL ||
+    ''
+  ).trim()
+  if (explicit) return explicit.replace(/\/+$/, '')
+
   if (!app.isPackaged && preferLocalBackend({ ...env, ...cwdEnv })) {
-    const fromCwd = (cwdEnv.BACKEND_URL || '').trim()
-    if (fromCwd && isLoopback(fromCwd)) return fromCwd.replace(/\/+$/, '')
     return LOCAL_BACKEND
   }
-
-  const fromProcess = (process.env.BACKEND_URL || '').trim()
-  if (fromProcess) return fromProcess.replace(/\/+$/, '')
-
-  if (!app.isPackaged && existsSync(cwdEnvPath)) {
-    const fromCwd = (cwdEnv.BACKEND_URL || '').trim()
-    if (fromCwd) return fromCwd.replace(/\/+$/, '')
-  }
-
-  const fromProfile = (env.BACKEND_URL || '').trim()
-  if (fromProfile) return fromProfile.replace(/\/+$/, '')
 
   return app.isPackaged ? LAN_BACKEND : LOCAL_BACKEND
 }
@@ -237,9 +226,6 @@ function broadcastAgentEvent(message: AgentSidecarMessage): void {
 }
 
 const agentSidecar = new AgentSidecar(CONFIG.backendUrl, broadcastAgentEvent)
-setStopRunHandler((workflowId, runId) => {
-  agentSidecar.send({ type: 'cancel', id: runId, workflowId })
-})
 
 const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
   const kind = String(command.type || '')
@@ -256,20 +242,9 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
       message
     })
   } else if (kind === 'run_agent') {
-    const runId = `run-${Date.now()}`
-    const agentTitle = String(command.title || '').trim()
-    showToast({
-      title: agentTitle ? `Запуск начался · ${agentTitle}` : 'Запуск начался',
-      body: agentTitle
-        ? `Агент «${agentTitle}» запущен. Можно остановить из этого уведомления.`
-        : 'Плановый запуск агента. Можно остановить из этого уведомления.',
-      workflowId,
-      runId,
-      canStop: true
-    })
     agentSidecar.send({
       type: 'run',
-      id: runId,
+      id: `run-${Date.now()}`,
       workflowId,
       message,
       source: 'trigger',
@@ -435,8 +410,9 @@ async function handleCopyLocalFile(
   }
 }
 
-function buildUrl(path: string, params?: RequestOptions['params']): string {
-  const base = `${CONFIG.backendUrl}${path}`
+function buildUrl(path: string, params?: RequestOptions['params'], baseUrl?: string): string {
+  const root = (baseUrl || CONFIG.backendUrl).replace(/\/+$/, '')
+  const base = `${root}${path}`
   if (!params) return base
   const usp = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
@@ -447,14 +423,68 @@ function buildUrl(path: string, params?: RequestOptions['params']): string {
   return query ? `${base}?${query}` : base
 }
 
+const ONEC_LOCAL_API_TOOLS = new Set(['onec.docflow_tasks'])
+
+function parseInvokeToolName(body: unknown): string {
+  if (body === undefined || body === null) return ''
+  if (typeof body === 'object' && !Array.isArray(body)) {
+    return String((body as Record<string, unknown>).tool ?? '').trim()
+  }
+  return ''
+}
+
+/** 1C docflow only — loopback has DOK_HTTP_*; auth/erp_pm stays on CONFIG.backendUrl. */
+function pathPrefersLocalBackendFirst(opts: RequestOptions): boolean {
+  if (!opts.path.includes('/api/v1/tools/invoke')) return false
+  return ONEC_LOCAL_API_TOOLS.has(parseInvokeToolName(opts.body))
+}
+
+function resolveDocflowGatewayBase(): string {
+  const fromEnv = (process.env.AUTH_ERP_GATEWAY_URL || '').trim().replace(/\/+$/, '')
+  if (fromEnv && !isLoopback(fromEnv)) return fromEnv
+  return LAN_BACKEND
+}
+
+function pathIsAuthApi(path: string): boolean {
+  const p = path || ''
+  if (!p.includes('/api/v1/auth/')) return false
+  if (p.includes('/auth/me/activity')) return false
+  return true
+}
+
+async function backendBasesForRequest(opts: RequestOptions): Promise<string[]> {
+  const primary = CONFIG.backendUrl.replace(/\/+$/, '')
+  // Login / FIO search always via configured backend (loopback); gateway proxy is in backend/.env.
+  if (pathIsAuthApi(opts.path)) return [primary]
+  if (!app.isPackaged && pathPrefersLocalBackendFirst(opts)) {
+    const gateway = resolveDocflowGatewayBase()
+    await ensureLocalBackend(LOCAL_BACKEND)
+    const profileEnvPath = join(app.getPath('userData'), '.env')
+    const profileEnv = existsSync(profileEnvPath) ? parseEnvFile(profileEnvPath) : {}
+    const preferLocal = preferLocalBackend(profileEnv)
+    const bases: string[] = []
+    const push = (base: string) => {
+      const normalized = (base || '').replace(/\/+$/, '')
+      if (normalized && !bases.includes(normalized)) bases.push(normalized)
+    }
+    // Local backend carries DOK_HTTP_* to 229; LAN gateway often returns stub/empty without session SOAP.
+    if (preferLocal || isLoopback(primary)) push(LOCAL_BACKEND)
+    if (!isLoopback(primary)) push(primary)
+    else if (gateway !== LOCAL_BACKEND) push(gateway)
+    if (bases.length) return bases
+    return [LOCAL_BACKEND]
+  }
+  return [primary]
+}
+
 function isLanBackendHost(url: string): boolean {
   if (/127\.0\.0\.1|localhost/i.test(url)) return false
   return /:\/\/192\.168\.|:\/\/10\.|:\/\/172\.(1[6-9]|2\d|3[01])\./.test(url)
 }
 
-function backendUnreachableMessage(): string {
+function backendUnreachableMessage(attemptedBase?: string): string {
   const profileHint = join(app.getPath('userData'), '.env')
-  const base = CONFIG.backendUrl
+  const base = (attemptedBase || CONFIG.backendUrl).replace(/\/+$/, '')
   const networkHint = isLanBackendHost(base)
     ? `Проверьте LAN до gateway ${base} (constructor-gateway на :7812). VPN на ПК для 1С не нужен — SQL выполняется на сервере gateway.`
     : `Проверьте VPN до erp_pm (локальный backend) или переключите BACKEND_URL на LAN gateway (например http://192.168.1.157:7812).`
@@ -480,9 +510,11 @@ function extractDetail(status: number, data: unknown): string {
 }
 
 /** Routes that may exist on local backend before LAN gateway is redeployed. */
-function pathUsesLocalBackendFallback(path: string): boolean {
+function pathUsesLocalBackendFallback(path: string, opts?: RequestOptions): boolean {
   const p = path || ''
-  return p.includes('/api/v1/admin/') || p.includes('/api/v1/workplace/kpi')
+  if (p.includes('/api/v1/admin/') || p.includes('/api/v1/workplace/kpi')) return true
+  if (pathPrefersLocalBackendFirst(opts || { path })) return true
+  return false
 }
 
 function localBackendFallbackFailureMessage(path: string, localUp: boolean): string {
@@ -550,8 +582,7 @@ async function tryLocalBackendFallback(
 }
 
 async function handleRequest(_evt: unknown, opts: RequestOptions) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT)
+  const totalTimeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   let bodyInit: string | undefined
@@ -559,30 +590,68 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
     headers['Content-Type'] = 'application/json'
     bodyInit = JSON.stringify(opts.body)
   }
-  try {
-    const response = await fetch(buildUrl(opts.path, opts.params), {
-      method: opts.method || 'GET',
-      headers,
-      body: bodyInit,
-      signal: controller.signal
-    })
-    const text = await response.text()
-    let data: unknown = null
-    if (text) {
-      try {
-        data = JSON.parse(text)
-      } catch {
-        data = text
+  const primaryBase = CONFIG.backendUrl.replace(/\/+$/, '')
+  const bases = await backendBasesForRequest(opts)
+  const attemptTimeoutMs =
+    bases.length > 1 ? Math.max(90_000, totalTimeoutMs) : totalTimeoutMs
+  let lastError = { status: 0, error: backendUnreachableMessage(primaryBase) }
+
+  for (let index = 0; index < bases.length; index += 1) {
+    const base = bases[index]
+    const hasNext = index < bases.length - 1
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), attemptTimeoutMs)
+    try {
+      const response = await fetch(buildUrl(opts.path, opts.params, base), {
+        method: opts.method || 'GET',
+        headers,
+        body: bodyInit,
+        signal: controller.signal
+      })
+      const text = await response.text()
+      let data: unknown = null
+      if (text) {
+        try {
+          data = JSON.parse(text)
+        } catch {
+          data = text
+        }
       }
-    }
-    if (!response.ok) {
-      const primaryBase = CONFIG.backendUrl.replace(/\/+$/, '')
-      const usingLan = primaryBase !== LOCAL_BACKEND
+      if (response.ok) {
+        if (base !== primaryBase) {
+          console.log(`Backend API routed: ${opts.path} via ${base}`)
+        }
+        return { ok: true, status: response.status, data }
+      }
+      lastError = {
+        status: response.status,
+        error: extractDetail(response.status, data)
+      }
       const routeMissing = response.status === 404 || response.status === 405
+      const docflowAuthRejected =
+        pathPrefersLocalBackendFirst(opts) &&
+        (response.status === 401 || response.status === 403)
+      if (docflowAuthRejected && hasNext) {
+        console.log(
+          `Backend API retry: ${opts.path} — ${base} (docflow auth ${response.status}) → ${bases[index + 1]}`
+        )
+        continue
+      }
+      if (docflowAuthRejected) {
+        return { ok: false, status: lastError.status, error: lastError.error }
+      }
+      if (hasNext) {
+        console.log(
+          `Backend API retry: ${opts.path} — ${base} (${response.status}) → ${bases[index + 1]}`
+        )
+        continue
+      }
+      const usingLan = primaryBase !== LOCAL_BACKEND
       if (
-        pathUsesLocalBackendFallback(opts.path) &&
+        pathUsesLocalBackendFallback(opts.path, opts) &&
         routeMissing &&
-        (usingLan || isLoopback(primaryBase))
+        (usingLan || isLoopback(primaryBase)) &&
+        base === primaryBase
       ) {
         const fallback = await tryLocalBackendFallback(opts, headers, bodyInit, controller.signal)
         if (fallback) {
@@ -590,18 +659,36 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
           return { ok: false, status: fallback.status, error: fallback.error }
         }
       }
-      return { ok: false, status: response.status, error: extractDetail(response.status, data) }
+      return { ok: false, status: lastError.status, error: lastError.error }
+    } catch (err) {
+      lastError = {
+        status: 0,
+        error:
+          err instanceof Error && err.name === 'AbortError'
+            ? `Превышено время ожидания ответа backend (${base})`
+            : backendUnreachableMessage(base)
+      }
+      if (hasNext) {
+        console.log(`Backend API retry: ${opts.path} — ${base} (${lastError.error}) → ${bases[index + 1]}`)
+        continue
+      }
+      if (
+        pathUsesLocalBackendFallback(opts.path, opts) &&
+        base === primaryBase &&
+        primaryBase !== LOCAL_BACKEND
+      ) {
+        const fallback = await tryLocalBackendFallback(opts, headers, bodyInit, controller.signal)
+        if (fallback?.ok) return fallback
+        if (fallback && !fallback.ok) {
+          return { ok: false, status: fallback.status, error: fallback.error }
+        }
+      }
+      return { ok: false, status: lastError.status, error: lastError.error }
+    } finally {
+      clearTimeout(timer)
     }
-    return { ok: true, status: response.status, data }
-  } catch (err) {
-    const message =
-      err instanceof Error && err.name === 'AbortError'
-        ? 'Превышено время ожидания ответа backend'
-        : backendUnreachableMessage()
-    return { ok: false, status: 0, error: message }
-  } finally {
-    clearTimeout(timer)
   }
+  return { ok: false, status: lastError.status, error: lastError.error }
 }
 
 async function handleUpload(_evt: unknown, opts: UploadOptions) {
@@ -707,71 +794,6 @@ async function handleFetchDataUrl(
   }
 }
 
-type RemoteFilePreviewResult =
-  | { ok: true; kind: 'text'; text: string; mime: string }
-  | { ok: true; kind: 'embed'; dataUrl: string; mime: string }
-  | { ok: true; kind: 'external'; hint: string; mime: string }
-  | { ok: false; error: string; tooLarge?: boolean }
-
-function sniffPreviewMeta(
-  buffer: Buffer,
-  fileName: string,
-  headerType: string
-): { mime: string; kind: 'text' | 'embed' | 'external' } {
-  if (buffer.length >= 4 && buffer.subarray(0, 4).toString('ascii') === '%PDF') {
-    return { mime: 'application/pdf', kind: 'embed' }
-  }
-  const image = sniffImageMime(buffer, headerType)
-  if (image) return { mime: image, kind: 'embed' }
-  let ext = extname(fileName || '').toLowerCase()
-  if (!ext) {
-    try {
-      ext = extname(new URL(fileName).pathname).toLowerCase()
-    } catch {
-      ext = ''
-    }
-  }
-  const headerMime = headerType.split(';')[0].trim().toLowerCase()
-  const mime = MIME_BY_EXT[ext] || headerMime || 'application/octet-stream'
-  return { mime, kind: localFilePreviewKind(ext, mime) }
-}
-
-async function handleFetchFilePreview(
-  _evt: unknown,
-  opts: { url: string; fileName?: string; token?: string | null }
-): Promise<RemoteFilePreviewResult> {
-  const url = absoluteBackendUrl(opts.url)
-  const headers: Record<string, string> = {}
-  if (opts.token) headers.Authorization = `Bearer ${opts.token}`
-  try {
-    const response = await fetch(url, { headers })
-    if (!response.ok) return { ok: false, error: `Ошибка загрузки (${response.status})` }
-    const buffer = Buffer.from(await response.arrayBuffer())
-    if (buffer.length > LOCAL_FILE_PREVIEW_MAX_BYTES) {
-      return { ok: false, tooLarge: true, error: 'Файл слишком большой для предпросмотра' }
-    }
-    const { mime, kind } = sniffPreviewMeta(
-      buffer,
-      opts.fileName || url,
-      response.headers.get('content-type') || ''
-    )
-    if (kind === 'text') {
-      return { ok: true, kind: 'text', text: buffer.toString('utf-8'), mime }
-    }
-    if (kind === 'embed') {
-      return { ok: true, kind: 'embed', dataUrl: `data:${mime};base64,${buffer.toString('base64')}`, mime }
-    }
-    return {
-      ok: true,
-      kind: 'external',
-      hint: 'Документ этого формата лучше открыть после скачивания',
-      mime
-    }
-  } catch {
-    return { ok: false, error: 'Не удалось загрузить файл' }
-  }
-}
-
 async function handleDownload(
   _evt: unknown,
   opts: { url: string; defaultName?: string; token?: string | null }
@@ -840,8 +862,7 @@ async function handleExportPdf(
     await pdfWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(opts.html || '')}`)
     const pdf = await pdfWin.webContents.printToPDF({
       printBackground: true,
-      pageSize: 'A4',
-      margins: { marginType: 'default' }
+      pageSize: 'A4'
     })
     writeFileSync(result.filePath, pdf)
     return { ok: true, path: result.filePath }
@@ -849,6 +870,131 @@ async function handleExportPdf(
     return { ok: false, error: 'Не удалось сформировать PDF' }
   } finally {
     if (!pdfWin.isDestroyed()) pdfWin.destroy()
+  }
+}
+
+type PrintHtmlOptions = {
+  html?: string
+  landscape?: boolean
+  openAfter?: boolean
+  defaultName?: string
+}
+
+/** Загружает автономный HTML во временный файл и скрытое окно (data:-URL ограничен по длине). */
+async function loadHiddenPrintWindow(
+  html: string
+): Promise<{ win: BrowserWindow; cleanup: () => void }> {
+  const tmpHtmlPath = join(
+    tmpdir(),
+    `orch-print-${Date.now()}-${Math.random().toString(36).slice(2)}.html`
+  )
+  writeFileSync(tmpHtmlPath, html, 'utf8')
+  const win = new BrowserWindow({
+    show: false,
+    width: 1024,
+    height: 768,
+    webPreferences: { sandbox: true, contextIsolation: true }
+  })
+  const cleanup = (): void => {
+    if (!win.isDestroyed()) win.destroy()
+    try {
+      unlinkSync(tmpHtmlPath)
+    } catch {
+      /* ignore */
+    }
+  }
+  try {
+    await win.loadFile(tmpHtmlPath)
+  } catch (err) {
+    cleanup()
+    throw err
+  }
+  return { win, cleanup }
+}
+
+async function renderHtmlToPdf(html: string, landscape: boolean): Promise<Buffer> {
+  const { win, cleanup } = await loadHiddenPrintWindow(html)
+  try {
+    return await win.webContents.printToPDF({
+      landscape,
+      printBackground: true,
+      pageSize: 'A4'
+    })
+  } finally {
+    cleanup()
+  }
+}
+
+async function handlePrintToPdf(
+  _evt: unknown,
+  opts: PrintHtmlOptions
+): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> {
+  const html = String(opts?.html || '').trim()
+  if (!html) return { ok: false, error: 'Нет содержимого для сохранения в PDF' }
+  const win = BrowserWindow.getFocusedWindow()
+  const stamp = new Date().toISOString().slice(0, 10)
+  const result = await dialog.showSaveDialog(win!, {
+    defaultPath: opts?.defaultName || `реестр-поручений-${stamp}.pdf`,
+    filters: [{ name: 'PDF', extensions: ['pdf'] }]
+  })
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+  try {
+    const pdf = await renderHtmlToPdf(html, Boolean(opts?.landscape))
+    writeFileSync(result.filePath, pdf)
+    if (opts?.openAfter) await shell.openPath(result.filePath)
+    return { ok: true, path: result.filePath }
+  } catch {
+    return { ok: false, error: 'Не удалось сформировать PDF' }
+  }
+}
+
+/** «Предварительный просмотр»: PDF во временный файл и открытие системным просмотрщиком. */
+async function handlePrintPreview(
+  _evt: unknown,
+  opts: PrintHtmlOptions
+): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const html = String(opts?.html || '').trim()
+  if (!html) return { ok: false, error: 'Нет содержимого для предпросмотра' }
+  try {
+    const pdf = await renderHtmlToPdf(html, Boolean(opts?.landscape))
+    const pdfPath = join(tmpdir(), `orch-print-preview-${Date.now()}.pdf`)
+    writeFileSync(pdfPath, pdf)
+    const openErr = await shell.openPath(pdfPath)
+    if (openErr) return { ok: false, path: pdfPath, error: openErr }
+    return { ok: true, path: pdfPath }
+  } catch {
+    return { ok: false, error: 'Не удалось сформировать PDF для предпросмотра' }
+  }
+}
+
+async function handlePrintDialog(
+  _evt: unknown,
+  opts: PrintHtmlOptions
+): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
+  const html = String(opts?.html || '').trim()
+  if (!html) return { ok: false, error: 'Нет содержимого для печати' }
+  let loaded: { win: BrowserWindow; cleanup: () => void } | null = null
+  try {
+    loaded = await loadHiddenPrintWindow(html)
+    const win = loaded.win
+    return await new Promise((resolve) => {
+      win.webContents.print(
+        { silent: false, printBackground: true, landscape: Boolean(opts?.landscape) },
+        (success, failureReason) => {
+          if (success) {
+            resolve({ ok: true })
+          } else if ((failureReason || '').toLowerCase().includes('cancel')) {
+            resolve({ ok: false, canceled: true })
+          } else {
+            resolve({ ok: false, error: failureReason || 'Печать не выполнена' })
+          }
+        }
+      )
+    })
+  } catch {
+    return { ok: false, error: 'Не удалось открыть диалог печати' }
+  } finally {
+    loaded?.cleanup()
   }
 }
 
@@ -1004,6 +1150,28 @@ function ipcHandle(channel: string, handler: IpcHandler): void {
 }
 
 function registerMainIpcHandlers(): void {
+  ipcHandle(
+    'session:setComSecret',
+    (
+      _evt,
+      payload: { login?: string; password?: string; nameMail?: string; persist?: boolean }
+    ) => {
+      setComSessionSecret(
+        {
+          login: payload?.login,
+          password: payload?.password,
+          nameMail: payload?.nameMail
+        },
+        Boolean(payload?.persist)
+      )
+      return { ok: true }
+    }
+  )
+  ipcHandle('session:getComSecret', () => getComSessionSecret())
+  ipcHandle('session:clearComSecret', () => {
+    clearComSessionSecret()
+    return { ok: true }
+  })
   ipcHandle('app:getConfig', () => ({
     backendUrl: CONFIG.backendUrl,
     testUser: CONFIG.testUser,
@@ -1016,33 +1184,15 @@ function registerMainIpcHandlers(): void {
       : null,
     devGatewaySecrets: CONFIG.devGateway
   }))
-  ipcHandle(
-    'session:setComSecret',
-    (
-      _evt,
-      payload: (Partial<ComSessionSecret> & { persist?: boolean }) | null
-    ) => {
-      const persist = Boolean(payload?.persist)
-      const next = setComSessionSecret(payload, persist)
-      agentSidecar.setSessionCredentials(
-        next ? { login: next.login, password: next.password } : { login: '', password: '' }
-      )
-      return { ok: true }
-    }
-  )
-  ipcHandle('session:getComSecret', () => getComSessionSecret(agentSidecar.sessionCredentials()))
-  ipcHandle('session:clearComSecret', () => {
-    clearComSessionSecret()
-    agentSidecar.setSessionCredentials({ login: '', password: '' })
-    return { ok: true }
-  })
   ipcHandle('api:request', handleRequest)
   ipcHandle('api:upload', handleUpload)
   ipcHandle('api:fetchDataUrl', handleFetchDataUrl)
-  ipcHandle('api:fetchFilePreview', handleFetchFilePreview)
   ipcHandle('api:download', handleDownload)
   ipcHandle('api:saveLocalFile', handleSaveLocalFile)
   ipcHandle('api:exportPdf', handleExportPdf)
+  ipcHandle('print:to-pdf', handlePrintToPdf)
+  ipcHandle('print:preview', handlePrintPreview)
+  ipcHandle('print:dialog', handlePrintDialog)
   ipcHandle('api:createWorkflow', handleCreateWorkflow)
   ipcHandle('api:stream', handleStream)
   ipcHandle(
@@ -1198,7 +1348,6 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   registerMainIpcHandlers()
-  installToastActivation()
   agentSidecar.warmup()
   const ready = await ensureDesktopBackend(CONFIG.backendUrl)
   const remoteUp =

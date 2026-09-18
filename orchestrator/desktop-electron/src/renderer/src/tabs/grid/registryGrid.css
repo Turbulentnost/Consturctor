@@ -1,0 +1,77 @@
+.orch-grid.orch-grid-registry {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  grid-template-rows: minmax(48px, max-content) minmax(0, 1fr);
+}
+
+.orch-grid-registry .orch-slot-tab-canvas {
+  grid-column: 1 / 9;
+  grid-row: 2 / -1;
+  min-height: 0;
+}
+
+.orch-grid-registry .tab-chrome-canvas[data-grid-cols='8'] {
+  --kpi-grid-cols: 8;
+  --kpi-grid-rows: 6;
+}
+
+.orch-grid-registry .tab-chrome-canvas--snap {
+  flex: 1 1 auto;
+  border-radius: 14px;
+  background-color: #e8edf4;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.22) 0,
+      rgba(255, 255, 255, 0.22) 1px,
+      transparent 1px,
+      transparent calc(var(--kpi-rgl-col-width, 0px) + var(--kpi-rgl-margin-x, 5px))
+    ),
+    repeating-linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.22) 0,
+      rgba(255, 255, 255, 0.22) 1px,
+      transparent 1px,
+      transparent calc(var(--kpi-rgl-row-height, 44px) + var(--kpi-rgl-margin-y, 5px))
+    );
+  background-size: 100% 100%;
+}
+
+.orch-grid-registry .tab-chrome-canvas--snap.tab-chrome-canvas--edit {
+  background-color: #dfe6f0;
+}
+
+.orch-grid-registry .tab-chrome-shell[data-widget-id='main'] .tab-chrome-content,
+.orch-grid-registry .tab-chrome-shell[data-widget-id='side'] .tab-chrome-content {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.orch-grid-registry .registry-widget-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.orch-grid-registry .registry-side-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.orch-grid-registry .registry-detail-panel {
+  flex: 1;
+  min-height: 0;
+  border-radius: inherit;
+}
+
+/* Кнопки в шапке карточки поручения (печать + закрыть) */
+.registry-detail-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}

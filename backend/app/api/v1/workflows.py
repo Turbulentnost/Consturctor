@@ -36,6 +36,7 @@ from app.schemas.workflow import (
     WorkflowListItem,
     WorkflowSchema,
 )
+from app.services.gateway_proxy import gateway_proxy_enabled, proxy_http_json
 from app.services.agent_runs import (
     answer_from_result,
     cancel_overlapping_slot,
@@ -316,21 +317,58 @@ async def read_workflows(
     return list_workflows(db, user_id=auth.user_id)
 
 
+def _bearer_token(request: Request) -> str:
+    raw = request.headers.get("Authorization") or ""
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return ""
+
+
 @router.get("/board", response_model=WorkflowBoard)
 async def read_workflow_board(
+    request: Request,
     window_from: str = "",
     window_to: str = "",
     workflow_id: str = "",
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WorkflowBoard:
-    return get_workflow_board(
+    board = get_workflow_board(
         db,
         user_id=auth.user_id,
         window_from=window_from,
         window_to=window_to,
         workflow_id=workflow_id,
     )
+    if board.agents or not gateway_proxy_enabled():
+        return board
+    token = _bearer_token(request)
+    if not token:
+        return board
+    params = {
+        k: v
+        for k, v in {
+            "window_from": window_from,
+            "window_to": window_to,
+            "workflow_id": workflow_id,
+        }.items()
+        if v
+    }
+    try:
+        remote_raw = await asyncio.to_thread(
+            proxy_http_json,
+            method="GET",
+            path="/api/v1/workflows/board",
+            bearer_token=token,
+            params=params,
+            timeout=30.0,
+        )
+        remote = WorkflowBoard.model_validate(remote_raw)
+        if remote.agents:
+            return remote
+    except HTTPException:
+        pass
+    return board
 
 
 @router.get("/files", response_model=PlatformFilesResponse)

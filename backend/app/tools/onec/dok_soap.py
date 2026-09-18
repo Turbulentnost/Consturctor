@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -446,7 +447,19 @@ def _auth_encodings(config: DokConfig) -> list[str]:
     return seen
 
 
+def _ensure_docflow_tcp(config: DokConfig, *, connect_timeout: float = 12.0) -> None:
+    try:
+        with socket.create_connection((config.server, config.port), timeout=connect_timeout):
+            return
+    except OSError as exc:
+        raise RuntimeError(
+            f"Нет связи с документооборотом {config.server}:{config.port} ({exc}). "
+            "Проверьте VPN или сеть до сервера 1С."
+        ) from exc
+
+
 def _execute_dm_once(config: DokConfig, request_xml: str, *, timeout: float) -> ET.Element:
+    _ensure_docflow_tcp(config)
     body = envelope(request_xml).encode("utf-8")
     request = Request(
         config.soap_url(),
@@ -587,6 +600,12 @@ def find_user(config: DokConfig, name: str) -> dict[str, str]:
     users = parse_users(root)
     if not users:
         raise ValueError(f"Пользователь ДО не найден: «{fio}»")
+    for item in users:
+        if normalize_person(item.get("name") or "") == normalize_person(fio):
+            return item
+    for item in users:
+        if person_names_match(fio, str(item.get("name") or "")):
+            return item
     return users[0]
 
 
@@ -694,13 +713,69 @@ def normalize_person(value: str) -> str:
     return " ".join(value.lower().replace("ё", "е").split())
 
 
+def _surname_and_initials(key: str) -> tuple[str, list[str]] | None:
+    parts = key.split()
+    if len(parts) < 2:
+        return None
+    surname = parts[0]
+    tail = " ".join(parts[1:])
+    if "." not in tail:
+        return None
+    initials: list[str] = []
+    for chunk in tail.replace(".", " ").split():
+        letter = chunk.strip()
+        if letter:
+            initials.append(letter[0])
+    if not initials:
+        return None
+    return surname, initials
+
+
+def _initials_match_name_parts(initials: list[str], name_parts: list[str]) -> bool:
+    if not initials or not name_parts:
+        return False
+    if len(initials) == 1:
+        return initials[0] == name_parts[0][0]
+    needed = min(len(initials), len(name_parts))
+    return all(initials[index] == name_parts[index][0] for index in range(needed))
+
+
+def person_names_match(actor: str, candidate: str) -> bool:
+    """Session FIO vs author/performer from SOAP (full name, initials, ё/е)."""
+    actor_key = normalize_person(actor)
+    cand_key = normalize_person(candidate)
+    if not actor_key or not cand_key:
+        return False
+    if actor_key == cand_key:
+        return True
+    actor_parts = actor_key.split()
+    cand_parts = cand_key.split()
+    if len(actor_parts) >= 2 and len(cand_parts) >= 2:
+        if actor_parts[0] == cand_parts[0] and actor_parts[1] == cand_parts[1]:
+            return True
+    actor_init = _surname_and_initials(actor_key)
+    cand_init = _surname_and_initials(cand_key)
+    if actor_init and len(cand_parts) >= 2:
+        surname, initials = actor_init
+        if surname == cand_parts[0] and _initials_match_name_parts(initials, cand_parts[1:]):
+            return True
+    if cand_init and len(actor_parts) >= 2:
+        surname, initials = cand_init
+        if surname == actor_parts[0] and _initials_match_name_parts(initials, actor_parts[1:]):
+            return True
+    if len(actor_key) >= 10 and len(cand_key) >= 10:
+        if actor_key.startswith(cand_key) or cand_key.startswith(actor_key):
+            return True
+    return False
+
+
 def task_role_for_user(row: dict[str, Any], user_fio: str) -> str | None:
     """executor / author / both when the dump row belongs to the session FIO."""
-    mine = normalize_person(user_fio)
+    mine = (user_fio or "").strip()
     if not mine:
         return None
-    is_performer = normalize_person(str(row.get("performer") or "")) == mine
-    is_author = normalize_person(str(row.get("author") or "")) == mine
+    is_performer = person_names_match(mine, str(row.get("performer") or ""))
+    is_author = person_names_match(mine, str(row.get("author") or ""))
     if is_performer and is_author:
         return ROLE_BOTH
     if is_performer:

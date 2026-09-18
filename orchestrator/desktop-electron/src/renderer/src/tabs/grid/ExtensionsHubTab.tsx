@@ -1,0 +1,74 @@
+import type { UserProfile } from '../../api/types'
+import type { PageKey } from '../../components/Sidebar'
+import { EXTENSIONS, canUseExtension } from '../../extensions/extensionRegistry'
+import { useExtensions } from '../../extensions/ExtensionsProvider'
+import { EXTENSION_MODULE_BY_ID } from '../../extensions/extensionModules'
+import './extensionsGrid.css'
+
+export function ExtensionsHubTab({
+  user,
+  onOpenExtension,
+  onNotify
+}: {
+  user: UserProfile
+  onOpenExtension: (pageKey: PageKey) => void
+  onNotify?: (message: string) => void
+}): React.JSX.Element {
+  const { isPinned, togglePin } = useExtensions()
+
+  return (
+    <div className="extensions-hub">
+      <header className="extensions-hub-head">
+        <h2>Расширения</h2>
+        <p className="set-muted">
+          Модульные вкладки: подключите расширение и выведите его на левую панель. Новые модули добавляются в{' '}
+          <code className="extensions-hub-code">extensionModules.tsx</code>.
+        </p>
+      </header>
+      <ul className="extensions-hub-list">
+        {EXTENSIONS.map((ext) => {
+          const allowed = canUseExtension(user, ext.id)
+          const pinned = isPinned(ext.id)
+          const mod = EXTENSION_MODULE_BY_ID[ext.id]
+          return (
+            <li key={ext.id} className="extensions-hub-card wp-card">
+              <div className="extensions-hub-card-body">
+                <h3>{ext.title}</h3>
+                <p>{ext.description}</p>
+                {!allowed ? (
+                  <p className="extensions-hub-locked">Нет доступа для вашей должности</p>
+                ) : null}
+              </div>
+              <div className="extensions-hub-card-actions">
+                <button
+                  type="button"
+                  className="today-link-btn"
+                  disabled={!allowed}
+                  onClick={() => onOpenExtension(ext.pageKey)}
+                >
+                  Открыть
+                </button>
+                <button
+                  type="button"
+                  className={`today-filter-layout-btn${pinned ? ' is-active' : ''}`}
+                  disabled={!allowed}
+                  onClick={() => {
+                    togglePin(ext.id)
+                    const title = mod?.title || ext.title
+                    onNotify?.(
+                      pinned
+                        ? `${title} убрано с панели навигации`
+                        : `${title} добавлено на панель навигации`
+                    )
+                  }}
+                >
+                  {pinned ? 'На панели' : 'Добавить на панель'}
+                </button>
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}

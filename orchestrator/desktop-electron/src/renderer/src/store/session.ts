@@ -146,7 +146,12 @@ export function syncComProfileFromUser(user: { fio?: string; nameMail?: string }
     comLogin = nextLogin
     changed = true
   }
-  if (changed) comCredentialsRevision += 1
+  if (changed) {
+    comCredentialsRevision += 1
+    if (comPassword) {
+      writeRendererComSecret({ login: comLogin, password: comPassword, nameMail: comNameMail })
+    }
+  }
 }
 
 export function clearComCredentials(): void {

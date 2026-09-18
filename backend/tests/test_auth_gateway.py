@@ -14,7 +14,7 @@ def test_login_delegates_to_gateway_when_local_erp_down(monkeypatch):
     async def fake_reachable() -> bool:
         return False
 
-    monkeypatch.setattr(auth_service, "_local_erp_reachable", fake_reachable)
+    monkeypatch.setattr(auth_service, "_local_erp_reachable_quick", fake_reachable)
 
     called: dict[str, str] = {}
 

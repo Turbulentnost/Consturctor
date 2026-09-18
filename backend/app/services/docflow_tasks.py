@@ -194,6 +194,33 @@ def _task_in_period(
     return True
 
 
+def _list_docflow_via_http(
+    fio: str,
+    *,
+    limit: int,
+    only_open: bool = True,
+    auth_args: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    from app.tools.onec.docflow_http_tasks import (
+        dok_http_base_url,
+        fetch_document_executor_tasks_http,
+    )
+
+    if not dok_http_base_url():
+        return [], ""
+    ref = fio.strip()
+    tasks, warning = fetch_document_executor_tasks_http(
+        user_ref=ref,
+        fio=fio,
+        only_open=only_open,
+        limit=limit,
+        auth_args=auth_args,
+    )
+    if tasks:
+        return tasks, warning or ""
+    return [], warning
+
+
 def _list_docflow_via_soap(
     fio: str,
     *,
@@ -229,6 +256,50 @@ def _list_docflow_via_soap(
     return tasks, warning
 
 
+def _fetch_docflow_tasks_merged(
+    fio: str,
+    *,
+    limit: int,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    only_open: bool = False,
+    today_and_overdue: bool = False,
+    force_refresh: bool = False,
+    auth_args: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """TasksII HTTP (hs/dterp) first, then SOAP inbox dump."""
+    limit = max(1, min(int(limit or 200), 200))
+    http_tasks, http_warn = _list_docflow_via_http(
+        fio,
+        limit=limit,
+        only_open=only_open,
+        auth_args=auth_args,
+    )
+    if http_tasks:
+        if today_and_overdue:
+            http_tasks = [row for row in http_tasks if _task_today_or_overdue(row)]
+        else:
+            http_tasks = [row for row in http_tasks if _task_in_period(row, date_from, date_to)]
+        if only_open:
+            http_tasks = [row for row in http_tasks if not row.get("done")]
+        http_tasks = http_tasks[:limit]
+        if http_tasks:
+            return http_tasks, http_warn
+    tasks, warning = _list_docflow_via_soap(
+        fio,
+        limit=limit,
+        date_from=date_from,
+        date_to=date_to,
+        only_open=only_open,
+        today_and_overdue=today_and_overdue,
+        force_refresh=force_refresh,
+        auth_args=auth_args,
+    )
+    if http_warn and not tasks and not warning:
+        warning = http_warn
+    return tasks, warning
+
+
 def list_docflow_tasks(
     *,
     fio: str,
@@ -240,8 +311,21 @@ def list_docflow_tasks(
     force_refresh: bool = False,
     auth_args: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    from app.services.docflow_redis_cache import cache_key, get_cached_tasks, set_cached_tasks
+
     limit = max(1, min(int(limit or 200), 200))
-    tasks, warning = _list_docflow_via_soap(
+    key = cache_key(
+        fio,
+        auth_args=auth_args,
+        only_open=only_open,
+        today_and_overdue=today_and_overdue,
+    )
+    if not force_refresh:
+        cached = get_cached_tasks(key)
+        if cached is not None:
+            return cached[:limit]
+
+    tasks, warning = _fetch_docflow_tasks_merged(
         fio,
         limit=limit,
         date_from=date_from,
@@ -253,6 +337,8 @@ def list_docflow_tasks(
     )
     if warning and not tasks:
         raise DocflowError(warning)
+    if tasks:
+        set_cached_tasks(key, tasks)
     return tasks
 
 
@@ -291,9 +377,14 @@ def handle_docflow_tasks(
     actor_fio: str = "",
     actor_user_id: str = "",
 ) -> dict[str, Any]:
-    from app.services.erp_tasks import actor_from_jwt, parse_date
+    from app.clients.erp_sql import ErpSqlError
+    from app.services.erp_tasks import ErpTaskError, actor_from_jwt, parse_date, resolve_actor
 
     fio, user_id = actor_from_jwt(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
+    try:
+        fio, user_id = resolve_actor(fio=fio, user_id=user_id)
+    except (ErpTaskError, ErpSqlError):
+        pass
     date_from_raw = str(args.get("date_from") or args.get("dateFrom") or "").strip()
     date_to_raw = str(args.get("date_to") or args.get("dateTo") or "").strip()
     start = parse_date(date_from_raw) if date_from_raw else None
@@ -307,16 +398,34 @@ def handle_docflow_tasks(
     auth_args = dict(args)
     if fio and not str(auth_args.get("fio") or auth_args.get("erp_login") or "").strip():
         auth_args["fio"] = fio
-    tasks, warning = _list_docflow_via_soap(
+    from app.services.docflow_redis_cache import cache_key, get_cached_tasks, set_cached_tasks
+
+    limit = int(args.get("limit") or 200)
+    key = cache_key(
         fio,
-        limit=int(args.get("limit") or 200),
-        date_from=None if today_and_overdue else start,
-        date_to=None if today_and_overdue else finish,
+        auth_args=auth_args,
         only_open=only_open,
         today_and_overdue=today_and_overdue,
-        force_refresh=force_refresh,
-        auth_args=auth_args,
     )
+    tasks: list[dict[str, Any]] = []
+    warning = ""
+    if not force_refresh:
+        cached = get_cached_tasks(key)
+        if cached is not None:
+            tasks = cached[:limit]
+    if not tasks:
+        tasks, warning = _fetch_docflow_tasks_merged(
+            fio,
+            limit=limit,
+            date_from=None if today_and_overdue else start,
+            date_to=None if today_and_overdue else finish,
+            only_open=only_open,
+            today_and_overdue=today_and_overdue,
+            force_refresh=force_refresh,
+            auth_args=auth_args,
+        )
+        if tasks:
+            set_cached_tasks(key, tasks)
     summary = (
         f"Задачи документооборота на сегодня и просроченные: {len(tasks)} ({fio})"
         if today_and_overdue

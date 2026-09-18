@@ -6,7 +6,7 @@
   overflow: hidden;
   grid-template-rows:
     minmax(48px, max-content)
-    104px
+    112px
     76px
     minmax(0, 1fr);
 }
@@ -44,9 +44,9 @@
 .orch-grid-today .orch-slot-metrics {
   grid-column: 1 / 9;
   grid-row: 2;
-  height: 104px;
-  max-height: 104px;
-  min-height: 104px;
+  height: 112px;
+  max-height: 112px;
+  min-height: 112px;
   overflow: hidden;
 }
 
@@ -57,7 +57,7 @@
 
 .orch-today-tiles .spec-v04-tiles-rich {
   display: grid !important;
-  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
   gap: 5px;
   height: 100%;
   min-height: 0;
@@ -71,6 +71,12 @@
   overflow: hidden;
   padding: 8px 10px 6px;
   gap: 3px;
+}
+
+.today-widget-shell--kpi-focus {
+  outline: 2px solid rgba(59, 130, 246, 0.65);
+  outline-offset: -2px;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25);
 }
 
 .orch-grid-today .spec-v04-tile-label {
@@ -141,6 +147,14 @@
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
+}
+
+.today-widget-grid-host-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .orch-slot-today-canvas:has(.today-widget-canvas--edit),
@@ -242,6 +256,7 @@
 }
 
 .today-widget-shell {
+  position: relative;
   height: 100%;
   min-height: 0;
   display: flex;
@@ -380,15 +395,51 @@
   }
 }
 
-.today-widget-grid-host:not(.today-widget-grid-host--edit) .react-resizable-handle {
-  opacity: 0;
-  pointer-events: none;
-}
-
+.today-widget-grid-host:not(.today-widget-grid-host--edit) .react-resizable-handle,
+.today-widget-grid-host:not(.today-widget-grid-host--edit) .react-grid-item:hover > .react-resizable-handle,
 .today-widget-grid-host:not(.today-widget-grid-host--edit) .today-widget-shell:hover .react-resizable-handle,
 .today-widget-grid-host:not(.today-widget-grid-host--edit) .react-grid-item.resizing .react-resizable-handle {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.today-widget-grid-host:not(.today-widget-grid-host--edit) .today-widget-drag-handle {
+  display: none;
+}
+
+/* Просмотр: без второй полоски-заголовка — только заголовок внутри виджета + кнопка «развернуть». */
+.today-widget-grid-host:not(.today-widget-grid-host--edit) .today-widget-chrome {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 4;
+  flex-shrink: 0;
+  gap: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.today-widget-grid-host:not(.today-widget-grid-host--edit) .today-widget-chrome-bar {
+  touch-action: auto;
+  cursor: default;
+}
+
+.today-widget-grid-host:not(.today-widget-grid-host--edit) .today-widget-chrome-title {
+  display: none;
+}
+
+.today-widget-grid-host:not(.today-widget-grid-host--edit) .today-widget-expand-btn {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(21, 101, 192, 0.14);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+
+.today-widget-grid-host:not(.today-widget-grid-host--edit) .today-widget-shell:hover .today-widget-expand-btn,
+.today-widget-grid-host:not(.today-widget-grid-host--edit) .today-widget-expand-btn:focus-visible {
   opacity: 1;
-  pointer-events: auto;
 }
 
 .today-widget-grid-host--edit .react-grid-item > .react-resizable-handle {
@@ -620,32 +671,40 @@
   white-space: nowrap;
 }
 
-.today-mini-table-head,
-.today-onec-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .today-from-me-toggle {
-  display: inline-flex;
+  display: inline-grid;
+  grid-template-columns: 16px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
+  column-gap: 6px;
   font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
   color: var(--content-muted);
   cursor: pointer;
   user-select: none;
-  white-space: nowrap;
+  max-width: min(100%, 168px);
 }
 
 .today-from-me-toggle input {
   margin: 0;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
   accent-color: #1565c0;
+}
+
+.today-from-me-toggle-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .today-from-me-toggle:has(input:checked) {
   color: #1565c0;
-  font-weight: 600;
+}
+
+.today-from-me-toggle:has(input:checked) .today-from-me-toggle-label {
+  font-weight: 500;
 }
 
 .today-refresh-btn {
@@ -724,7 +783,7 @@
   flex-direction: column;
   overflow: hidden;
   margin: 0;
-  padding: 10px 12px 12px;
+  padding: 8px 10px 10px;
 }
 
 .today-grid-window > .today-outlook-shell,
@@ -741,11 +800,29 @@
 .today-grid-window .spec-v04-panel-head {
   flex-shrink: 0;
   margin-bottom: 6px;
+  align-items: center;
+  gap: 10px;
+  padding-right: 40px;
+  min-height: 28px;
 }
 
 .today-grid-window .spec-v04-panel-head h3 {
   font-size: 14px;
-  line-height: 1.2;
+  line-height: 1.25;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.today-mini-card-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+  flex-shrink: 0;
 }
 
 .today-grid-window .spec-v04-table-wrap,
@@ -2424,6 +2501,30 @@
   font-size: 12px;
   color: #323130;
   cursor: pointer;
+}
+
+.today-outlook-attachment-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.today-outlook-attachment-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.today-outlook-action-note {
+  margin: 6px 12px 0;
+  font-size: 12px;
 }
 
 .today-outlook-attachment:hover {

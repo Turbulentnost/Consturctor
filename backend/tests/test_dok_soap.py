@@ -28,6 +28,7 @@ from app.tools.onec.dok_soap import (
     slice_dump_for_user,
     soap_configured,
     soap_timeout_message,
+    person_names_match,
     task_role_for_user,
 )
 
@@ -191,6 +192,43 @@ def test_slice_dump_dedupes_repeated_task_id() -> None:
 def test_normalize_person_yo_and_spaces() -> None:
     assert normalize_person("Комарькова  Анастасия") == normalize_person("комарькова анастасия")
     assert normalize_person("Ёлкин") == normalize_person("елкин")
+
+
+def test_person_names_match_full_fio_and_initials() -> None:
+    full = "Ильченко Екатерина Александровна"
+    short = "Ильченко Е.А."
+    assert person_names_match(full, short)
+    assert person_names_match(short, full)
+    assert task_role_for_user(
+        {"performer": short, "author": "Петров П.П."},
+        full,
+    ) == ROLE_EXECUTOR
+    assert task_role_for_user(
+        {"performer": "Сидоров С.С.", "author": full},
+        short,
+    ) == ROLE_AUTHOR
+
+
+def test_slice_dump_ilchenko_style_roles() -> None:
+    dump = {
+        "rows": [
+            {
+                "id": "for-me",
+                "performer": "Ильченко Е.А.",
+                "author": "Жалыбин М. Д.",
+                "executed": False,
+            },
+            {
+                "id": "from-me",
+                "performer": "Комарькова А. Э.",
+                "author": "Ильченко Екатерина Александровна",
+                "executed": False,
+            },
+        ],
+    }
+    sliced = slice_dump_for_user(dump, "Ильченко Екатерина Александровна")
+    by_id = {row["id"]: row["role"] for row in sliced["rows"]}
+    assert by_id == {"for-me": ROLE_EXECUTOR, "from-me": ROLE_AUTHOR}
 
 
 def test_is_today_or_overdue() -> None:

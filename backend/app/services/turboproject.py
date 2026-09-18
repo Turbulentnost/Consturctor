@@ -11,6 +11,7 @@ from typing import Any, Callable
 import httpx
 
 from app.config import settings
+from app.services.name_mail_resolver import discover_name_mail_slug, latin_slug_from_login
 
 TOOL_NAME = "turboproject"
 LIST_TOOL_NAME = "turboproject.list"
@@ -152,7 +153,8 @@ def _turbo_email_from_slug(slug: str) -> str:
 
 
 def _payload_mail_slug(payload: dict[str, Any]) -> str:
-    return str(payload.get("name_mail") or payload.get("nameMail") or "").strip()
+    raw = str(payload.get("name_mail") or payload.get("nameMail") or "").strip()
+    return latin_slug_from_login(raw) or raw.lower()
 
 
 def _payload_turbo_credentials(payload: dict[str, Any]) -> tuple[str, str] | None:
@@ -177,14 +179,61 @@ def _settings_turbo_credentials() -> tuple[str, str] | None:
     return None
 
 
+def _payload_employee_fio(payload: dict[str, Any]) -> str:
+    return str(payload.get("employee") or payload.get("fio") or "").strip()
+
+
+def _settings_identity_fio() -> str:
+    return (settings.my_name or settings.erp_login or "").strip()
+
+
+def _turbo_settings_match_employee(payload: dict[str, Any]) -> bool:
+    employee = _payload_employee_fio(payload).casefold()
+    settings_fio = _settings_identity_fio().casefold()
+    if not settings_fio:
+        return not employee
+    if not employee:
+        return True
+    return employee == settings_fio
+
+
 def _resolve_turbo_credentials(args: dict[str, Any] | None) -> tuple[str, str]:
     payload = args if isinstance(args, dict) else {}
     explicit = _payload_turbo_credentials(payload)
+    fallback = (
+        _settings_turbo_credentials() if _turbo_settings_match_employee(payload) else None
+    )
+    settings_turbo_password = (
+        settings.turboproject_password or settings.my_password or ""
+    ).strip()
+
     if explicit:
+        email, session_password = explicit
+        if fallback and settings_turbo_password:
+            fb_email, fb_password = fallback
+            if fb_email.casefold() == email.casefold():
+                return fb_email, fb_password
         return explicit
-    fallback = _settings_turbo_credentials()
+
     if fallback:
         return fallback
+
+    employee = _payload_employee_fio(payload)
+    session_password = str(
+        payload.get("password") or payload.get("erp_password") or payload.get("turboproject_password") or ""
+    ).strip()
+    if employee and session_password:
+        slug = discover_name_mail_slug(employee, session_password)
+        if slug:
+            return _turbo_email_from_slug(slug), session_password
+
+    if employee:
+        raise TurboProjectError(
+            f"TurboProject: для «{employee}» нужен латинский логин "
+            "(nameMail → *@turbo-don.ru) и пароль API TurboProject. "
+            "Задайте MY_NAME, MY_NAME_MAIL и MY_PASSWORD в backend/.env для этого ФИО "
+            "или войдите через gateway с nameMail из 1С."
+        )
     raise TurboProjectError(
         "TurboProject: нет учётных данных "
         "(email/password или name_mail из сессии; иначе TURBOPROJECT_EMAIL/MY_NAME_MAIL и PASSWORD)"

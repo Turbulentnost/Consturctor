@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Sidebar, type PageKey } from '../components/Sidebar'
+import { Sidebar, type PageKey, type SidebarNavItem } from '../components/Sidebar'
 import { PAGE_LABELS } from '../components/Sidebar'
 import type { ChatThread, DirectoryUser } from '../api/types'
 import { UserMenu } from '../components/UserMenu'
@@ -38,6 +38,7 @@ interface OrchGridShellProps {
   gridClassName?: string
   /** Hide workplace title/search — used for agent run/history overlays. */
   subpage?: boolean
+  pinnedExtensionNav?: SidebarNavItem[]
   children: ReactNode
 }
 
@@ -64,6 +65,7 @@ export function OrchGridShell({
   toast,
   gridClassName = '',
   subpage = false,
+  pinnedExtensionNav = [],
   children
 }: OrchGridShellProps): React.JSX.Element {
   const meta = TAB_REGISTRY[activeKey]
@@ -85,6 +87,7 @@ export function OrchGridShell({
           onOpenThread={onOpenThread}
           onOpenFio={onOpenFio}
           refreshAt={chatRefreshAt}
+          pinnedExtensionNav={pinnedExtensionNav}
         />
       </div>
 

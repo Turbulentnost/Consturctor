@@ -4,7 +4,12 @@ import type { BoardAgent, CalendarEvent, UserProfile } from '../api/types'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { SpecV04SourcesContext } from './SpecV04SourcesProvider'
-import { buildTaskCatalog, filterTaskRows } from './tileFilters'
+import {
+  buildTaskCatalog,
+  filterTaskRows,
+  isTurboTaskAsManager,
+  isTurboTaskToMe
+} from './tileFilters'
 
 export interface SpecV04SourcesState {
   /** Любой из долгих источников ещё грузится. Не использовать как стоп-кран виджета. */
@@ -193,6 +198,8 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
     const role = String(t.role || '').trim().toLowerCase()
     return role === 'author' || role === 'both'
   }).length
+  const turboMine = data.turboTasks.filter((t) => isTurboTaskToMe(t)).length
+  const turboMgr = data.turboTasks.filter((t) => isTurboTaskAsManager(t)).length
   const regTotal = data.processRows.length
   const onecDead = Boolean(data.erpError) && !data.erpTaskCount && !data.erpLoading
   const turboDead = Boolean(data.turboError) && !data.turboTaskCount && !data.turboLoading
@@ -236,10 +243,19 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
       tone: 'lilac'
     },
     {
-      id: 'proj',
-      label: 'Проектные',
-      value: taskTileValue(data.turboLoading, data.turboTaskCount, turboDead),
+      id: 'proj-mine',
+      label: 'Turbo мне',
+      value: taskTileValue(data.turboLoading, turboMine, turboDead),
       hint: turboHint,
+      tooltip: 'Задачи TurboProject, где вы исполнитель',
+      tone: 'purple'
+    },
+    {
+      id: 'proj-mgr',
+      label: 'Turbo РП',
+      value: taskTileValue(data.turboLoading, turboMgr, turboDead),
+      hint: turboDead ? '' : turboMgr ? 'руководитель' : '',
+      tooltip: 'Задачи в проектах под вашим руководством',
       tone: 'purple'
     },
     {

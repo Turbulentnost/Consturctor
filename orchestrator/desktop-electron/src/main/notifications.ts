@@ -1,4 +1,4 @@
-import { BrowserWindow, Notification } from 'electron'
+import { app, BrowserWindow, Notification } from 'electron'
 
 const PING_MS = 20_000
 const RECONNECT_MS = 4_000
@@ -95,6 +95,18 @@ function shouldSkipDuplicateToast(payload: ToastPayload): boolean {
   return false
 }
 
+/** Dev / Cursor: no Windows toast popups — log to integrated terminal instead. */
+export function preferConsoleNotifications(): boolean {
+  if (process.env.ORCH_CONSOLE_NOTIFY === '1') return true
+  if (process.env.ORCH_DEV_QUIET === '1') return true
+  try {
+    if (!app.isPackaged) return true
+  } catch {
+    /* before app ready */
+  }
+  return false
+}
+
 export function showToast(payload: ToastPayload): void {
   if (shouldSkipDuplicateToast(payload)) return
   const title = (payload.title || '').trim() || 'Уведомление'
@@ -102,6 +114,11 @@ export function showToast(payload: ToastPayload): void {
   const canStop = Boolean(payload.canStop || isStartRunTitle(title))
   if (isFinishRunTitle(title)) closeStartToast(workflowId)
   notifyWindows('inbox:changed', { id: workflowId || title })
+  if (preferConsoleNotifications()) {
+    const body = (payload.body || '').trim()
+    console.log(`[notify] ${title}${body ? ` — ${body}` : ''}`)
+    return
+  }
   if (!Notification.isSupported()) {
     notifyWindows('notification:open', payload)
     return

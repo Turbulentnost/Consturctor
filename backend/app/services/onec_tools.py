@@ -861,9 +861,14 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
     nav_suffix = cleaned_path.split(")", 1)[-1] if ")" in cleaned_path else ""
     is_navigation = keyed and nav_suffix.startswith("/")
     if value and not is_navigation:
-        nav_budget = 6 if entity == "Document_ТД_Поручения" else 2
-        for row in value[:10]:
-            _resolve_navigation_names(row, args, budget=nav_budget)
+        # Journal list: erp_assignments resolves FIO in batches — skip N×M navigation GETs.
+        if entity == "Document_ТД_Поручения" and len(value) > 1 and not keyed:
+            nav_budget = 0
+        else:
+            nav_budget = 6 if entity == "Document_ТД_Поручения" else 2
+        if nav_budget > 0:
+            for row in value[:10]:
+                _resolve_navigation_names(row, args, budget=nav_budget)
         card = value[0] if (keyed or number or extra_filter or len(value) == 1) else None
         if isinstance(card, dict):
             row_ref = str(card.get("Ref_Key") or ref_key or "").strip()
