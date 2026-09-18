@@ -1,7 +1,7 @@
-import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
+import { resolveWindowsPythonExe, spawnHidden } from './spawnHidden'
 
 export const LOCAL_BACKEND_DEFAULT = 'http://127.0.0.1:7812'
 
@@ -54,11 +54,11 @@ function resolveBackendRoot(): string | null {
 }
 
 function spawnLocalBackend(backendRoot: string): void {
-  const child = spawn('py', ['-3.12', '-m', 'app.main'], {
+  const python = resolveWindowsPythonExe()
+  const child = spawnHidden(python, ['-m', 'app.main'], {
     cwd: backendRoot,
     detached: true,
     stdio: 'ignore',
-    windowsHide: true,
     env: {
       ...process.env,
       AUTH_SKIP_SESSION_LOCK: process.env.AUTH_SKIP_SESSION_LOCK || '1'

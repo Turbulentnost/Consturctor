@@ -43,10 +43,38 @@ function TodayWindow({ children }: { children: React.ReactNode }): React.JSX.Ele
   return <div className="today-grid-window">{children}</div>
 }
 
+/** Цветовая маркировка строк — как в «Реестре поручений». */
+type TodayRowTone = 'done' | 'overdue' | 'due_soon' | 'neutral'
+
+/** Дедлайн из мини-таблиц: `16.09` или `16.09.2026`. */
+function parseMiniDeadline(raw: string): Date | null {
+  const text = (raw || '').trim()
+  const match = /^(\d{2})\.(\d{2})(?:\.(\d{4}))?$/.exec(text)
+  if (!match) return null
+  const year = match[3] ? Number(match[3]) : new Date().getFullYear()
+  return new Date(year, Number(match[2]) - 1, Number(match[1]))
+}
+
+function todayRowTone(status: string, deadline: string, urgent?: boolean): TodayRowTone {
+  if (/выполнен/i.test(status)) return 'done'
+  if (urgent || /просрочен/i.test(status)) return 'overdue'
+  const due = parseMiniDeadline(deadline)
+  if (due) {
+    const now = new Date()
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    if (due < start) return 'overdue'
+    const end = new Date(start)
+    end.setDate(end.getDate() + 3)
+    if (due <= end) return 'due_soon'
+  }
+  return 'neutral'
+}
+
 function MiniTableCard({
   title,
   columns,
   rows,
+  rowTones,
   loading,
   error,
   emptyText,
@@ -57,6 +85,8 @@ function MiniTableCard({
   title: string
   columns: string[]
   rows: React.ReactNode[][]
+  /** Тона строк (по индексам rows): done | overdue | due_soon | neutral. */
+  rowTones?: TodayRowTone[]
   loading?: boolean
   /** Shown above the table (KPI/banner), never as a fake data row. */
   error?: string
@@ -84,13 +114,16 @@ function MiniTableCard({
         </tr>
       )
     }
-    return rows.map((cells, index) => (
-      <tr key={index}>
-        {cells.map((cell, cellIndex) => (
-          <td key={cellIndex}>{cell}</td>
-        ))}
-      </tr>
-    ))
+    return rows.map((cells, index) => {
+      const tone = rowTones?.[index]
+      return (
+        <tr key={index} className={tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : undefined}>
+          {cells.map((cell, cellIndex) => (
+            <td key={cellIndex}>{cell}</td>
+          ))}
+        </tr>
+      )
+    })
   })()
 
   return (
@@ -320,6 +353,7 @@ export function TodayGridTab({
           }
           emptyExtra={onecReconnectBlock}
           columns={onecFromMe ? ['Задача', 'Исполнитель', 'Статус'] : ['Задача', 'Статус']}
+          rowTones={taskRows.map((row) => todayRowTone(row.status, row.deadline, row.urgent))}
           rows={taskRows.map((row) =>
             onecFromMe
               ? [
@@ -373,6 +407,7 @@ export function TodayGridTab({
                 : 'Нет задач на сегодня и просроченных'
           }
           columns={['Задача', 'Срок', 'Статус']}
+          rowTones={projectRows.map((row) => todayRowTone(row.status, row.deadline))}
           rows={projectRows.map((row) => [
             <TodayCellText key={`${row.id}-t`} text={row.title} />,
             <TodayCellText key={`${row.id}-d`} text={row.deadline} />,

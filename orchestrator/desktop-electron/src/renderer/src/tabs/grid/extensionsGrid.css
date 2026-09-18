@@ -1,11 +1,15 @@
 .extensions-hub {
-  padding: 4px 2px 16px;
-  max-width: 920px;
+  grid-column: 1 / -1;
+  grid-row: 2 / -1;
+  padding: 4px 2px 8px;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-.extensions-hub-head h2 {
-  margin: 0 0 6px;
-  font-size: 18px;
+.extensions-hub-head p {
+  margin: 0;
 }
 
 .extensions-hub-code {
@@ -15,33 +19,85 @@
   background: rgba(21, 101, 192, 0.08);
 }
 
-.extensions-hub-list {
-  list-style: none;
-  margin: 16px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+/* Рабочая область: снап-сетка 8×8 с gutter 5px, как на других вкладках. */
+.extensions-hub-canvas {
+  flex: 1;
+  min-height: 0;
+  margin-top: 12px;
+  padding: 5px;
+  border-radius: 14px;
+  background-color: #e8edf4;
 }
 
+.extensions-hub-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-rows: repeat(8, minmax(0, 1fr));
+  gap: 5px;
+}
+
+/* Карточка расширения занимает 2 строки × 1 столбец. */
 .extensions-hub-card {
+  grid-row: span 2;
+  grid-column: span 1;
+  min-width: 0;
+  min-height: 0;
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
   justify-content: space-between;
-  gap: 16px;
-  padding: 16px 18px;
+  gap: 10px;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.extensions-hub-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+/* Та же иконка, что появится на левой панели после закрепления. */
+.extensions-hub-card-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(21, 101, 192, 0.1);
+  color: #1565c0;
+}
+
+.extensions-hub-card-icon .nav-icon-svg {
+  width: 16px;
+  height: 16px;
 }
 
 .extensions-hub-card h3 {
-  margin: 0 0 8px;
-  font-size: 16px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.3;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .extensions-hub-card p {
   margin: 0;
   color: var(--content-muted);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
 }
 
 .extensions-hub-locked {
@@ -53,8 +109,12 @@
 .extensions-hub-card-actions {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
+}
+
+.extensions-hub-card-actions button {
+  width: 100%;
 }
 
 .extensions-access-denied {
@@ -64,16 +124,63 @@
 
 .registry-date-filters {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 10px;
-  width: 100%;
+  gap: 8px;
+  min-width: 0;
+}
+
+.registry-filter-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.registry-filter-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(21, 101, 192, 0.22);
+  border-radius: 8px;
+  background: #fff;
+  color: #1565c0;
+  cursor: pointer;
+}
+
+.registry-filter-icon-btn:hover:not(:disabled) {
+  background: rgba(21, 101, 192, 0.08);
+}
+
+.registry-filter-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.registry-filter-icon-btn--primary {
+  background: rgba(21, 101, 192, 0.12);
+  border-color: rgba(21, 101, 192, 0.35);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .registry-date-field {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 .registry-date-label {
@@ -83,6 +190,7 @@
 
 .registry-date-input {
   min-width: 148px;
+  text-align: left;
 }
 
 /* KPI: явная подсветка выбранной плитки в фиксированной полосе chrome */
@@ -131,6 +239,7 @@
 .registry-table td {
   padding: 8px 10px;
   vertical-align: top;
+  text-align: left;
   border-bottom: 1px solid rgba(16, 20, 26, 0.08);
 }
 
@@ -215,25 +324,40 @@
 
 .registry-th--collapsed,
 .registry-td--collapsed {
-  width: 14px;
-  min-width: 14px;
-  max-width: 14px;
+  width: 28px;
+  min-width: 28px;
+  max-width: 28px;
   padding: 4px 2px !important;
-  cursor: pointer;
-  background: rgba(21, 101, 192, 0.06);
+  background: #f6f8fb;
+  border-left: 1px dashed rgba(21, 101, 192, 0.28);
+  border-right: 1px dashed rgba(21, 101, 192, 0.28);
 }
 
-.registry-th-expand-grip {
-  display: block;
-  width: 6px;
-  height: 28px;
+.registry-td--collapsed {
+  background: transparent;
+  border-left: none;
+  border-right: none;
+  padding: 0 !important;
+}
+
+.registry-col-expand-btn {
+  width: 22px;
+  height: 22px;
   margin: 0 auto;
-  border-radius: 4px;
-  background: rgba(21, 101, 192, 0.35);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid rgba(21, 101, 192, 0.35);
+  background: #fff;
+  color: #1565c0;
+  cursor: pointer;
 }
 
-.registry-th--collapsed:hover .registry-th-expand-grip {
-  background: #1565c0;
+.registry-col-expand-btn:hover {
+  background: #e8f0fe;
+  border-color: #1565c0;
 }
 
 .registry-th--compact,
@@ -244,6 +368,30 @@
 /* nowrap оставляем только у ячеек данных: заголовки compact-колонок переносятся */
 .registry-td--compact {
   white-space: nowrap;
+}
+
+/* Даты в таблице — с левого края, без «центрирования» в широкой колонке */
+.registry-table th[data-col='date'],
+.registry-table td[data-col='date'],
+.registry-table th[data-col='weeklyReportDate'],
+.registry-table td[data-col='weeklyReportDate'],
+.registry-table th[data-col='fullRemediationDue'],
+.registry-table td[data-col='fullRemediationDue'],
+.registry-table th[data-col='finalReportDate'],
+.registry-table td[data-col='finalReportDate'] {
+  text-align: left;
+  vertical-align: top;
+}
+
+.registry-table th[data-col='date'],
+.registry-table td[data-col='date'],
+.registry-table th[data-col='weeklyReportDate'],
+.registry-table td[data-col='weeklyReportDate'],
+.registry-table th[data-col='finalReportDate'],
+.registry-table td[data-col='finalReportDate'] {
+  width: 6.5rem;
+  min-width: 6.5rem;
+  max-width: 7.5rem;
 }
 
 .registry-th[data-col='topic'],

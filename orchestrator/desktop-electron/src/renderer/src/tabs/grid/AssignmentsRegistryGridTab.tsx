@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { buildRegistryPrintHtml } from '../../workplace/registryPrint'
+import { FileDown, Printer } from 'lucide-react'
+import { buildRegistryReportHtml } from '../../workplace/registryPrint'
 import type { UserProfile } from '../../api/types'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT } from './useTabChromeLayout'
@@ -19,13 +20,7 @@ import './registryGrid.css'
 
 export const ASSIGNMENTS_REGISTRY_AI_CONTEXT = 'Расширение «Реестр поручений»'
 
-const TILE_FILTER_LABELS: Record<AssignmentRegistryTileId | 'all', string> = {
-  all: '',
-  done: 'Выполненные',
-  overdue: 'Просроченные',
-  due_soon: 'Подходит срок',
-  ai: ''
-}
+const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon'])
 
 const AI_REVIEW_PROMPT =
   'Проверь все незакрытые поручения в журнале АСТ00 за выбранный период: для каждого открытого поручения проверь наличие артефактов (файлов через onec.erp_assignments action=files) и оцени, есть ли реальные основания для закрытия. Сформируй список сомнительных и готовых к закрытию с кратким обоснованием.'
@@ -70,7 +65,7 @@ function buildRegistryTiles(
       id: 'due_soon',
       label: 'Подходит срок',
       value: String(dueSoon.length),
-      hint: '3 дня от сегодня',
+      hint: '3 рабочих дня от сегодня',
       tone: dueSoon.length ? 'orange' : 'neutral'
     },
     {
@@ -91,10 +86,54 @@ export function AssignmentsRegistryGridTab({
   onAskOrchestrator: (message: string, appContext: string) => void
 }): React.JSX.Element {
   const allowed = canUseExtension(user, 'assignments_registry')
-  const range = defaultRange()
-  const [dateFrom, setDateFrom] = useState(range.from)
-  const [dateTo, setDateTo] = useState(range.to)
-  const [tileFilter, setTileFilter] = useState<AssignmentRegistryTileId | 'all'>('all')
+  const storagePrefix = `orch-registry:${user.id || 'default'}`
+  const filtersKey = `${storagePrefix}:filters`
+  const tableStateKey = `${storagePrefix}:table`
+
+  const initialFilters = useMemo(() => {
+    const range = defaultRange()
+    const fallback = { from: range.from, to: range.to, tile: 'all' as AssignmentRegistryTileId | 'all' }
+    try {
+      const raw = sessionStorage.getItem(filtersKey)
+      if (!raw) return fallback
+      const parsed = JSON.parse(raw) as { from?: string; to?: string; tile?: string }
+      return {
+        from: /^\d{4}-\d{2}-\d{2}$/.test(parsed.from || '') ? String(parsed.from) : fallback.from,
+        to: /^\d{4}-\d{2}-\d{2}$/.test(parsed.to || '') ? String(parsed.to) : fallback.to,
+        tile: TILE_FILTER_IDS.has(parsed.tile || '')
+          ? (parsed.tile as AssignmentRegistryTileId)
+          : ('all' as const)
+      }
+    } catch {
+      return fallback
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersKey])
+
+  const [dateFrom, setDateFrom] = useState(initialFilters.from)
+  const [dateTo, setDateTo] = useState(initialFilters.to)
+  const [tileFilter, setTileFilter] = useState<AssignmentRegistryTileId | 'all'>(initialFilters.tile)
+
+  const persistFilters = (from: string, to: string, tile: AssignmentRegistryTileId | 'all'): void => {
+    try {
+      sessionStorage.setItem(filtersKey, JSON.stringify({ from, to, tile }))
+    } catch {
+      /* ignore */
+    }
+  }
+  const changeDateFrom = (value: string): void => {
+    setDateFrom(value)
+    persistFilters(value, dateTo, tileFilter)
+  }
+  const changeDateTo = (value: string): void => {
+    setDateTo(value)
+    persistFilters(dateFrom, value, tileFilter)
+  }
+  const changeTileFilter = (next: AssignmentRegistryTileId | 'all'): void => {
+    setTileFilter(next)
+    persistFilters(dateFrom, dateTo, next)
+  }
+
   const selectionKey = `orch-registry-selection:${user.id || 'default'}`
   const [selectedId, setSelectedId] = useState<string | null>(() => {
     try {
@@ -139,7 +178,7 @@ export function AssignmentsRegistryGridTab({
       onAskOrchestrator(AI_REVIEW_PROMPT, ASSIGNMENTS_REGISTRY_AI_CONTEXT)
       return
     }
-    setTileFilter((current) => (current === id ? 'all' : (id as AssignmentRegistryTileId)))
+    changeTileFilter(tileFilter === id ? 'all' : (id as AssignmentRegistryTileId))
   }
 
   const activeTileId = tileFilter === 'all' ? null : tileFilter
@@ -147,45 +186,63 @@ export function AssignmentsRegistryGridTab({
   const [printBusy, setPrintBusy] = useState(false)
   const [printError, setPrintError] = useState('')
 
-  const buildCurrentPrintHtml = (): string =>
-    buildRegistryPrintHtml(filteredRows, {
+  /** Отчёт всегда по всем строкам периода: разделы группируют сами. */
+  const buildCurrentReportHtml = (): string =>
+    buildRegistryReportHtml(rows, {
       periodFrom: dateFrom,
-      periodTo: dateTo,
-      filterLabel: TILE_FILTER_LABELS[tileFilter]
+      periodTo: dateTo
     })
 
-  /** «PDF»: сохранение через диалог, файл открывается после сохранения (предпросмотр). */
+  const PRINT_RESTART_HINT =
+    'Модуль печати обновился — полностью перезапустите приложение (закрыть и открыть заново).'
+
+  /** «PDF»: сохранение отчёта через диалог, файл открывается после сохранения. */
   const exportRegistryPdf = async (): Promise<void> => {
     if (printBusy) return
     setPrintBusy(true)
     setPrintError('')
     try {
+      if (typeof window.api.printToPdf !== 'function') {
+        setPrintError(PRINT_RESTART_HINT)
+        return
+      }
       const result = await window.api.printToPdf({
-        html: buildCurrentPrintHtml(),
+        html: buildCurrentReportHtml(),
         landscape: true,
         openAfter: true
       })
       if (!result.ok && !result.canceled) {
         setPrintError(result.error || 'Не удалось сохранить PDF')
       }
+    } catch (err) {
+      setPrintError(err instanceof Error ? err.message : 'Не удалось сохранить PDF')
     } finally {
       setPrintBusy(false)
     }
   }
 
-  /** «Печать»: системный диалог печати Windows. */
+  /**
+   * «Печать»: сразу системный диалог печати готового отчёта
+   * (выполненные / в работе / просроченные) из уже загруженных строк.
+   */
   const printRegistry = async (): Promise<void> => {
     if (printBusy) return
     setPrintBusy(true)
     setPrintError('')
     try {
+      if (typeof window.api.printDialog !== 'function') {
+        setPrintError(PRINT_RESTART_HINT)
+        return
+      }
       const result = await window.api.printDialog({
-        html: buildCurrentPrintHtml(),
+        html: buildCurrentReportHtml(),
         landscape: true
       })
       if (!result.ok && !result.canceled) {
         setPrintError(result.error || 'Не удалось выполнить печать')
       }
+    } catch (err) {
+      setPrintError(err instanceof Error ? err.message : 'Не удалось выполнить печать')
     } finally {
       setPrintBusy(false)
     }
@@ -212,6 +269,30 @@ export function AssignmentsRegistryGridTab({
       defaults={DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT}
       labels={{ main: 'Таблица', side: 'Карточка поручения' }}
       chromeTiles={summaryTilesAsChrome(tiles, activeTileId, onTileSelect)}
+      filterToolbarExtra={
+        <div className="registry-filter-toolbar-actions">
+          <button
+            type="button"
+            className="registry-filter-icon-btn"
+            title="Сохранить отчёт в PDF"
+            disabled={printBusy}
+            onClick={() => void exportRegistryPdf()}
+          >
+            <FileDown size={16} aria-hidden />
+            <span className="sr-only">PDF</span>
+          </button>
+          <button
+            type="button"
+            className="registry-filter-icon-btn registry-filter-icon-btn--primary"
+            title="Печать готового отчёта"
+            disabled={printBusy}
+            onClick={() => void printRegistry()}
+          >
+            <Printer size={16} aria-hidden />
+            <span className="sr-only">Печать</span>
+          </button>
+        </div>
+      }
       widgets={{
         filters: (
           <GridFilterBar
@@ -221,6 +302,13 @@ export function AssignmentsRegistryGridTab({
               setDateTo(next.to)
               setTileFilter('all')
               setSelectedId(null)
+              try {
+                sessionStorage.removeItem(filtersKey)
+                sessionStorage.removeItem(tableStateKey)
+                sessionStorage.removeItem(selectionKey)
+              } catch {
+                /* ignore */
+              }
             }}
             extra={
               <div className="registry-date-filters">
@@ -231,7 +319,7 @@ export function AssignmentsRegistryGridTab({
                     type="date"
                     className="wp-input registry-date-input"
                     value={dateFrom}
-                    onChange={(event) => setDateFrom(event.target.value)}
+                    onChange={(event) => changeDateFrom(event.target.value)}
                   />
                 </label>
                 <label className="spec-filter-input spec-filter-period registry-date-field">
@@ -241,29 +329,11 @@ export function AssignmentsRegistryGridTab({
                     type="date"
                     className="wp-input registry-date-input"
                     value={dateTo}
-                    onChange={(event) => setDateTo(event.target.value)}
+                    onChange={(event) => changeDateTo(event.target.value)}
                   />
                 </label>
                 <button type="button" className="today-link-btn" onClick={() => refresh()}>
                   Обновить
-                </button>
-                <button
-                  type="button"
-                  className="today-link-btn"
-                  title="Сохранить таблицу в PDF (файл откроется после сохранения)"
-                  disabled={printBusy || !filteredRows.length}
-                  onClick={() => void exportRegistryPdf()}
-                >
-                  PDF
-                </button>
-                <button
-                  type="button"
-                  className="today-link-btn"
-                  title="Печать таблицы через системный диалог"
-                  disabled={printBusy || !filteredRows.length}
-                  onClick={() => void printRegistry()}
-                >
-                  Печать
                 </button>
               </div>
             }
@@ -280,6 +350,7 @@ export function AssignmentsRegistryGridTab({
               rows={filteredRows}
               loading={loading && !rows.length}
               selectedId={selectedId}
+              stateKey={tableStateKey}
               onSelectRow={(row) => pickRow(row)}
               emptyText={
                 tileFilter !== 'all' ? 'Нет поручений по выбранной плитке' : 'Нет поручений за период'

@@ -3,6 +3,20 @@ import type {
   AssignmentRegistryRow,
   AssignmentRegistryRowTone
 } from './assignmentRegistryTypes'
+function isBusinessDay(date: Date): boolean {
+  const day = date.getDay()
+  return day >= 1 && day <= 5
+}
+
+function endOfBusinessDaysWindow(today: Date, businessDays: number): Date {
+  let cursor = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  let left = businessDays
+  while (left > 0) {
+    if (isBusinessDay(cursor)) left -= 1
+    if (left > 0) cursor.setDate(cursor.getDate() + 1)
+  }
+  return cursor
+}
 
 function formatOneCDate(raw: string): string {
   const text = (raw || '').trim()
@@ -38,12 +52,11 @@ export function parseRegistryDay(value: string): Date | null {
 }
 
 export function isDueWithinDays(row: AssignmentRegistryRow, days: number, today = new Date()): boolean {
-  if (!row.open) return false
+  if (!row.open || row.overdue) return false
   const due = parseRegistryDay(row.fullRemediationDue)
   if (!due) return false
   const start = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-  const end = new Date(start)
-  end.setDate(end.getDate() + days)
+  const end = endOfBusinessDaysWindow(today, days)
   return due >= start && due <= end
 }
 
@@ -56,8 +69,7 @@ export function resolveRegistryRowTone(
   const due = parseRegistryDay(row.fullRemediationDue)
   if (due) {
     const start = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-    const end = new Date(start)
-    end.setDate(end.getDate() + 3)
+    const end = endOfBusinessDaysWindow(today, 3)
     if (due >= start && due <= end) return 'due_soon'
   }
   return 'neutral'

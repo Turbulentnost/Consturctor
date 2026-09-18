@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties } from 'react'
-import { ArrowDown, ArrowUp, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronLeft, EyeOff } from 'lucide-react'
 import {
   ASSIGNMENT_REGISTRY_COLUMNS,
   type AssignmentRegistryColumnId,
@@ -45,21 +45,67 @@ function compareRows(
   return dir === 'asc' ? cmp : -cmp
 }
 
+type SortState = { col: AssignmentRegistryColumnId; dir: SortDir } | null
+
+const VALID_COLUMN_IDS = new Set(ASSIGNMENT_REGISTRY_COLUMNS.map((col) => col.id))
+
+function readTableState(key: string): { sort: SortState; collapsed: Set<AssignmentRegistryColumnId> } {
+  const fallback = { sort: null as SortState, collapsed: new Set<AssignmentRegistryColumnId>() }
+  if (!key) return fallback
+  try {
+    const raw = sessionStorage.getItem(key)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw) as {
+      sort?: { col?: string; dir?: string } | null
+      collapsed?: string[]
+    }
+    const collapsed = new Set(
+      (parsed.collapsed || []).filter((id): id is AssignmentRegistryColumnId =>
+        VALID_COLUMN_IDS.has(id as AssignmentRegistryColumnId)
+      )
+    )
+    const sortCol = parsed.sort?.col
+    const sort: SortState =
+      sortCol && VALID_COLUMN_IDS.has(sortCol as AssignmentRegistryColumnId)
+        ? {
+            col: sortCol as AssignmentRegistryColumnId,
+            dir: parsed.sort?.dir === 'desc' ? 'desc' : 'asc'
+          }
+        : null
+    return { sort, collapsed }
+  } catch {
+    return fallback
+  }
+}
+
+function writeTableState(key: string, sort: SortState, collapsed: Set<AssignmentRegistryColumnId>): void {
+  if (!key) return
+  try {
+    sessionStorage.setItem(key, JSON.stringify({ sort, collapsed: [...collapsed] }))
+  } catch {
+    /* ignore */
+  }
+}
+
 export function AssignmentsRegistryTable({
   rows,
   loading,
   emptyText,
   selectedId,
-  onSelectRow
+  onSelectRow,
+  stateKey = ''
 }: {
   rows: AssignmentRegistryRow[]
   loading?: boolean
   emptyText?: string
   selectedId?: string | null
   onSelectRow?: (row: AssignmentRegistryRow) => void
+  /** Ключ sessionStorage для сохранения сортировки и скрытых столбцов. */
+  stateKey?: string
 }): React.JSX.Element {
-  const [sort, setSort] = useState<{ col: AssignmentRegistryColumnId; dir: SortDir } | null>(null)
-  const [collapsed, setCollapsed] = useState<Set<AssignmentRegistryColumnId>>(() => new Set())
+  const initial = useMemo(() => readTableState(stateKey), [stateKey])
+  const [sort, setSort] = useState<SortState>(initial.sort)
+  const [collapsed, setCollapsed] = useState<Set<AssignmentRegistryColumnId>>(initial.collapsed)
 
   const sortedRows = useMemo(() => {
     if (!sort) return rows
@@ -68,20 +114,30 @@ export function AssignmentsRegistryTable({
 
   const toggleSort = (col: AssignmentRegistryColumnId): void => {
     setSort((current) => {
-      if (!current || current.col !== col) return { col, dir: 'asc' }
-      if (current.dir === 'asc') return { col, dir: 'desc' }
-      return null
+      const next: SortState =
+        !current || current.col !== col
+          ? { col, dir: 'asc' }
+          : current.dir === 'asc'
+            ? { col, dir: 'desc' }
+            : null
+      writeTableState(stateKey, next, collapsed)
+      return next
     })
   }
 
   const collapseCol = (col: AssignmentRegistryColumnId): void => {
-    setCollapsed((current) => new Set([...current, col]))
+    setCollapsed((current) => {
+      const next = new Set([...current, col])
+      writeTableState(stateKey, sort, next)
+      return next
+    })
   }
 
   const expandCol = (col: AssignmentRegistryColumnId): void => {
     setCollapsed((current) => {
       const next = new Set(current)
       next.delete(col)
+      writeTableState(stateKey, sort, next)
       return next
     })
   }
@@ -120,10 +176,18 @@ export function AssignmentsRegistryTable({
                   <th
                     key={col.id}
                     className="registry-th registry-th--collapsed"
+                    data-col={col.id}
                     title={`Развернуть: ${col.label}`}
-                    onClick={() => expandCol(col.id)}
                   >
-                    <span className="registry-th-expand-grip" aria-hidden />
+                    <button
+                      type="button"
+                      className="registry-col-expand-btn"
+                      title={`Развернуть: ${col.label}`}
+                      aria-label={`Развернуть столбец «${col.label}»`}
+                      onClick={() => expandCol(col.id)}
+                    >
+                      <ChevronLeft size={14} aria-hidden />
+                    </button>
                   </th>
                 )
               }
@@ -161,9 +225,10 @@ export function AssignmentsRegistryTable({
                       type="button"
                       className="registry-col-btn registry-col-btn--hide"
                       title="Скрыть столбец"
+                      aria-label={`Скрыть столбец «${col.label}»`}
                       onClick={() => collapseCol(col.id)}
                     >
-                      <X size={12} aria-hidden />
+                      <EyeOff size={12} aria-hidden />
                     </button>
                   </div>
                 </th>
@@ -226,7 +291,7 @@ export function AssignmentsRegistryTable({
       </table>
       {visibleColumns.length === 0 ? (
         <p className="registry-table-hint">
-          Все столбцы скрыты — нажмите узкую полоску в заголовке, чтобы вернуть столбец.
+          Все столбцы скрыты — нажмите «‹» в заголовке, чтобы вернуть столбец.
         </p>
       ) : null}
     </div>

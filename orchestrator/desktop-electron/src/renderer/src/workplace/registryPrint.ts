@@ -3,6 +3,7 @@ import {
   type AssignmentRegistryRow,
   type AssignmentRegistryRowTone
 } from './assignmentRegistryTypes'
+import { selectRegistryReportRows } from './registryReportRows'
 
 /** Фоны строк — как в UI (extensionsGrid.css, .registry-tr.tone-*). */
 const TONE_BACKGROUND: Record<AssignmentRegistryRowTone, string> = {
@@ -116,6 +117,26 @@ function printDocument(title: string, bodyHtml: string): string {
   .task-meta { font-size: 10px; color: #333a45; }
   .task-meta b { color: #5a6472; font-weight: 600; }
   .empty { color: #5a6472; font-style: italic; }
+  .report-summary {
+    display: flex;
+    gap: 18px;
+    margin: 0 0 14px;
+    font-size: 11px;
+  }
+  .report-summary b { font-size: 15px; display: block; }
+  .section { margin-bottom: 18px; }
+  .section h2 {
+    font-size: 13px;
+    margin: 0 0 6px;
+    padding: 4px 8px;
+    border-left: 4px solid #8a94a6;
+    background: #f2f5f9;
+    page-break-after: avoid;
+  }
+  .section.done h2 { border-left-color: #2e9a6f; }
+  .section.overdue h2 { border-left-color: #c62828; }
+  .section.due_soon h2 { border-left-color: #e6a700; }
+  .section.closed_week h2 { border-left-color: #2e9a6f; }
 </style>
 </head>
 <body>
@@ -180,6 +201,85 @@ ${bodyRows}
 ${legend}`
 
   return printDocument('Реестр поручений', body)
+}
+
+function sectionTable(rows: AssignmentRegistryRow[]): string {
+  const headCells = ASSIGNMENT_REGISTRY_COLUMNS.map(
+    (column) => `<th${column.compact ? ' style="width:7%"' : ''}>${escapeHtml(column.label)}</th>`
+  ).join('')
+  const bodyRows = rows.length
+    ? rows
+        .map((row) => {
+          const background = TONE_BACKGROUND[row.tone] || TONE_BACKGROUND.neutral
+          const cells = ASSIGNMENT_REGISTRY_COLUMNS.map(
+            (column) => `<td>${escapeHtml(row[column.id])}</td>`
+          ).join('')
+          return `<tr style="background:${background}">${cells}</tr>`
+        })
+        .join('\n')
+    : `<tr><td colspan="${ASSIGNMENT_REGISTRY_COLUMNS.length}" class="empty">Нет поручений</td></tr>`
+  return `<table class="registry">
+<thead><tr>${headCells}</tr></thead>
+<tbody>
+${bodyRows}
+</tbody>
+</table>`
+}
+
+/**
+ * Отчёт для печати/PDF: только просроченные, закрытые за текущую неделю
+ * и срок в ближайшие 3 рабочих дня (из загруженного реестра).
+ */
+export function buildRegistryReportHtml(
+  rows: AssignmentRegistryRow[],
+  opts: RegistryPrintOptions = {}
+): string {
+  const { overdue, closedThisWeek, dueSoon, all } = selectRegistryReportRows(rows)
+
+  const metaParts: string[] = []
+  if (opts.periodFrom || opts.periodTo) {
+    metaParts.push(
+      `Данные реестра: ${escapeHtml(formatRuDate(opts.periodFrom || ''))} — ${escapeHtml(
+        formatRuDate(opts.periodTo || '')
+      )}`
+    )
+  }
+  metaParts.push(`Сформировано: ${escapeHtml(new Date().toLocaleString('ru-RU'))}`)
+
+  const summary = `<div class="report-summary">
+<span><b>${all.length}</b>в отчёте</span>
+<span><b style="color:#c62828">${overdue.length}</b>просрочено</span>
+<span><b style="color:#2e9a6f">${closedThisWeek.length}</b>закрыто за неделю</span>
+<span><b style="color:#e6a700">${dueSoon.length}</b>срок 3 раб. дня</span>
+</div>`
+
+  const sections = [
+    { cls: 'overdue', title: `Просроченные (${overdue.length})`, rows: overdue },
+    {
+      cls: 'closed_week',
+      title: `Закрытые за текущую неделю (${closedThisWeek.length})`,
+      rows: closedThisWeek
+    },
+    {
+      cls: 'due_soon',
+      title: `Срок в ближайшие 3 рабочих дня (${dueSoon.length})`,
+      rows: dueSoon
+    }
+  ]
+    .map(
+      (section) => `<div class="section ${section.cls}">
+<h2>${section.title}</h2>
+${sectionTable(section.rows)}
+</div>`
+    )
+    .join('\n')
+
+  const body = `<h1>Отчёт по реестру поручений</h1>
+<p class="doc-meta">${metaParts.join(' · ')}</p>
+${summary}
+${sections}`
+
+  return printDocument('Отчёт по реестру поручений', body)
 }
 
 /** Автономный HTML карточки одного поручения (поля + список задач). */

@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { resolveWindowsPythonExe, spawnHidden } from './spawnHidden'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { app } from 'electron'
@@ -232,7 +233,9 @@ export class AgentSidecar {
 
   private pythonCommand(): string {
     const bundled = join(process.resourcesPath, 'python', process.platform === 'win32' ? 'python.exe' : 'python')
-    return process.env.CONSTRUCTOR_PYTHON || (app.isPackaged && existsSync(bundled) ? bundled : 'python')
+    if (process.env.CONSTRUCTOR_PYTHON) return process.env.CONSTRUCTOR_PYTHON
+    if (app.isPackaged && existsSync(bundled)) return bundled
+    return resolveWindowsPythonExe()
   }
 
   private nodeCommand(): string {
@@ -328,11 +331,10 @@ export class AgentSidecar {
     const env = this.runtimeEnv(sidecar, desktopRoot)
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawn(env.CONSTRUCTOR_PYTHON || python, ['-u', sidecar], {
+      child = spawnHidden(env.CONSTRUCTOR_PYTHON || python, ['-u', sidecar], {
         cwd: existsSync(cwd) ? cwd : undefined,
-        env,
-        windowsHide: true
-      })
+        env
+      }) as ChildProcessWithoutNullStreams
     } catch (err) {
       this.lastStartError = `Не удалось запустить sidecar: ${err instanceof Error ? err.message : String(err)}`
       this.onEvent({

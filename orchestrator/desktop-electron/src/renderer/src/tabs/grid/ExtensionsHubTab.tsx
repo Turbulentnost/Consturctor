@@ -3,6 +3,7 @@ import type { PageKey } from '../../components/Sidebar'
 import { EXTENSIONS, canUseExtension } from '../../extensions/extensionRegistry'
 import { useExtensions } from '../../extensions/ExtensionsProvider'
 import { EXTENSION_MODULE_BY_ID } from '../../extensions/extensionModules'
+import { NavIcon } from '../../layout/navIcons'
 import './extensionsGrid.css'
 
 export function ExtensionsHubTab({
@@ -19,12 +20,12 @@ export function ExtensionsHubTab({
   return (
     <div className="extensions-hub">
       <header className="extensions-hub-head">
-        <h2>Расширения</h2>
         <p className="set-muted">
           Модульные вкладки: подключите расширение и выведите его на левую панель. Новые модули добавляются в{' '}
           <code className="extensions-hub-code">extensionModules.tsx</code>.
         </p>
       </header>
+      <div className="extensions-hub-canvas">
       <ul className="extensions-hub-list">
         {EXTENSIONS.map((ext) => {
           const allowed = canUseExtension(user, ext.id)
@@ -33,7 +34,12 @@ export function ExtensionsHubTab({
           return (
             <li key={ext.id} className="extensions-hub-card wp-card">
               <div className="extensions-hub-card-body">
-                <h3>{ext.title}</h3>
+                <div className="extensions-hub-card-head">
+                  <span className="extensions-hub-card-icon" title="Иконка на левой панели">
+                    <NavIcon page={ext.pageKey} />
+                  </span>
+                  <h3>{ext.title}</h3>
+                </div>
                 <p>{ext.description}</p>
                 {!allowed ? (
                   <p className="extensions-hub-locked">Нет доступа для вашей должности</p>
@@ -69,6 +75,7 @@ export function ExtensionsHubTab({
           )
         })}
       </ul>
+      </div>
     </div>
   )
 }

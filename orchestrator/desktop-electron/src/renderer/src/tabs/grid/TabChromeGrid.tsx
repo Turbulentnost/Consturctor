@@ -445,7 +445,8 @@ export function StandardTabChrome({
   defaults,
   labels,
   widgets,
-  chromeTiles
+  chromeTiles,
+  filterToolbarExtra
 }: {
   tabId: string
   userId: string
@@ -453,6 +454,8 @@ export function StandardTabChrome({
   labels?: Record<string, string>
   widgets: Record<string, React.ReactNode>
   chromeTiles?: ChromeTileSpec[]
+  /** Кнопки справа в полосе фильтров (перед «Редактировать виджеты»). */
+  filterToolbarExtra?: React.ReactNode
 }): React.JSX.Element {
   const layoutDefaults = useMemo(
     () => defaults.filter((item) => item.i !== 'tiles' && item.i !== 'filters' && !isTileWidgetId(item.i)),
@@ -492,6 +495,9 @@ export function StandardTabChrome({
       <div className="tab-chrome-filters-bar">
         <div className="tab-chrome-filters-wrap">
           {filterNode}
+          {filterToolbarExtra ? (
+            <div className="tab-chrome-filters-extra">{filterToolbarExtra}</div>
+          ) : null}
           <TabChromeToolbar
             editMode={chrome.editMode}
             onToggleEdit={() => chrome.setEditMode((value) => !value)}

@@ -1409,6 +1409,19 @@
   overflow: hidden;
 }
 
+/* Цветовая маркировка строк — палитра «Реестра поручений». */
+.today-mini-table tr.today-tr-tone-done td {
+  background: rgba(46, 154, 111, 0.14);
+}
+
+.today-mini-table tr.today-tr-tone-overdue td {
+  background: rgba(198, 40, 40, 0.12);
+}
+
+.today-mini-table tr.today-tr-tone-due_soon td {
+  background: rgba(230, 167, 0, 0.18);
+}
+
 .today-mini-table tr:last-child td {
   border-bottom: none;
 }
