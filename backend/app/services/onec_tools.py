@@ -825,6 +825,16 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
             and "$orderby" not in odata_path.lower()
         ):
             odata_path = _append_odata_query(odata_path, **{"$orderby": "Date%20desc"})
+        expand = str(args.get("expand") or "").strip()
+        if expand and "$expand" not in odata_path.lower():
+            odata_path = _append_odata_query(
+                odata_path, **{"$expand": quote(expand, safe="")}
+            )
+        select = str(args.get("select") or args.get("$select") or "").strip()
+        if select and "$select" not in odata_path.lower():
+            odata_path = _append_odata_query(
+                odata_path, **{"$select": quote(select, safe=",")}
+            )
 
     if not _odata_base_url(args):
         raise OnecToolError(

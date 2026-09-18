@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { FileDown, Printer } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { FileDown, Plus, Printer } from 'lucide-react'
 import { buildRegistryReportHtml } from '../../workplace/registryPrint'
 import type { UserProfile } from '../../api/types'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
@@ -8,10 +8,18 @@ import { GridFilterBar } from './gridFilters'
 import { SpecIconCalendar } from '../../workplace/specV04Icons'
 import { useAssignmentRegistry } from '../../workplace/useAssignmentRegistry'
 import { isDueWithinDays } from '../../workplace/assignmentRegistryMappers'
-import type { AssignmentRegistryTileId } from '../../workplace/assignmentRegistryTypes'
+import {
+  fetchAssignmentLines,
+  fetchAssignmentLinesBatch,
+  mergeRowsWithLines,
+  readCachedLines
+} from '../../workplace/assignmentRegistryLazyLoad'
+import { selectRegistryReportRows } from '../../workplace/registryReportRows'
+import type { AssignmentRegistryLine, AssignmentRegistryTileId } from '../../workplace/assignmentRegistryTypes'
 import { canUseExtension } from '../../extensions/extensionRegistry'
 import { AssignmentsRegistryTable } from './AssignmentsRegistryTable'
 import { AssignmentsRegistryDetailPanel } from './AssignmentsRegistryDetailPanel'
+import { AssignmentsRegistryCreateDialog } from './AssignmentsRegistryCreateDialog'
 import { useRuns } from '../../store/runs'
 import { personalAgentWorkflowId } from '../../workplace/personalAgent'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
@@ -142,7 +150,18 @@ export function AssignmentsRegistryGridTab({
       return null
     }
   })
-  const { rows, loading, refreshing, error, refresh } = useAssignmentRegistry(user.id || '', dateFrom, dateTo)
+  const { rows, loading, refreshing, loadingMore, firstRowReady, error, refresh } = useAssignmentRegistry(
+    user.id || '',
+    dateFrom,
+    dateTo
+  )
+  const [lineOverlay, setLineOverlay] = useState<Record<string, AssignmentRegistryLine[]>>({})
+  const [detailLinesLoading, setDetailLinesLoading] = useState(false)
+
+  const rowsHydrated = useMemo(
+    () => mergeRowsWithLines(rows, new Map(Object.entries(lineOverlay))),
+    [rows, lineOverlay]
+  )
 
   const pickRow = (row: { id: string } | null): void => {
     setSelectedId((current) => {
@@ -163,15 +182,21 @@ export function AssignmentsRegistryGridTab({
   const aiBusy = Boolean(aiRun?.state?.running)
   const aiHint = aiBusy ? 'Идёт проверка…' : 'Запустить'
 
-  const tiles = useMemo(() => buildRegistryTiles(rows, aiHint), [rows, aiHint])
+  const tiles = useMemo(() => buildRegistryTiles(rowsHydrated, aiHint), [rowsHydrated, aiHint])
 
   const filteredRows = useMemo(() => {
-    if (tileFilter === 'all') return rows
-    if (tileFilter === 'done') return rows.filter((row) => !row.open)
-    if (tileFilter === 'overdue') return rows.filter((row) => row.open && row.overdue)
-    if (tileFilter === 'due_soon') return rows.filter((row) => row.open && isDueWithinDays(row, 3))
-    return rows
-  }, [rows, tileFilter])
+    if (tileFilter === 'all') return rowsHydrated
+    if (tileFilter === 'done') return rowsHydrated.filter((row) => !row.open)
+    if (tileFilter === 'overdue') return rowsHydrated.filter((row) => row.open && row.overdue)
+    if (tileFilter === 'due_soon') return rowsHydrated.filter((row) => row.open && isDueWithinDays(row, 3))
+    return rowsHydrated
+  }, [rowsHydrated, tileFilter])
+
+  const filterRowCountLabel = useMemo((): string | null => {
+    if (!firstRowReady && !filteredRows.length) return null
+    if (loadingMore && filteredRows.length) return `${filteredRows.length} поручений…`
+    return `${filteredRows.length} поручений`
+  }, [filteredRows.length, firstRowReady, loadingMore])
 
   const onTileSelect = (id: string): void => {
     if (id === 'ai') {
@@ -185,10 +210,28 @@ export function AssignmentsRegistryGridTab({
 
   const [printBusy, setPrintBusy] = useState(false)
   const [printError, setPrintError] = useState('')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createNotice, setCreateNotice] = useState('')
 
-  /** Отчёт всегда по всем строкам периода: разделы группируют сами. */
-  const buildCurrentReportHtml = (): string =>
-    buildRegistryReportHtml(rows, {
+  const hydrateReportRows = async (): Promise<typeof rowsHydrated> => {
+    const { all } = selectRegistryReportRows(rowsHydrated)
+    const refKeys = all.filter((row) => row.refKey && !row.lines.length).map((row) => row.refKey)
+    if (!refKeys.length) return rowsHydrated
+    const batch = await fetchAssignmentLinesBatch(refKeys)
+    const merged = mergeRowsWithLines(rowsHydrated, batch)
+    const patch: Record<string, AssignmentRegistryLine[]> = {}
+    for (const [refKey, lines] of batch) {
+      if (lines.length) patch[refKey] = lines
+    }
+    if (Object.keys(patch).length) {
+      setLineOverlay((current) => ({ ...current, ...patch }))
+    }
+    return merged
+  }
+
+  /** Отчёт по строкам периода; задачи догружаются пакетом только для попавших в отчёт. */
+  const buildCurrentReportHtml = (sourceRows: typeof rowsHydrated): string =>
+    buildRegistryReportHtml(sourceRows, {
       periodFrom: dateFrom,
       periodTo: dateTo
     })
@@ -206,8 +249,9 @@ export function AssignmentsRegistryGridTab({
         setPrintError(PRINT_RESTART_HINT)
         return
       }
+      const reportRows = await hydrateReportRows()
       const result = await window.api.printToPdf({
-        html: buildCurrentReportHtml(),
+        html: buildCurrentReportHtml(reportRows),
         landscape: true,
         openAfter: true
       })
@@ -234,8 +278,9 @@ export function AssignmentsRegistryGridTab({
         setPrintError(PRINT_RESTART_HINT)
         return
       }
+      const reportRows = await hydrateReportRows()
       const result = await window.api.printDialog({
-        html: buildCurrentReportHtml(),
+        html: buildCurrentReportHtml(reportRows),
         landscape: true
       })
       if (!result.ok && !result.canceled) {
@@ -249,9 +294,42 @@ export function AssignmentsRegistryGridTab({
   }
 
   const selectedRow = useMemo(
-    () => filteredRows.find((row) => row.id === selectedId) ?? rows.find((row) => row.id === selectedId) ?? null,
-    [filteredRows, rows, selectedId]
+    () =>
+      filteredRows.find((row) => row.id === selectedId) ??
+      rowsHydrated.find((row) => row.id === selectedId) ??
+      null,
+    [filteredRows, rowsHydrated, selectedId]
   )
+
+  useEffect(() => {
+    const refKey = selectedRow?.refKey?.trim()
+    if (!refKey) {
+      setDetailLinesLoading(false)
+      return
+    }
+    if (selectedRow.lines.length) {
+      setDetailLinesLoading(false)
+      return
+    }
+    const cached = readCachedLines(refKey) ?? lineOverlay[refKey]
+    if (cached?.length) {
+      setLineOverlay((current) =>
+        current[refKey]?.length ? current : { ...current, [refKey]: cached }
+      )
+      setDetailLinesLoading(false)
+      return
+    }
+    let alive = true
+    setDetailLinesLoading(true)
+    void fetchAssignmentLines(refKey).then((lines) => {
+      if (!alive) return
+      setLineOverlay((current) => ({ ...current, [refKey]: lines }))
+      setDetailLinesLoading(false)
+    })
+    return () => {
+      alive = false
+    }
+  }, [selectedRow?.refKey, selectedRow?.lines.length])
 
   if (!allowed) {
     return (
@@ -263,6 +341,15 @@ export function AssignmentsRegistryGridTab({
   }
 
   return (
+    <>
+    <AssignmentsRegistryCreateDialog
+      open={createOpen}
+      onClose={() => setCreateOpen(false)}
+      onCreated={(message) => {
+        setCreateNotice(message)
+        refresh()
+      }}
+    />
     <StandardTabChrome
       tabId="assignments_registry"
       userId={user.id || ''}
@@ -311,30 +398,48 @@ export function AssignmentsRegistryGridTab({
               }
             }}
             extra={
-              <div className="registry-date-filters">
-                <label className="spec-filter-input spec-filter-period registry-date-field">
-                  <SpecIconCalendar />
-                  <span className="registry-date-label">С</span>
-                  <input
-                    type="date"
-                    className="wp-input registry-date-input"
-                    value={dateFrom}
-                    onChange={(event) => changeDateFrom(event.target.value)}
-                  />
-                </label>
-                <label className="spec-filter-input spec-filter-period registry-date-field">
-                  <SpecIconCalendar />
-                  <span className="registry-date-label">По</span>
-                  <input
-                    type="date"
-                    className="wp-input registry-date-input"
-                    value={dateTo}
-                    onChange={(event) => changeDateTo(event.target.value)}
-                  />
-                </label>
-                <button type="button" className="today-link-btn" onClick={() => refresh()}>
-                  Обновить
-                </button>
+              <div className="registry-filter-bar-extra">
+                <div className="registry-date-filters">
+                  <label className="spec-filter-input spec-filter-period registry-date-field">
+                    <SpecIconCalendar />
+                    <span className="registry-date-label">С</span>
+                    <input
+                      type="date"
+                      className="wp-input registry-date-input"
+                      value={dateFrom}
+                      onChange={(event) => changeDateFrom(event.target.value)}
+                    />
+                  </label>
+                  <label className="spec-filter-input spec-filter-period registry-date-field">
+                    <SpecIconCalendar />
+                    <span className="registry-date-label">По</span>
+                    <input
+                      type="date"
+                      className="wp-input registry-date-input"
+                      value={dateTo}
+                      onChange={(event) => changeDateTo(event.target.value)}
+                    />
+                  </label>
+                  <button type="button" className="today-link-btn" onClick={() => refresh()}>
+                    Обновить
+                  </button>
+                  <button
+                    type="button"
+                    className="today-filter-layout-btn registry-create-open-btn"
+                    title="Создать поручение в журнале АСТ00"
+                    onClick={() => {
+                      setCreateNotice('')
+                      setCreateOpen(true)
+                    }}
+                  >
+                    <Plus size={14} aria-hidden /> Создать
+                  </button>
+                </div>
+                {filterRowCountLabel ? (
+                  <span className="registry-filter-row-count" aria-live="polite">
+                    {filterRowCountLabel}
+                  </span>
+                ) : null}
               </div>
             }
           />
@@ -343,12 +448,18 @@ export function AssignmentsRegistryGridTab({
           <div className="wp-card registry-table-card registry-widget-fill">
             {error ? <p className="registry-table-error">{error}</p> : null}
             {printError ? <p className="registry-table-error">{printError}</p> : null}
-            {refreshing && rows.length ? (
+            {createNotice ? <p className="registry-table-hint registry-table-success">{createNotice}</p> : null}
+            {refreshing && rows.length && !loadingMore ? (
               <p className="registry-table-hint">Обновление данных…</p>
+            ) : null}
+            {loadingMore && rows.length ? (
+              <p className="registry-table-hint registry-table-hint--progress">
+                Загружено {rows.length}… подгружаем следующие поручения
+              </p>
             ) : null}
             <AssignmentsRegistryTable
               rows={filteredRows}
-              loading={loading && !rows.length}
+              loading={(!firstRowReady && !error) || (loading && !rows.length)}
               selectedId={selectedId}
               stateKey={tableStateKey}
               onSelectRow={(row) => pickRow(row)}
@@ -360,10 +471,15 @@ export function AssignmentsRegistryGridTab({
         ),
         side: (
           <div className="wp-card registry-side-card registry-widget-fill">
-            <AssignmentsRegistryDetailPanel row={selectedRow} onClose={() => pickRow(null)} />
+            <AssignmentsRegistryDetailPanel
+              row={selectedRow}
+              linesLoading={detailLinesLoading}
+              onClose={() => pickRow(null)}
+            />
           </div>
         )
       }}
     />
+    </>
   )
 }

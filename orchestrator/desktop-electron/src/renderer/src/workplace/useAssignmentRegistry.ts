@@ -4,6 +4,9 @@ import { mapAssignmentFromApi } from './assignmentRegistryMappers'
 import type { AssignmentRegistryRow } from './assignmentRegistryTypes'
 import { readRegistryCache, registryCacheKey, writeRegistryCache } from './assignmentRegistryCache'
 
+export const REGISTRY_PAGE_SIZE = 20
+export const REGISTRY_MAX_ROWS = 100
+
 function parseAssignmentsPayload(result: unknown): AssignmentRegistryRow[] {
   if (!result || typeof result !== 'object') return []
   const payload = result as Record<string, unknown>
@@ -13,14 +16,19 @@ function parseAssignmentsPayload(result: unknown): AssignmentRegistryRow[] {
     .map((item) => mapAssignmentFromApi(item))
 }
 
-function parseGetAssignment(result: unknown): AssignmentRegistryRow | null {
-  if (!result || typeof result !== 'object') return null
-  const payload = result as Record<string, unknown>
-  const one = payload.assignment
-  if (one && typeof one === 'object') {
-    return mapAssignmentFromApi(one as Record<string, unknown>)
+function mergeAssignmentRows(
+  current: AssignmentRegistryRow[],
+  batch: AssignmentRegistryRow[]
+): AssignmentRegistryRow[] {
+  if (!batch.length) return current
+  const seen = new Set(current.map((row) => row.id))
+  const next = [...current]
+  for (const row of batch) {
+    if (seen.has(row.id)) continue
+    seen.add(row.id)
+    next.push(row)
   }
-  return null
+  return next
 }
 
 export function useAssignmentRegistry(
@@ -31,6 +39,8 @@ export function useAssignmentRegistry(
   rows: AssignmentRegistryRow[]
   loading: boolean
   refreshing: boolean
+  loadingMore: boolean
+  firstRowReady: boolean
   error: string
   refresh: () => void
 } {
@@ -40,12 +50,18 @@ export function useAssignmentRegistry(
   const [rows, setRows] = useState<AssignmentRegistryRow[]>(() => cached?.rows ?? [])
   const [loading, setLoading] = useState(() => !cached?.rows.length)
   const [refreshing, setRefreshing] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [firstRowReady, setFirstRowReady] = useState(() => Boolean(cached?.rows.length))
   const [error, setError] = useState('')
   const [tick, setTick] = useState(0)
   const loadGeneration = useRef(0)
-  const enrichGeneration = useRef(0)
 
-  const refresh = useCallback(() => setTick((value) => value + 1), [])
+  const refresh = useCallback(() => {
+    setRows([])
+    writeRegistryCache(cacheKey, [])
+    setFirstRowReady(false)
+    setTick((value) => value + 1)
+  }, [cacheKey])
 
   const applyRows = useCallback(
     (next: AssignmentRegistryRow[]) => {
@@ -57,8 +73,6 @@ export function useAssignmentRegistry(
 
   useEffect(() => {
     const seq = ++loadGeneration.current
-    enrichGeneration.current += 1
-    const enrichSeq = enrichGeneration.current
     let alive = true
 
     const hadCache = Boolean(readRegistryCache(cacheKey)?.rows.length)
@@ -66,75 +80,88 @@ export function useAssignmentRegistry(
     const load = async (): Promise<void> => {
       if (!hadCache) setLoading(true)
       else setRefreshing(true)
+      setLoadingMore(false)
       setError('')
+
+      const basePayload: Record<string, unknown> = {
+        action: 'list',
+        limit: REGISTRY_PAGE_SIZE,
+        only_open: false,
+        include_lines: false,
+        profile: true
+      }
+      if (dateFrom.trim()) basePayload.date_from = dateFrom.trim()
+      if (dateTo.trim()) basePayload.date_to = dateTo.trim()
+
+      const cachedRows = readRegistryCache(cacheKey)?.rows ?? []
+      let accumulated: AssignmentRegistryRow[] = hadCache && cachedRows.length ? [...cachedRows] : []
+      let skip = 0
+      setFirstRowReady(Boolean(accumulated.length))
+
       try {
-        const payload: Record<string, unknown> = {
-          action: 'list',
-          limit: 100,
-          only_open: false
-        }
-        if (dateFrom.trim()) payload.date_from = dateFrom.trim()
-        if (dateTo.trim()) payload.date_to = dateTo.trim()
-        const res = await api.invokeServerTool('onec.erp_assignments', payload, 300_000)
-        if (!alive || seq !== loadGeneration.current) return
-        if (!res.ok) {
-          if (!readRegistryCache(cacheKey)?.rows.length) setRows([])
-          setError(String(res.error || 'Не удалось загрузить реестр поручений'))
-          return
-        }
-        const mapped = parseAssignmentsPayload(res.result)
-        applyRows(mapped)
-        if (!mapped.length && res.result && typeof res.result === 'object') {
-          const summary = String((res.result as Record<string, unknown>).summary || '').trim()
-          if (summary.includes('stub')) {
-            setError('OData 1С не настроен на backend (режим stub)')
+        while (skip < REGISTRY_MAX_ROWS) {
+          if (!alive || seq !== loadGeneration.current) return
+
+          const res = await api.invokeServerTool(
+            'onec.erp_assignments',
+            { ...basePayload, skip },
+            300_000
+          )
+          if (!alive || seq !== loadGeneration.current) return
+
+          if (!res.ok) {
+            if (!accumulated.length) {
+              setRows([])
+              setError(String(res.error || 'Не удалось загрузить реестр поручений'))
+            }
+            setFirstRowReady(true)
+            return
           }
+
+          const batch = parseAssignmentsPayload(res.result)
+          if (import.meta.env.DEV && skip === 0 && res.result && typeof res.result === 'object') {
+            const timing = (res.result as Record<string, unknown>).timing_ms
+            if (timing) console.info('[registry] page timing_ms', timing)
+          }
+
+          if (!batch.length) {
+            setFirstRowReady(true)
+            break
+          }
+
+          accumulated = mergeAssignmentRows(accumulated, batch)
+          applyRows(accumulated)
+          if (accumulated.length) setFirstRowReady(true)
+
+          if (seq === loadGeneration.current) {
+            setLoading(false)
+            setRefreshing(false)
+          }
+
+          if (batch.length < REGISTRY_PAGE_SIZE || accumulated.length >= REGISTRY_MAX_ROWS) {
+            setLoadingMore(false)
+            break
+          }
+
+          skip += REGISTRY_PAGE_SIZE
+          setLoadingMore(true)
         }
 
-        void enrichMissingLines(mapped, enrichSeq)
+        if (!accumulated.length) {
+          setError('')
+        }
       } catch (exc) {
         if (!alive || seq !== loadGeneration.current) return
-        if (!readRegistryCache(cacheKey)?.rows.length) setRows([])
-        setError(exc instanceof Error ? exc.message : 'Ошибка загрузки реестра')
+        if (!accumulated.length) {
+          setRows([])
+          setError(exc instanceof Error ? exc.message : 'Ошибка загрузки реестра')
+        }
+        setFirstRowReady(true)
       } finally {
         if (seq === loadGeneration.current) {
           setLoading(false)
           setRefreshing(false)
-        }
-      }
-    }
-
-    async function enrichMissingLines(base: AssignmentRegistryRow[], generation: number): Promise<void> {
-      const pending = base.filter((row) => row.refKey && row.lines.length === 0)
-      if (!pending.length) return
-      for (const stub of pending) {
-        if (!alive || generation !== enrichGeneration.current || seq !== loadGeneration.current) return
-        try {
-          const res = await api.invokeServerTool(
-            'onec.erp_assignments',
-            { action: 'get', ref_key: stub.refKey },
-            120_000
-          )
-          if (!alive || generation !== enrichGeneration.current) return
-          if (!res.ok) continue
-          const detailed = parseGetAssignment(res.result)
-          if (!detailed?.lines.length) continue
-          setRows((current) => {
-            const merged = current.map((row) => {
-              if (row.id !== stub.id) return row
-              return {
-                ...row,
-                lines: detailed.lines,
-                reporter: detailed.reporter !== '—' ? detailed.reporter : row.reporter,
-                secretary: detailed.secretary !== '—' ? detailed.secretary : row.secretary,
-                manager: detailed.manager !== '—' ? detailed.manager : row.manager
-              }
-            })
-            writeRegistryCache(cacheKey, merged)
-            return merged
-          })
-        } catch {
-          /* следующее поручение */
+          setLoadingMore(false)
         }
       }
     }
@@ -146,5 +173,5 @@ export function useAssignmentRegistry(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo, tick, cacheKey, applyRows])
 
-  return { rows, loading, refreshing, error, refresh }
+  return { rows, loading, refreshing, loadingMore, firstRowReady, error, refresh }
 }

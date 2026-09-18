@@ -22,6 +22,11 @@
   min-width: 0;
 }
 
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-bar-extra {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .orch-grid-registry .tab-chrome-filters-bar .registry-date-filters {
   flex: 0 1 auto;
   min-width: 0;
@@ -35,9 +40,9 @@
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-date-input {
-  width: 128px;
-  min-width: 128px;
-  max-width: 128px;
+  width: 132px;
+  min-width: 132px;
+  max-width: 132px;
   flex-shrink: 0;
 }
 
@@ -100,6 +105,8 @@
 .orch-grid-registry .registry-side-card {
   padding: 0;
   overflow: hidden;
+  background: transparent;
+  box-shadow: none;
 }
 
 .orch-grid-registry .registry-detail-panel {
