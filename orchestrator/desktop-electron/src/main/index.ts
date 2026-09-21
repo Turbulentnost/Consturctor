@@ -113,7 +113,9 @@ function resolveBackendUrl(env: Record<string, string>): string {
   }
 
   const fromProcess = (process.env.BACKEND_URL || '').trim()
-  if (fromProcess) return fromProcess.replace(/\/+$/, '')
+  if (fromProcess && !(app.isPackaged && isLoopback(fromProcess))) {
+    return fromProcess.replace(/\/+$/, '')
+  }
 
   if (!app.isPackaged && existsSync(cwdEnvPath)) {
     const fromCwd = (cwdEnv.BACKEND_URL || '').trim()
@@ -121,7 +123,9 @@ function resolveBackendUrl(env: Record<string, string>): string {
   }
 
   const fromProfile = (env.BACKEND_URL || '').trim()
-  if (fromProfile) return fromProfile.replace(/\/+$/, '')
+  if (fromProfile && !(app.isPackaged && isLoopback(fromProfile))) {
+    return fromProfile.replace(/\/+$/, '')
+  }
 
   return app.isPackaged ? LAN_BACKEND : LOCAL_BACKEND
 }

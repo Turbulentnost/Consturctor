@@ -1658,6 +1658,11 @@
   box-shadow: 0 28px 80px rgba(8, 20, 40, 0.35);
 }
 
+.today-result-preview-dialog--wide {
+  width: min(1360px, calc(100vw - 28px));
+  max-width: calc(100vw - 28px);
+}
+
 .today-result-preview-head {
   position: relative;
   display: flex;
@@ -1748,6 +1753,11 @@
   display: flex;
   flex-direction: row;
   justify-content: center;
+}
+
+.today-result-preview-body--desk.is-workbook {
+  align-items: stretch;
+  padding: 20px 16px 24px;
 }
 
 .today-result-doc-sheet {
@@ -2441,15 +2451,42 @@
 }
 
 .today-result-workbook-table-wrap {
-  max-height: min(52vh, 520px);
+  max-height: min(58vh, 560px);
 }
 
+.today-result-workbook-table th,
+.today-result-workbook-table td {
+  min-width: 92px;
+}
+
+.today-result-workbook-table th[data-col='wide'],
 .today-result-workbook-table td[data-col='wide'] {
-  min-width: 220px;
+  min-width: 260px;
+  max-width: 420px;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
+.today-result-workbook-table th[data-col='id'],
 .today-result-workbook-table td[data-col='id'] {
+  min-width: 108px;
   white-space: nowrap;
+}
+
+.today-result-workbook-table th[data-col='date'],
+.today-result-workbook-table td[data-col='date'] {
+  min-width: 104px;
+  white-space: nowrap;
+}
+
+.today-result-workbook-table th[data-col='status'],
+.today-result-workbook-table td[data-col='status'],
+.today-result-workbook-table th[data-col='risk'],
+.today-result-workbook-table td[data-col='risk'] {
+  min-width: 120px;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .today-result-workbook-table tbody tr:nth-child(even) td {
@@ -2509,7 +2546,9 @@
 }
 
 .today-result-preview-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 13px;
@@ -2529,10 +2568,17 @@
   border-bottom: 1px solid rgba(16, 20, 26, 0.08);
   text-align: left;
   vertical-align: top;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
   background-color: #fff;
+}
+
+.today-result-preview-table td,
+.today-result-preview-doc .md-table td {
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .today-result-preview-table thead {
@@ -2647,6 +2693,18 @@
 .today-decision-status.tone-gray {
   background: rgba(16, 20, 26, 0.08);
   color: var(--content-muted);
+}
+
+.today-decision-status.tone-red {
+  background: rgba(196, 57, 57, 0.14);
+  color: #c43939;
+}
+
+.today-decision-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
 }
 
 .today-decision-body {

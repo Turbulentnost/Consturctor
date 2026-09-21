@@ -5,6 +5,7 @@ import type { WorkflowFileItem } from '../api/types'
 import { AgentFeed, omitTriggerCheckNoise } from '../components/agentfeed'
 import type { FeedItem } from '../components/agentfeed/types'
 import { useRuns } from '../store/runs'
+import { liveRunProgress } from '../store/liveRun'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
@@ -169,6 +170,14 @@ export function AgentRunPage({
     void runs.attachHistoryFeed(workflowId)
   }, [workflowId, runs, state?.items, autoStart, initialMessage])
 
+  useEffect(() => {
+    if (!running) return
+    const timer = window.setInterval(() => {
+      void runs.attachHistoryFeed(workflowId)
+    }, 2500)
+    return () => window.clearInterval(timer)
+  }, [running, workflowId, runs])
+
   // The "Запустить" play button opens this page with autoStart, so the agent
   // starts immediately on its own playbook instead of waiting for a message.
   useEffect(() => {
@@ -332,6 +341,13 @@ export function AgentRunPage({
     ]
   }, [state?.items, personalAgent])
 
+  const progress = liveRunProgress({
+    running,
+    pendingQuestion: state?.pendingQuestion,
+    pendingHitl: state?.pendingHitl,
+    timing: state?.timing,
+    items: state?.items
+  })
   const statusText = running
     ? state?.status || 'Агент работает…'
     : awaiting
@@ -347,6 +363,14 @@ export function AgentRunPage({
         <div className="wf-title-block">
           <h1 className="wf-title">{title || (personalAgent ? 'Оркестратор' : 'Запуск агента')}</h1>
           {personalAgent ? <span className="wf-title-sub">Базовый агент</span> : null}
+          {running || awaiting ? (
+            <div className="wf-run-progress" aria-label={`Прогресс ${progress}%`}>
+              <div className="wf-progress">
+                <span className="wf-progress-fill" style={{ width: `${progress}%` }} />
+              </div>
+              <span className="wf-run-progress-meta">{progress}%</span>
+            </div>
+          ) : null}
         </div>
         <div className="wf-topbar-spacer" />
         {onOpenHistory && !personalAgent && (

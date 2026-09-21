@@ -458,14 +458,24 @@ export function DecisionsTab({
   }, [catalog.items, query, processId, status, priority, attachmentsOnly, due, sort, today])
 
   const pending = visibleTools.filter((item) => item.status === 'pending')
-  const awaitingMe = visibleTools.filter((item) => decisionStatusBucket(item) === 'pending')
-  const underReview = visibleTools.filter((item) => decisionStatusBucket(item) === 'review')
-  const confirmedToday = visibleTools.filter((item) => {
-    if (decisionStatusBucket(item) !== 'confirmed') return false
-    const stamp = parseIso(item.at)
-    return stamp ? dayKey(stamp) === todayKey() : false
-  })
-  const returned = visibleTools.filter((item) => decisionStatusBucket(item) === 'returned')
+  const tileItems = catalog.items
+  const awaitingMe = tileItems.filter((item) => decisionStatusBucket(item) === 'pending')
+  const underReview = tileItems.filter((item) => decisionStatusBucket(item) === 'review')
+  const confirmedAll = tileItems.filter((item) => decisionStatusBucket(item) === 'confirmed')
+  const returnedAll = tileItems.filter((item) => decisionStatusBucket(item) === 'returned')
+  const awaitingTitle = latestTitle(awaitingMe)
+  const reviewTitle = latestTitle(underReview)
+  const confirmedTitle = latestTitle(confirmedAll)
+  const returnedTitle = latestTitle(returnedAll)
+
+  function latestTitle(items: ToolDecisionItem[]): string {
+    const newest = [...items].sort((left, right) => String(right.at).localeCompare(String(left.at)))[0]
+    return newest?.title || ''
+  }
+
+  function selectTile(next: DecisionStatusFilter): void {
+    setStatus((prev) => (prev === next ? '' : next))
+  }
   const selected = visibleTools.find((item) => item.id === selectedId) || null
   const selectedFiles = selected
     ? (() => {
@@ -632,22 +642,33 @@ export function DecisionsTab({
       id: 'awaiting',
       label: 'Ожидают меня',
       node: (
-        <article className="wp-decisions-kpi-card wait">
+        <button
+          type="button"
+          className={`wp-decisions-kpi-card wait${status === 'pending' ? ' is-active' : ''}`}
+          aria-pressed={status === 'pending'}
+          onClick={() => selectTile('pending')}
+        >
           <div className="wp-decisions-kpi-icon" aria-hidden>
             !
           </div>
           <div>
             <p>Ожидают меня</p>
             <strong>{awaitingMe.length}</strong>
+            {awaitingTitle ? <small>{awaitingTitle}</small> : null}
           </div>
-        </article>
+        </button>
       )
     },
     {
       id: 'review',
       label: 'На рассмотрении',
       node: (
-        <article className="wp-decisions-kpi-card review">
+        <button
+          type="button"
+          className={`wp-decisions-kpi-card review${status === 'review' ? ' is-active' : ''}`}
+          aria-pressed={status === 'review'}
+          onClick={() => selectTile('review')}
+        >
           <div className="wp-decisions-kpi-icon nf-review" aria-hidden>
             <svg viewBox="0 0 24 24" width="20" height="20" focusable="false">
               <path
@@ -659,38 +680,51 @@ export function DecisionsTab({
           <div>
             <p>На рассмотрении</p>
             <strong>{underReview.length}</strong>
+            {reviewTitle ? <small>{reviewTitle}</small> : null}
           </div>
-        </article>
+        </button>
       )
     },
     {
       id: 'confirmed',
-      label: 'Подтверждено сегодня',
+      label: 'Подтверждено',
       node: (
-        <article className="wp-decisions-kpi-card done">
+        <button
+          type="button"
+          className={`wp-decisions-kpi-card done${status === 'confirmed' ? ' is-active' : ''}`}
+          aria-pressed={status === 'confirmed'}
+          onClick={() => selectTile('confirmed')}
+        >
           <div className="wp-decisions-kpi-icon" aria-hidden>
             ✓
           </div>
           <div>
-            <p>Подтверждено сегодня</p>
-            <strong>{confirmedToday.length}</strong>
+            <p>Подтверждено</p>
+            <strong>{confirmedAll.length}</strong>
+            {confirmedTitle ? <small>{confirmedTitle}</small> : null}
           </div>
-        </article>
+        </button>
       )
     },
     {
       id: 'returned',
       label: 'Возвращено',
       node: (
-        <article className="wp-decisions-kpi-card returned">
+        <button
+          type="button"
+          className={`wp-decisions-kpi-card returned${status === 'returned' ? ' is-active' : ''}`}
+          aria-pressed={status === 'returned'}
+          onClick={() => selectTile('returned')}
+        >
           <div className="wp-decisions-kpi-icon" aria-hidden>
             ↻
           </div>
           <div>
             <p>Возвращено</p>
-            <strong>{returned.length}</strong>
+            <strong>{returnedAll.length}</strong>
+            {returnedTitle ? <small>{returnedTitle}</small> : null}
           </div>
-        </article>
+        </button>
       )
     }
   ]

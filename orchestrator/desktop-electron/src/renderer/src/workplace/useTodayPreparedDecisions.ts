@@ -42,11 +42,14 @@ function permissionTitle(item: ToolDecisionItem): string {
 function permissionSubtitle(item: ToolDecisionItem): string {
   const agent = (item.agentName || '').trim()
   const who = agent ? `Агенту «${agent}»` : 'Агенту'
-  if (item.status === 'confirmed' || item.status === 'done') {
+  if (item.status === 'confirmed') {
     return `${who} потребовалось разрешение — выдано`
   }
   if (item.status === 'rejected') {
     return `${who} потребовалось разрешение — отклонено`
+  }
+  if (item.status === 'done') {
+    return `${who} потребовалось разрешение — не подтверждено`
   }
   return `${who} потребовалось разрешение на выполнение операции`
 }
@@ -55,14 +58,18 @@ function rowFromTool(item: ToolDecisionItem): TodayPreparedDecisionRow {
   let status = 'Ждёт разрешения'
   let statusTone: SpecPillTone = 'orange'
   let statusIcon: TodayPreparedDecisionRow['statusIcon'] = '!'
-  if (item.status === 'confirmed' || item.status === 'done') {
-    status = 'Разрешение выдано'
+  if (item.status === 'confirmed') {
+    status = 'Выдано'
     statusTone = 'green'
     statusIcon = '✓'
   } else if (item.status === 'rejected') {
-    status = 'Разрешение отклонено'
-    statusTone = 'orange'
+    status = 'Отклонено'
+    statusTone = 'red'
     statusIcon = '!'
+  } else if (item.status === 'done') {
+    status = 'Не подтверждено'
+    statusTone = 'gray'
+    statusIcon = '…'
   } else if (item.status === 'pending' && !item.live) {
     status = 'Ждёт разрешения'
     statusTone = 'gray'
@@ -103,9 +110,15 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
       const start = parseIso(item.at) || new Date(item.at)
       return start.getTime()
     }
+    const rank = (item: ToolDecisionItem): number => {
+      if (item.status === 'pending') return 0
+      if (item.status === 'rejected') return 1
+      if (item.status === 'done') return 2
+      return 3
+    }
     return permissionItems
       .slice()
-      .sort((left, right) => dueMs(left) - dueMs(right))
+      .sort((left, right) => rank(left) - rank(right) || dueMs(right) - dueMs(left))
       .slice(0, MAX_ROWS)
       .map(rowFromTool)
   }, [permissionItems])

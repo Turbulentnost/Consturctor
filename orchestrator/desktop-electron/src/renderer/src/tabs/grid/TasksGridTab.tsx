@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
-import { DEFAULT_STANDARD_LAYOUT } from './useTabChromeLayout'
+import { DEFAULT_WIDE_MAIN_LAYOUT } from './useTabChromeLayout'
 import { SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import {
   comPasswordSessionHint,
@@ -167,10 +167,16 @@ export function TasksGridTab({
   }, [data.erpLoading, showOneCReconnect, data.comPasswordInSession])
   const [selectedId, setSelectedId] = useState('')
   const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
-  const effectiveId = selectedId || taskRows[0]?.id || ''
-  const selected = taskRows.find((item) => item.id === effectiveId)
+  const selected = taskRows.find((item) => item.id === selectedId)
+  const drawerOpen = Boolean(createChannel || selected)
   const onecToMe = effectiveTile.source === 'onec'
   const onecFromMe = effectiveTile.source === 'onec-from-me'
+
+  useEffect(() => {
+    if (selectedId && !taskRows.some((row) => row.id === selectedId)) {
+      setSelectedId('')
+    }
+  }, [selectedId, taskRows])
 
   useEffect(() => {
     const onCreate = (event: Event): void => {
@@ -183,12 +189,23 @@ export function TasksGridTab({
     return () => window.removeEventListener(ORCH_CREATE_TASK, onCreate)
   }, [])
 
+  useEffect(() => {
+    if (!drawerOpen) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      setSelectedId('')
+      setCreateChannel(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawerOpen])
+
   return (
     <>
       <StandardTabChrome
         tabId="tasks"
         userId={user.id || ''}
-        defaults={DEFAULT_STANDARD_LAYOUT}
+        defaults={DEFAULT_WIDE_MAIN_LAYOUT}
         chromeTiles={summaryTilesAsChrome(buildTaskTiles(data), taskTileActiveIds(tileFilter), onTileSelect)}
         widgets={{
           filters: (
@@ -241,7 +258,7 @@ export function TasksGridTab({
         />
           ),
           main: (
-        <div className="orch-tasks-main">
+        <div className={`orch-tasks-main${drawerOpen ? ' has-drawer' : ''}`}>
         <div className="spec-table-toolbar orch-tasks-toolbar">
           <div className="orch-process-tabs-tools">
             <OrchDateRangePicker
@@ -274,16 +291,24 @@ export function TasksGridTab({
           ) : null}
           <table className="spec-v04-table spec-v04-table-tasks">
             <colgroup>
-              <col className="spec-v04-col-check" />
               <col className="spec-v04-col-task" />
-              <col className="spec-v04-col-source" />
-              <col className="spec-v04-col-process" />
               <col className="spec-v04-col-deadline" />
-              <col className="spec-v04-col-progress" />
+              {onecToMe || onecFromMe ? (
+                <>
+                  <col className="spec-v04-col-person" />
+                  <col className="spec-v04-col-created" />
+                </>
+              ) : (
+                <>
+                  <col className="spec-v04-col-source" />
+                  <col className="spec-v04-col-process" />
+                  <col className="spec-v04-col-status" />
+                  <col className="spec-v04-col-progress" />
+                </>
+              )}
             </colgroup>
             <thead>
               <tr>
-                <th className="spec-v04-cell-check" />
                 <th className="spec-v04-cell-task">Задача</th>
                 <th className="spec-v04-cell-deadline">Срок</th>
                 {onecFromMe ? <th>Исполнитель</th> : null}
@@ -302,7 +327,7 @@ export function TasksGridTab({
             <tbody>
               {!taskRows.length ? (
                 <tr>
-                  <td colSpan={onecToMe || onecFromMe ? 5 : 7} className="spec-v04-empty">
+                  <td colSpan={onecToMe || onecFromMe ? 4 : 6} className="spec-v04-empty">
                     {showOneCReconnect ? (
                       <OneCReconnectInline
                         errorHint={reconnectHint}
@@ -317,12 +342,9 @@ export function TasksGridTab({
               {taskRows.map((row) => (
                 <tr
                   key={row.id}
-                  className={effectiveId === row.id ? 'selected' : ''}
-                  onClick={() => setSelectedId(row.id)}
+                  className={selectedId === row.id ? 'selected' : ''}
+                  onClick={() => setSelectedId((current) => (current === row.id ? '' : row.id))}
                 >
-                  <td className="spec-v04-cell-check">
-                    <input type="checkbox" onClick={(e) => e.stopPropagation()} />
-                  </td>
                   <td className="spec-v04-cell-task">
                     <strong>{row.title}</strong>
                   </td>
@@ -359,62 +381,80 @@ export function TasksGridTab({
             </tbody>
           </table>
         </div>
-        </div>
-          ),
-          side: (
-        <>
         {createChannel ? (
-          <div className="spec-detail-card wp-card">
-            <h2>Создать задачу</h2>
-            <SpecPill tone="blue">{CREATE_TASK_CHANNEL_LABEL[createChannel]}</SpecPill>
-            <p className="spec-v04-muted">
-              Write-API для канала «{CREATE_TASK_CHANNEL_LABEL[createChannel]}» ещё не готов. Задача не
-              создана.
-            </p>
-            <button type="button" className="spec-btn-outline spec-btn-outline-block" onClick={() => setCreateChannel(null)}>
-              Закрыть
-            </button>
-          </div>
+          <aside className="orch-tasks-drawer" aria-label="Создать задачу">
+            <div className="spec-detail-card wp-card">
+              <header className="spec-detail-head">
+                <h2>Создать задачу</h2>
+                <button
+                  type="button"
+                  className="spec-detail-menu"
+                  aria-label="Закрыть"
+                  onClick={() => setCreateChannel(null)}
+                >
+                  ×
+                </button>
+              </header>
+              <SpecPill tone="blue">{CREATE_TASK_CHANNEL_LABEL[createChannel]}</SpecPill>
+              <p className="spec-v04-muted">
+                Write-API для канала «{CREATE_TASK_CHANNEL_LABEL[createChannel]}» ещё не готов. Задача не
+                создана.
+              </p>
+              <button type="button" className="spec-btn-outline spec-btn-outline-block" onClick={() => setCreateChannel(null)}>
+                Закрыть
+              </button>
+            </div>
+          </aside>
         ) : selected ? (
-          <div className="spec-detail-card wp-card">
-            <h2>{selected.title}</h2>
-            <SpecPill tone={selected.statusTone}>{selected.status}</SpecPill>
-            <p className="spec-v04-muted">{selected.process}</p>
-            <dl className="spec-detail-meta">
-              <div>
-                <dt>Автор</dt>
-                <dd>{selected.author || '—'}</dd>
-              </div>
-              <div>
-                <dt>Исполнитель</dt>
-                <dd>{selected.performer || selected.executor || '—'}</dd>
-              </div>
-              <div>
-                <dt>Создана</dt>
-                <dd>{formatDocflowCreated(selected.createdAt || '')}</dd>
-              </div>
-              <div>
-                <dt>Канал</dt>
-                <dd>{selected.channel === 'soap' ? 'SOAP' : selected.channel || '—'}</dd>
-              </div>
-              <div>
-                <dt>Источник</dt>
-                <dd>{selected.source}</dd>
-              </div>
-              <div>
-                <dt>Кто</dt>
-                <dd>{selected.who}</dd>
-              </div>
-            </dl>
-            <SpecProgress value={selected.progress} />
-            <button type="button" className="spec-btn-launch spec-btn-launch-block">
-              Отметить выполненной
-            </button>
-          </div>
-        ) : (
-          <div className="wp-card spec-v04-muted">Выберите задачу</div>
-        )}
-        </>
+          <aside className="orch-tasks-drawer" aria-label="Карточка задачи">
+            <div className="spec-detail-card wp-card">
+              <header className="spec-detail-head">
+                <h2>{selected.title}</h2>
+                <button
+                  type="button"
+                  className="spec-detail-menu"
+                  aria-label="Закрыть"
+                  onClick={() => setSelectedId('')}
+                >
+                  ×
+                </button>
+              </header>
+              <SpecPill tone={selected.statusTone}>{selected.status}</SpecPill>
+              <p className="spec-v04-muted">{selected.process}</p>
+              <dl className="spec-detail-meta">
+                <div>
+                  <dt>Автор</dt>
+                  <dd>{selected.author || '—'}</dd>
+                </div>
+                <div>
+                  <dt>Исполнитель</dt>
+                  <dd>{selected.performer || selected.executor || '—'}</dd>
+                </div>
+                <div>
+                  <dt>Создана</dt>
+                  <dd>{formatDocflowCreated(selected.createdAt || '')}</dd>
+                </div>
+                <div>
+                  <dt>Канал</dt>
+                  <dd>{selected.channel === 'soap' ? 'SOAP' : selected.channel || '—'}</dd>
+                </div>
+                <div>
+                  <dt>Источник</dt>
+                  <dd>{selected.source}</dd>
+                </div>
+                <div>
+                  <dt>Кто</dt>
+                  <dd>{selected.who}</dd>
+                </div>
+              </dl>
+              <SpecProgress value={selected.progress} />
+              <button type="button" className="spec-btn-launch spec-btn-launch-block">
+                Отметить выполненной
+              </button>
+            </div>
+          </aside>
+        ) : null}
+        </div>
           )
         }}
       />

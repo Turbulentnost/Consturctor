@@ -24,7 +24,7 @@
     "files": [
       "out/**/*"
     ],
-    "afterSign": "scripts/afterSign.cjs",
+    "afterPack": "scripts/afterSign.cjs",
     "win": {
       "icon": "build/icon.ico",
       "target": [
@@ -34,8 +34,8 @@
     },
     "extraResources": [
       {
-        "from": "build/icon.ico",
-        "to": "icon.ico"
+        "from": "../../desktop/.env",
+        "to": "desktop/.env"
       }
     ],
     "nsis": {

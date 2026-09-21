@@ -199,7 +199,7 @@ export function useDecisionCatalog(options: {
   const userId = (options.userId || specUserId || '').trim()
   const { fromDay, toDay } = options
   const generation = useGridRefreshGeneration()
-  const cacheKey = `decision-catalog-perm:${userId || 'anon'}:${fromDay}:${toDay}`
+  const cacheKey = `decision-catalog-perm-v2:${userId || 'anon'}:${fromDay}:${toDay}`
   const { agents, loading: agentsLoading, error: agentsError } = useWorkplaceData(
     userId ? { userId, fio: '' } : null
   )

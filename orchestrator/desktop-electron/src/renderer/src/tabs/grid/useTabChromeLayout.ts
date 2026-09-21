@@ -229,6 +229,12 @@ function mergeLayout(
   defaults: LayoutItem[],
   grid: { cols: number; maxRows: number }
 ): LayoutItem[] {
+  const defaultIds = new Set(defaults.map((item) => item.i))
+  // Dropped widgets (e.g. tasks side card) leave a hole if we keep the old main width.
+  const savedHadRemoved = Boolean(raw?.some((item) => item?.i && !defaultIds.has(item.i)))
+  if (savedHadRemoved) {
+    return defaults.map((item) => ({ ...item }))
+  }
   const list = raw ? [...raw] : []
   const byId = new Map(list.filter((item) => item?.i).map((item) => [item.i, item]))
   return defaults.map((base) => {

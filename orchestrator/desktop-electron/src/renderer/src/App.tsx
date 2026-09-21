@@ -751,10 +751,8 @@ function AppShell(): React.JSX.Element {
     const nextTitle = agentTitle || runs.entries[workflowId]?.title || 'ИИ-агент'
     if (/запуск начался|начат плановый запуск/i.test(title)) {
       setView({ kind: 'agentrun', workflowId, title: nextTitle, autoStart: false })
-      if (runId) {
-        runs.noteRunning(workflowId, nextTitle, runId)
-        void runs.attachHistoryFeed(workflowId)
-      }
+      runs.noteRunning(workflowId, nextTitle, runId)
+      void runs.attachHistoryFeed(workflowId)
       return
     }
     if (/запуск закончен/i.test(title) && runId) {

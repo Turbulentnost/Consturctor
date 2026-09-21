@@ -13,7 +13,7 @@
 | Совещания | live/partial | `ensureOutlookMeetings` |
 | База знаний | partial | `api.listWorkflows()` (регламенты Constructor) |
 | KPI «Сегодня» (5 плиток) | live/partial | `useTodayKpiData` → `useSpecV04Sources` (см. ниже) |
-| Сегодня → «Результаты агентов» | live | `useTodayAgentResults` → `GET /api/v1/workflows/files` (`listPlatformFiles`), фильтр: `source=agent`, день = «Период»; в списке имена агентов, просмотр в модалке (`api.fetchFilePreview`) и скачивание `api.download` |
+| Сегодня → «Результаты агентов» | live | `useTodayAgentResults` → файлы `GET /api/v1/workflows/files` + устные `ok`-прогоны за день без файла (`board` + `listAgentRuns`); в списке имена агентов, просмотр в модалке и скачивание |
 | Сегодня → «Подготовленные решения» | live | Только факт, что агенту потребовалось разрешение на операцию: `useDecisionCatalog` → `useTodayPreparedDecisions` (день = «Период»). HITL / вопрос / `WAITING_HUMAN` через `extractPermissionDecisions`. Итог прогона и файлы результата сюда не попадают. Доска грузится с `userId`. Пустой список без demo. |
 | Сегодня → «Проектные задачи» | live | Один кэш `turboTasks`: мне + сегодня/просроченные по проектам руководителя. Переключатель «Как руководитель» режет кэш без нового запроса. Колонки: задача / срок / статус. |
 | Сегодня → «Задачи из 1С» | live | `loadOrchestratorErpTasks` → `onec.docflow_tasks` (кэш SOAP). Колонки: содержимое / срок / статус. Переключатель «Задачи от меня» режет кэш по `role=author` / ФИО автора. |

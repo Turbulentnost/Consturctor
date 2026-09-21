@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ if str(PYBRIDGE) not in sys.path:
 
 from agent_sidecar import (  # noqa: E402
     _persist_run_outputs,
+    _persist_work_result_if_needed,
     _stamp_run_event,
     needs_confirmation,
     OUTLOOK_MEETING_RULE,
@@ -537,6 +539,27 @@ def test_persist_run_outputs_sweeps_cwd_at_end(tmp_path: Path, monkeypatch) -> N
     )
     assert uploaded == [str(report.resolve())]
     assert api.run_outputs == [("wf-meet", "run-1", [str(report.resolve())])]
+
+
+def test_persist_run_outputs_skips_old_leftovers(tmp_path: Path, monkeypatch) -> None:
+    leftover = tmp_path / "porucheniya_td.xlsx"
+    leftover.write_bytes(b"old")
+    older = leftover.stat().st_mtime - 20 * 3600
+    os.utime(leftover, (older, older))
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path / "missing")
+    api = _Api(tmp_path)
+    uploaded = _persist_run_outputs(api, "wf-cal", str(tmp_path), run_id="run-1")
+    assert uploaded == []
+    assert api.run_outputs == []
+
+
+def test_persist_work_result_writes_oral_md(tmp_path: Path) -> None:
+    api = _Api(tmp_path)
+    answer = "## WORK_RESULT\nУстный список.\n\nTESTS: PASS\n"
+    written = _persist_work_result_if_needed(api, "wf-cal", str(tmp_path), answer, run_id="run-2")
+    assert written
+    assert Path(written[0]).name.startswith("Результат_")
+    assert api.run_outputs
 
 
 def test_persist_run_outputs_skips_read_tools(tmp_path: Path, monkeypatch) -> None:

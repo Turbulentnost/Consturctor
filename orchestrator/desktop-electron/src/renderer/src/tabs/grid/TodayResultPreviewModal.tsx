@@ -142,7 +142,13 @@ function PreviewBody({
 
   }
 
-  if (preview.kind === 'table' || preview.kind === 'embed' || preview.kind === 'workbook') {
+  if (preview.kind === 'workbook') {
+
+    return <ResultPreviewContent preview={preview} attachmentName={file.name} />
+
+  }
+
+  if (preview.kind === 'table' || preview.kind === 'embed') {
 
     return (
 
@@ -280,7 +286,9 @@ export function TodayResultPreviewModal({
 
         <div
 
-          className="modal-card today-result-preview-dialog today-result-preview-dialog--doc"
+          className={`modal-card today-result-preview-dialog today-result-preview-dialog--doc${
+            bodyKind === 'workbook' || bodyKind === 'table' ? ' today-result-preview-dialog--wide' : ''
+          }`}
 
           role="dialog"
 

@@ -17,9 +17,21 @@ function headerKey(header: string): string {
   const value = header.toLowerCase()
   if (/статус|status|состояние/.test(value)) return 'status'
   if (/риск|эскалац/.test(value)) return 'risk'
-  if (/поручен|тема|описание|результат|комментар/.test(value)) return 'wide'
+  if (/поручен|тема|описание|результат|комментар|ссылк/.test(value)) return 'wide'
   if (/id|код|номер/.test(value)) return 'id'
+  if (/дата|срок/.test(value)) return 'date'
   return 'text'
+}
+
+function flattenCellText(text: string): string {
+  const value = String(text ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .trim()
+  if (!value.includes('\n')) return value.replace(/\s+/g, ' ').trim()
+  const parts = value.split('\n').map((part) => part.trim())
+  if (parts.length >= 2 && parts.every((part) => part.length <= 1)) return parts.join('')
+  return parts.filter(Boolean).join(' ')
 }
 
 function tokenClass(token: string): string {
@@ -38,7 +50,7 @@ function tokenLabel(token: string): string {
 }
 
 function CellText({ text }: { text: string }): React.JSX.Element {
-  const value = String(text ?? '').trim()
+  const value = flattenCellText(text)
   if (!value) return <span className="today-result-empty">—</span>
   const parts = value.split(TOKEN_RE)
   return (
@@ -71,13 +83,18 @@ function ruCount(count: number, one: string, few: string, many: string): string 
 function normalizeSheet(sheet: WorkbookSheet): WorkbookSheet {
   return {
     name: String(sheet?.name || 'Лист'),
-    title: String(sheet?.title || ''),
-    subtitle: String(sheet?.subtitle || ''),
-    kpis: Array.isArray(sheet?.kpis) ? sheet.kpis : [],
-    notes: Array.isArray(sheet?.notes) ? sheet.notes.map((item) => String(item || '')) : [],
-    headers: Array.isArray(sheet?.headers) ? sheet.headers.map((item) => String(item || '')) : [],
+    title: flattenCellText(String(sheet?.title || '')),
+    subtitle: flattenCellText(String(sheet?.subtitle || '')),
+    kpis: Array.isArray(sheet?.kpis)
+      ? sheet.kpis.map((kpi) => ({
+          label: flattenCellText(String(kpi?.label || '')),
+          value: flattenCellText(String(kpi?.value || ''))
+        }))
+      : [],
+    notes: Array.isArray(sheet?.notes) ? sheet.notes.map((item) => flattenCellText(String(item || ''))) : [],
+    headers: Array.isArray(sheet?.headers) ? sheet.headers.map((item) => flattenCellText(String(item || ''))) : [],
     rows: Array.isArray(sheet?.rows)
-      ? sheet.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? '')) : []))
+      ? sheet.rows.map((row) => (Array.isArray(row) ? row.map((cell) => flattenCellText(String(cell ?? ''))) : []))
       : []
   }
 }
@@ -113,7 +130,9 @@ function SheetView({ sheet }: { sheet: WorkbookSheet }): React.JSX.Element {
             <thead>
               <tr>
                 {sheet.headers.map((header, index) => (
-                  <th key={`${index}:${header}`}>{header || `Колонка ${index + 1}`}</th>
+                  <th key={`${index}:${header}`} data-col={keys[index] || 'text'}>
+                    {header || `Колонка ${index + 1}`}
+                  </th>
                 ))}
               </tr>
             </thead>

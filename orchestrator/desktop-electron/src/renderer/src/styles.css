@@ -8739,6 +8739,29 @@ button.feed-tool-head:hover {
   display: flex;
   align-items: center;
   gap: 12px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.wp-decisions-kpi-card:hover {
+  border-color: rgba(21, 101, 192, 0.35);
+}
+.wp-decisions-kpi-card.is-active {
+  border-color: #1565c0;
+  box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.12);
+}
+.wp-decisions-kpi-card small {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--content-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 .wp-decisions-kpi-card p {
   margin: 0;
@@ -9461,6 +9484,23 @@ button.feed-tool-head:hover {
   font-size: 12px;
   color: var(--content-muted);
   font-weight: 600;
+}
+.wf-run-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 160px;
+  max-width: 280px;
+  margin-top: 4px;
+}
+.wf-run-progress .wf-progress {
+  flex: 1 1 auto;
+}
+.wf-run-progress-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--content-muted);
 }
 .wp-today-head {
   display: flex;

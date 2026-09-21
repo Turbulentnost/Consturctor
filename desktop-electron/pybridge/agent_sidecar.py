@@ -1786,6 +1786,29 @@ def _upload_knowledge_files(
         return False
 
 
+_OUTPUT_SWEEP_MAX_AGE_SEC = 12 * 3600
+
+
+def _recent_output_paths(paths: list[Path]) -> list[Path]:
+    """Keep documents written during this run, not leftover clone files."""
+    cutoff = time.time() - _OUTPUT_SWEEP_MAX_AGE_SEC
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            resolved = path.resolve()
+            key = str(resolved)
+            if key in seen or not resolved.is_file():
+                continue
+            if resolved.stat().st_mtime < cutoff:
+                continue
+            seen.add(key)
+            out.append(resolved)
+        except OSError:
+            continue
+    return out
+
+
 def _upload_run_outputs(
     api: ApiClient,
     workflow_id: str,
@@ -1833,9 +1856,11 @@ def _persist_run_outputs(
     ):
         should_sweep = True
     if should_sweep:
-        found.extend(collect_workspace_output_files(workflow_id))
+        swept: list[Path] = []
+        swept.extend(collect_workspace_output_files(workflow_id))
         cwd = Path(run_cwd) if run_cwd else None
-        found.extend(collect_output_files_from_dir(cwd))
+        swept.extend(collect_output_files_from_dir(cwd))
+        found.extend(_recent_output_paths(swept))
     paths = [str(path) for path in found if path.is_file()]
     if not paths:
         return []
@@ -1939,8 +1964,10 @@ def _persist_work_result_if_needed(
     run_id: str = "",
     existing: list[str] | None = None,
 ) -> list[str]:
-    """If the run produced WORK_RESULT but no file, store the oral result for Files."""
-    if existing or api is None or not (workflow_id or "").strip():
+    """If the run produced WORK_RESULT but no result file, store the oral result."""
+    if api is None or not (workflow_id or "").strip():
+        return []
+    if any(Path(item).name.lower().startswith(("результат", "result_")) for item in existing or []):
         return []
     if not _text_has_finished_work_result(answer):
         return []
@@ -3053,14 +3080,14 @@ class Sidecar:
                     answer,
                     run_id=str(run_ref or active.run_id).strip(),
                 )
-            if not output_paths:
-                _persist_work_result_if_needed(
-                    self._api,
-                    workflow_id,
-                    run_cwd,
-                    answer,
-                    run_id=str(run_ref or active.run_id).strip(),
-                )
+            _persist_work_result_if_needed(
+                self._api,
+                workflow_id,
+                run_cwd,
+                answer,
+                run_id=str(run_ref or active.run_id).strip(),
+                existing=output_paths,
+            )
         except Exception as exc:  # noqa: BLE001
             log("run output sweep failed: " + repr(exc))
         try:

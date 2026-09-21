@@ -497,7 +497,10 @@ export function TodayGridTab({
                       {item.subtitle ? (
                         <p className="today-decision-agent-action spec-v04-muted">{item.subtitle}</p>
                       ) : null}
-                      <SpecPill tone={item.tagTone}>{item.tag}</SpecPill>
+                      <div className="today-decision-pills">
+                        <SpecPill tone={item.statusTone}>{item.status}</SpecPill>
+                        <SpecPill tone={item.tagTone}>{item.tag}</SpecPill>
+                      </div>
                     </div>
                   </li>
                 )
