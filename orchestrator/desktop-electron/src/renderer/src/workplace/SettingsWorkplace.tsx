@@ -7,7 +7,8 @@ import {
   TODAY_WIDGET_IDS,
   TODAY_WIDGET_LABELS,
   type TodayWidgetId,
-  writeTodayWidgetVisibility
+  writeTodayWidgetVisibility,
+  TODAY_WIDGET_VISIBILITY_EVENT
 } from '../tabs/grid/todayWidgetSettings'
 import { OneCSessionProfileSection } from './OneCSessionProfileSection'
 
@@ -352,6 +353,16 @@ export function SettingsWorkplace({
   }, [user.id])
 
   useEffect(() => {
+    const syncWidgets = (): void => {
+      const widgets = readTodayWidgetVisibility(user.id)
+      setWidgetVisibility(widgets)
+      setWidgetDraft(widgets)
+    }
+    window.addEventListener(TODAY_WIDGET_VISIBILITY_EVENT, syncWidgets)
+    return () => window.removeEventListener(TODAY_WIDGET_VISIBILITY_EVENT, syncWidgets)
+  }, [user.id])
+
+  useEffect(() => {
     void api.unreadNotificationCount().then(setUnread).catch(() => setUnread(0))
   }, [])
 
@@ -426,6 +437,10 @@ export function SettingsWorkplace({
     setWidgetDraft(defaultTodayWidgetVisibility())
   }
 
+  function toggleWidgetDraft(id: TodayWidgetId): void {
+    setWidgetDraft((prev) => ({ ...prev, [id]: prev[id] === false }))
+  }
+
   function openNotificationCenter(): void {
     window.dispatchEvent(new CustomEvent('orchestrator:open-notifications'))
   }
@@ -453,6 +468,7 @@ export function SettingsWorkplace({
               <p className="set-sub">Профиль, обновления и рабочие файлы</p>
             </div>
           </header>
+          <div className="set-general-grid">
           <section className="set-card">
             <h2>Профиль</h2>
             <p className="set-muted">
@@ -482,22 +498,22 @@ export function SettingsWorkplace({
           <section className="set-card set-widgets-card">
             <h2>Виджеты вкладки «Сегодня»</h2>
             <p className="set-muted">Выберите, какие блоки показывать на главной рабочей вкладке.</p>
-            <ul className="set-widget-list">
-              {TODAY_WIDGET_IDS.map((id) => (
-                <li key={id}>
-                  <label className="set-widget-row">
-                    <input
-                      type="checkbox"
-                      checked={widgetDraft[id] !== false}
-                      onChange={(event) =>
-                        setWidgetDraft((prev) => ({ ...prev, [id]: event.target.checked }))
-                      }
-                    />
-                    <span>{TODAY_WIDGET_LABELS[id]}</span>
-                  </label>
-                </li>
-              ))}
-            </ul>
+            <div className="set-widget-grid-9" role="group" aria-label="Видимость виджетов">
+              {TODAY_WIDGET_IDS.map((id) => {
+                const on = widgetDraft[id] !== false
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`set-widget-toggle${on ? ' is-on' : ''}`}
+                    aria-pressed={on}
+                    onClick={() => toggleWidgetDraft(id)}
+                  >
+                    {TODAY_WIDGET_LABELS[id]}
+                  </button>
+                )
+              })}
+            </div>
             <div className="wp-actions set-widget-actions">
               <button className="btn-primary" type="button" onClick={saveWidgetSettings}>
                 Сохранить виджеты
@@ -507,6 +523,7 @@ export function SettingsWorkplace({
               </button>
             </div>
           </section>
+          </div>
         </div>
       ) : null}
 
