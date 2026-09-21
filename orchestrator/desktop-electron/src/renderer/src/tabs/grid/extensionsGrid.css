@@ -1260,17 +1260,7 @@
 }
 
 .nav-item-extensions-hub {
-  margin-top: 6px;
   font-weight: 600;
-}
-
-.nav-item-extension-module {
-  border-left: 3px solid rgba(21, 101, 192, 0.45);
-  padding-left: 5px;
-}
-
-.sidebar.light .nav-item-extension-module {
-  border-left-color: rgba(21, 101, 192, 0.35);
 }
 
 /* —— Библиотека агентов: две панели, без конфликта с wp-card / 8×8 сеткой —— */
