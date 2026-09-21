@@ -309,7 +309,28 @@ CATALOG: list[dict[str, Any]] = [
                 formula_kind="violation_bands",
                 formula_json=dict(VIOLATION_BANDS),
                 formula_human=VIOLATION_HUMAN,
-                sources=[dict(UNKNOWN_VIOLATION_FACT)],
+                sources=[
+                    {
+                        "role": "fact",
+                        "kind": "onec",
+                        "title": "План/факт тем совещаний 1С",
+                        "detail": (
+                            "Отчёт круга управления: открытые темы "
+                            "Catalog_ТД_ТемыСовещаний.ТемаКругаУправления. "
+                            "Факт — протоколы Document_ТД_Протокол за период. "
+                            "План — расписание карточки, если дни недели совпадают с фактом; "
+                            "иначе регулярность протоколов за месяц. "
+                            "Руководитель темы = Донцова."
+                        ),
+                        "update_rule": "Раз в расчётный месяц.",
+                        "extra_json": {
+                            "module": "kpi.sources.onec_meetings",
+                            "leader": "Донцова Анна Егоровна",
+                            "theme_entity": "Catalog_ТД_ТемыСовещаний",
+                            "fact_entity": "Document_ТД_Протокол",
+                        },
+                    }
+                ],
             ),
             _metric(
                 mid="plnpo010-assistant-unplanned",
