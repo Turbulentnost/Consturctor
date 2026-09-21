@@ -13,6 +13,7 @@ import {
   fetchOutlookMailForDay,
   fetchOutlookMailForRange,
   outlookMailWeekRange,
+  resolveOutlookMailFetchRange,
   skipOutlookCom
 } from '../utils/outlookMail'
 
@@ -271,14 +272,21 @@ export function pickMailRows(input: {
   imapRows: SpecMailRow[]
   comRows: SpecMailRow[]
 }): SpecMailRow[] {
-  if (input.primary === 'imap' && input.imapRows.length) return input.imapRows
   if (input.comRows.length) return input.comRows
-  if (input.imapUsable && input.imapRows.length) return input.imapRows
+  if (input.imapRows.length) return input.imapRows
+  if (input.primary === 'imap' && input.imapUsable) return []
   return []
 }
 
-export async function loadOrchestratorMail(outlookMailbox: string): Promise<OrchestratorMailLoad> {
-  const range = outlookMailWeekRange()
+export async function loadOrchestratorMail(
+  outlookMailbox: string,
+  period?: { dateFrom: string; dateTo: string }
+): Promise<OrchestratorMailLoad> {
+  const range = resolveOutlookMailFetchRange(
+    period?.dateFrom || '',
+    period?.dateTo || '',
+    outlookMailWeekRange()
+  )
   const [probe, comWeek, imapWeek] = await Promise.all([
     probeMailToday(),
     skipOutlookCom()
@@ -288,8 +296,8 @@ export async function loadOrchestratorMail(outlookMailbox: string): Promise<Orch
           error: 'Outlook COM отключён (VITE_SKIP_OUTLOOK_COM)',
           source: ''
         })
-      : fetchOutlookMailForRange(range.dateFrom, range.dateTo, { folder: 'All', maxResults: 50 }),
-    fetchImapSearch({ since: range.dateFrom, before: nextDayKey(range.dateTo), limit: 50 })
+      : fetchOutlookMailForRange(range.dateFrom, range.dateTo, { folder: 'All', maxResults: 120 }),
+    fetchImapSearch({ since: range.dateFrom, before: nextDayKey(range.dateTo), limit: 120 })
   ])
 
   const comError = uniqueMailErrors(probe.comError, comWeek.ok ? '' : comWeek.error || 'Outlook недоступен')
@@ -348,14 +356,20 @@ export function mailListEmptyHint(input: {
   imapPrimary: boolean
   mailbox: string
   imapStatus?: string
+  periodFrom?: string
+  periodTo?: string
 }): string {
   if (input.loading) return 'Загружаем письма…'
   const status = input.imapStatus?.trim() || ''
+  const period =
+    input.periodFrom && input.periodTo
+      ? ` за период ${input.periodFrom} — ${input.periodTo}`
+      : ' за выбранный период'
   if (input.imapPrimary) {
-    return status ? `Нет писем в IMAP. ${status}` : 'Нет писем в IMAP.'
+    return status ? `Нет писем в IMAP${period}. ${status}` : `Нет писем в IMAP${period}.`
   }
   const box = input.mailbox ? ` Ящик: ${input.mailbox}.` : ''
   return status
-    ? `Нет писем за неделю (Outlook COM).${box} ${status}`
-    : `Нет писем за неделю (Outlook COM).${box}`.trim()
+    ? `Нет писем${period} (Outlook COM).${box} ${status}`
+    : `Нет писем${period} (Outlook COM).${box}`.trim()
 }

@@ -10,7 +10,9 @@ import {
   SpecQuickActions,
   SpecTableTabs
 } from '../../workplace/specV04Components'
-import { type SpecProcessRow } from '../../workplace/specV04DemoData'
+import { type SpecProcessRow, type SpecTaskRow } from '../../workplace/specV04DemoData'
+import { WorkplaceProgressSection } from '../../workplace/WorkplaceProgressSection'
+import { taskActionContextFromProcessRow } from '../../workplace/taskSourceKind'
 import {
   buildProcessTiles,
   countProcessRowsByTab,
@@ -20,6 +22,8 @@ import {
 } from '../../workplace/useSpecV04Data'
 import { isDeadProcessSource } from '../../workplace/tileFilters'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
+import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions'
 import { applyMeetingDoneToRow, isMeetingRowId } from '../../workplace/meetingCompletion'
 import { useMeetingCompletion } from '../../workplace/useMeetingCompletion'
@@ -46,12 +50,18 @@ const PROCESS_TABS = [
 
 function ProcessDetail({
   row,
+  user,
+  linkedTask,
+  linkedProjectUrl,
   onOpen,
   onOpenRun,
   meetingDone,
   onToggleMeetingDone
 }: {
   row: SpecProcessRow
+  user: UserProfile
+  linkedTask?: SpecTaskRow | null
+  linkedProjectUrl?: string
   onOpen?: (workflowId: string, title: string) => void
   onOpenRun?: (workflowId: string, title: string, runId?: string) => void
   meetingDone?: boolean
@@ -149,7 +159,13 @@ function ProcessDetail({
               <dd className={row.deadlineUrgent ? 'spec-deadline-urgent' : undefined}>{row.deadline}</dd>
             </div>
           </dl>
-          <SpecProgress value={row.progress} />
+          <WorkplaceProgressSection
+            user={user}
+            rowId={row.id}
+            baseProgress={row.progress}
+            actionContext={taskActionContextFromProcessRow(row, linkedTask)}
+            projectUrl={linkedProjectUrl}
+          />
         </>
       ) : null}
       {detailTab === 'tasks' ? (
@@ -248,6 +264,7 @@ export function ProcessesGridTab({
   navProcessTab?: string | null
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
+  const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const meetingCompletion = useMeetingCompletion()
   const [tab, setTab] = useState(navProcessTab || 'all')
   const [query, setQuery] = useState('')
@@ -263,6 +280,7 @@ export function ProcessesGridTab({
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
     return filterProcessRowsByTab(allRows, tab).filter((row) => {
+      if (!deadlineInWorkplacePeriod(row.deadline, periodFrom, periodTo)) return false
       if (barType && row.type !== barType) return false
       if (barStatus && row.status !== barStatus) return false
       if (barSource && row.source !== barSource) return false
@@ -272,7 +290,7 @@ export function ProcessesGridTab({
       }
       return true
     })
-  }, [allRows, tab, query, barType, barStatus, barSource, barProject])
+  }, [allRows, tab, query, barType, barStatus, barSource, barProject, periodFrom, periodTo])
   const displayRows = useMemo(
     () =>
       rows.map((row) =>
@@ -286,6 +304,16 @@ export function ProcessesGridTab({
   const [selectedId, setSelectedId] = useState('')
   const effectiveId = selectedId || displayRows[0]?.id || ''
   const selected = displayRows.find((item) => item.id === effectiveId)
+  const linkedErpTask = useMemo(() => {
+    if (!selected?.id.startsWith('erp:')) return null
+    const ref = selected.id.slice(4)
+    return data.tasks.find((task) => task.id === ref) ?? null
+  }, [selected?.id, data.tasks])
+  const linkedTurboProject = useMemo(() => {
+    if (!selected?.id.startsWith('proj:')) return null
+    const projectId = selected.id.slice(5)
+    return data.projects.find((project) => project.id === projectId) ?? null
+  }, [selected?.id, data.projects])
 
   const tabs = useMemo(
     () =>
@@ -481,6 +509,9 @@ export function ProcessesGridTab({
         side: selected ? (
           <ProcessDetail
             row={selected}
+            user={user}
+            linkedTask={linkedErpTask}
+            linkedProjectUrl={linkedTurboProject?.url}
             onOpen={onOpen}
             onOpenRun={onOpenRun}
             meetingDone={isMeetingRowId(selected.id) ? meetingCompletion.isDone(selected.id) : undefined}

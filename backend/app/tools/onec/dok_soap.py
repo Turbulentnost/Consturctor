@@ -700,6 +700,44 @@ def retrieve_tasks(config: DokConfig, task_ids: list[str], *, timeout: float) ->
     return parse_tasks(root)
 
 
+_ACTION_RESULT_CODES: dict[str, str] = {
+    "execute": "Executed",
+    "acquaint": "Acquainted",
+    "reject": "Rejected",
+    "consider": "Considered",
+    "approve": "Approved",
+}
+
+
+def perform_business_process_task(
+    config: DokConfig,
+    task_id: str,
+    *,
+    action: str,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Best-effort выполнение шага задачи ДО через DMPerformBusinessProcessTaskRequest."""
+    task_id = str(task_id or "").strip()
+    if not task_id:
+        raise RuntimeError("Не указан task_id")
+    code = _ACTION_RESULT_CODES.get(str(action or "").strip().lower())
+    if not code:
+        raise RuntimeError(f"Неизвестное действие: {action}")
+    task_xml = (
+        "<dm:task>"
+        f"<dm:id>{xml_escape(task_id)}</dm:id>"
+        "<dm:type>DMBusinessProcessTask</dm:type>"
+        "</dm:task>"
+        f"<dm:resultCode>{xml_escape(code)}</dm:resultCode>"
+    )
+    request = f'<dm:request xsi:type="dm:DMPerformBusinessProcessTaskRequest">{task_xml}</dm:request>'
+    root = execute_dm(config, request, timeout=timeout or float(config.timeout))
+    fault = root.find(".//{http://schemas.xmlsoap.org/soap/envelope/}Fault")
+    if fault is not None:
+        raise RuntimeError(xml_text(fault, "faultstring") or "SOAP Fault")
+    return {"task_id": task_id, "action": action, "result_code": code, "ok": True}
+
+
 ROLE_EXECUTOR = "executor"
 ROLE_AUTHOR = "author"
 ROLE_BOTH = "both"

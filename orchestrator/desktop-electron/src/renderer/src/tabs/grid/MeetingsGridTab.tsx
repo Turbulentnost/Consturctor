@@ -15,6 +15,8 @@ import { addDays, mondayOf, type CalendarView } from '../../utils/calendar'
 import { countMeetingTiles, meetingMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import { MeetingsCalendar } from '../../components/agents/MeetingsCalendar'
 import { GridFilterBar } from './gridFilters'
+import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
+import { isoTimestampInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 
 function meetingField(value: string | undefined): string {
   const text = (value || '').trim()
@@ -76,6 +78,7 @@ function MeetingDetailCard({ meeting }: { meeting: MeetingEvent }): React.JSX.El
 
 export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Element {
   const fio = erpActorFio(user)
+  const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -108,6 +111,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
     const q = query.trim().toLowerCase()
     const now = new Date()
     return meetings.filter((item) => {
+      if (!isoTimestampInWorkplacePeriod(item.start, periodFrom, periodTo)) return false
       if (!meetingMatchesTile(item, tileFilter, now)) return false
       if (barStatus === 'past' && !meetingMatchesTile(item, 'done', now)) return false
       if (barStatus === 'today' && !meetingMatchesTile(item, 'today', now)) return false
@@ -117,7 +121,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
       }
       return true
     })
-  }, [meetings, tileFilter, query, barStatus])
+  }, [meetings, tileFilter, query, barStatus, periodFrom, periodTo])
 
   const selected = visibleMeetings.find((item) => item.id === (selectedId || visibleMeetings[0]?.id))
 

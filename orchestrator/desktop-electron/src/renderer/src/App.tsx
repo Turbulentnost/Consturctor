@@ -50,6 +50,7 @@ import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
+import { WorkplacePeriodProvider } from './workplace/workplacePeriod'
 import { clearGridCacheForUser } from './workplace/gridDataCache'
 import { ORCH_OPEN_TAB, type WorkplaceTabIntent } from './workplace/workplaceNav'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
@@ -993,6 +994,7 @@ function AppShell(): React.JSX.Element {
   return (
     <ExtensionsProvider user={activeUser}>
       <GridDataRefreshProvider userId={activeUser.id}>
+        <WorkplacePeriodProvider>
         <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
           <DebugSourcesLifetime />
           <WithExtensionNav>
@@ -1009,7 +1011,11 @@ function AppShell(): React.JSX.Element {
                     ? 'orch-grid-kpi'
                     : workplaceShellKey === 'assignments_registry'
                       ? 'orch-grid-registry'
-                      : ''
+                      : workplaceShellKey === 'history'
+                        ? 'orch-grid-history'
+                        : workplaceShellKey === 'extensions'
+                          ? 'orch-grid-extensions'
+                          : ''
               }
               user={activeUser}
               avatarUrl={avatarUrl}
@@ -1088,6 +1094,7 @@ function AppShell(): React.JSX.Element {
             }
           </WithExtensionNav>
         </SpecV04SourcesProvider>
+        </WorkplacePeriodProvider>
       </GridDataRefreshProvider>
     </ExtensionsProvider>
   )

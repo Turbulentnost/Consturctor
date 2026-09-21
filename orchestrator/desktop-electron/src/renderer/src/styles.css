@@ -12194,6 +12194,82 @@ button.spec-v04-tile {
   color: var(--content-muted);
   min-width: 32px;
 }
+.task-progress-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+.task-progress-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.task-progress-editor-label {
+  font-size: 12px;
+  color: var(--content-muted);
+}
+.task-progress-editor-value {
+  font-size: 12px;
+  font-weight: 600;
+}
+.task-progress-slider {
+  width: 100%;
+  accent-color: #08745f;
+  cursor: pointer;
+}
+.task-progress-slider-track {
+  height: 8px;
+}
+.task-progress-save {
+  margin-top: 4px;
+}
+.workplace-progress-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.task-source-actions {
+  border-top: 1px solid rgba(16, 20, 26, 0.08);
+  padding-top: 12px;
+}
+.task-source-actions-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.task-source-actions-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.task-source-actions-grid .spec-btn-launch,
+.task-source-actions-grid .spec-btn-outline {
+  flex: 1 1 auto;
+  min-width: 140px;
+}
+.task-source-btn-danger {
+  color: #c62828;
+  border-color: rgba(198, 40, 40, 0.35);
+}
+.task-source-feedback {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--content-muted);
+}
+.task-source-feedback.is-error {
+  color: #c62828;
+}
+.project-task-detail {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(16, 20, 26, 0.12);
+}
+.project-task-detail h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
 .spec-deadline-urgent {
   color: #c62828;
   font-weight: 600;

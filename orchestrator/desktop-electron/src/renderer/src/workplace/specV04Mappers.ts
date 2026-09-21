@@ -79,12 +79,13 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
   } else if (taskSource.includes('odata')) {
     sourceLabel = '1С ERP (OData)'
   }
+  const step = String(task.step || task.approval || '').trim()
   return {
     id: refKey || number || title,
     title,
     source: sourceLabel,
     sourceTone: isDocflow ? 'green' : 'blue',
-    process: String(task.approval || task.comment || '—'),
+    process: String(task.comment || step || task.approval || '—'),
     project: '—',
     deadline: formatTaskDeadline(due),
     urgent: late,
@@ -98,7 +99,12 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
     author: author || undefined,
     performer: performer || undefined,
     channel: channel || (isDocflow ? 'soap' : undefined),
-    role: role || undefined
+    role: role || undefined,
+    sourceKind: isDocflow ? 'docflow' : 'erp',
+    refKey: refKey || undefined,
+    taskNumber: number || undefined,
+    step: step || undefined,
+    targetId: String(task.target_id || task.targetId || '').trim() || undefined
   }
 }
 
@@ -334,6 +340,7 @@ export function turboProjectTaskToSpecTaskRow(
 ): SpecTaskRow {
   const mini = turboProjectTaskToTodayRow(task, projectId, actorFio)
   const delayDays = Number(task.delay_days ?? 0)
+  const uid = String(task.uid ?? task.id ?? mini.id).trim()
   return {
     id: `turbo:${projectId}:${mini.id}`,
     title: mini.title,
@@ -350,7 +357,10 @@ export function turboProjectTaskToSpecTaskRow(
     executor: actorFio,
     who: mini.assignee,
     progress: turboTaskProgressDisplay(task),
-    turboScope
+    turboScope,
+    sourceKind: 'turbo',
+    projectId,
+    taskUid: uid
   }
 }
 
@@ -382,7 +392,8 @@ export function turboProjectTaskToTodayRow(
   const outline = String(task.outline_number ?? task.wbs ?? '').trim()
   const name = String(task.name || 'Задача').trim()
   const title = outline && !name.includes(outline) ? `${outline} · ${name}` : name
-  const id = String(task.uid ?? task.id ?? `${projectId}:${name}`)
+  const uid = String(task.uid ?? task.id ?? `${projectId}:${name}`).trim()
+  const id = uid
   return {
     id,
     title,
@@ -391,7 +402,9 @@ export function turboProjectTaskToTodayRow(
     statusTone: toneForStatus(status),
     assignee: label,
     assigneeTone: tone,
-    progress: turboTaskProgressDisplay(task)
+    progress: turboTaskProgressDisplay(task),
+    projectId,
+    taskUid: uid
   }
 }
 

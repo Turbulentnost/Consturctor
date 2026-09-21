@@ -33,17 +33,13 @@
   justify-content: flex-start;
 }
 
-.orch-grid-registry .tab-chrome-filters-bar .registry-date-filters .spec-filter-input {
-  width: auto;
-  flex: 0 0 auto;
-  max-width: none;
+.orch-grid-registry .tab-chrome-filters-bar .registry-date-field {
+  height: 28px;
 }
 
-.orch-grid-registry .tab-chrome-filters-bar .registry-date-input {
-  width: 132px;
-  min-width: 132px;
-  max-width: 132px;
-  flex-shrink: 0;
+.orch-grid-registry .tab-chrome-filters-bar .kpi-day-picker-btn {
+  min-width: 88px;
+  font-size: 12px;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-date-filters .today-link-btn {

@@ -512,7 +512,7 @@ export async function fetchOrchestratorTaskSources(
   user: UserProfile,
   erpFio: string,
   outlookMailbox: string,
-  opts?: { forceRefresh?: boolean }
+  opts?: { forceRefresh?: boolean; mailPeriod?: { dateFrom: string; dateTo: string } }
 ): Promise<OrchestratorTaskSourcesBundle> {
   const [erp, turbo] = await Promise.all([
     loadOrchestratorErpTasks(user, erpFio, opts),
@@ -524,6 +524,6 @@ export async function fetchOrchestratorTaskSources(
     turbo.projects,
     turbo.turboNoSession
   )
-  const mail = await loadOrchestratorMail(outlookMailbox)
+  const mail = await loadOrchestratorMail(outlookMailbox, opts?.mailPeriod)
   return { erp, turbo, turboTasks, mail }
 }

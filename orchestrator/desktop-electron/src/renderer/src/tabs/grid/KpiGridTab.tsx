@@ -3,11 +3,10 @@ import { api } from '../../api/client'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_KPI_LAYOUT } from './useTabChromeLayout'
 import type { UserProfile } from '../../api/types'
-import { KpiRangePicker, type KpiRangeShortcut } from '../../pages/KpiRangePicker'
-import { SpecFilters, SpecPanel, SpecPill, SpecProgress } from '../../workplace/specV04Components'
+import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
+import { SpecPanel, SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { SpecIconSearch } from '../../workplace/specV04Icons'
-import { currentWeekRange, rollingKpiRange } from '../../workplace/kpiPeriod'
 import { setKpiExportSnapshot } from '../../workplace/kpiExportSnapshot'
 import {
   buildKpiDailySyncPayload,
@@ -23,8 +22,6 @@ import { KpiEmployeePanel } from './KpiEmployeePanel'
 import { KpiPeriodDynamicsChart } from './KpiPeriodDynamicsChart'
 import { KpiProblemZonesTable } from './KpiProblemZonesTable'
 import './kpiGrid.css'
-
-const WEEK = currentWeekRange()
 
 const LOADING_TILES: SpecSummaryTile[] = [
   { id: 'tasks', label: 'Выполнение задач', value: '—', tone: 'orange' },
@@ -52,9 +49,7 @@ export function KpiGridTab(_props: {
   onOpenProcesses?: () => void
   onOpenDecisions?: () => void
 }): React.JSX.Element {
-  const [from, setFrom] = useState(WEEK.from)
-  const [to, setTo] = useState(WEEK.to)
-  const [shortcut, setShortcut] = useState<KpiRangeShortcut | null>(null)
+  const { from, to } = useWorkplacePeriod()
   const [agentQuery, setAgentQuery] = useState('')
   const [tileFilter, setTileFilter] = useState('all')
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
@@ -105,19 +100,6 @@ export function KpiGridTab(_props: {
       })
   }, [from, to, loading, periodSources, reload])
 
-  const applyRange = (next: { from: string; to: string }): void => {
-    setFrom(next.from)
-    setTo(next.to)
-    setShortcut(null)
-  }
-
-  const applyShortcut = (days: KpiRangeShortcut): void => {
-    const next = rollingKpiRange(days)
-    setFrom(next.from)
-    setTo(next.to)
-    setShortcut(days)
-  }
-
   return (
     <StandardTabChrome
       tabId="kpi"
@@ -136,9 +118,6 @@ export function KpiGridTab(_props: {
       widgets={{
         filters: (
         <>
-        <SpecFilters layout="row">
-          <KpiRangePicker from={from} to={to} shortcut={shortcut} onApply={applyRange} onShortcut={applyShortcut} />
-        </SpecFilters>
         {!tiles.length && loading ? (
           <p className="kpi-dash-status-banner">Загружаем показатели…</p>
         ) : null}

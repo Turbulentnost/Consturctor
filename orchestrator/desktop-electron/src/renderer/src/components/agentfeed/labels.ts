@@ -41,6 +41,7 @@ export const TOOL_LABELS: Record<string, string> = {
   'onec.erp_tasks_period': 'Задачи 1С за период',
   'onec.erp_subordinate_tasks': 'Задачи подчинённых 1С',
   'onec.docflow_tasks': 'Задачи документооборота',
+  'onec.docflow_task_action': 'Действие по задаче документооборота',
   'excel.list_files': 'Файлы агента',
   'excel.read_workbook': 'Чтение Excel',
   'office.read_file': 'Чтение Word, PDF и картинок',

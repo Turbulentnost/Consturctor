@@ -4,6 +4,12 @@ import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_STANDARD_LAYOUT } from './useTabChromeLayout'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { SpecPill, SpecProgress } from '../../workplace/specV04Components'
+import { WorkplaceProgressSection } from '../../workplace/WorkplaceProgressSection'
+import { displayTaskProgress } from '../../workplace/TaskProgressEditor'
+import {
+  taskActionContextFromProject,
+  taskActionContextFromTurboOpenTask
+} from '../../workplace/taskSourceKind'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { projectMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import {
@@ -13,18 +19,24 @@ import {
 } from '../../workplace/useTurboProjectOpenTasks'
 import { openHttpUrl } from '../../workplace/workplaceNav'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
+import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 import { hasTurboSessionCredentials } from '../../workplace/userContext'
 
 function ProjectTasksTable({
   rows,
   loading,
   error,
-  emptyLabel
+  emptyLabel,
+  selectedTaskId,
+  onSelectTask
 }: {
   rows: TurboProjectOpenTaskRow[]
   loading: boolean
   error: string
   emptyLabel: string
+  selectedTaskId?: string
+  onSelectTask?: (taskId: string) => void
 }): React.JSX.Element {
   if (loading) {
     return <p className="spec-v04-muted">Загружаем задачи…</p>
@@ -48,7 +60,11 @@ function ProjectTasksTable({
         </thead>
         <tbody>
           {rows.map((task) => (
-            <tr key={task.id}>
+            <tr
+              key={task.id}
+              className={selectedTaskId === task.id ? 'selected' : undefined}
+              onClick={() => onSelectTask?.(task.id)}
+            >
               <td>
                 <strong>{task.title}</strong>
               </td>
@@ -59,7 +75,7 @@ function ProjectTasksTable({
                 <SpecPill tone={task.statusTone}>{task.status}</SpecPill>
               </td>
               <td>
-                <SpecProgress value={task.progress} />
+                <SpecProgress value={displayTaskProgress(`turbo:${task.projectId}:${task.taskUid || task.id}`, task.progress ?? 0)} />
               </td>
             </tr>
           ))}
@@ -101,8 +117,10 @@ export function ProjectsGridTab({
   user: UserProfile
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
+  const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const [tileFilter, setTileFilter] = useState('all')
   const [selectedId, setSelectedId] = useState('')
+  const [selectedProjectTaskId, setSelectedProjectTaskId] = useState('')
   const [query, setQuery] = useState('')
   const [barStatus, setBarStatus] = useState('')
   const [barRisk, setBarRisk] = useState('')
@@ -110,6 +128,7 @@ export function ProjectsGridTab({
   const projects = useMemo(() => {
     const q = query.trim().toLowerCase()
     return data.projects.filter((row) => {
+      if (!deadlineInWorkplacePeriod(row.deadline, periodFrom, periodTo)) return false
       if (!projectMatchesTile(row, tileFilter)) return false
       if (barStatus && row.status !== barStatus) return false
       if (barRisk && row.risk !== barRisk) return false
@@ -117,7 +136,7 @@ export function ProjectsGridTab({
       if (q && !`${row.name} ${row.code} ${row.role}`.toLowerCase().includes(q)) return false
       return true
     })
-  }, [data.projects, tileFilter, query, barStatus, barRisk, barMine])
+  }, [data.projects, tileFilter, query, barStatus, barRisk, barMine, periodFrom, periodTo])
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
   const [myTasksOnly, setMyTasksOnly] = useState(true)
   const effectiveId = selectedId || projects[0]?.id || ''
@@ -141,6 +160,10 @@ export function ProjectsGridTab({
   }, [projects, selectedId])
 
   useEffect(() => {
+    setSelectedProjectTaskId('')
+  }, [effectiveId])
+
+  useEffect(() => {
     if (!effectiveId) return
     setExpandedIds((prev) => {
       if (prev.has(effectiveId)) return prev
@@ -161,6 +184,17 @@ export function ProjectsGridTab({
     taskFetch
   )
 
+  const projectTasksInPeriod = useMemo(
+    () =>
+      projectTasks.rows.filter((row) => deadlineInWorkplacePeriod(row.deadline, periodFrom, periodTo)),
+    [projectTasks.rows, periodFrom, periodTo]
+  )
+
+  const selectedProjectTask = useMemo(
+    () => projectTasksInPeriod.find((row) => row.id === selectedProjectTaskId) ?? null,
+    [projectTasksInPeriod, selectedProjectTaskId]
+  )
+
   const allProjects = data.projects
   const riskCount = useMemo(
     () => allProjects.filter((p) => p.riskTone === 'red' || p.riskTone === 'orange').length,
@@ -168,8 +202,8 @@ export function ProjectsGridTab({
   )
 
   const doneTasksInView = useMemo(
-    () => projectTasks.rows.filter((row) => row.status === 'Выполнена').length,
-    [projectTasks.rows]
+    () => projectTasksInPeriod.filter((row) => row.status === 'Выполнена').length,
+    [projectTasksInPeriod]
   )
 
   const tiles: SpecSummaryTile[] = useMemo(
@@ -181,7 +215,7 @@ export function ProjectsGridTab({
         value: myTasksOnly
           ? projectTasks.loading
             ? '…'
-            : String(projectTasks.matchedCount || projectTasks.rows.length || '—')
+            : String(projectTasks.matchedCount || projectTasksInPeriod.length || '—')
           : String(allProjects.reduce((s, p) => s + p.tasks, 0) || '—'),
         tone: 'blue'
       },
@@ -189,7 +223,7 @@ export function ProjectsGridTab({
       {
         id: 'done',
         label: 'Выполнено (выбранный)',
-        value: selected && projectTasks.rows.length ? String(doneTasksInView) : '—',
+        value: selected && projectTasksInPeriod.length ? String(doneTasksInView) : '—',
         tone: 'purple'
       },
       { id: 'load', label: 'Загрузка', value: '—', tone: 'yellow' }
@@ -201,7 +235,7 @@ export function ProjectsGridTab({
       myTasksOnly,
       projectTasks.loading,
       projectTasks.matchedCount,
-      projectTasks.rows.length,
+      projectTasksInPeriod.length,
       doneTasksInView
     ]
   )
@@ -327,7 +361,7 @@ export function ProjectsGridTab({
                           ? p.id === effectiveId
                             ? projectTasks.loading
                               ? '…'
-                              : projectTasks.matchedCount || projectTasks.rows.length
+                              : projectTasks.matchedCount || projectTasksInPeriod.length
                             : '—'
                           : p.tasks}
                       </td>
@@ -347,7 +381,7 @@ export function ProjectsGridTab({
                         <td colSpan={9}>
                           {p.id === effectiveId ? (
                             <ProjectTasksTable
-                              rows={projectTasks.rows}
+                              rows={projectTasksInPeriod}
                               loading={projectTasks.loading}
                               error={projectTasks.error}
                               emptyLabel={tasksEmptyLabel}
@@ -408,16 +442,22 @@ export function ProjectsGridTab({
                   ? 'Загружаем мои открытые задачи…'
                   : 'Загружаем открытые задачи…'
                 : myTasksOnly
-                  ? projectTasks.matchedCount || projectTasks.rows.length
-                    ? projectTasks.matchedCount > projectTasks.rows.length
-                      ? `Моих открытых задач: ${projectTasks.matchedCount} · показано ${projectTasks.rows.length}`
-                      : `Моих открытых задач: ${projectTasks.matchedCount || projectTasks.rows.length}`
+                  ? projectTasks.matchedCount || projectTasksInPeriod.length
+                    ? projectTasks.matchedCount > projectTasksInPeriod.length
+                      ? `Моих открытых задач: ${projectTasks.matchedCount} · показано ${projectTasksInPeriod.length}`
+                      : `Моих открытых задач: ${projectTasks.matchedCount || projectTasksInPeriod.length}`
                     : 'Нет моих открытых задач в проекте'
-                  : projectTasks.matchedCount > projectTasks.rows.length
-                    ? `Открытых задач (MPP): ${projectTasks.matchedCount} · показано ${projectTasks.rows.length}`
+                  : projectTasks.matchedCount > projectTasksInPeriod.length
+                    ? `Открытых задач (MPP): ${projectTasks.matchedCount} · показано ${projectTasksInPeriod.length}`
                     : `Открытых задач (MPP): ${projectTasks.matchedCount || selected.tasks}`}
             </p>
-            <SpecProgress value={selected.progress} />
+            <WorkplaceProgressSection
+              user={user}
+              rowId={`proj:${selected.id}`}
+              baseProgress={selected.progress}
+              actionContext={taskActionContextFromProject(selected)}
+              projectUrl={selected.url}
+            />
             <div className="spec-detail-pane spec-detail-pane-row">
               <h4>{myTasksOnly ? 'Мои задачи проекта' : 'Задачи проекта'}</h4>
               <label className="spec-v04-toggle-inline">
@@ -430,13 +470,27 @@ export function ProjectsGridTab({
               </label>
             </div>
             <ProjectTasksTable
-              rows={projectTasks.rows}
+              rows={projectTasksInPeriod}
               loading={projectTasks.loading}
               error={projectTasks.error}
               emptyLabel={
                 myTasksOnly ? 'Нет моих открытых задач в проекте' : 'Нет открытых задач в MPP'
               }
+              selectedTaskId={selectedProjectTaskId}
+              onSelectTask={setSelectedProjectTaskId}
             />
+            {selectedProjectTask ? (
+              <div className="project-task-detail">
+                <h4>{selectedProjectTask.title}</h4>
+                <WorkplaceProgressSection
+                  user={user}
+                  rowId={`turbo:${effectiveId}:${selectedProjectTask.taskUid || selectedProjectTask.id}`}
+                  baseProgress={selectedProjectTask.progress ?? 0}
+                  actionContext={taskActionContextFromTurboOpenTask(selectedProjectTask, effectiveId)}
+                  projectUrl={selected.url}
+                />
+              </div>
+            ) : null}
             {openHint ? <p className="spec-v04-muted">{openHint}</p> : null}
             <footer className="spec-detail-actions">
               <button type="button" className="btn-primary" onClick={openSelectedProject}>

@@ -79,6 +79,38 @@ function requestOutlookMail(range: {
   })
 }
 
+const MAIL_FETCH_MAX_DAYS = 90
+
+function parseDayKey(key: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key.trim())
+  if (!m) return null
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/** Диапазон для outlook.search_mail / IMAP: из UI-периода, не больше MAIL_FETCH_MAX_DAYS. */
+export function resolveOutlookMailFetchRange(
+  from: string,
+  to: string,
+  fallback = outlookMailWeekRange()
+): { dateFrom: string; dateTo: string } {
+  const startKey = (from || '').trim()
+  const endKey = (to || '').trim()
+  if (!startKey || !endKey) return fallback
+  const lo = startKey <= endKey ? startKey : endKey
+  const hi = startKey <= endKey ? endKey : startKey
+  const end = parseDayKey(hi)
+  const start = parseDayKey(lo)
+  if (!end || !start) return fallback
+  const spanDays = Math.floor((end.getTime() - start.getTime()) / 86400000) + 1
+  if (spanDays <= MAIL_FETCH_MAX_DAYS) {
+    return { dateFrom: lo, dateTo: hi }
+  }
+  const clampStart = new Date(end)
+  clampStart.setDate(clampStart.getDate() - (MAIL_FETCH_MAX_DAYS - 1))
+  return { dateFrom: dayKeyLocal(clampStart), dateTo: hi }
+}
+
 /** Диапазон текущей недели (пн…вс, локальный календарь) для outlook.search_mail. */
 export function outlookMailWeekRange(anchor = new Date()): { dateFrom: string; dateTo: string } {
   const day = anchor.getDay()

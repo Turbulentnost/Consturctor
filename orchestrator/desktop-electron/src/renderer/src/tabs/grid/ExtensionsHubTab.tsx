@@ -1,5 +1,7 @@
+import { OrchSlotFilters } from '../../layout/GridSlots'
 import type { UserProfile } from '../../api/types'
 import type { PageKey } from '../../components/Sidebar'
+import { WorkplaceGlobalRangePicker } from '../../workplace/workplacePeriod'
 import { EXTENSIONS, canUseExtension } from '../../extensions/extensionRegistry'
 import { useExtensions } from '../../extensions/ExtensionsProvider'
 import { EXTENSION_MODULE_BY_ID } from '../../extensions/extensionModules'
@@ -18,6 +20,12 @@ export function ExtensionsHubTab({
   const { isPinned, togglePin } = useExtensions()
 
   return (
+    <>
+    <OrchSlotFilters>
+      <div className="workplace-global-filters-strip wp-card">
+        <WorkplaceGlobalRangePicker />
+      </div>
+    </OrchSlotFilters>
     <div className="extensions-hub">
       <header className="extensions-hub-head">
         <p className="set-muted">
@@ -77,5 +85,6 @@ export function ExtensionsHubTab({
       </ul>
       </div>
     </div>
+    </>
   )
 }

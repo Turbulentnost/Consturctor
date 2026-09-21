@@ -5,7 +5,7 @@ import type { UserProfile } from '../../api/types'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT } from './useTabChromeLayout'
 import { GridFilterBar } from './gridFilters'
-import { SpecIconCalendar } from '../../workplace/specV04Icons'
+import { KpiDayPicker } from '../../pages/KpiRangePicker'
 import { useAssignmentRegistry } from '../../workplace/useAssignmentRegistry'
 import { isDueWithinDays } from '../../workplace/assignmentRegistryMappers'
 import {
@@ -354,6 +354,7 @@ export function AssignmentsRegistryGridTab({
       tabId="assignments_registry"
       userId={user.id || ''}
       defaults={DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT}
+      hideGlobalPeriod
       labels={{ main: 'Таблица', side: 'Карточка поручения' }}
       chromeTiles={summaryTilesAsChrome(tiles, activeTileId, onTileSelect)}
       filterToolbarExtra={
@@ -400,26 +401,18 @@ export function AssignmentsRegistryGridTab({
             extra={
               <div className="registry-filter-bar-extra">
                 <div className="registry-date-filters">
-                  <label className="spec-filter-input spec-filter-period registry-date-field">
-                    <SpecIconCalendar />
-                    <span className="registry-date-label">С</span>
-                    <input
-                      type="date"
-                      className="wp-input registry-date-input"
-                      value={dateFrom}
-                      onChange={(event) => changeDateFrom(event.target.value)}
-                    />
-                  </label>
-                  <label className="spec-filter-input spec-filter-period registry-date-field">
-                    <SpecIconCalendar />
-                    <span className="registry-date-label">По</span>
-                    <input
-                      type="date"
-                      className="wp-input registry-date-input"
-                      value={dateTo}
-                      onChange={(event) => changeDateTo(event.target.value)}
-                    />
-                  </label>
+                  <KpiDayPicker
+                    prefixLabel="С"
+                    value={dateFrom}
+                    onChange={changeDateFrom}
+                    ariaLabel="Дата начала периода"
+                  />
+                  <KpiDayPicker
+                    prefixLabel="По"
+                    value={dateTo}
+                    onChange={changeDateTo}
+                    ariaLabel="Дата окончания периода"
+                  />
                   <button type="button" className="today-link-btn" onClick={() => refresh()}>
                     Обновить
                   </button>

@@ -18,6 +18,10 @@ from app.services.docflow_tasks import (
     handle_docflow_tasks as _docflow_tasks,
     stub_docflow_tasks as _stub_docflow_tasks,
 )
+from app.services.docflow_task_action import (
+    handle_docflow_task_action as _docflow_task_action,
+    stub_docflow_task_action as _stub_docflow_task_action,
+)
 from app.services.erp_assignments import (
     ASSIGNMENT_ENTITY,
     ASSIGNMENT_FILES_ENTITY,
@@ -153,6 +157,7 @@ ONEC_TOOLS = frozenset(
         "onec.download_artifact",
         "onec.erp_write_probe",
         "onec.docflow_tasks",
+        "onec.docflow_task_action",
         "onec.meeting_protocols",
     }
 )
@@ -163,7 +168,9 @@ ONEC_ODATA_WRITE_TOOLS = frozenset(
         "onec.attach_file",
     }
 )
-ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset({"onec.erp_assignments_write"})
+ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset(
+    {"onec.erp_assignments_write", "onec.docflow_task_action"}
+)
 _ERP_TASK_TOOLS = frozenset(
     {
         "onec.erp_tasks_current",
@@ -174,6 +181,7 @@ _ERP_TASK_TOOLS = frozenset(
 _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
     "onec.erp_tasks_odata",
     "onec.docflow_tasks",
+    "onec.docflow_task_action",
     "onec.erp_write_probe",
 }
 _ACCESS_TOOLS = frozenset(
@@ -288,7 +296,11 @@ def invoke_onec(
     from app.services.docflow_tasks import docflow_url_ready
 
     if docflow_url_ready():
-        handlers = {**handlers, "onec.docflow_tasks": REAL_HANDLERS["onec.docflow_tasks"]}
+        handlers = {
+            **handlers,
+            "onec.docflow_tasks": REAL_HANDLERS["onec.docflow_tasks"],
+            "onec.docflow_task_action": REAL_HANDLERS["onec.docflow_task_action"],
+        }
     handler = handlers.get(tool)
     if handler is None:
         raise OnecToolError(f"Неизвестный 1С-инструмент: {tool}")
@@ -1499,6 +1511,7 @@ STUB_HANDLERS = {
     "onec.download_artifact": _stub_download_artifact,
     "onec.erp_write_probe": _stub_erp_write_probe,
     "onec.docflow_tasks": _stub_docflow_tasks,
+    "onec.docflow_task_action": _stub_docflow_task_action,
     "onec.meeting_protocols": _stub_meeting_protocols,
 }
 
@@ -1518,5 +1531,6 @@ REAL_HANDLERS = {
     "onec.download_artifact": _download_artifact,
     "onec.erp_write_probe": _erp_write_probe,
     "onec.docflow_tasks": _docflow_tasks,
+    "onec.docflow_task_action": _docflow_task_action,
     "onec.meeting_protocols": _list_meeting_protocols,
 }

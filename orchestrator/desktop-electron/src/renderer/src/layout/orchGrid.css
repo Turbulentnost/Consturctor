@@ -245,6 +245,26 @@
   min-width: 0;
 }
 
+.orch-grid-history .orch-slot-filters {
+  grid-row: 2;
+}
+
+.orch-grid-history .orch-heavy-embed-slot {
+  grid-row: 3 / 5;
+}
+
+.orch-grid-extensions .orch-slot-filters {
+  grid-row: 2;
+}
+
+.orch-grid-extensions .extensions-hub {
+  grid-column: 1 / 9;
+  grid-row: 3 / 5;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+}
+
 .orch-slot-main {
   grid-column: 1 / 7;
   grid-row: 4 / 5;

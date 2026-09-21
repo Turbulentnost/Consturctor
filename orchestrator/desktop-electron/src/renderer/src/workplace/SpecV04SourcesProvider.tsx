@@ -28,6 +28,8 @@ import { useWorkplaceData } from './WorkplaceBoard'
 import { summarizeDayLaunches } from './todayKpiLaunches'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
 import { fetchOrchestratorTaskSources, ORCH_SOURCE_ID } from './orchestratorTaskSources'
+import { loadOrchestratorMail } from './mailProbe'
+import { useWorkplacePeriod } from './workplacePeriod'
 import type { SpecV04SourcesState } from './useSpecV04Data'
 
 const EMPTY: SpecV04SourcesState = {
@@ -86,6 +88,9 @@ export function SpecV04SourcesProvider({
 }): React.JSX.Element {
   const erpFio = erpActorFio(user)
   const outlookMailbox = outlookMailboxAddress(user)
+  const { from: mailPeriodFrom, to: mailPeriodTo } = useWorkplacePeriod()
+  const mailPeriodKey = `${mailPeriodFrom}:${mailPeriodTo}`
+  const mailPeriodKeyRef = useRef('')
   const { generation, takeHardRefresh } = useGridDataRefreshContext()
   const { agents, board, loading: agentsLoading } = useWorkplaceData({
     userId: user.id || '',
@@ -127,7 +132,8 @@ export function SpecV04SourcesProvider({
       setOneCAuthFailure(false)
       try {
         const bundle = await fetchOrchestratorTaskSources(user, erpFio, outlookMailbox, {
-          forceRefresh: takeHardRefresh()
+          forceRefresh: takeHardRefresh(),
+          mailPeriod: { dateFrom: mailPeriodFrom, dateTo: mailPeriodTo }
         })
         if (!alive) return
 
@@ -163,6 +169,7 @@ export function SpecV04SourcesProvider({
         setMailImapError(bundle.mail.imapError || '')
         setMailImapPrimary(Boolean(bundle.mail.imapPrimary))
         setMailImapStatus(bundle.mail.imapStatus || '')
+        mailPeriodKeyRef.current = mailPeriodKey
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : 'Не удалось загрузить данные')
       } finally {
@@ -176,6 +183,26 @@ export function SpecV04SourcesProvider({
       alive = false
     }
   }, [user.id, erpFio, outlookMailbox, generation, comCredsRevision])
+
+  useEffect(() => {
+    if (!user.id || !hasLoadedSourcesRef.current) return
+    if (mailPeriodKeyRef.current === mailPeriodKey) return
+    let alive = true
+    void loadOrchestratorMail(outlookMailbox, { dateFrom: mailPeriodFrom, dateTo: mailPeriodTo })
+      .then((mail) => {
+        if (!alive) return
+        setMailRows(mail.rows)
+        setMailSource(mail.sourceLabel)
+        setMailComError(mail.comError || '')
+        setMailImapError(mail.imapError || '')
+        setMailImapPrimary(Boolean(mail.imapPrimary))
+        setMailImapStatus(mail.imapStatus || '')
+        mailPeriodKeyRef.current = mailPeriodKey
+      })
+    return () => {
+      alive = false
+    }
+  }, [user.id, outlookMailbox, mailPeriodFrom, mailPeriodTo, mailPeriodKey])
 
   useEffect(() => {
     if (!user.id) return

@@ -115,6 +115,13 @@ export interface SpecTaskRow {
   role?: string
   /** Turbo: мне / чужие в проектах, где я руководитель / и то и другое. */
   turboScope?: 'mine' | 'managed' | 'both'
+  sourceKind?: 'docflow' | 'turbo' | 'erp' | 'other'
+  refKey?: string
+  taskNumber?: string
+  step?: string
+  targetId?: string
+  projectId?: string
+  taskUid?: string
 }
 
 export const DEMO_TASK_ROWS: SpecTaskRow[] = [
