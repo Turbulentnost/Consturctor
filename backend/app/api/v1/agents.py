@@ -41,8 +41,32 @@ from app.services.readiness.chat import (
     send_question_chat_message,
 )
 from app.services.readiness.service import ReadinessError
+from app.schemas.agent_library import AgentLibraryAdoptOut, AgentLibraryListOut
+from app.services.agent_library import AgentLibraryError, adopt_library_agent, list_agent_library
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+@router.get("/library", response_model=AgentLibraryListOut, response_model_by_alias=True)
+async def read_agent_library(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentLibraryListOut:
+    payload = list_agent_library(db, user_id=auth.user_id)
+    return AgentLibraryListOut.model_validate(payload)
+
+
+@router.post("/library/{workflow_id}/adopt", response_model=AgentLibraryAdoptOut, response_model_by_alias=True)
+async def adopt_agent_from_library(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentLibraryAdoptOut:
+    try:
+        payload = adopt_library_agent(db, user_id=auth.user_id, source_workflow_id=workflow_id)
+    except AgentLibraryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return AgentLibraryAdoptOut.model_validate(payload)
 
 
 @router.get("/drafts", response_model=AgentDraftListResult)

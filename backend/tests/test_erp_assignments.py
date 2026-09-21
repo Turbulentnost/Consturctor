@@ -62,6 +62,17 @@ def test_filter_uses_cyrillic_prefix_and_leader() -> None:
     assert "2026-09-10T00:00:00" in filt
 
 
+def test_create_body_uses_session_actor_ref() -> None:
+    session_ref = "4c6b539d-5606-11e0-b816-008048428575"
+    body = build_create_body(
+        {"topic": "Tema", "due": "2026-09-20", "lines": [{"text": "Punkt"}]},
+        actor_fio="Амураль Игорь Борисович",
+        actor_onec_ref=session_ref,
+    )
+    assert body["Руководитель_Key"] == session_ref
+    assert body["ОЧем"] == "Tema"
+
+
 def test_create_body_builds_lines() -> None:
     body = build_create_body(
         {

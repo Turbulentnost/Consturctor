@@ -183,6 +183,7 @@ _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
     "onec.docflow_tasks",
     "onec.docflow_task_action",
     "onec.erp_write_probe",
+    "onec.erp_assignments_write",
 }
 _ACCESS_TOOLS = frozenset(
     {
@@ -278,6 +279,7 @@ def invoke_onec(
     *,
     actor_user_id: str = "",
     actor_fio: str = "",
+    actor_onec_ref: str = "",
 ) -> dict[str, Any]:
     from app.services.tool_names import resolve_tool_name
 
@@ -319,7 +321,12 @@ def invoke_onec(
         if tool == "onec.meeting_protocols":
             result = handler(args, access=access)
         elif tool in _JWT_ONEC_TOOLS:
-            result = handler(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
+            result = handler(
+                args,
+                actor_fio=actor_fio,
+                actor_user_id=actor_user_id,
+                actor_onec_ref=actor_onec_ref,
+            )
         else:
             result = handler(args)
         if access is not None and tool == "onec.odata_get" and isinstance(result, dict):

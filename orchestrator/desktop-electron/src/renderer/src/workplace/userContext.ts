@@ -1,10 +1,13 @@
 import type { UserProfile } from '../api/types'
+import { buildSidecarSessionFields, mergeUserWithOneCProfile } from '../store/onecSessionProfile'
 import {
   comCredentials,
   devGatewayCredentials,
   gatewaySessionPassword,
   savedFio
 } from '../store/session'
+
+export { buildSidecarSessionFields, mergeUserWithOneCProfile }
 
 export const TURBO_DON_MAIL_DOMAIN = 'turbo-don.ru'
 
@@ -79,16 +82,19 @@ export function onecGatewayInvokeArgs(
   user: UserProfile | null,
   extra: Record<string, unknown> = {}
 ): Record<string, unknown> {
+  const merged = user ? mergeUserWithOneCProfile(user) : user
   const creds = comCredentials()
-  const fio = erpActorFio(user)
-  const userId = erpActorUserId(user)
+  const fio = erpActorFio(merged)
+  const userId = erpActorUserId(merged)
   const password = gatewaySessionPassword() || devGatewayCredentials().password
   const typedLogin = (creds.login || '').trim()
-  const username = erpActorComUsername(user)
+  const username = erpActorComUsername(merged)
+  const sessionFields = buildSidecarSessionFields(merged)
   return {
+    ...sessionFields,
     ...extra,
     fio,
-    user_id: userId,
+    user_id: userId || sessionFields.user_id,
     session_login: typedLogin || fio,
     erp_login: typedLogin || fio,
     password,
@@ -133,9 +139,13 @@ export function onecComInvokeArgs(
   extra: Record<string, unknown> = {},
   user: UserProfile | null = null
 ): Record<string, unknown> {
+  const merged = user ? mergeUserWithOneCProfile(user) : user
   const { login, password } = comCredentials()
-  const args: Record<string, unknown> = { ...extra }
-  const fio = (login || user?.fio || savedFio() || '').trim()
+  const args: Record<string, unknown> = {
+    ...buildSidecarSessionFields(merged),
+    ...extra
+  }
+  const fio = (login || merged?.fio || savedFio() || '').trim()
   if (fio) {
     args.fio = fio
     args.erp_login = fio

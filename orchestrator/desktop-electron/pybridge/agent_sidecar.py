@@ -121,7 +121,12 @@ def _bootstrap_desktop_path() -> Path:
 DESKTOP_ROOT = _bootstrap_desktop_path()
 _AC_REGISTRY_LOGGED = False
 
-# Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
+# Importing app.config loads desktop/.env (ONEC_COM_*, CURSOR_API_KEY, ...).
+from app.envfile import load_env_file  # noqa: E402
+
+load_env_file(DESKTOP_ROOT / ".env", override=True)
+import app.config as _app_config  # noqa: E402, F401
+
 from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.orchestrator.json_blob import extract_json_object  # noqa: E402
 from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkUnavailable  # noqa: E402

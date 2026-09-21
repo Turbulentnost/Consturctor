@@ -94,6 +94,8 @@ def _ensure_columns() -> None:
             alters.append("ADD COLUMN activity_status VARCHAR(16) NOT NULL DEFAULT 'online'")
         if "is_support" not in existing:
             alters.append("ADD COLUMN is_support BOOLEAN NOT NULL DEFAULT FALSE")
+        if "onec_catalog_ref_key" not in existing:
+            alters.append("ADD COLUMN onec_catalog_ref_key VARCHAR(36) NOT NULL DEFAULT ''")
         if existing and "fio" not in existing:
             alters.append("ADD COLUMN fio VARCHAR(512) NOT NULL DEFAULT ''")
         if existing:

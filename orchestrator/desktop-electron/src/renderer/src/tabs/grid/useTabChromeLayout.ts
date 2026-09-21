@@ -11,6 +11,9 @@ export const KPI_TAB_GRID_ROWS = 6
 /** Реестр поручений: рабочее поле 8×6 (col×row). */
 export const REGISTRY_TAB_GRID_COLS = 8
 export const REGISTRY_TAB_GRID_ROWS = 6
+/** Библиотека агентов: 8×8, низ 2×8 — «Ваши добавленные». */
+export const AGENT_LIBRARY_TAB_GRID_COLS = 8
+export const AGENT_LIBRARY_TAB_GRID_ROWS = 8
 
 export function tabChromeGridDimensions(tabId: string): { cols: number; maxRows: number } {
   if (tabId === 'kpi') {
@@ -19,11 +22,14 @@ export function tabChromeGridDimensions(tabId: string): { cols: number; maxRows:
   if (tabId === 'assignments_registry') {
     return { cols: REGISTRY_TAB_GRID_COLS, maxRows: REGISTRY_TAB_GRID_ROWS }
   }
+  if (tabId === 'agent_library') {
+    return { cols: AGENT_LIBRARY_TAB_GRID_COLS, maxRows: AGENT_LIBRARY_TAB_GRID_ROWS }
+  }
   return { cols: TAB_CHROME_COLS, maxRows: TAB_CHROME_MAX_ROWS }
 }
 
 export function tabUsesSnapGrid(tabId: string): boolean {
-  return tabId === 'kpi' || tabId === 'assignments_registry'
+  return tabId === 'kpi' || tabId === 'assignments_registry' || tabId === 'agent_library'
 }
 export const TAB_CHROME_MARGIN: [number, number] = [5, 5]
 export const TAB_CHROME_MIN_ROW = 48
@@ -110,6 +116,32 @@ export const DEFAULT_WIDE_MAIN_LAYOUT: LayoutItem[] = [
 ]
 
 /** 8×6: таблица 6×6, карточка поручения 2×6. */
+/** 8×8: каталог 8×6, добавленные 8×2. */
+export const DEFAULT_AGENT_LIBRARY_LAYOUT: LayoutItem[] = [
+  {
+    i: 'main',
+    x: 0,
+    y: 0,
+    w: AGENT_LIBRARY_TAB_GRID_COLS,
+    h: 6,
+    minW: 4,
+    minH: 3,
+    maxW: AGENT_LIBRARY_TAB_GRID_COLS,
+    maxH: AGENT_LIBRARY_TAB_GRID_ROWS
+  },
+  {
+    i: 'botA',
+    x: 0,
+    y: 6,
+    w: AGENT_LIBRARY_TAB_GRID_COLS,
+    h: 2,
+    minW: 4,
+    minH: 2,
+    maxW: AGENT_LIBRARY_TAB_GRID_COLS,
+    maxH: 4
+  }
+]
+
 export const DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT: LayoutItem[] = [
   {
     i: 'main',
@@ -163,6 +195,9 @@ function storageKey(tabId: string, userId: string): string {
   const uid = userId.trim() || 'default'
   if (tabId === 'assignments_registry') {
     return `${TAB_CHROME_STORAGE_KEY}:assignments_registry-v2:${uid}`
+  }
+  if (tabId === 'agent_library') {
+    return `${TAB_CHROME_STORAGE_KEY}:agent_library-v1:${uid}`
   }
   return `${TAB_CHROME_STORAGE_KEY}:${tabId}:${uid}`
 }

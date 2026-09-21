@@ -658,7 +658,7 @@ def search_mail(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
         _log_progress("step=get_namespace start")
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         _log_progress("step=get_namespace ok")
 
         results = []
@@ -748,7 +748,7 @@ def read_calendar(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
         _log_progress("step=get_namespace start")
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         _log_progress("step=get_namespace ok")
         start_at, end_at = _resolve_date_range(
             input_data,
@@ -1006,6 +1006,16 @@ def _dispatch_outlook(win32com_client: Any) -> Any:
         return win32com_client.GetActiveObject("Outlook.Application")
     except Exception:
         return win32com_client.Dispatch("Outlook.Application")
+
+
+def _mapi_namespace(outlook: Any) -> Any:
+    """MAPI без диалога пароля — профиль уже открыт в Outlook (как read_calendar)."""
+    namespace = outlook.GetNamespace("MAPI")
+    try:
+        namespace.Logon("", "", False, False)
+    except Exception as exc:  # noqa: BLE001
+        _log_progress(f"step=mapi_logon noop: {exc}")
+    return namespace
 
 
 def _verify_saved_appointment(outlook: Any, appt: Any) -> str:

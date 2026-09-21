@@ -9,8 +9,15 @@ import {
   type TodayWidgetId,
   writeTodayWidgetVisibility
 } from '../tabs/grid/todayWidgetSettings'
+import { OneCSessionProfileSection } from './OneCSessionProfileSection'
 
-type SettingsSection = 'general' | 'notifications' | 'access' | 'diagnostics' | 'integrations'
+type SettingsSection =
+  | 'general'
+  | 'notifications'
+  | 'access'
+  | 'diagnostics'
+  | 'integrations'
+  | 'onec_profile'
 
 type SendWhen = 'immediate' | '60m' | 'off'
 type Escalate = '30m' | 'none' | 'owner'
@@ -121,6 +128,7 @@ const TABS: { id: SettingsSection; label: string }[] = [
   { id: 'notifications', label: 'Уведомления' },
   { id: 'access', label: 'Права доступа' },
   { id: 'diagnostics', label: 'Диагностика' },
+  { id: 'onec_profile', label: 'Профиль 1С' },
   { id: 'integrations', label: 'Интеграции' }
 ]
 
@@ -828,6 +836,18 @@ export function SettingsWorkplace({
               </ul>
             </section>
           ) : null}
+        </div>
+      ) : null}
+
+      {section === 'onec_profile' ? (
+        <div className="set-body">
+          <header className="set-head">
+            <div>
+              <h1 className="page-title">Профиль 1С</h1>
+              <p className="set-sub">Идентификатор пользователя erp_pm и данные для COM (временный режим)</p>
+            </div>
+          </header>
+          <OneCSessionProfileSection user={user} />
         </div>
       ) : null}
 

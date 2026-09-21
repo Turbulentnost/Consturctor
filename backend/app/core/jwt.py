@@ -18,6 +18,8 @@ class AuthContext:
     position: str | None = None
     session_id: str = ""
     client: str = DEFAULT_CLIENT
+    """Catalog_Пользователи Ref_Key — не показывается в UI, только сессия/запись."""
+    onec_catalog_ref_key: str = ""
 
 
 def create_access_token(
@@ -28,6 +30,7 @@ def create_access_token(
     position: str = "",
     session_id: str = "",
     client: str = DEFAULT_CLIENT,
+    onec_catalog_ref_key: str = "",
 ) -> str:
     now = datetime.now(UTC)
     sid = (session_id or "").strip() or str(uuid4())
@@ -41,6 +44,9 @@ def create_access_token(
         "iat": now,
         "exp": now + timedelta(minutes=settings.jwt_expire_minutes),
     }
+    ref = (onec_catalog_ref_key or "").strip()
+    if ref:
+        payload["onec_ref"] = ref
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
@@ -66,6 +72,7 @@ def validate_token(token: str) -> AuthContext:
     position = payload.get("position")
     session_id = payload.get("sid")
     raw_client = payload.get("cid") or payload.get("client")
+    onec_ref = payload.get("onec_ref")
     return AuthContext(
         user_id=user_id,
         fio=fio if isinstance(fio, str) else None,
@@ -73,4 +80,7 @@ def validate_token(token: str) -> AuthContext:
         position=position if isinstance(position, str) else None,
         session_id=session_id if isinstance(session_id, str) else "",
         client=normalize_client(raw_client if isinstance(raw_client, str) else ""),
+        onec_catalog_ref_key=onec_ref.strip()
+        if isinstance(onec_ref, str) and onec_ref.strip()
+        else "",
     )

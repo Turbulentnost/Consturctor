@@ -500,20 +500,22 @@ export async function loadOrchestratorTurboTaskRows(
   return { tasks, error: fetchError }
 }
 
-export type OrchestratorTaskSourcesBundle = {
+export type OrchestratorCoreSourcesBundle = {
   erp: OrchestratorErpLoad
   turbo: OrchestratorTurboLoad
   turboTasks: OrchestratorTurboTasksLoad
+}
+
+export type OrchestratorTaskSourcesBundle = OrchestratorCoreSourcesBundle & {
   mail: OrchestratorMailLoad
 }
 
-/** Single fetch entry for SpecV04SourcesProvider (order: SOAP ДО → Turbo portfolio → Outlook week). */
-export async function fetchOrchestratorTaskSources(
+/** 1C / Turbo — без Outlook COM (не дергать почту при смене пароля 1С). */
+export async function fetchOrchestratorCoreSources(
   user: UserProfile,
   erpFio: string,
-  outlookMailbox: string,
-  opts?: { forceRefresh?: boolean; mailPeriod?: { dateFrom: string; dateTo: string } }
-): Promise<OrchestratorTaskSourcesBundle> {
+  opts?: { forceRefresh?: boolean }
+): Promise<OrchestratorCoreSourcesBundle> {
   const [erp, turbo] = await Promise.all([
     loadOrchestratorErpTasks(user, erpFio, opts),
     loadOrchestratorTurboPortfolio(user, erpFio)
@@ -524,6 +526,19 @@ export async function fetchOrchestratorTaskSources(
     turbo.projects,
     turbo.turboNoSession
   )
-  const mail = await loadOrchestratorMail(outlookMailbox, opts?.mailPeriod)
-  return { erp, turbo, turboTasks, mail }
+  return { erp, turbo, turboTasks }
+}
+
+/** Single fetch entry for SpecV04SourcesProvider (order: SOAP ДО → Turbo portfolio → Outlook week). */
+export async function fetchOrchestratorTaskSources(
+  user: UserProfile,
+  erpFio: string,
+  outlookMailbox: string,
+  opts?: { forceRefresh?: boolean; mailPeriod?: { dateFrom: string; dateTo: string } }
+): Promise<OrchestratorTaskSourcesBundle> {
+  const core = await fetchOrchestratorCoreSources(user, erpFio, opts)
+  const mail = await loadOrchestratorMail(outlookMailbox, opts?.mailPeriod, {
+    forceOutlook: opts?.forceRefresh
+  })
+  return { ...core, mail }
 }

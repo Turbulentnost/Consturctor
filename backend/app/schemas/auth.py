@@ -23,6 +23,8 @@ class UserOut(BaseModel):
     department_change_available_at: datetime | None = None
     activity_status: str = "online"
     is_support: bool = False
+    """Ref_Key Catalog_Пользователи — для записи в 1С, в UI профиля не показывается."""
+    onec_catalog_ref_key: str = ""
 
 
 class LoginResponse(BaseModel):

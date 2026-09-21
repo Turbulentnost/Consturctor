@@ -15,6 +15,7 @@ class AppUser(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # ERP v8users id
     fio: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    onec_catalog_ref_key: Mapped[str] = mapped_column(String(36), nullable=False, default="")
     department: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     position: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     avatar_path: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)

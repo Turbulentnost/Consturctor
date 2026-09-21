@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import glob
 import io
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -57,6 +59,8 @@ ENV_SEARCH_METHOD = "ONEC_COM_SEARCH_METHOD"
 ENV_GET_DOCUMENT_CARD_METHOD = "ONEC_COM_GET_DOCUMENT_CARD_METHOD"
 ENV_SEARCH_TASKS_METHOD = "ONEC_COM_SEARCH_TASKS_METHOD"
 ENV_GET_TASK_CARD_METHOD = "ONEC_COM_GET_TASK_CARD_METHOD"
+ENV_CLIENT_EXE = "ONEC_CLIENT_EXE"
+DEFAULT_ASSIGNMENT_LIST_FORM = "Документ.ТД_Поручения.Форма.ФормаСписка"
 
 
 def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
@@ -71,6 +75,18 @@ def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
             error_type="ONEC_READONLY_POLICY_ERROR",
             error_message=str(exc),
         )
+
+    if task.tool_name == "onec.open_form":
+        try:
+            payload = launch_onec_client_form(task.input_data if isinstance(task.input_data, dict) else {})
+            return WorkerResult(task_id=task.task_id, ok=True, output_data=payload)
+        except Exception as exc:  # noqa: BLE001
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="ONEC_OPEN_FORM_ERROR",
+                error_message=str(exc),
+            )
 
     if sys.platform != "win32":
         return _com_not_available(task, "1C COMConnector доступен только на Windows")
@@ -177,6 +193,8 @@ def _dispatch_via_com32(task: WorkerTask) -> dict[str, Any]:
         return _search_tasks_com32(task.input_data)
     if task.tool_name == "onec.get_task_card":
         return _get_task_card_com32(task.input_data)
+    if task.tool_name == "onec.open_form":
+        return launch_onec_client_form(task.input_data if isinstance(task.input_data, dict) else {})
     raise OneCConnectionError(
         f"Инструмент {task.tool_name} ещё не переведён на 32-bit COMConnector (cscript). "
         "32-bit Python (py -3.12-32) для этого не нужен."
@@ -949,7 +967,110 @@ def _dispatch_tool(session: Any, task: WorkerTask) -> dict[str, Any]:
         }
     if task.tool_name == "onec.meeting_service_notes":
         return _list_meeting_service_notes(session, task.input_data)
+    if task.tool_name == "onec.open_form":
+        return launch_onec_client_form(task.input_data if isinstance(task.input_data, dict) else {})
     raise OneCConnectionError(f"Неизвестный COM tool_name: {task.tool_name}")
+
+
+def _resolve_onec_client_exe() -> Path:
+    explicit = (os.environ.get(ENV_CLIENT_EXE) or "").strip().strip('"')
+    if explicit:
+        path = Path(explicit)
+        if path.is_file():
+            return path
+        raise OneCConnectionError(f"ONEC_CLIENT_EXE не найден: {explicit}")
+    patterns = [
+        r"C:\Program Files\1cv8\*\bin\1cv8c.exe",
+        r"C:\Program Files (x86)\1cv8\*\bin\1cv8c.exe",
+        r"C:\Program Files\1cv8\*\bin\1cv8.exe",
+    ]
+    for pattern in patterns:
+        matches = sorted(glob.glob(pattern), reverse=True)
+        if matches:
+            return Path(matches[0])
+    raise OneCConnectionError(
+        "Не найден 1cv8c.exe. Укажите ONEC_CLIENT_EXE или установите платформу 1С:Предприятие."
+    )
+
+
+def _startup_login_from_input(input_data: dict[str, Any]) -> tuple[str, str]:
+    user = str(
+        input_data.get("fio")
+        or input_data.get("erp_login")
+        or input_data.get("username")
+        or os.environ.get(ENV_COM_USR)
+        or os.environ.get(ENV_LOGIN)
+        or ""
+    ).strip()
+    password = str(
+        input_data.get("password")
+        or input_data.get("erp_password")
+        or os.environ.get(ENV_PASSWORD)
+        or ""
+    ).strip()
+    return user, password
+
+
+def _enterprise_db_switch() -> str:
+    explicit = (os.environ.get("ONEC_ENTERPRISE_DB") or os.environ.get("ONEC_DB_PATH") or "").strip()
+    if explicit:
+        text = explicit.strip('"')
+        return text if text.upper().startswith("/S") else f"/S{text}"
+    connection = _connection_string()
+    if not connection:
+        raise OneCConnectionError(
+            "Не задано подключение к базе 1С (ONEC_COM_CONNECTION_STRING или ONEC_COM_SERVER/REF)."
+        )
+    server = ""
+    ref = ""
+    for chunk in connection.split(";"):
+        piece = chunk.strip()
+        if not piece or "=" not in piece:
+            continue
+        key, value = piece.split("=", 1)
+        key = key.strip().casefold()
+        value = value.strip().strip('"')
+        if key == "srvr":
+            server = value
+        elif key == "ref":
+            ref = value
+    if server and ref:
+        return f"/S{server}\\{ref}"
+    raise OneCConnectionError(
+        "Не удалось собрать /S для 1cv8c из ONEC_COM_CONNECTION_STRING. Задайте ONEC_ENTERPRISE_DB."
+    )
+
+
+def launch_onec_client_form(input_data: dict[str, Any]) -> dict[str, Any]:
+    """Запуск толстого клиента 1С с /C «ОткрытьФорму(...)» — UI, без OData-записи."""
+    form_path = str(input_data.get("form") or DEFAULT_ASSIGNMENT_LIST_FORM).strip()
+    if not form_path:
+        form_path = DEFAULT_ASSIGNMENT_LIST_FORM
+    db_switch = _enterprise_db_switch()
+    exe = _resolve_onec_client_exe()
+    user, password = _startup_login_from_input(input_data)
+    bsl = f'ОткрытьФорму("{form_path.replace(chr(34), "")}");'
+    args = ["ENTERPRISE", db_switch]
+    if user:
+        args.append(f'/N{user}')
+    if password:
+        args.append(f'/P{password}')
+    args.append(f'/C{bsl}')
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen(
+        [str(exe), *args],
+        close_fds=True,
+        creationflags=creationflags,
+    )
+    return {
+        "ok": True,
+        "form": form_path,
+        "method": "1cv8c_startup",
+        "executable": str(exe),
+        "summary": f"Открываю {form_path} в клиенте 1С",
+    }
 
 
 def _safe_str(value: Any, limit: int = 500) -> str:

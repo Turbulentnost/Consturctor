@@ -23,6 +23,12 @@ import {
 } from './store/session'
 import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSessionHints'
 import { fetchMyErpTasksOData } from './workplace/fetchMyErpTasksOData'
+import {
+  buildSidecarSessionFields,
+  clearOneCSessionProfile,
+  mergeUserWithOneCProfile,
+  saveOneCSessionProfileFromUser
+} from './store/onecSessionProfile'
 import { erpActorFio } from './workplace/userContext'
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
@@ -239,7 +245,7 @@ function AppShell(): React.JSX.Element {
       done = true
       setBooting(false)
     }
-    const watchdog = window.setTimeout(finish, 10_000)
+    const watchdog = window.setTimeout(finish, 4_000)
     ;(async () => {
       try {
         const config = await window.api.getConfig()
@@ -265,7 +271,8 @@ function AppShell(): React.JSX.Element {
           } else {
             api.setToken(stored.accessToken)
             try {
-              const profile = await api.me(8_000)
+              const profile = mergeUserWithOneCProfile(await api.me(8_000))
+              saveOneCSessionProfileFromUser(profile, 'me', stored.accessToken)
               setUser(profile)
               // Password comes from login (safeStorage / sidecar), not from JWT.
               setModeForUser(profile)
@@ -360,12 +367,19 @@ function AppShell(): React.JSX.Element {
     }
     const creds = comCredentials()
     void agentClient
-      .ready(token, {
+      .ready(token, buildSidecarSessionFields(user, {
         login: creds.login || user.fio,
         password: creds.password || ''
-      })
+      }))
       .catch(() => undefined)
-  }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision, bumpComCredentialsRevision])
+  }, [
+    user?.id ?? '',
+    user?.nameMail ?? '',
+    user?.fio ?? '',
+    user?.onecCatalogRefKey ?? '',
+    comCredsRevision,
+    bumpComCredentialsRevision
+  ])
 
   useEffect(() => {
     if (!import.meta.env.DEV || !user) {
@@ -519,24 +533,34 @@ function AppShell(): React.JSX.Element {
     })
     bumpComCredentialsRevision()
     setRequireComLogin(false)
+    saveOneCSessionProfileFromUser(result.user, 'login', result.accessToken)
+    const mergedLogin = mergeUserWithOneCProfile(result.user)
     void agentClient
-      .ready(result.accessToken || null, {
-        login: result.user.fio,
-        password
-      })
+      .ready(
+        result.accessToken || null,
+        buildSidecarSessionFields(mergedLogin, {
+          login: typedLogin || result.user.fio,
+          password
+        })
+      )
       .catch(() => undefined)
     if (remember && result.accessToken) {
       saveSession({ accessToken: result.accessToken, fio: result.user.fio })
     } else {
       clearSession(true)
     }
-    setUser(result.user)
-    setModeForUser(result.user)
+    setUser(mergedLogin)
+    setModeForUser(mergedLogin)
     if (result.accessToken) {
-      void api.me().then((profile) => {
-        setUser(profile)
-        setModeForUser(profile)
-      }).catch(() => undefined)
+      void api
+        .me()
+        .then((profile) => {
+          const merged = mergeUserWithOneCProfile(profile)
+          saveOneCSessionProfileFromUser(merged, 'me', result.accessToken)
+          setUser(merged)
+          setModeForUser(merged)
+        })
+        .catch(() => undefined)
     }
   }
 
@@ -547,6 +571,7 @@ function AppShell(): React.JSX.Element {
     runs.clearAll()
     clearSession(true)
     clearComCredentials()
+    clearOneCSessionProfile()
     api.setToken(null)
     clearAvatarCache()
     setAvatarUrl(null)
@@ -692,7 +717,7 @@ function AppShell(): React.JSX.Element {
         onLoggedIn={onLoggedIn}
         banner={
           requireComLogin
-            ? 'Сеанс Orchestrator восстановлен по сохранённому токену. Введите пароль 1С для загрузки задач и OData.'
+            ? 'Сеанс восстановлен по токену. Введите пароль 1С — без него erp_pm и COM недоступны.'
             : undefined
         }
       />
@@ -914,7 +939,9 @@ function AppShell(): React.JSX.Element {
                 onNavigate: (pageKey) => {
                   setLastTab(pageKey)
                   setView({ kind: 'tab', key: pageKey })
-                }
+                },
+                onOpenPassport: (workflowId, title, tab) =>
+                  setView({ kind: 'passport', workflowId, title, tab })
               })}
             </>
           )
@@ -1015,7 +1042,9 @@ function AppShell(): React.JSX.Element {
                         ? 'orch-grid-history'
                         : workplaceShellKey === 'extensions'
                           ? 'orch-grid-extensions'
-                          : ''
+                          : workplaceShellKey === 'agent_library'
+                            ? 'orch-grid-agent-library'
+                            : ''
               }
               user={activeUser}
               avatarUrl={avatarUrl}

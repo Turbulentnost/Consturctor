@@ -207,6 +207,30 @@ class OneCReadAttachmentTool(OneCReadOnlyTool):
         )
 
 
+class OneCOpenFormTool(OneCReadOnlyTool):
+    """Открыть форму метаданных в толстом клиенте 1С (журнал поручений и др.)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.open_form",
+                "Открыть форму 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "form": {
+                            "type": "string",
+                            "description": "Путь формы, напр. Документ.ТД_Поручения.Форма.ФормаСписка",
+                        },
+                        "metadata": {"type": "string", "description": "Имя объекта метаданных (опционально)"},
+                        "form_name": {"type": "string", "description": "Имя формы (опционально)"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
 class OneCMeetingServiceNotesTool(OneCReadOnlyTool):
     """Чтение служебных записок на организацию совещаний. Только SELECT."""
 
@@ -259,6 +283,7 @@ def register_onec_readonly_tools(
         OneCGetTaskCardTool(worker),
         OneCListAttachmentsTool(worker),
         OneCReadAttachmentTool(worker),
+        OneCOpenFormTool(worker),
         OneCMeetingServiceNotesTool(worker),
     ]:
         if skip_existing and registry.has_tool(tool.definition.name):

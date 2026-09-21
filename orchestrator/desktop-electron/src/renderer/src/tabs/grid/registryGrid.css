@@ -11,26 +11,9 @@
   min-height: 0;
 }
 
-/* Реестр: в полосе фильтров не сетка KPI (7 кол.), а flex — иначе даты накладываются. */
-.orch-grid-registry .tab-chrome-filters-bar .spec-v04-filters-card.spec-v04-filters-one-row {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-.orch-grid-registry .tab-chrome-filters-bar .registry-filter-bar-extra {
+.orch-grid-registry .tab-chrome-filters-bar .registry-toolbar {
   flex: 1 1 auto;
   min-width: 0;
-}
-
-.orch-grid-registry .tab-chrome-filters-bar .registry-date-filters {
-  flex: 0 1 auto;
-  min-width: 0;
-  justify-content: flex-start;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-date-field {

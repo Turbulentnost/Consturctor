@@ -80,6 +80,90 @@ function requestOutlookMail(range: {
 }
 
 const MAIL_FETCH_MAX_DAYS = 90
+const MAIL_CACHE_KEY = 'orchOutlookMail:v1'
+
+interface OutlookMailCache {
+  day: string
+  mailbox: string
+  dateFrom: string
+  dateTo: string
+  folder: string
+  messages: Record<string, unknown>[]
+}
+
+function readMailCache(): OutlookMailCache | null {
+  try {
+    const raw = window.localStorage.getItem(MAIL_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as OutlookMailCache
+    if (!parsed || !Array.isArray(parsed.messages)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeMailCache(cache: OutlookMailCache): void {
+  try {
+    window.localStorage.setItem(MAIL_CACHE_KEY, JSON.stringify(cache))
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Письма за период — не чаще одного COM-запроса в день на тот же диапазон
+ * (как ensureOutlookMeetings для календаря).
+ */
+export async function ensureOutlookMailRange(
+  mailbox: string,
+  dateFrom: string,
+  dateTo: string,
+  options: { force?: boolean; folder?: string; maxResults?: number } = {}
+): Promise<{
+  ok: boolean
+  messages: Record<string, unknown>[]
+  error?: string
+  cached: boolean
+}> {
+  const fromKey = (dateFrom || '').trim()
+  const toKey = (dateTo || '').trim()
+  const today = dayKeyLocal(new Date())
+  const folder = options.folder || 'All'
+  const box = (mailbox || '').trim().toLowerCase()
+
+  if (!options.force && fromKey && toKey) {
+    const cache = readMailCache()
+    if (
+      cache &&
+      cache.day === today &&
+      cache.mailbox === box &&
+      cache.dateFrom === fromKey &&
+      cache.dateTo === toKey &&
+      cache.folder === folder
+    ) {
+      return { ok: true, messages: cache.messages, cached: true }
+    }
+  }
+
+  const result = await requestOutlookMail({
+    dateFrom: fromKey,
+    dateTo: toKey,
+    folder,
+    maxResults: options.maxResults ?? 120
+  })
+  if (result.ok && fromKey && toKey) {
+    writeMailCache({
+      day: today,
+      mailbox: box,
+      dateFrom: fromKey,
+      dateTo: toKey,
+      folder,
+      messages: result.messages
+    })
+  }
+  return { ...result, cached: false }
+}
 
 function parseDayKey(key: string): Date | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key.trim())

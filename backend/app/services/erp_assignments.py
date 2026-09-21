@@ -870,14 +870,35 @@ def handle_assignments(
     return handler(payload)
 
 
-def build_create_body(args: dict[str, Any]) -> dict[str, Any]:
+def _session_catalog_ref_key(
+    args: dict[str, Any],
+    *,
+    actor_onec_ref: str = "",
+) -> str:
+    trusted = (actor_onec_ref or "").strip()
+    if trusted:
+        return trusted
+    return str(args.get("session_customer_key") or args.get("session_onec_ref") or "").strip()
+
+
+def build_create_body(
+    args: dict[str, Any],
+    *,
+    actor_fio: str = "",
+    actor_onec_ref: str = "",
+) -> dict[str, Any]:
     topic = str(args.get("topic") or args.get("ОЧем") or "").strip()
     if not topic:
         raise AssignmentError("Dlya create nuzhen topic / ОЧем")
     customer = str(args.get("customer") or "").strip()
     customer_key = str(args.get("customer_key") or "").strip()
+    session_ref = _session_catalog_ref_key(args, actor_onec_ref=actor_onec_ref)
     if customer and not customer_key:
         customer_key = resolve_user(customer)["ref_key"]
+    if not customer_key and not customer and session_ref:
+        customer_key = session_ref
+        if not customer and actor_fio:
+            customer = actor_fio.strip()
     if not customer_key:
         raise AssignmentError("Dlya create nuzhen customer (FIO zakazchika)")
     due = str(args.get("due") or args.get("СрокПолногоУстраненияНарушений") or "").strip()
@@ -987,12 +1008,17 @@ def handle_assignments_write(
     *,
     actor_fio: str = "",
     actor_user_id: str = "",
+    actor_onec_ref: str = "",
     **_: Any,
 ) -> dict[str, Any]:
-    _ = actor_fio, actor_user_id
+    _ = actor_user_id
     action = str(args.get("action") or "update").strip().casefold()
     if action == "create":
-        body = build_create_body(args)
+        body = build_create_body(
+            args,
+            actor_fio=actor_fio,
+            actor_onec_ref=actor_onec_ref,
+        )
         result = _odata_post({"entity": ASSIGNMENT_ENTITY, "body": body})
         return {
             "summary": "Sozdano poruchenie v 1C (zhdi nomer AST00)",

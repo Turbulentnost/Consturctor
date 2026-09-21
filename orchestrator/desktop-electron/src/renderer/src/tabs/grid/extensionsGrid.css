@@ -40,18 +40,31 @@
   gap: 5px;
 }
 
-/* Карточка расширения занимает 2 строки × 1 столбец. */
+/* Карточка расширения: 2×2 ячейки сетки — кнопки на всю ширину рамки. */
 .extensions-hub-card {
   grid-row: span 2;
-  grid-column: span 1;
+  grid-column: span 2;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 12px;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  padding: 14px;
   overflow: hidden;
+  box-sizing: border-box;
+}
+
+.extensions-hub-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
 }
 
 .extensions-hub-card-head {
@@ -89,15 +102,17 @@
   -webkit-box-orient: vertical;
 }
 
-.extensions-hub-card p {
+.extensions-hub-card-body > p {
   margin: 0;
   color: var(--content-muted);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.45;
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+  width: 100%;
+  max-width: 100%;
 }
 
 .extensions-hub-locked {
@@ -106,15 +121,136 @@
   font-size: 13px !important;
 }
 
+.extensions-hub-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-bottom: 10px;
+}
+
+.extensions-hub-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.extensions-hub-filter-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin-right: 4px;
+}
+
+.extensions-hub-filter-btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.extensions-hub-filter-btn:hover {
+  border-color: rgba(21, 101, 192, 0.35);
+  color: #1565c0;
+}
+
+.extensions-hub-filter-btn.is-active {
+  border-color: rgba(21, 101, 192, 0.45);
+  background: rgba(21, 101, 192, 0.12);
+  color: #1565c0;
+}
+
+.extensions-hub-filter-meta {
+  font-size: 12px;
+}
+
+.extensions-hub-empty {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: #64748b;
+  font-size: 14px;
+  list-style: none;
+}
+
 .extensions-hub-card-actions {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   flex-shrink: 0;
+  width: 100%;
+  margin-top: auto;
+  box-sizing: border-box;
 }
 
-.extensions-hub-card-actions button {
+.extensions-hub-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.extensions-hub-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.extensions-hub-btn--open {
+  border: 1px solid rgba(13, 59, 115, 0.28);
+  background: #fff;
+  color: #0d3b73;
+}
+
+.extensions-hub-btn--open:not(:disabled):hover {
+  border-color: #1565c0;
+  background: #f3f8ff;
+  color: #1565c0;
+}
+
+/* Как spec-btn-launch / основные CTA оркестратора */
+.extensions-hub-btn--pin {
+  border: none;
+  background: #0d3b73;
+  color: #fff;
+  box-shadow: none;
+}
+
+.extensions-hub-btn--pin:not(:disabled):hover {
+  background: #1565c0;
+}
+
+/* Закреплено — контур, как spec-btn-outline */
+.extensions-hub-btn--pin.is-active {
+  border: 1px solid rgba(13, 59, 115, 0.35);
+  background: #fff;
+  color: #0d3b73;
+  box-shadow: none;
+}
+
+.extensions-hub-btn--pin.is-active:not(:disabled):hover {
+  background: #f3f8ff;
+  border-color: #1565c0;
+  color: #1565c0;
 }
 
 .extensions-access-denied {
@@ -1135,4 +1271,111 @@
 
 .sidebar.light .nav-item-extension-module {
   border-left-color: rgba(21, 101, 192, 0.35);
+}
+
+/* —— Библиотека агентов: две панели, без конфликта с wp-card / 8×8 сеткой —— */
+.orch-grid-agent-library .orch-slot-main.orch-heavy-embed-slot > .agent-library-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.agent-library-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  padding: 12px 14px 14px;
+  border-radius: 14px;
+  background: #eef2f7;
+  box-sizing: border-box;
+}
+
+.agent-library-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-library-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
+  overflow: hidden;
+}
+
+.agent-library-panel--catalog {
+  flex: 1 1 auto;
+  min-height: 180px;
+}
+
+.agent-library-panel--adopted {
+  flex: 0 0 auto;
+  max-height: min(38vh, 380px);
+  border-color: rgba(21, 101, 192, 0.22);
+  background: linear-gradient(180deg, #f8fbff 0%, #fff 48%);
+}
+
+.agent-library-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  flex-shrink: 0;
+}
+
+.agent-library-panel-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: #0f172a;
+}
+
+.agent-library-panel-hint {
+  font-size: 12px;
+}
+
+.agent-library-panel-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 12px 14px 14px;
+}
+
+.agent-library-panel-scroll--adopted {
+  max-height: calc(min(38vh, 380px) - 52px);
+}
+
+.agent-library-cards {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  align-content: start;
+  grid-auto-rows: auto;
+}
+
+.agent-library-cards--catalog {
+  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+}
+
+.agent-library-cards--adopted {
+  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+}
+
+.agent-library-page .agent-library-tile {
+  min-width: 0;
+  width: 100%;
+  min-height: 260px;
+  box-sizing: border-box;
 }

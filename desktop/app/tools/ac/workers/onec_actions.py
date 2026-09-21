@@ -19,7 +19,16 @@ ALLOWED_ONEC_TOOLS = {
     "onec.meeting_service_notes",
     "onec.list_attachments",
     "onec.read_attachment",
+    "onec.open_form",
 }
+
+
+def open_metadata_form(input_data: dict) -> dict:
+    """Открыть форму метаданных в толстом клиенте 1С (без записи через COM)."""
+    from app.tools.ac.workers.onec_com_actions import launch_onec_client_form
+
+    ensure_onec_readonly_input(input_data)
+    return launch_onec_client_form(input_data)
 
 FORBIDDEN_INPUT_KEYS = {
     "write",

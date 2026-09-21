@@ -452,10 +452,19 @@ function pathIsAuthApi(path: string): boolean {
   return true
 }
 
+function pathIsAgentLibraryApi(path: string): boolean {
+  return (path || '').includes('/api/v1/agents/library')
+}
+
 async function backendBasesForRequest(opts: RequestOptions): Promise<string[]> {
   const primary = CONFIG.backendUrl.replace(/\/+$/, '')
   // Login / FIO search always via configured backend (loopback); gateway proxy is in backend/.env.
   if (pathIsAuthApi(opts.path)) return [primary]
+  if (!app.isPackaged && pathIsAgentLibraryApi(opts.path)) {
+    await ensureLocalBackend(LOCAL_BACKEND)
+    if (isLoopback(primary)) return [primary]
+    return [LOCAL_BACKEND, primary]
+  }
   if (!app.isPackaged && pathPrefersLocalBackendFirst(opts)) {
     const gateway = resolveDocflowGatewayBase()
     await ensureLocalBackend(LOCAL_BACKEND)
@@ -513,6 +522,7 @@ function extractDetail(status: number, data: unknown): string {
 function pathUsesLocalBackendFallback(path: string, opts?: RequestOptions): boolean {
   const p = path || ''
   if (p.includes('/api/v1/admin/') || p.includes('/api/v1/workplace/kpi')) return true
+  if (p.includes('/api/v1/agents/library')) return true
   if (pathPrefersLocalBackendFirst(opts || { path })) return true
   return false
 }
@@ -523,6 +533,12 @@ function localBackendFallbackFailureMessage(path: string, localUp: boolean): str
   }
   if ((path || '').includes('/api/v1/workplace/kpi')) {
     return 'Не удалось загрузить KPI рабочего места. Перелогиньтесь или обновите вкладку.'
+  }
+  if ((path || '').includes('/api/v1/agents/library')) {
+    return (
+      'Библиотека агентов недоступна на gateway. Запустите локальный backend (orchestrator\\backend, run_dev.bat) ' +
+      'или обновите сервер с маршрутом GET /api/v1/agents/library.'
+    )
   }
   return 'Не удалось загрузить админ-данные. Перелогиньтесь или обновите страницу.'
 }

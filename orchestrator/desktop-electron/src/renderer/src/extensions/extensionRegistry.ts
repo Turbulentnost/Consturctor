@@ -11,7 +11,7 @@ export type ExtensionId = string
 
 export type ExtensionDefinition = Pick<
   ExtensionModule,
-  'id' | 'navLabel' | 'title' | 'description' | 'pageKey'
+  'id' | 'navLabel' | 'title' | 'description' | 'pageKey' | 'positionGroups'
 >
 
 export const EXTENSIONS: ExtensionDefinition[] = EXTENSION_MODULES.map((item) => ({
@@ -19,7 +19,8 @@ export const EXTENSIONS: ExtensionDefinition[] = EXTENSION_MODULES.map((item) =>
   navLabel: item.navLabel,
   title: item.title,
   description: item.description,
-  pageKey: item.pageKey
+  pageKey: item.pageKey,
+  positionGroups: item.positionGroups
 }))
 
 export const EXTENSION_BY_ID = EXTENSION_MODULE_BY_ID

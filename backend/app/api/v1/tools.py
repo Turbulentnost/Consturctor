@@ -109,6 +109,7 @@ def _dispatch_server_tool(
                 arguments,
                 actor_user_id=auth.user_id,
                 actor_fio=auth.fio or "",
+                actor_onec_ref=auth.onec_catalog_ref_key or "",
             )
     except (ImapToolError, OnecToolError, TurboProjectError, ArtifactError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

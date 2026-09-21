@@ -12984,6 +12984,32 @@ button.spec-v04-tile {
   font-weight: 700;
   color: #102033;
 }
+.set-kv {
+  display: grid;
+  gap: 10px 16px;
+  margin: 0 0 14px;
+}
+.set-kv > div {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 8px 12px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.set-kv dt {
+  margin: 0;
+  color: var(--content-muted);
+  font-weight: 500;
+}
+.set-kv dd {
+  margin: 0;
+  color: #102033;
+  word-break: break-word;
+}
+.set-mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
 .set-widget-list {
   list-style: none;
   margin: 0 0 14px;

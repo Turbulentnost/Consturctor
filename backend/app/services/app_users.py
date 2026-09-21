@@ -77,6 +77,7 @@ def to_user_out(user: AppUser) -> UserOut:
         department_change_available_at=available_at,
         activity_status=getattr(user, "activity_status", None) or "online",
         is_support=bool(getattr(user, "is_support", False)),
+        onec_catalog_ref_key=str(getattr(user, "onec_catalog_ref_key", None) or "").strip(),
     )
 
 
@@ -86,7 +87,9 @@ def upsert_app_user(
     fio: str,
     department: str,
     position: str = "",
+    onec_catalog_ref_key: str = "",
 ) -> AppUser:
+    ref_key = (onec_catalog_ref_key or "").strip()
     with SessionLocal() as db:
         user = db.get(AppUser, user_id)
         if user is None:
@@ -95,6 +98,7 @@ def upsert_app_user(
                 fio=fio,
                 department=department or "",
                 position=position or "",
+                onec_catalog_ref_key=ref_key,
             )
             db.add(user)
             logger.info("Created app user id=%s", user_id)
@@ -107,6 +111,9 @@ def upsert_app_user(
                 changed = True
             if not (user.position or "").strip() and position:
                 user.position = position
+                changed = True
+            if ref_key and (user.onec_catalog_ref_key or "") != ref_key:
+                user.onec_catalog_ref_key = ref_key
                 changed = True
             if not changed:
                 # /auth/me runs on every app open; skip the write when nothing moved.

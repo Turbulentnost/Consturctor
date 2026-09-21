@@ -142,6 +142,12 @@ async def _local_erp_reachable_quick(max_sec: float = 8.0) -> bool:
         return False
 
 
+def _resolve_onec_catalog_ref(*, user_id: str, fio: str) -> str:
+    from app.services.onec_catalog_user import resolve_catalog_user_ref_key
+
+    return resolve_catalog_user_ref_key(user_id=user_id, fio=fio)
+
+
 def _user_out_from_gateway_payload(raw: dict[str, Any]) -> UserOut:
     user_id = str(raw.get("id") or raw.get("user_id") or "").strip()
     fio = str(raw.get("fio") or "").strip()
@@ -150,12 +156,16 @@ def _user_out_from_gateway_payload(raw: dict[str, Any]) -> UserOut:
     department = str(raw.get("department") or "")
     position = str(raw.get("position") or "")
     name_mail = str(raw.get("name_mail") or raw.get("nameMail") or "")
+    onec_ref = str(raw.get("onec_catalog_ref_key") or raw.get("onecCatalogRefKey") or "").strip()
+    if not onec_ref:
+        onec_ref = _resolve_onec_catalog_ref(user_id=user_id, fio=fio)
     return _to_user_out(
         user_id=user_id,
         fio=fio,
         department=department,
         position=position,
         name_mail=name_mail,
+        onec_catalog_ref_key=onec_ref,
     )
 
 
@@ -209,6 +219,7 @@ def _login_via_erp_gateway(fio: str, password: str, client: str = DEFAULT_CLIENT
         position=user_out.position or "",
         session_id=session_id,
         client=client,
+        onec_catalog_ref_key=user_out.onec_catalog_ref_key or "",
     )
     _trace(
         f"Auth login via gateway id={user_out.id} fio={user_out.fio} "
@@ -265,6 +276,7 @@ def _login_via_bypass(fio: str, password: str, client: str = DEFAULT_CLIENT) -> 
     session_id = new_session_id()
     client = normalize_client(client)
     replace_session(user_id, session_id, client)
+    onec_ref = _resolve_onec_catalog_ref(user_id=user_id, fio=canon_fio)
     token = create_access_token(
         user_id=user_id,
         fio=canon_fio,
@@ -272,6 +284,7 @@ def _login_via_bypass(fio: str, password: str, client: str = DEFAULT_CLIENT) -> 
         position=position,
         session_id=session_id,
         client=client,
+        onec_catalog_ref_key=onec_ref,
     )
     name_mail = (settings.my_name_mail or "").strip().lower()
     user_out = _to_user_out(
@@ -280,6 +293,7 @@ def _login_via_bypass(fio: str, password: str, client: str = DEFAULT_CLIENT) -> 
         department=department,
         position=position,
         name_mail=name_mail,
+        onec_catalog_ref_key=onec_ref,
     )
     _trace(
         f"Auth login bypass id={user_id} fio={canon_fio} "
@@ -308,13 +322,18 @@ def _to_user_out(
     department: str,
     position: str = "",
     name_mail: str = "",
+    onec_catalog_ref_key: str = "",
 ) -> UserOut:
+    ref_key = (onec_catalog_ref_key or "").strip()
+    if not ref_key:
+        ref_key = _resolve_onec_catalog_ref(user_id=user_id, fio=fio)
     try:
         app_user = app_users.upsert_app_user(
             user_id=user_id,
             fio=fio,
             department=department or "",
             position=position or "",
+            onec_catalog_ref_key=ref_key,
         )
     except Exception as exc:
         logger.exception("Failed to upsert app user id=%s", user_id)
@@ -392,6 +411,11 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
 
     session_id = new_session_id()
     replace_session(erp_user.id, session_id, client)
+    onec_ref = await asyncio.to_thread(
+        _resolve_onec_catalog_ref,
+        user_id=erp_user.id,
+        fio=erp_user.fio,
+    )
     token = create_access_token(
         user_id=erp_user.id,
         fio=erp_user.fio,
@@ -399,6 +423,7 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
         position=position or "",
         session_id=session_id,
         client=client,
+        onec_catalog_ref_key=onec_ref,
     )
     user_out = await asyncio.to_thread(
         _to_user_out,
@@ -407,6 +432,7 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
         department=department or "",
         position=position or "",
         name_mail=_name_mail_for_erp_user(erp_user, password=password),
+        onec_catalog_ref_key=onec_ref,
     )
     _trace(
         f"Auth login ok id={erp_user.id} fio={erp_user.fio} "
@@ -424,7 +450,7 @@ async def list_user_fios(search: str | None = None) -> list[str]:
             return []
         return [fio]
     gateway = _auth_gateway_base()
-    if gateway and not await _local_erp_reachable():
+    if gateway and not await _local_erp_reachable_quick():
         items = await asyncio.to_thread(_list_fios_via_erp_gateway, search)
         if items or search:
             return items
@@ -463,13 +489,36 @@ async def list_department_names() -> list[str]:
         raise AuthError("Не удалось загрузить список отделов", status_code=503) from exc
 
 
-async def get_current_user_profile(user_id: str, fio_hint: str | None = None) -> UserOut:
+async def get_current_user_profile(
+    user_id: str,
+    fio_hint: str | None = None,
+    *,
+    onec_catalog_ref_hint: str = "",
+) -> UserOut:
     app_cached = app_users.get_app_user(user_id)
     if app_cached is None and fio_hint:
         app_cached = app_users.find_app_user_by_fio(fio_hint)
     if app_cached is not None and (app_cached.fio or "").strip():
-        # Desktop calls /auth/me on every open — do not reopen ODBC if login already synced Postgres.
-        return app_users.to_user_out(app_cached)
+        ref = (onec_catalog_ref_hint or app_cached.onec_catalog_ref_key or "").strip()
+        if not ref:
+            ref = await asyncio.to_thread(
+                _resolve_onec_catalog_ref,
+                user_id=user_id,
+                fio=app_cached.fio or (fio_hint or ""),
+            )
+            if ref:
+                app_cached = await asyncio.to_thread(
+                    app_users.upsert_app_user,
+                    user_id=app_cached.id,
+                    fio=app_cached.fio,
+                    department=app_cached.department or "",
+                    position=app_cached.position or "",
+                    onec_catalog_ref_key=ref,
+                )
+        out = app_users.to_user_out(app_cached)
+        if ref and not out.onec_catalog_ref_key:
+            return out.model_copy(update={"onec_catalog_ref_key": ref})
+        return out
 
     if _erp_sql_bypass_enabled():
         fio = (fio_hint or settings.erp_login).strip()
