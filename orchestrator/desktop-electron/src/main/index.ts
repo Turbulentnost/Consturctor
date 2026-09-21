@@ -452,25 +452,47 @@ function pathIsAuthApi(path: string): boolean {
   return true
 }
 
+function pathIsAgentLibraryApi(path: string): boolean {
+  return (path || '').includes('/api/v1/agents/library')
+}
+
 async function backendBasesForRequest(opts: RequestOptions): Promise<string[]> {
   const primary = CONFIG.backendUrl.replace(/\/+$/, '')
   // Login / FIO search always via configured backend (loopback); gateway proxy is in backend/.env.
   if (pathIsAuthApi(opts.path)) return [primary]
+  // Agent library: JWT must match the backend that issued it (LAN vs 127.0.0.1).
+  // Local backend first only when BACKEND_URL is already loopback; LAN → gateway only (404 → fallback).
+  if (!app.isPackaged && pathIsAgentLibraryApi(opts.path)) {
+    if (isLoopback(primary)) {
+      await ensureLocalBackend(LOCAL_BACKEND)
+      return [primary]
+    }
+    return [primary]
+  }
   if (!app.isPackaged && pathPrefersLocalBackendFirst(opts)) {
-    const gateway = resolveDocflowGatewayBase()
     await ensureLocalBackend(LOCAL_BACKEND)
+    // JWT is tied to BACKEND_URL host — LAN login must not hit 127.0.0.1 first.
+    if (!isLoopback(primary)) {
+      return [primary]
+    }
     const profileEnvPath = join(app.getPath('userData'), '.env')
     const profileEnv = existsSync(profileEnvPath) ? parseEnvFile(profileEnvPath) : {}
     const preferLocal = preferLocalBackend(profileEnv)
+    const gateway = resolveDocflowGatewayBase()
     const bases: string[] = []
     const push = (base: string) => {
       const normalized = (base || '').replace(/\/+$/, '')
       if (normalized && !bases.includes(normalized)) bases.push(normalized)
     }
-    // Local backend carries DOK_HTTP_* to 229; LAN gateway often returns stub/empty without session SOAP.
-    if (preferLocal || isLoopback(primary)) push(LOCAL_BACKEND)
-    if (!isLoopback(primary)) push(primary)
-    else if (gateway !== LOCAL_BACKEND) push(gateway)
+    // Loopback dev: local DOK_HTTP_*; optional second hop only with the same JWT host.
+    if (preferLocal) {
+      push(LOCAL_BACKEND)
+    } else {
+      push(primary)
+    }
+    if (gateway !== LOCAL_BACKEND && isLoopback(gateway)) {
+      push(gateway)
+    }
     if (bases.length) return bases
     return [LOCAL_BACKEND]
   }
@@ -513,6 +535,7 @@ function extractDetail(status: number, data: unknown): string {
 function pathUsesLocalBackendFallback(path: string, opts?: RequestOptions): boolean {
   const p = path || ''
   if (p.includes('/api/v1/admin/') || p.includes('/api/v1/workplace/kpi')) return true
+  if (p.includes('/api/v1/agents/library')) return true
   if (pathPrefersLocalBackendFirst(opts || { path })) return true
   return false
 }
@@ -523,6 +546,12 @@ function localBackendFallbackFailureMessage(path: string, localUp: boolean): str
   }
   if ((path || '').includes('/api/v1/workplace/kpi')) {
     return 'Не удалось загрузить KPI рабочего места. Перелогиньтесь или обновите вкладку.'
+  }
+  if ((path || '').includes('/api/v1/agents/library')) {
+    return (
+      'Библиотека агентов недоступна на gateway. Запустите локальный backend (orchestrator\\backend, run_dev.bat) ' +
+      'или обновите сервер с маршрутом GET /api/v1/agents/library.'
+    )
   }
   return 'Не удалось загрузить админ-данные. Перелогиньтесь или обновите страницу.'
 }
@@ -564,6 +593,10 @@ async function tryLocalBackendFallback(
       return { ok: true, status: localResponse.status, data: localData }
     }
     if (localResponse.status !== 404 && localResponse.status !== 405) {
+      // LAN JWT on loopback → «Недействительный токен»; keep primary error instead.
+      if (localResponse.status === 401 || localResponse.status === 403) {
+        return null
+      }
       return {
         ok: false,
         status: localResponse.status,
@@ -628,16 +661,17 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
         error: extractDetail(response.status, data)
       }
       const routeMissing = response.status === 404 || response.status === 405
-      const docflowAuthRejected =
-        pathPrefersLocalBackendFirst(opts) &&
+      const authRejectedOnWrongHost =
+        (pathPrefersLocalBackendFirst(opts) || pathIsAgentLibraryApi(opts.path)) &&
         (response.status === 401 || response.status === 403)
+      const docflowAuthRejected = authRejectedOnWrongHost
       if (docflowAuthRejected && hasNext) {
         console.log(
           `Backend API retry: ${opts.path} — ${base} (docflow auth ${response.status}) → ${bases[index + 1]}`
         )
         continue
       }
-      if (docflowAuthRejected) {
+      if (docflowAuthRejected && !hasNext) {
         return { ok: false, status: lastError.status, error: lastError.error }
       }
       if (hasNext) {

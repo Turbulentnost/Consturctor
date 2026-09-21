@@ -90,23 +90,38 @@ export function FioSuggest({
     if (debounce.current) clearTimeout(debounce.current)
     debounce.current = setTimeout(async () => {
       let results: DirectoryUser[] = []
+      const onLoginScreen = !api.getToken()
       try {
-        results = await api.listDirectoryUsers(search)
+        if (onLoginScreen) {
+          const names = await api.searchUsers(search)
+          results = names.map((fio) => ({
+            id: '',
+            fio,
+            position: '',
+            department: '',
+            activityStatus: 'online',
+            online: false,
+            isSupport: false,
+            avatarUrl: null
+          }))
+        } else {
+          results = await api.listDirectoryUsers(search)
+          if (!results.length) {
+            const names = await api.searchUsers(search)
+            results = names.map((fio) => ({
+              id: '',
+              fio,
+              position: '',
+              department: '',
+              activityStatus: 'online',
+              online: false,
+              isSupport: false,
+              avatarUrl: null
+            }))
+          }
+        }
       } catch {
         results = []
-      }
-      if (!results.length) {
-        const names = await api.searchUsers(search)
-        results = names.map((fio) => ({
-          id: '',
-          fio,
-          position: '',
-          department: '',
-          activityStatus: 'online',
-          online: false,
-          isSupport: false,
-          avatarUrl: null
-        }))
       }
       setItems(results.slice(0, 20))
       setHighlight(-1)

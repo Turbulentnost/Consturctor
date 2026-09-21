@@ -4,6 +4,9 @@ import type { UserProfile } from '../../api/types'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_STANDARD_LAYOUT } from './useTabChromeLayout'
 import { SpecPill, SpecProgress } from '../../workplace/specV04Components'
+import { WorkplaceProgressSection } from '../../workplace/WorkplaceProgressSection'
+import { displayTaskProgress } from '../../workplace/TaskProgressEditor'
+import { taskActionContextFromTaskRow } from '../../workplace/taskSourceKind'
 import {
   comPasswordSessionHint,
   sessionOneCEmptyText,
@@ -30,6 +33,8 @@ import {
   type CreateTaskChannel
 } from '../../workplace/workplaceNav'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
+import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 
 export function TasksGridTab({
   user,
@@ -39,6 +44,7 @@ export function TasksGridTab({
   navTaskFilter?: TaskTileFilter | null
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
+  const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const [tileFilter, setTileFilter] = useState(navTaskFilter ?? EMPTY_TASK_TILE_FILTER)
   const [query, setQuery] = useState('')
   const [barSource, setBarSource] = useState('')
@@ -61,6 +67,7 @@ export function TasksGridTab({
     const q = query.trim().toLowerCase()
     const filtered = filterTaskRows(catalog.rows, effectiveTile, catalog.erpIds, catalog.turboIds).filter(
       (row) => {
+        if (!deadlineInWorkplacePeriod(row.deadline, periodFrom, periodTo)) return false
         if (barStatus && row.status !== barStatus) return false
         if (barProject && row.project !== barProject) return false
         if (q && !`${row.title} ${row.source} ${row.process} ${row.project}`.toLowerCase().includes(q)) {
@@ -81,7 +88,7 @@ export function TasksGridTab({
       })
     }
     return [...filtered].sort(compareTasksByUrgency)
-  }, [catalog, effectiveTile, query, barStatus, barProject, barSort, barOverdue])
+  }, [catalog, effectiveTile, query, barStatus, barProject, barSort, barOverdue, periodFrom, periodTo])
   const onTileSelect = (id: string): void => {
     setTileFilter((current) => applyTaskTileClick(current, id, isDeadTaskSource(data, id)))
   }
@@ -260,7 +267,7 @@ export function TasksGridTab({
                     <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
                   </td>
                   <td>
-                    <SpecProgress value={row.progress} />
+                    <SpecProgress value={displayTaskProgress(row.id, row.progress)} />
                   </td>
                 </tr>
               ))}
@@ -309,10 +316,12 @@ export function TasksGridTab({
                 <dd>{selected.who}</dd>
               </div>
             </dl>
-            <SpecProgress value={selected.progress} />
-            <button type="button" className="spec-btn-launch spec-btn-launch-block">
-              Отметить выполненной
-            </button>
+            <WorkplaceProgressSection
+              user={user}
+              rowId={selected.id}
+              baseProgress={selected.progress}
+              actionContext={taskActionContextFromTaskRow(selected)}
+            />
           </div>
         ) : (
           <div className="wp-card spec-v04-muted">Выберите задачу</div>

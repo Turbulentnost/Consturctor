@@ -63,6 +63,7 @@ _READ_EXACT = frozenset(
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
+        "onec.open_form",
         "onec.meeting_service_notes",
         "agent.wait",
         "turboproject",

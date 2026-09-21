@@ -1,8 +1,12 @@
 import type { ReactNode } from 'react'
 import type { UserProfile } from '../api/types'
 import type { PageKey } from '../components/Sidebar'
+import type { PassportTab } from '../pages/AgentPassportPage'
 import { AssignmentsRegistryGridTab } from '../tabs/grid/AssignmentsRegistryGridTab'
+import { AgentLibraryGridTab } from '../tabs/grid/AgentLibraryGridTab'
+import type { ExtensionPositionFilter } from './extensionAudience'
 import {
+  canUseAgentLibrary,
   canUseAssignmentsRegistry,
   isChairmanBoardAssistant,
   isPromptEngineer
@@ -13,6 +17,7 @@ export type ExtensionTabContext = {
   user: UserProfile
   onAskOrchestrator: (message: string, appContext: string) => void
   onNavigate: (pageKey: PageKey) => void
+  onOpenPassport: (workflowId: string, title: string, tab?: PassportTab) => void
 }
 
 /**
@@ -26,6 +31,8 @@ export type ExtensionModule = {
   title: string
   description: string
   subtitle: string
+  /** В каких фильтрах по должности показывать карточку в каталоге «Расширения». */
+  positionGroups: ExtensionPositionFilter[]
   canAccess: (user: UserProfile) => boolean
   renderTab: (ctx: ExtensionTabContext) => ReactNode
 }
@@ -39,9 +46,24 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
     subtitle: 'Журнал поручений АСТ00: контроль сроков, статусов и проверка закрытия через ИИ',
     description:
       'Журнал поручений АСТ00: плитки, фильтр по датам, таблица с сортировкой и проверка незакрытых поручений через ИИ-агента.',
+    positionGroups: ['director_assistants'],
     canAccess: canUseAssignmentsRegistry,
     renderTab: ({ user, onAskOrchestrator }) => (
       <AssignmentsRegistryGridTab user={user} onAskOrchestrator={onAskOrchestrator} />
+    )
+  },
+  {
+    id: 'agent_library',
+    pageKey: 'agent_library',
+    navLabel: 'Библиотека агентов',
+    title: 'Библиотека агентов',
+    subtitle: 'Опубликованные ИИ-агенты всех сотрудников: добавьте к себе и откройте паспорт',
+    description:
+      'Сбор агентов со всех пользователей, карточки agent_card, добавление копии в ваши процессы и открытие паспорта.',
+    positionGroups: ['all', 'director_assistants'],
+    canAccess: canUseAgentLibrary,
+    renderTab: ({ user, onOpenPassport }) => (
+      <AgentLibraryGridTab user={user} onOpenPassport={onOpenPassport} />
     )
   }
 ]

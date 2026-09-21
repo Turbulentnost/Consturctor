@@ -121,7 +121,9 @@ function parseUser(data: Record<string, unknown>): UserProfile {
       (data.canChangeDepartment as boolean) ?? (data.can_change_department as boolean) ?? true,
     activityStatus:
       (data.activityStatus as string) ?? (data.activity_status as string) ?? 'online',
-    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false
+    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false,
+    onecCatalogRefKey:
+      String(data.onecCatalogRefKey ?? data.onec_catalog_ref_key ?? '').trim() || undefined
   })
 }
 

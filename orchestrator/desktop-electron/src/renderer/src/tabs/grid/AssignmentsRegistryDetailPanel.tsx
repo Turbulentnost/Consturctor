@@ -13,9 +13,11 @@ function DetailField({ label, value }: { label: string; value: string }): React.
 
 export function AssignmentsRegistryDetailPanel({
   row,
+  linesLoading = false,
   onClose
 }: {
   row: AssignmentRegistryRow | null
+  linesLoading?: boolean
   onClose: () => void
 }): React.JSX.Element {
   if (!row) {
@@ -67,7 +69,9 @@ export function AssignmentsRegistryDetailPanel({
         <h4 className="registry-detail-tasks-title">
           Задачи {row.lines.length ? `(${row.lines.length})` : ''}
         </h4>
-        {row.lines.length ? (
+        {linesLoading && !row.lines.length ? (
+          <p className="registry-detail-tasks-empty">Загрузка задач из 1С…</p>
+        ) : row.lines.length ? (
           <ul className="registry-detail-tasks">
             {row.lines.map((line, index) => (
               <li key={`${row.id}-${line.line}`} className="registry-detail-task">

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { PAGE_LABELS } from '../components/Sidebar'
+import agentLibraryLogo from '../assets/nav-orchestrator.svg'
 import {
   SpecProcessMapButton,
   SpecQuickLaunchButton,
@@ -21,11 +22,14 @@ export type WorkplaceTabKey =
   | 'knowledge'
   | 'extensions'
   | 'assignments_registry'
+  | 'agent_library'
 
 export interface TabRegistryEntry {
   title: string
   subtitle: string
   headerActions?: ReactNode
+  /** Логотип в шапке вкладки вместо стандартной иконки навигации */
+  titleLogoSrc?: string
 }
 
 export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
@@ -91,5 +95,10 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   assignments_registry: {
     title: 'Реестр поручений',
     subtitle: 'Журнал поручений АСТ00: контроль сроков, статусов и проверка закрытия через ИИ'
+  },
+  agent_library: {
+    title: 'Библиотека агентов',
+    subtitle: 'Опубликованные ИИ-агенты всех сотрудников: добавьте к себе и откройте паспорт',
+    titleLogoSrc: agentLibraryLogo
   }
 }

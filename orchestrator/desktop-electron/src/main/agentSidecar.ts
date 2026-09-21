@@ -106,6 +106,29 @@ function resolveDesktopRoot(starts: string[], fallback: string): string {
   return found.find((path) => hasCursorKey(path)) || found[0] || fallback
 }
 
+const ONEC_DESKTOP_ENV_KEYS = [
+  'ONEC_COM_SERVER',
+  'ONEC_COM_REF',
+  'ONEC_COM_CONNECTION_STRING',
+  'ONEC_ENTERPRISE_DB',
+  'ONEC_COM_PROGID',
+  'ONEC_DB_PATH',
+  'BACKEND_URL'
+] as const
+
+function onecInfraEnvFromDesktop(desktopRoot: string): Record<string, string> {
+  const parsed = parseEnvFile(join(desktopRoot, '.env'))
+  const out: Record<string, string> = {}
+  for (const key of ONEC_DESKTOP_ENV_KEYS) {
+    const value = parsed[key]?.trim()
+    if (value) out[key] = value
+  }
+  if (!out.ONEC_ENTERPRISE_DB && out.ONEC_COM_SERVER && out.ONEC_COM_REF) {
+    out.ONEC_ENTERPRISE_DB = `/S${out.ONEC_COM_SERVER}\\${out.ONEC_COM_REF}`
+  }
+  return out
+}
+
 function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
   const appData = process.env.APPDATA || ''
   const files = [
@@ -249,6 +272,7 @@ export class AgentSidecar {
     const pathParts = [nodeDir, process.env.PATH || process.env.Path || ''].filter(Boolean)
     const browsersPath = join(desktopRoot, 'ms-playwright')
     const cursorEnv = cursorEnvFromDesktop(desktopRoot)
+    const onecEnv = onecInfraEnvFromDesktop(desktopRoot)
     const pythonPathParts = [desktopRoot, process.env.PYTHONPATH].filter(Boolean)
     const localAppData = process.env.LOCALAPPDATA || process.env.APPDATA || ''
     const orchestratorWorkspacesRoot = localAppData
@@ -261,6 +285,7 @@ export class AgentSidecar {
     }
     return {
       ...process.env,
+      ...onecEnv,
       ...cursorEnv,
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
@@ -585,14 +610,22 @@ export class AgentSidecar {
 
   configure(
     token: string | null,
-    credentials?: { login?: string; password?: string; onecComUsr?: string }
+    credentials?: {
+      login?: string
+      password?: string
+      onecComUsr?: string
+      nameMail?: string
+      userId?: string
+      onecCatalogRefKey?: string
+      [key: string]: unknown
+    }
   ): void {
     this.lastToken = token ?? null
     if (credentials) {
       if (credentials.login !== undefined) this.lastLogin = String(credentials.login || '')
       if (credentials.password !== undefined) this.lastPassword = String(credentials.password || '')
     }
-    this.send({
+    const payload: Record<string, unknown> = {
       type: 'configure',
       backendUrl: this.backendUrl,
       token: this.lastToken,
@@ -600,12 +633,29 @@ export class AgentSidecar {
       fio: this.lastLogin,
       erp_login: this.lastLogin,
       password: this.lastPassword
-    })
+    }
+    if (credentials) {
+      for (const [key, value] of Object.entries(credentials)) {
+        if (value === undefined || value === null) continue
+        const text = String(value).trim()
+        if (!text) continue
+        payload[key] = text
+      }
+    }
+    this.send(payload)
   }
 
   ready(
     token: string | null,
-    credentials?: { login?: string; password?: string; onecComUsr?: string }
+    credentials?: {
+      login?: string
+      password?: string
+      onecComUsr?: string
+      nameMail?: string
+      userId?: string
+      onecCatalogRefKey?: string
+      [key: string]: unknown
+    }
   ): void {
     this.lastToken = token ?? null
     this.start()

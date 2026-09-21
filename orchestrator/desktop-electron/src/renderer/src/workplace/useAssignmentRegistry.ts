@@ -2,7 +2,22 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { mapAssignmentFromApi } from './assignmentRegistryMappers'
 import type { AssignmentRegistryRow } from './assignmentRegistryTypes'
-import { readRegistryCache, registryCacheKey, writeRegistryCache } from './assignmentRegistryCache'
+import {
+  clearRegistryPool,
+  mergeRegistryPool,
+  readRegistryCache,
+  readRegistryPool,
+  registryCacheKey,
+  writeRegistryCache
+} from './assignmentRegistryCache'
+import {
+  filterRegistryRowsByPeriod,
+  planRegistryFetchSlices,
+  type RegistryLoadedSpan
+} from './assignmentRegistryRange'
+
+export const REGISTRY_PAGE_SIZE = 20
+export const REGISTRY_MAX_ROWS = 100
 
 function parseAssignmentsPayload(result: unknown): AssignmentRegistryRow[] {
   if (!result || typeof result !== 'object') return []
@@ -13,16 +28,6 @@ function parseAssignmentsPayload(result: unknown): AssignmentRegistryRow[] {
     .map((item) => mapAssignmentFromApi(item))
 }
 
-function parseGetAssignment(result: unknown): AssignmentRegistryRow | null {
-  if (!result || typeof result !== 'object') return null
-  const payload = result as Record<string, unknown>
-  const one = payload.assignment
-  if (one && typeof one === 'object') {
-    return mapAssignmentFromApi(one as Record<string, unknown>)
-  }
-  return null
-}
-
 export function useAssignmentRegistry(
   userId: string,
   dateFrom: string,
@@ -31,110 +36,180 @@ export function useAssignmentRegistry(
   rows: AssignmentRegistryRow[]
   loading: boolean
   refreshing: boolean
+  loadingMore: boolean
+  firstRowReady: boolean
   error: string
   refresh: () => void
 } {
   const cacheKey = registryCacheKey(userId, dateFrom, dateTo)
   const cached = readRegistryCache(cacheKey)
+  const poolSeed = filterRegistryRowsByPeriod(readRegistryPool(userId), dateFrom, dateTo)
+  const initialRows = cached?.rows.length ? cached.rows : poolSeed
 
-  const [rows, setRows] = useState<AssignmentRegistryRow[]>(() => cached?.rows ?? [])
-  const [loading, setLoading] = useState(() => !cached?.rows.length)
+  const [rows, setRows] = useState<AssignmentRegistryRow[]>(() => initialRows)
+  const [loading, setLoading] = useState(() => !initialRows.length)
   const [refreshing, setRefreshing] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [firstRowReady, setFirstRowReady] = useState(() => Boolean(initialRows.length))
   const [error, setError] = useState('')
   const [tick, setTick] = useState(0)
   const loadGeneration = useRef(0)
-  const enrichGeneration = useRef(0)
+  const loadedSpanRef = useRef<RegistryLoadedSpan | null>(
+    cached?.complete && cached.dateFrom && cached.dateTo
+      ? { dateFrom: cached.dateFrom, dateTo: cached.dateTo, complete: true }
+      : null
+  )
 
-  const refresh = useCallback(() => setTick((value) => value + 1), [])
+  const refresh = useCallback(() => {
+    clearRegistryPool(userId)
+    loadedSpanRef.current = null
+    writeRegistryCache(cacheKey, [], { complete: false, dateFrom, dateTo })
+    setRows([])
+    setFirstRowReady(false)
+    setTick((value) => value + 1)
+  }, [cacheKey, dateFrom, dateTo, userId])
 
-  const applyRows = useCallback(
-    (next: AssignmentRegistryRow[]) => {
-      setRows(next)
-      writeRegistryCache(cacheKey, next)
+  const publishVisible = useCallback(
+    (pool: AssignmentRegistryRow[], meta?: { complete?: boolean }) => {
+      const visible = filterRegistryRowsByPeriod(pool, dateFrom, dateTo)
+      setRows(visible)
+      writeRegistryCache(cacheKey, visible, {
+        complete: meta?.complete,
+        dateFrom,
+        dateTo
+      })
+      if (visible.length) setFirstRowReady(true)
+      return visible
     },
-    [cacheKey]
+    [cacheKey, dateFrom, dateTo]
   )
 
   useEffect(() => {
     const seq = ++loadGeneration.current
-    enrichGeneration.current += 1
-    const enrichSeq = enrichGeneration.current
     let alive = true
 
-    const hadCache = Boolean(readRegistryCache(cacheKey)?.rows.length)
+    const poolVisible = filterRegistryRowsByPeriod(readRegistryPool(userId), dateFrom, dateTo)
+    const exactCache = readRegistryCache(cacheKey)
+
+    if (exactCache?.complete && exactCache.rows.length) {
+      setRows(exactCache.rows)
+      setFirstRowReady(true)
+      setLoading(false)
+      setRefreshing(false)
+      setLoadingMore(false)
+      loadedSpanRef.current = {
+        dateFrom: exactCache.dateFrom || dateFrom,
+        dateTo: exactCache.dateTo || dateTo,
+        complete: true
+      }
+      return
+    }
+
+    if (poolVisible.length) {
+      publishVisible(readRegistryPool(userId))
+    }
+
+    if (!loadedSpanRef.current && poolVisible.length) {
+      loadedSpanRef.current = { dateFrom, dateTo, complete: false }
+    }
+
+    const slices = planRegistryFetchSlices(loadedSpanRef.current, dateFrom, dateTo)
+    if (!slices.length) {
+      if (poolVisible.length) publishVisible(readRegistryPool(userId))
+      setLoading(false)
+      setRefreshing(false)
+      setLoadingMore(false)
+      return
+    }
+
+    if (!poolVisible.length) setLoading(true)
+    else setRefreshing(true)
+    setError('')
 
     const load = async (): Promise<void> => {
-      if (!hadCache) setLoading(true)
-      else setRefreshing(true)
-      setError('')
+      let pool = readRegistryPool(userId)
+      let spanFinishedComplete = true
+
       try {
-        const payload: Record<string, unknown> = {
-          action: 'list',
-          limit: 100,
-          only_open: false
-        }
-        if (dateFrom.trim()) payload.date_from = dateFrom.trim()
-        if (dateTo.trim()) payload.date_to = dateTo.trim()
-        const res = await api.invokeServerTool('onec.erp_assignments', payload, 300_000)
-        if (!alive || seq !== loadGeneration.current) return
-        if (!res.ok) {
-          if (!readRegistryCache(cacheKey)?.rows.length) setRows([])
-          setError(String(res.error || 'Не удалось загрузить реестр поручений'))
-          return
-        }
-        const mapped = parseAssignmentsPayload(res.result)
-        applyRows(mapped)
-        if (!mapped.length && res.result && typeof res.result === 'object') {
-          const summary = String((res.result as Record<string, unknown>).summary || '').trim()
-          if (summary.includes('stub')) {
-            setError('OData 1С не настроен на backend (режим stub)')
+        for (const slice of slices) {
+          if (!alive || seq !== loadGeneration.current) return
+
+          const sliceFrom = slice.dateFrom.trim()
+          const sliceTo = slice.dateTo.trim()
+          let skip = 0
+          if (slice.continuePagination) {
+            skip = filterRegistryRowsByPeriod(pool, sliceFrom, sliceTo).length
+          }
+
+          while (skip < REGISTRY_MAX_ROWS) {
+            if (!alive || seq !== loadGeneration.current) return
+
+            const res = await api.invokeServerTool(
+              'onec.erp_assignments',
+              {
+                action: 'list',
+                limit: REGISTRY_PAGE_SIZE,
+                skip,
+                only_open: false,
+                include_lines: false,
+                profile: true,
+                ...(sliceFrom ? { date_from: sliceFrom } : {}),
+                ...(sliceTo ? { date_to: sliceTo } : {})
+              },
+              300_000
+            )
+            if (!alive || seq !== loadGeneration.current) return
+
+            if (!res.ok) {
+              spanFinishedComplete = false
+              if (!pool.length) {
+                setRows([])
+                setError(String(res.error || 'Не удалось загрузить реестр поручений'))
+              }
+              setFirstRowReady(true)
+              break
+            }
+
+            const batch = parseAssignmentsPayload(res.result)
+            if (import.meta.env.DEV && skip === 0 && res.result && typeof res.result === 'object') {
+              const timing = (res.result as Record<string, unknown>).timing_ms
+              if (timing) console.info('[registry] page timing_ms', timing)
+            }
+
+            if (!batch.length) break
+
+            pool = mergeRegistryPool(userId, batch)
+            publishVisible(pool)
+            setLoading(false)
+            setRefreshing(false)
+
+            if (batch.length < REGISTRY_PAGE_SIZE || skip + batch.length >= REGISTRY_MAX_ROWS) {
+              if (batch.length >= REGISTRY_PAGE_SIZE && skip + batch.length >= REGISTRY_MAX_ROWS) {
+                spanFinishedComplete = false
+              }
+              break
+            }
+
+            skip += REGISTRY_PAGE_SIZE
+            setLoadingMore(true)
           }
         }
 
-        void enrichMissingLines(mapped, enrichSeq)
+        loadedSpanRef.current = { dateFrom, dateTo, complete: spanFinishedComplete }
+        publishVisible(pool, { complete: spanFinishedComplete })
       } catch (exc) {
         if (!alive || seq !== loadGeneration.current) return
-        if (!readRegistryCache(cacheKey)?.rows.length) setRows([])
-        setError(exc instanceof Error ? exc.message : 'Ошибка загрузки реестра')
+        spanFinishedComplete = false
+        if (!pool.length) {
+          setRows([])
+          setError(exc instanceof Error ? exc.message : 'Ошибка загрузки реестра')
+        }
+        setFirstRowReady(true)
       } finally {
         if (seq === loadGeneration.current) {
           setLoading(false)
           setRefreshing(false)
-        }
-      }
-    }
-
-    async function enrichMissingLines(base: AssignmentRegistryRow[], generation: number): Promise<void> {
-      const pending = base.filter((row) => row.refKey && row.lines.length === 0)
-      if (!pending.length) return
-      for (const stub of pending) {
-        if (!alive || generation !== enrichGeneration.current || seq !== loadGeneration.current) return
-        try {
-          const res = await api.invokeServerTool(
-            'onec.erp_assignments',
-            { action: 'get', ref_key: stub.refKey },
-            120_000
-          )
-          if (!alive || generation !== enrichGeneration.current) return
-          if (!res.ok) continue
-          const detailed = parseGetAssignment(res.result)
-          if (!detailed?.lines.length) continue
-          setRows((current) => {
-            const merged = current.map((row) => {
-              if (row.id !== stub.id) return row
-              return {
-                ...row,
-                lines: detailed.lines,
-                reporter: detailed.reporter !== '—' ? detailed.reporter : row.reporter,
-                secretary: detailed.secretary !== '—' ? detailed.secretary : row.secretary,
-                manager: detailed.manager !== '—' ? detailed.manager : row.manager
-              }
-            })
-            writeRegistryCache(cacheKey, merged)
-            return merged
-          })
-        } catch {
-          /* следующее поручение */
+          setLoadingMore(false)
         }
       }
     }
@@ -143,8 +218,7 @@ export function useAssignmentRegistry(
     return () => {
       alive = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFrom, dateTo, tick, cacheKey, applyRows])
+  }, [cacheKey, dateFrom, dateTo, publishVisible, tick, userId])
 
-  return { rows, loading, refreshing, error, refresh }
+  return { rows, loading, refreshing, loadingMore, firstRowReady, error, refresh }
 }

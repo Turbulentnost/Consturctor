@@ -64,6 +64,7 @@ def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
         "source": source_for_role(role),
         "ref_key": str(row.get("id") or "").strip(),
         "target_id": str(row.get("target_id") or "").strip(),
+        "step": step,
     }
 
 

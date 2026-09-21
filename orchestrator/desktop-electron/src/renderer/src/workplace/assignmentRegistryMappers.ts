@@ -29,7 +29,7 @@ function formatOneCDate(raw: string): string {
   return text
 }
 
-function mapLine(raw: Record<string, unknown>): AssignmentRegistryLine {
+export function mapLine(raw: Record<string, unknown>): AssignmentRegistryLine {
   return {
     line: Number(raw.line) || 0,
     text: String(raw.text || '').trim() || '—',

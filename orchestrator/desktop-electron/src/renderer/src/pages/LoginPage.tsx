@@ -58,6 +58,10 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
     return () => window.clearInterval(timer)
   }, [busy])
 
+  useEffect(() => {
+    void api.searchUsers('').catch(() => undefined)
+  }, [])
+
   async function submit(): Promise<void> {
     setError('')
     if (!fio.trim() || !password) {

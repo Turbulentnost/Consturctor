@@ -50,6 +50,7 @@ import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
+import { WorkplacePeriodProvider } from './workplace/workplacePeriod'
 import { clearGridCacheForUser } from './workplace/gridDataCache'
 import { ORCH_OPEN_TAB, type WorkplaceTabIntent } from './workplace/workplaceNav'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
@@ -238,7 +239,7 @@ function AppShell(): React.JSX.Element {
       done = true
       setBooting(false)
     }
-    const watchdog = window.setTimeout(finish, 10_000)
+    const watchdog = window.setTimeout(finish, 4_000)
     ;(async () => {
       try {
         const config = await window.api.getConfig()
@@ -520,7 +521,7 @@ function AppShell(): React.JSX.Element {
     setRequireComLogin(false)
     void agentClient
       .ready(result.accessToken || null, {
-        login: result.user.fio,
+        login: typedLogin || result.user.fio,
         password
       })
       .catch(() => undefined)
@@ -532,10 +533,13 @@ function AppShell(): React.JSX.Element {
     setUser(result.user)
     setModeForUser(result.user)
     if (result.accessToken) {
-      void api.me().then((profile) => {
-        setUser(profile)
-        setModeForUser(profile)
-      }).catch(() => undefined)
+      void api
+        .me()
+        .then((profile) => {
+          setUser(profile)
+          setModeForUser(profile)
+        })
+        .catch(() => undefined)
     }
   }
 
@@ -691,7 +695,7 @@ function AppShell(): React.JSX.Element {
         onLoggedIn={onLoggedIn}
         banner={
           requireComLogin
-            ? 'Сеанс Orchestrator восстановлен по сохранённому токену. Введите пароль 1С для загрузки задач и OData.'
+            ? 'Сеанс восстановлен по токену. Введите пароль 1С — без него erp_pm и COM недоступны.'
             : undefined
         }
       />
@@ -913,7 +917,9 @@ function AppShell(): React.JSX.Element {
                 onNavigate: (pageKey) => {
                   setLastTab(pageKey)
                   setView({ kind: 'tab', key: pageKey })
-                }
+                },
+                onOpenPassport: (workflowId, title, tab) =>
+                  setView({ kind: 'passport', workflowId, title, tab })
               })}
             </>
           )
@@ -993,6 +999,7 @@ function AppShell(): React.JSX.Element {
   return (
     <ExtensionsProvider user={activeUser}>
       <GridDataRefreshProvider userId={activeUser.id}>
+        <WorkplacePeriodProvider>
         <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
           <DebugSourcesLifetime />
           <WithExtensionNav>
@@ -1009,7 +1016,13 @@ function AppShell(): React.JSX.Element {
                     ? 'orch-grid-kpi'
                     : workplaceShellKey === 'assignments_registry'
                       ? 'orch-grid-registry'
-                      : ''
+                      : workplaceShellKey === 'history'
+                        ? 'orch-grid-history'
+                        : workplaceShellKey === 'extensions'
+                          ? 'orch-grid-extensions'
+                          : workplaceShellKey === 'agent_library'
+                            ? 'orch-grid-agent-library'
+                            : ''
               }
               user={activeUser}
               avatarUrl={avatarUrl}
@@ -1088,6 +1101,7 @@ function AppShell(): React.JSX.Element {
             }
           </WithExtensionNav>
         </SpecV04SourcesProvider>
+        </WorkplacePeriodProvider>
       </GridDataRefreshProvider>
     </ExtensionsProvider>
   )

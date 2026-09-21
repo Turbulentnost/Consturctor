@@ -34,7 +34,8 @@ export function GridFilterBar({
   sort,
   toggles,
   onReset,
-  extra
+  extra,
+  resetLabel = 'Сбросить фильтры'
 }: {
   search?: { value: string; onChange: (value: string) => void; placeholder?: string }
   selects?: GridFilterSelectField[]
@@ -42,6 +43,7 @@ export function GridFilterBar({
   toggles?: GridFilterToggleField[]
   onReset: () => void
   extra?: React.ReactNode
+  resetLabel?: string
 }): React.JSX.Element {
   return (
     <SpecFilters layout="row">
@@ -100,7 +102,7 @@ export function GridFilterBar({
       ))}
       {extra}
       <button type="button" className="spec-filter-reset" onClick={onReset}>
-        Сбросить фильтры
+        {resetLabel}
       </button>
     </SpecFilters>
   )

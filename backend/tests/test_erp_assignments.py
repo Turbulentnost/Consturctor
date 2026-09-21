@@ -7,6 +7,7 @@ from datetime import datetime
 from app.models.workflow import Workflow
 from app.services.erp_assignments import (
     ASSIGNMENT_ENTITY,
+    ASSIGNMENT_LINES_NAV,
     PROBE_MARK,
     build_assignment_filter,
     build_create_body,
@@ -59,6 +60,17 @@ def test_filter_uses_cyrillic_prefix_and_leader() -> None:
     assert "Создано" in filt
     assert "ВРаботе" in filt
     assert "2026-09-10T00:00:00" in filt
+
+
+def test_create_body_uses_session_actor_ref() -> None:
+    session_ref = "4c6b539d-5606-11e0-b816-008048428575"
+    body = build_create_body(
+        {"topic": "Tema", "due": "2026-09-20", "lines": [{"text": "Punkt"}]},
+        actor_fio="Амураль Игорь Борисович",
+        actor_onec_ref=session_ref,
+    )
+    assert body["Руководитель_Key"] == session_ref
+    assert body["ОЧем"] == "Tema"
 
 
 def test_create_body_builds_lines() -> None:
@@ -388,6 +400,82 @@ def test_catalog_search_finds_assignment_document() -> None:
 def test_assignment_entity_default_top() -> None:
     assert _parse_top_limit("", {"entity": ASSIGNMENT_ENTITY}) == 40
     assert _parse_top_limit("", {"entity": "Catalog_Контрагенты"}) == 3
+
+
+def test_list_lite_skips_line_fetch(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_odata(args: dict) -> dict:
+        calls.append(dict(args))
+        if str(args.get("entity") or "") == ASSIGNMENT_ENTITY:
+            return {
+                "value": [
+                    {
+                        "Number": "АСТ00-00001",
+                        "Ref_Key": "b75214dc-a846-11f1-9877-6cb31113810c",
+                        "Date": "2026-09-10T09:00:00",
+                        "Posted": True,
+                        "ОЧем": "Tema",
+                        "Статус": "ВРаботе",
+                        "Руководитель_Name": "Ivanov",
+                    }
+                ],
+                "source": "odata",
+            }
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata)
+    result = handle_assignments({"action": "list", "limit": 5, "include_lines": False})
+    assert result["include_lines"] is False
+    assert result["assignments"][0]["lines"] == []
+    assert calls[0].get("select")
+    assert "expand" not in calls[0]
+    nav_calls = [c for c in calls if ASSIGNMENT_LINES_NAV in str(c.get("path") or "")]
+    assert not nav_calls
+
+
+def test_list_fetches_lines_via_navigation_when_missing(monkeypatch) -> None:
+    doc_key = "b75214dc-a846-11f1-9877-6cb31113810c"
+
+    def fake_odata(args: dict) -> dict:
+        path = str(args.get("path") or "")
+        entity = str(args.get("entity") or "")
+        if ASSIGNMENT_LINES_NAV in path and doc_key in path:
+            return {
+                "value": [
+                    {
+                        "LineNumber": "1",
+                        "Мероприятие": "NavLine",
+                        "СрокИсполнения": "2026-09-20T00:00:00",
+                        "ОтветственноеЛицо_Key": "11111111-1111-1111-1111-111111111111",
+                    }
+                ],
+                "source": "odata",
+            }
+        if entity == ASSIGNMENT_ENTITY and args.get("expand"):
+            raise RuntimeError("expand not supported")
+        if entity == ASSIGNMENT_ENTITY:
+            return {
+                "value": [
+                    {
+                        "Number": "АСТ00-00001",
+                        "Ref_Key": doc_key,
+                        "Date": "2026-09-10T09:00:00",
+                        "Posted": True,
+                        "ОЧем": "Tema",
+                        "Статус": "ВРаботе",
+                        "Руководитель_Key": "4c6b539d-5606-11e0-b816-008048428575",
+                    }
+                ],
+                "source": "odata",
+            }
+        if entity == "Catalog_Пользователи":
+            return {"value": [], "source": "odata"}
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata)
+    result = handle_assignments({"action": "list", "limit": 5})
+    assert result["assignments"][0]["lines"][0]["text"] == "NavLine"
 
 
 def test_list_normalizes_card(monkeypatch) -> None:

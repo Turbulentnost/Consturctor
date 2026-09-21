@@ -240,7 +240,10 @@ export function AssignmentsRegistryTable({
           {loading && !rows.length ? (
             <tr>
               <td colSpan={ASSIGNMENT_REGISTRY_COLUMNS.length} className="registry-table-status">
-                Загружаем реестр из 1С… (до 1 мин)
+                <span className="registry-table-status-spin" aria-hidden>
+                  <span className="spinner" />
+                </span>
+                <span>Загружаем реестр из 1С… (до 1 мин)</span>
               </td>
             </tr>
           ) : !sortedRows.length ? (

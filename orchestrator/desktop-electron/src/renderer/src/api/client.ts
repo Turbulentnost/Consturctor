@@ -162,7 +162,9 @@ function parseUser(data: Record<string, unknown>): UserProfile {
       (data.canChangeDepartment as boolean) ?? (data.can_change_department as boolean) ?? true,
     activityStatus:
       (data.activityStatus as string) ?? (data.activity_status as string) ?? 'online',
-    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false
+    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false,
+    onecCatalogRefKey:
+      String(data.onecCatalogRefKey ?? data.onec_catalog_ref_key ?? '').trim() || undefined
   })
 }
 
@@ -1283,6 +1285,26 @@ export class ApiClient {
 
   async deleteWorkflow(workflowId: string): Promise<void> {
     await this.request('DELETE', `/api/v1/workflows/${workflowId}`, { timeoutMs: 60_000 })
+  }
+
+  async listAgentLibrary(): Promise<{
+    catalog: Record<string, unknown>[]
+    adopted: Record<string, unknown>[]
+  }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/agents/library', {
+      timeoutMs: 25_000
+    })
+    const catalog = Array.isArray(data.catalog) ? (data.catalog as Record<string, unknown>[]) : []
+    const adopted = Array.isArray(data.adopted) ? (data.adopted as Record<string, unknown>[]) : []
+    return { catalog, adopted }
+  }
+
+  async adoptAgentFromLibrary(sourceWorkflowId: string): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/agents/library/${encodeURIComponent(sourceWorkflowId)}/adopt`,
+      { timeoutMs: 120_000 }
+    )
   }
 
   async stopWorkflowAutoRun(workflowId: string): Promise<void> {

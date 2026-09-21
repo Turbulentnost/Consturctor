@@ -26,6 +26,7 @@ export type UserPageKey =
   | 'knowledge'
   | 'extensions'
   | 'assignments_registry'
+  | 'agent_library'
 
 export type SharedPageKey = 'kpi' | 'history' | 'settings'
 export type PageKey = AdminPageKey | UserPageKey | SharedPageKey
@@ -48,6 +49,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   knowledge: 'База знаний',
   extensions: 'Расширения',
   assignments_registry: 'Реестр поручений',
+  agent_library: 'Библиотека агентов',
   kpi: 'KPI',
   history: 'История',
   settings: 'Настройки'

@@ -9,6 +9,7 @@ import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { countMailTiles, mailMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import { mailListEmptyHint } from '../../workplace/mailProbe'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { MailDetailPanel } from './MailDetailPanel'
 
 export function MailGridTab({
@@ -19,6 +20,7 @@ export function MailGridTab({
   onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
+  const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const [rowPatches, setRowPatches] = useState<Record<string, Partial<SpecMailRow>>>({})
   const mailRows = useMemo(
     () => data.mailRows.map((row) => ({ ...row, ...rowPatches[row.id] })),
@@ -123,7 +125,9 @@ export function MailGridTab({
                           loading: data.mailLoading,
                           imapPrimary: data.mailImapPrimary,
                           mailbox: data.outlookMailbox,
-                          imapStatus: data.mailImapStatus
+                          imapStatus: data.mailImapStatus,
+                          periodFrom,
+                          periodTo
                         })}
                   </td>
                 </tr>

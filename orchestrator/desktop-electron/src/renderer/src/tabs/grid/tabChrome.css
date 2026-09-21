@@ -166,6 +166,32 @@
   z-index: 3;
 }
 
+.workplace-global-period {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.workplace-global-filters-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  max-height: 40px;
+  padding: 0 10px;
+  min-width: 0;
+}
+
+.orch-slot-filters .workplace-global-filters-strip,
+.orch-slot-filters .kpi-range-picker-btn,
+.tab-chrome-filters-bar .kpi-range-picker-btn,
+.today-filters-bar .kpi-range-picker-btn {
+  height: 26px;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
 .tab-chrome-filters-wrap {
   display: flex;
   flex-wrap: nowrap;

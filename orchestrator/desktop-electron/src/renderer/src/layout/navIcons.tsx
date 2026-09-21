@@ -42,6 +42,7 @@ const PAGE_ICONS: Record<PageKey, LucideIcon> = {
   knowledge: BookOpen,
   extensions: Puzzle,
   assignments_registry: ScrollText,
+  agent_library: Bot,
   settings: Settings,
   overview: LayoutDashboard,
   launch_calendar: Rocket,

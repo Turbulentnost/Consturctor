@@ -96,7 +96,11 @@ export function OrchGridShell({
         <>
           <header className={`orch-grid-title${isToday ? ' orch-grid-title-today' : ''}`}>
             <span className="orch-grid-title-icon" aria-hidden>
-              <NavIcon page={activeKey} />
+              {meta?.titleLogoSrc ? (
+                <img className="orch-grid-title-logo" src={meta.titleLogoSrc} alt="" />
+              ) : (
+                <NavIcon page={activeKey} />
+              )}
             </span>
             <div>
               <h1 className="page-title">{displayTitle}</h1>
