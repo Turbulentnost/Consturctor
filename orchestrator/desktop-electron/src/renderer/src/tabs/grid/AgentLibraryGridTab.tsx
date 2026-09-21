@@ -88,8 +88,7 @@ function AgentLibraryTile({
         }
       }}
     >
-      <header className="agent-library-tile-head">
-        <h3>{entry.title}</h3>
+      <div className="agent-library-tile-actions">
         {variant === 'catalog' ? (
           <button
             type="button"
@@ -116,7 +115,7 @@ function AgentLibraryTile({
             удалить
           </button>
         )}
-      </header>
+      </div>
       <AgentSharePreview entry={entry} />
       <div className="agent-library-tile-body">
         {lines.map((line, index) => (
@@ -147,7 +146,6 @@ function AgentLibraryInfoModal({
   return (
     <div className="modal-overlay agent-library-info-overlay" onClick={onClose}>
       <div className="modal-card agent-library-info-modal" onClick={(event) => event.stopPropagation()}>
-        <h3 className="modal-title">{entry.title}</h3>
         <AgentSharePreview entry={entry} />
         <div className="agent-library-info-rows">
           <label>Описание</label>
@@ -194,7 +192,6 @@ function AgentLibraryInfoModal({
 function SkeletonTile(): React.JSX.Element {
   return (
     <div className="agent-library-tile agent-library-tile--skeleton" aria-hidden>
-      <div className="agent-library-skel-line agent-library-skel-line--title" />
       <div className="agent-library-skel-block" />
       <div className="agent-library-skel-line" />
       <div className="agent-library-skel-line" />
@@ -348,15 +345,12 @@ export function AgentLibraryGridTab({
                   ? 'Загрузка…'
                   : `Доступно: ${catalog.length} · У вас: ${adopted.length}`}
               </span>
+              <span className="agent-library-add-hint set-muted">Кнопка «+» — копия к вам</span>
             </div>
           ),
           main: (
             <div className="agent-library-widget agent-library-widget--catalog wp-card">
               {error ? <div className="agent-library-error">{error}</div> : null}
-              <header className="agent-library-widget-head">
-                <h3>Доступные для добавления</h3>
-                <span className="agent-library-widget-hint">Кнопка «+» — копия к вам</span>
-              </header>
               <div className="agent-library-widget-scroll">
                 <div className="agent-library-cards agent-library-cards--catalog">
                   {showSkeleton
@@ -387,10 +381,6 @@ export function AgentLibraryGridTab({
           ),
           botA: (
             <div className="agent-library-widget agent-library-widget--adopted wp-card">
-              <header className="agent-library-widget-head">
-                <h3>Ваши добавленные агенты</h3>
-                <span className="agent-library-widget-hint">{filteredAdopted.length} шт.</span>
-              </header>
               <div className="agent-library-widget-scroll">
                 <div className="agent-library-cards agent-library-cards--adopted">
                   {!showSkeleton && filteredAdopted.length === 0 ? (

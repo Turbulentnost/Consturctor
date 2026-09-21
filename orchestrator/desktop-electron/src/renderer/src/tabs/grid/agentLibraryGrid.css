@@ -61,27 +61,6 @@
   border: none;
 }
 
-.agent-library-widget-head {
-  flex-shrink: 0;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 2px 8px;
-}
-
-.agent-library-widget-head h3 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 650;
-  color: #0f172a;
-}
-
-.agent-library-widget-hint {
-  font-size: 11px;
-  color: #64748b;
-}
-
 .agent-library-widget-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -120,6 +99,19 @@
 
 .agent-library-toolbar-row .agent-library-search {
   flex: 1 1 220px;
+}
+
+.agent-library-add-hint {
+  font-size: 11px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .agent-library-add-hint {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
 }
 
 .agent-library-empty {
