@@ -18,7 +18,7 @@ import type { AssignmentRegistryLine, AssignmentRegistryTileId } from '../../wor
 import { canUseExtension } from '../../extensions/extensionRegistry'
 import { AssignmentsRegistryTable } from './AssignmentsRegistryTable'
 import { AssignmentsRegistryDetailPanel } from './AssignmentsRegistryDetailPanel'
-import { openAssignmentListFormIn1C } from '../../workplace/assignmentRegistryOneCForm'
+import { AssignmentsRegistryCreateDialog } from './AssignmentsRegistryCreateDialog'
 import { useRuns } from '../../store/runs'
 import { personalAgentWorkflowId } from '../../workplace/personalAgent'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
@@ -224,7 +224,7 @@ export function AssignmentsRegistryGridTab({
 
   const [printBusy, setPrintBusy] = useState(false)
   const [printError, setPrintError] = useState('')
-  const [createOpening, setCreateOpening] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
   const [createNotice, setCreateNotice] = useState('')
 
   const hydrateReportRows = async (): Promise<typeof rowsHydrated> => {
@@ -356,6 +356,14 @@ export function AssignmentsRegistryGridTab({
 
   return (
     <>
+    <AssignmentsRegistryCreateDialog
+      open={createOpen}
+      onClose={() => setCreateOpen(false)}
+      onCreated={(message) => {
+        setCreateNotice(message)
+        refresh()
+      }}
+    />
     <StandardTabChrome
       tabId="assignments_registry"
       userId={user.id || ''}
@@ -389,8 +397,8 @@ export function AssignmentsRegistryGridTab({
       }
       widgets={{
         filters: (
-          <div className="registry-toolbar" role="toolbar" aria-label="Фильтры реестра поручений">
-            <div className="registry-toolbar-dates" aria-label="Период">
+          <div className="registry-filter-strip" role="toolbar" aria-label="Фильтры реестра поручений">
+            <div className="registry-date-filters">
               <KpiDayPicker
                 prefixLabel="С"
                 value={dateFrom}
@@ -403,43 +411,28 @@ export function AssignmentsRegistryGridTab({
                 onChange={changeDateTo}
                 ariaLabel="Дата окончания периода"
               />
+              <button type="button" className="today-link-btn" onClick={() => refresh()}>
+                Обновить
+              </button>
+              <button
+                type="button"
+                className="today-filter-layout-btn registry-create-open-btn"
+                title="Создать поручение в журнале АСТ00"
+                onClick={() => {
+                  setCreateNotice('')
+                  setCreateOpen(true)
+                }}
+              >
+                <Plus size={14} aria-hidden /> Создать
+              </button>
             </div>
-            <button type="button" className="registry-toolbar-btn" onClick={() => refresh()}>
-              Обновить
-            </button>
-            <button
-              type="button"
-              className="registry-toolbar-btn registry-toolbar-btn--create"
-              title="Документ.ТД_Поручения.Форма.ФормаСписка в 1С ERP"
-              disabled={createOpening}
-              onClick={() => {
-                setCreateNotice('')
-                setCreateOpening(true)
-                void openAssignmentListFormIn1C(user).then((res) => {
-                  setCreateOpening(false)
-                  if (res.ok) {
-                    setCreateNotice(
-                      'Открыта форма списка поручений в 1С — нажмите «Создать» в журнале АСТ00.'
-                    )
-                    return
-                  }
-                  setCreateNotice(res.error || 'Не удалось открыть форму поручений в 1С.')
-                })
-              }}
-            >
-              <Plus size={14} aria-hidden /> {createOpening ? '1С…' : 'Создать'}
-            </button>
             {filterRowCountLabel ? (
-              <span className="registry-toolbar-count" aria-live="polite">
+              <span className="registry-filter-row-count" aria-live="polite">
                 {filterRowCountLabel}
               </span>
             ) : null}
-            <span className="registry-toolbar-spacer" aria-hidden />
-            <button
-              type="button"
-              className="registry-toolbar-link"
-              onClick={resetRegistryFilters}
-            >
+            <span className="registry-filter-strip-spacer" aria-hidden />
+            <button type="button" className="spec-filter-reset" onClick={resetRegistryFilters}>
               Сбросить
             </button>
           </div>

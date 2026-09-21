@@ -81,11 +81,7 @@ async def update_my_activity(
 @router.get("/me", response_model=UserOut)
 async def me(auth: AuthContext = Depends(get_current_user)) -> UserOut:
     try:
-        return await auth_service.get_current_user_profile(
-            auth.user_id,
-            auth.fio,
-            onec_catalog_ref_hint=auth.onec_catalog_ref_key or "",
-        )
+        return await auth_service.get_current_user_profile(auth.user_id, auth.fio)
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 

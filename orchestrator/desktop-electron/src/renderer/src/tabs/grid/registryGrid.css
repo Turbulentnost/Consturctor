@@ -11,9 +11,40 @@
   min-height: 0;
 }
 
-.orch-grid-registry .tab-chrome-filters-bar .registry-toolbar {
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip {
   flex: 1 1 auto;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 2px 8px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  background: var(--card, #fff);
+  box-shadow: none;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip .registry-date-filters {
+  flex: 0 0 auto;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip .registry-filter-row-count {
+  flex: 0 0 auto;
+  margin-left: 0;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip-spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip .spec-filter-reset {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-date-field {

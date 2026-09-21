@@ -2,7 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { mapAssignmentFromApi } from './assignmentRegistryMappers'
 import type { AssignmentRegistryRow } from './assignmentRegistryTypes'
-import { readRegistryCache, registryCacheKey, writeRegistryCache } from './assignmentRegistryCache'
+import {
+  clearRegistryPool,
+  mergeRegistryPool,
+  readRegistryCache,
+  readRegistryPool,
+  registryCacheKey,
+  writeRegistryCache
+} from './assignmentRegistryCache'
+import {
+  filterRegistryRowsByPeriod,
+  planRegistryFetchSlices,
+  type RegistryLoadedSpan
+} from './assignmentRegistryRange'
 
 export const REGISTRY_PAGE_SIZE = 20
 export const REGISTRY_MAX_ROWS = 100
@@ -14,21 +26,6 @@ function parseAssignmentsPayload(result: unknown): AssignmentRegistryRow[] {
   return list
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     .map((item) => mapAssignmentFromApi(item))
-}
-
-function mergeAssignmentRows(
-  current: AssignmentRegistryRow[],
-  batch: AssignmentRegistryRow[]
-): AssignmentRegistryRow[] {
-  if (!batch.length) return current
-  const seen = new Set(current.map((row) => row.id))
-  const next = [...current]
-  for (const row of batch) {
-    if (seen.has(row.id)) continue
-    seen.add(row.id)
-    next.push(row)
-  }
-  return next
 }
 
 export function useAssignmentRegistry(
@@ -46,113 +43,164 @@ export function useAssignmentRegistry(
 } {
   const cacheKey = registryCacheKey(userId, dateFrom, dateTo)
   const cached = readRegistryCache(cacheKey)
+  const poolSeed = filterRegistryRowsByPeriod(readRegistryPool(userId), dateFrom, dateTo)
+  const initialRows = cached?.rows.length ? cached.rows : poolSeed
 
-  const [rows, setRows] = useState<AssignmentRegistryRow[]>(() => cached?.rows ?? [])
-  const [loading, setLoading] = useState(() => !cached?.rows.length)
+  const [rows, setRows] = useState<AssignmentRegistryRow[]>(() => initialRows)
+  const [loading, setLoading] = useState(() => !initialRows.length)
   const [refreshing, setRefreshing] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [firstRowReady, setFirstRowReady] = useState(() => Boolean(cached?.rows.length))
+  const [firstRowReady, setFirstRowReady] = useState(() => Boolean(initialRows.length))
   const [error, setError] = useState('')
   const [tick, setTick] = useState(0)
   const loadGeneration = useRef(0)
+  const loadedSpanRef = useRef<RegistryLoadedSpan | null>(
+    cached?.complete && cached.dateFrom && cached.dateTo
+      ? { dateFrom: cached.dateFrom, dateTo: cached.dateTo, complete: true }
+      : null
+  )
 
   const refresh = useCallback(() => {
+    clearRegistryPool(userId)
+    loadedSpanRef.current = null
+    writeRegistryCache(cacheKey, [], { complete: false, dateFrom, dateTo })
     setRows([])
-    writeRegistryCache(cacheKey, [])
     setFirstRowReady(false)
     setTick((value) => value + 1)
-  }, [cacheKey])
+  }, [cacheKey, dateFrom, dateTo, userId])
 
-  const applyRows = useCallback(
-    (next: AssignmentRegistryRow[]) => {
-      setRows(next)
-      writeRegistryCache(cacheKey, next)
+  const publishVisible = useCallback(
+    (pool: AssignmentRegistryRow[], meta?: { complete?: boolean }) => {
+      const visible = filterRegistryRowsByPeriod(pool, dateFrom, dateTo)
+      setRows(visible)
+      writeRegistryCache(cacheKey, visible, {
+        complete: meta?.complete,
+        dateFrom,
+        dateTo
+      })
+      if (visible.length) setFirstRowReady(true)
+      return visible
     },
-    [cacheKey]
+    [cacheKey, dateFrom, dateTo]
   )
 
   useEffect(() => {
     const seq = ++loadGeneration.current
     let alive = true
 
-    const hadCache = Boolean(readRegistryCache(cacheKey)?.rows.length)
+    const poolVisible = filterRegistryRowsByPeriod(readRegistryPool(userId), dateFrom, dateTo)
+    const exactCache = readRegistryCache(cacheKey)
+
+    if (exactCache?.complete && exactCache.rows.length) {
+      setRows(exactCache.rows)
+      setFirstRowReady(true)
+      setLoading(false)
+      setRefreshing(false)
+      setLoadingMore(false)
+      loadedSpanRef.current = {
+        dateFrom: exactCache.dateFrom || dateFrom,
+        dateTo: exactCache.dateTo || dateTo,
+        complete: true
+      }
+      return
+    }
+
+    if (poolVisible.length) {
+      publishVisible(readRegistryPool(userId))
+    }
+
+    if (!loadedSpanRef.current && poolVisible.length) {
+      loadedSpanRef.current = { dateFrom, dateTo, complete: false }
+    }
+
+    const slices = planRegistryFetchSlices(loadedSpanRef.current, dateFrom, dateTo)
+    if (!slices.length) {
+      if (poolVisible.length) publishVisible(readRegistryPool(userId))
+      setLoading(false)
+      setRefreshing(false)
+      setLoadingMore(false)
+      return
+    }
+
+    if (!poolVisible.length) setLoading(true)
+    else setRefreshing(true)
+    setError('')
 
     const load = async (): Promise<void> => {
-      if (!hadCache) setLoading(true)
-      else setRefreshing(true)
-      setLoadingMore(false)
-      setError('')
-
-      const basePayload: Record<string, unknown> = {
-        action: 'list',
-        limit: REGISTRY_PAGE_SIZE,
-        only_open: false,
-        include_lines: false,
-        profile: true
-      }
-      if (dateFrom.trim()) basePayload.date_from = dateFrom.trim()
-      if (dateTo.trim()) basePayload.date_to = dateTo.trim()
-
-      const cachedRows = readRegistryCache(cacheKey)?.rows ?? []
-      let accumulated: AssignmentRegistryRow[] = hadCache && cachedRows.length ? [...cachedRows] : []
-      let skip = 0
-      setFirstRowReady(Boolean(accumulated.length))
+      let pool = readRegistryPool(userId)
+      let spanFinishedComplete = true
 
       try {
-        while (skip < REGISTRY_MAX_ROWS) {
+        for (const slice of slices) {
           if (!alive || seq !== loadGeneration.current) return
 
-          const res = await api.invokeServerTool(
-            'onec.erp_assignments',
-            { ...basePayload, skip },
-            300_000
-          )
-          if (!alive || seq !== loadGeneration.current) return
+          const sliceFrom = slice.dateFrom.trim()
+          const sliceTo = slice.dateTo.trim()
+          let skip = 0
+          if (slice.continuePagination) {
+            skip = filterRegistryRowsByPeriod(pool, sliceFrom, sliceTo).length
+          }
 
-          if (!res.ok) {
-            if (!accumulated.length) {
-              setRows([])
-              setError(String(res.error || 'Не удалось загрузить реестр поручений'))
+          while (skip < REGISTRY_MAX_ROWS) {
+            if (!alive || seq !== loadGeneration.current) return
+
+            const res = await api.invokeServerTool(
+              'onec.erp_assignments',
+              {
+                action: 'list',
+                limit: REGISTRY_PAGE_SIZE,
+                skip,
+                only_open: false,
+                include_lines: false,
+                profile: true,
+                ...(sliceFrom ? { date_from: sliceFrom } : {}),
+                ...(sliceTo ? { date_to: sliceTo } : {})
+              },
+              300_000
+            )
+            if (!alive || seq !== loadGeneration.current) return
+
+            if (!res.ok) {
+              spanFinishedComplete = false
+              if (!pool.length) {
+                setRows([])
+                setError(String(res.error || 'Не удалось загрузить реестр поручений'))
+              }
+              setFirstRowReady(true)
+              break
             }
-            setFirstRowReady(true)
-            return
-          }
 
-          const batch = parseAssignmentsPayload(res.result)
-          if (import.meta.env.DEV && skip === 0 && res.result && typeof res.result === 'object') {
-            const timing = (res.result as Record<string, unknown>).timing_ms
-            if (timing) console.info('[registry] page timing_ms', timing)
-          }
+            const batch = parseAssignmentsPayload(res.result)
+            if (import.meta.env.DEV && skip === 0 && res.result && typeof res.result === 'object') {
+              const timing = (res.result as Record<string, unknown>).timing_ms
+              if (timing) console.info('[registry] page timing_ms', timing)
+            }
 
-          if (!batch.length) {
-            setFirstRowReady(true)
-            break
-          }
+            if (!batch.length) break
 
-          accumulated = mergeAssignmentRows(accumulated, batch)
-          applyRows(accumulated)
-          if (accumulated.length) setFirstRowReady(true)
-
-          if (seq === loadGeneration.current) {
+            pool = mergeRegistryPool(userId, batch)
+            publishVisible(pool)
             setLoading(false)
             setRefreshing(false)
-          }
 
-          if (batch.length < REGISTRY_PAGE_SIZE || accumulated.length >= REGISTRY_MAX_ROWS) {
-            setLoadingMore(false)
-            break
-          }
+            if (batch.length < REGISTRY_PAGE_SIZE || skip + batch.length >= REGISTRY_MAX_ROWS) {
+              if (batch.length >= REGISTRY_PAGE_SIZE && skip + batch.length >= REGISTRY_MAX_ROWS) {
+                spanFinishedComplete = false
+              }
+              break
+            }
 
-          skip += REGISTRY_PAGE_SIZE
-          setLoadingMore(true)
+            skip += REGISTRY_PAGE_SIZE
+            setLoadingMore(true)
+          }
         }
 
-        if (!accumulated.length) {
-          setError('')
-        }
+        loadedSpanRef.current = { dateFrom, dateTo, complete: spanFinishedComplete }
+        publishVisible(pool, { complete: spanFinishedComplete })
       } catch (exc) {
         if (!alive || seq !== loadGeneration.current) return
-        if (!accumulated.length) {
+        spanFinishedComplete = false
+        if (!pool.length) {
           setRows([])
           setError(exc instanceof Error ? exc.message : 'Ошибка загрузки реестра')
         }
@@ -170,8 +218,7 @@ export function useAssignmentRegistry(
     return () => {
       alive = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFrom, dateTo, tick, cacheKey, applyRows])
+  }, [cacheKey, dateFrom, dateTo, publishVisible, tick, userId])
 
   return { rows, loading, refreshing, loadingMore, firstRowReady, error, refresh }
 }
