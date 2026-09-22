@@ -241,21 +241,40 @@ export async function fetchOutlookMailForDay(
   })
 }
 
+/** Уже отформатировано как dd.mm.yy hh:mm */
+const MAIL_TIME_DISPLAY_RE = /^(\d{2})\.(\d{2})\.(\d{2}) (\d{2}):(\d{2})$/
+/** Legacy: hh:mm dd.mm.yy */
+const MAIL_TIME_DISPLAY_LEGACY_RE = /^(\d{2}):(\d{2}) (\d{2})\.(\d{2})\.(\d{2})$/
+
+function formatMailTimeFromDate(parsed: Date): string {
+  const h = String(parsed.getHours()).padStart(2, '0')
+  const m = String(parsed.getMinutes()).padStart(2, '0')
+  const d = String(parsed.getDate()).padStart(2, '0')
+  const mo = String(parsed.getMonth() + 1).padStart(2, '0')
+  const y = String(parsed.getFullYear() % 100).padStart(2, '0')
+  return `${d}.${mo}.${y} ${h}:${m}`
+}
+
+/** Отображение даты/времени письма: dd.mm.yy hh:mm (локальные часы). */
 export function formatMailTime(raw: string): string {
-  const parsed = parseMeetingTime(raw)
-  if (!parsed) return raw || '—'
-  return parsed.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const value = (raw || '').trim()
+  if (!value) return '—'
+  if (MAIL_TIME_DISPLAY_RE.test(value)) return value
+  const legacy = MAIL_TIME_DISPLAY_LEGACY_RE.exec(value)
+  if (legacy) {
+    return `${legacy[3]}.${legacy[4]}.${legacy[5]} ${legacy[1]}:${legacy[2]}`
+  }
+  const parsed = parseMeetingTime(value)
+  if (!parsed) return value
+  return formatMailTimeFromDate(parsed)
+}
+
+/** Для параметра формы 1С (ДатаПисьма). */
+export function formatMailTimeRawForOneC(raw: string): string {
+  const label = formatMailTime(raw)
+  return label === '—' ? '' : label
 }
 
 export function formatMailReceivedLabel(raw: string): string {
-  const parsed = parseMeetingTime(raw)
-  if (!parsed) return raw || '—'
-  return parsed.toLocaleString('ru-RU', {
-    weekday: 'short',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
+  return formatMailTime(raw)
 }

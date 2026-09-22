@@ -1,0 +1,138 @@
+/* Карточка открытого письма: 2 col × 7 row, отступ от краёв окна 5px */
+.spec-detail-card.spec-mail-detail-grid {
+  display: grid;
+  flex-direction: unset;
+  padding: 5px;
+  gap: 10px;
+  box-sizing: border-box;
+}
+
+.spec-mail-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto repeat(4, minmax(0, 1fr)) auto auto;
+  gap: 10px;
+  margin: 0;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.spec-mail-detail-grid__head {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-width: 0;
+  padding-left: 10px;
+  box-sizing: border-box;
+}
+
+.spec-mail-detail-grid__head h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.spec-mail-detail-grid__content {
+  grid-column: 1 / -1;
+  grid-row: 2 / 6;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(13, 59, 115, 0.1);
+  background: #fff;
+  overflow: hidden;
+}
+
+.spec-mail-detail-grid__attachments {
+  flex-shrink: 0;
+  max-height: 38%;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(21, 101, 192, 0.42) transparent;
+}
+
+.spec-mail-detail-grid__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(21, 101, 192, 0.42) transparent;
+}
+
+.spec-mail-detail-grid__attachments::-webkit-scrollbar,
+.spec-mail-detail-grid__body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.spec-mail-detail-grid__attachments::-webkit-scrollbar-track,
+.spec-mail-detail-grid__body::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 4px;
+}
+
+.spec-mail-detail-grid__attachments::-webkit-scrollbar-thumb,
+.spec-mail-detail-grid__body::-webkit-scrollbar-thumb {
+  background: rgba(21, 101, 192, 0.38);
+  border-radius: 4px;
+}
+
+.spec-mail-detail-grid__attachments::-webkit-scrollbar-thumb:hover,
+.spec-mail-detail-grid__body::-webkit-scrollbar-thumb:hover {
+  background: rgba(21, 101, 192, 0.58);
+}
+
+.spec-mail-detail-grid__actions {
+  grid-column: 1 / -1;
+  grid-row: 6 / 8;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: auto;
+  gap: 10px;
+  align-content: start;
+  min-height: 0;
+}
+
+.spec-mail-detail-grid__actions .spec-btn-launch,
+.spec-mail-detail-grid__actions .spec-btn-outline {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  margin: 0;
+  border-radius: 20px;
+  font-size: 13px;
+}
+
+.spec-mail-detail-grid__actions .spec-mail-incoming-btn {
+  grid-column: 1 / -1;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.spec-mail-detail-grid__actions .spec-mail-read-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  width: 100%;
+}
+
+.spec-mail-detail-grid__actions .spec-mail-read-btn {
+  width: 100%;
+  height: 40px;
+}
+
+.spec-mail-detail-grid__note {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 12px;
+}

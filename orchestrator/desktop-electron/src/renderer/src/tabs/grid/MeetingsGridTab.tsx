@@ -15,6 +15,7 @@ import { addDays, mondayOf, type CalendarView } from '../../utils/calendar'
 import { countMeetingTiles, meetingMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import { MeetingsCalendar } from '../../components/agents/MeetingsCalendar'
 import { GridFilterBar } from './gridFilters'
+import { usePageSearch } from '../../layout/pageSearchContext'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { isoTimestampInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 
@@ -86,7 +87,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   const [anchor, setAnchor] = useState(() => new Date())
   const [tileFilter, setTileFilter] = useState('all')
   const [selectedId, setSelectedId] = useState('')
-  const [query, setQuery] = useState('')
+  const { query, setQuery } = usePageSearch()
   const [barStatus, setBarStatus] = useState('')
 
   const load = useCallback(() => {

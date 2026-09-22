@@ -207,6 +207,53 @@ class OneCReadAttachmentTool(OneCReadOnlyTool):
         )
 
 
+class OneCSaveIncomingMailMsgTool(OneCReadOnlyTool):
+    """Outlook .msg → staging для OData POST входящей (без формы 1С)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.save_incoming_mail_msg",
+                "Сохранить письмо .msg для входящей",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string", "description": "Outlook EntryID"},
+                        "mail_subject": {"type": "string"},
+                        "save_dir": {"type": "string"},
+                    },
+                    "required": ["entry_id"],
+                },
+            ),
+            worker,
+        )
+
+
+class OneCRegisterIncomingFromMailTool(OneCReadOnlyTool):
+    """Outlook .msg → staging → форма входящей корреспонденции (как agent-pochta)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.register_incoming_from_mail",
+                "Входящая из письма Outlook",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string", "description": "Outlook EntryID"},
+                        "mail_subject": {"type": "string"},
+                        "mail_sender": {"type": "string"},
+                        "mail_received_at": {"type": "string", "description": "ISO или dd.mm.yy hh:mm"},
+                        "save_dir": {"type": "string"},
+                        "form": {"type": "string"},
+                    },
+                    "required": ["entry_id"],
+                },
+            ),
+            worker,
+        )
+
+
 class OneCOpenFormTool(OneCReadOnlyTool):
     """Открыть форму метаданных в толстом клиенте 1С (журнал поручений и др.)."""
 
@@ -224,6 +271,13 @@ class OneCOpenFormTool(OneCReadOnlyTool):
                         },
                         "metadata": {"type": "string", "description": "Имя объекта метаданных (опционально)"},
                         "form_name": {"type": "string", "description": "Имя формы (опционально)"},
+                        "attach_mail_file": {
+                            "type": "boolean",
+                            "description": "Передать .msg в параметрах формы (ФайлСообщения)",
+                        },
+                        "mail_file_path": {"type": "string", "description": "Путь к сохранённому .msg"},
+                        "mail_subject": {"type": "string"},
+                        "mail_sender": {"type": "string"},
                     },
                 },
             ),
@@ -284,6 +338,8 @@ def register_onec_readonly_tools(
         OneCListAttachmentsTool(worker),
         OneCReadAttachmentTool(worker),
         OneCOpenFormTool(worker),
+        OneCSaveIncomingMailMsgTool(worker),
+        OneCRegisterIncomingFromMailTool(worker),
         OneCMeetingServiceNotesTool(worker),
     ]:
         if skip_existing and registry.has_tool(tool.definition.name):

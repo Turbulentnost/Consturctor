@@ -22,6 +22,7 @@ import {
 } from '../../workplace/useSpecV04Data'
 import { isDeadProcessSource } from '../../workplace/tileFilters'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { usePageSearch } from '../../layout/pageSearchContext'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions'
@@ -267,7 +268,7 @@ export function ProcessesGridTab({
   const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const meetingCompletion = useMeetingCompletion()
   const [tab, setTab] = useState(navProcessTab || 'all')
-  const [query, setQuery] = useState('')
+  const { query, setQuery } = usePageSearch()
   const [barType, setBarType] = useState('')
   const [barStatus, setBarStatus] = useState('')
   const [barSource, setBarSource] = useState('')

@@ -248,6 +248,8 @@ export interface SpecMailRow {
   catTone: SpecPillTone
   link: string
   time: string
+  /** ISO / COM datetime до форматирования для UI */
+  receivedAt?: string
   priority: string
   priTone: SpecPillTone
   status: string

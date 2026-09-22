@@ -12,6 +12,7 @@ import {
 import { NavIcon } from '../../layout/navIcons'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import './extensionsGrid.css'
+import { textMatchesPageSearch, usePageSearch } from '../../layout/pageSearchContext'
 
 export function ExtensionsHubTab({
   user,
@@ -24,13 +25,16 @@ export function ExtensionsHubTab({
 }): React.JSX.Element {
   const { isPinned, togglePin } = useExtensions()
   const [positionFilter, setPositionFilter] = useState<ExtensionPositionFilter>('all')
+  const { query: pageQuery } = usePageSearch()
 
   const visibleExtensions = useMemo(
     () =>
       EXTENSIONS.filter((ext) =>
         extensionMatchesPositionFilter(ext.positionGroups, positionFilter)
+      ).filter((ext) =>
+        textMatchesPageSearch(`${ext.title} ${ext.description || ''} ${ext.id}`, pageQuery)
       ),
-    [positionFilter]
+    [positionFilter, pageQuery]
   )
 
   return (

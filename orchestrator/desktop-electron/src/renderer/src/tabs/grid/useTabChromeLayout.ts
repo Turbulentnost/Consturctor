@@ -11,7 +11,7 @@ export const KPI_TAB_GRID_ROWS = 6
 /** Реестр поручений: рабочее поле 8×6 (col×row). */
 export const REGISTRY_TAB_GRID_COLS = 8
 export const REGISTRY_TAB_GRID_ROWS = 6
-/** Библиотека агентов: 8×8, низ 2×8 — «Ваши добавленные». */
+/** Библиотека агентов: 8×8, низ 2×8 — «Мои агенты». */
 export const AGENT_LIBRARY_TAB_GRID_COLS = 8
 export const AGENT_LIBRARY_TAB_GRID_ROWS = 8
 

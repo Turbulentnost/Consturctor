@@ -352,6 +352,10 @@
   overflow: auto;
 }
 
+.orch-slot-side > .spec-mail-detail-grid {
+  overflow: hidden;
+}
+
 .orch-slot-bot-a,
 .orch-slot-bot-b,
 .orch-slot-bot-c {

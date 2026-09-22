@@ -13,6 +13,8 @@ from app.tools.ac.workers.onec_actions import (
     get_task_card,
     list_meeting_service_notes,
     open_metadata_form,
+    register_incoming_from_mail,
+    save_incoming_mail_msg,
     search_documents,
     search_tasks,
 )
@@ -36,6 +38,8 @@ class OneCReadOnlyWorker(BaseWorker):
         "onec.get_task_card": get_task_card,
         "onec.meeting_service_notes": list_meeting_service_notes,
         "onec.open_form": open_metadata_form,
+        "onec.register_incoming_from_mail": register_incoming_from_mail,
+        "onec.save_incoming_mail_msg": save_incoming_mail_msg,
     }
 
     def execute(self, task: WorkerTask) -> WorkerResult:

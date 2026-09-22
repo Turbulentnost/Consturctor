@@ -1050,6 +1050,9 @@ export function suggestionsFromRoleMatch(roleMatch: RoleMatchResult): AgentSugge
 
 export type UnauthorizedHandler = (message: string, status: number) => void
 
+const FIO_SUGGEST_CACHE_MS = 120_000
+const fioSuggestCache = new Map<string, { at: number; items: string[] }>()
+
 export class ApiClient {
   private token: string | null = null
   private unauthorizedHandler: UnauthorizedHandler | null = null
@@ -1121,13 +1124,21 @@ export class ApiClient {
   }
 
   async searchUsers(search = ''): Promise<string[]> {
+    const key = search.trim().toLowerCase()
+    const cached = fioSuggestCache.get(key)
+    if (cached && Date.now() - cached.at < FIO_SUGGEST_CACHE_MS) {
+      return cached.items
+    }
     try {
       const data = await this.request<{ items?: unknown[] }>('GET', '/api/v1/auth/users', {
-        params: search.trim() ? { search } : undefined
+        params: search.trim() ? { search } : undefined,
+        timeoutMs: 25_000
       })
-      return (data.items ?? []).map((x) => String(x))
+      const items = (data.items ?? []).map((x) => String(x))
+      fioSuggestCache.set(key, { at: Date.now(), items })
+      return items
     } catch {
-      return []
+      return cached?.items ?? []
     }
   }
 

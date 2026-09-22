@@ -35,6 +35,7 @@ import {
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
+import { usePageSearch } from '../../layout/pageSearchContext'
 
 export function TasksGridTab({
   user,
@@ -46,7 +47,7 @@ export function TasksGridTab({
   const data = useSpecV04Sources(user)
   const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const [tileFilter, setTileFilter] = useState(navTaskFilter ?? EMPTY_TASK_TILE_FILTER)
-  const [query, setQuery] = useState('')
+  const { query, setQuery } = usePageSearch()
   const [barSource, setBarSource] = useState('')
   const [barStatus, setBarStatus] = useState('')
   const [barProject, setBarProject] = useState('')

@@ -146,6 +146,37 @@ class OutlookDisplayMessageComTool(ComBackedTool):
         )
 
 
+class OutlookSaveMessageComTool(ComBackedTool):
+    """COM: сохранить письмо как .msg для регистрации в 1С."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.save_message",
+                title="Сохранить письмо Outlook",
+                description="Сохраняет письмо в .msg (OLSaveAsMsg) для прикрепления к входящей корреспонденции.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=120,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "save_dir": {"type": "string"},
+                        "stage_for_incoming": {
+                            "type": "boolean",
+                            "description": "Staging .msg для OData-входящей (как agent-pochta)",
+                        },
+                    },
+                    "required": ["entry_id"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
 class OutlookSaveAttachmentComTool(ComBackedTool):
     """COM: сохранить вложение письма на диск."""
 
@@ -406,6 +437,7 @@ def register_outlook_com_tools(
     registry.register(OutlookSearchMailComTool(read_worker))
     registry.register(OutlookFetchMessageComTool(read_worker))
     registry.register(OutlookSaveAttachmentComTool(read_worker))
+    registry.register(OutlookSaveMessageComTool(read_worker))
     registry.register(OutlookReadCalendarComTool(read_worker))
     registry.register(OutlookMarkReadComTool(write_worker))
     registry.register(OutlookDisplayMessageComTool(write_worker))

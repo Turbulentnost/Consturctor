@@ -230,6 +230,38 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
+        "onec.incoming_correspondence",
+        (
+            "Справочник подразделений для ручной регистрации входящей (как agent-pochta). "
+            "action=departments."
+        ),
+        _schema({"action": _prop("string", "departments | list_departments", default="departments")}),
+    ),
+    (
+        "onec.incoming_correspondence_write",
+        (
+            "Создание Document_ТД_ВходящаяКорреспонденция через OData POST. "
+            "Требует подтверждения. action=create, department_id, theme, msg_base64 или staged_path."
+        ),
+        _schema(
+            {
+                "action": _prop("string", "create", default="create"),
+                "department_id": _prop("string", "Код подразделения 00-000066"),
+                "department_name": _prop("string", "Название подразделения"),
+                "theme": _prop("string", "ТемаСлужебнойЗаписки"),
+                "partner": _prop("string", "Партнер"),
+                "organization": _prop("string", "Код организации НП/АЛ/…"),
+                "email_sender": _prop("string"),
+                "email_recipient": _prop("string"),
+                "content": _prop("string", "Содержание"),
+                "msg_base64": _prop("string", "Файл .msg Base64"),
+                "staged_path": _prop("string", "Путь к .msg на сервере"),
+                "attach_msg": _prop("boolean", "Прикрепить .msg после POST", default=True),
+            },
+            ["department_id", "theme"],
+        ),
+    ),
+    (
         "onec.erp_assignments_write",
         (
             "Запись в журнал поручений 1С. Требует подтверждения человека. "

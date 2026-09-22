@@ -32,6 +32,13 @@ from app.services.erp_assignments import (
     stub_assignments as _stub_erp_assignments,
     stub_assignments_write as _stub_erp_assignments_write,
 )
+from app.services.erp_incoming import (
+    IncomingCorrespondenceError,
+    handle_incoming_correspondence as _erp_incoming_correspondence,
+    handle_incoming_correspondence_write as _erp_incoming_correspondence_write,
+    stub_incoming_correspondence as _stub_erp_incoming_correspondence,
+    stub_incoming_correspondence_write as _stub_erp_incoming_correspondence_write,
+)
 from app.services.onec_artifacts import (
     ArtifactError,
     handle_download_artifact as _download_artifact,
@@ -154,6 +161,8 @@ ONEC_TOOLS = frozenset(
         "onec.erp_subordinate_tasks",
         "onec.erp_assignments",
         "onec.erp_assignments_write",
+        "onec.incoming_correspondence",
+        "onec.incoming_correspondence_write",
         "onec.download_artifact",
         "onec.erp_write_probe",
         "onec.docflow_tasks",
@@ -169,7 +178,11 @@ ONEC_ODATA_WRITE_TOOLS = frozenset(
     }
 )
 ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset(
-    {"onec.erp_assignments_write", "onec.docflow_task_action"}
+    {
+        "onec.erp_assignments_write",
+        "onec.incoming_correspondence_write",
+        "onec.docflow_task_action",
+    }
 )
 _ERP_TASK_TOOLS = frozenset(
     {
@@ -332,7 +345,7 @@ def invoke_onec(
         return result
     except OnecToolError:
         raise
-    except (ErpTaskError, AssignmentError, ArtifactError) as exc:
+    except (ErpTaskError, AssignmentError, IncomingCorrespondenceError, ArtifactError) as exc:
         raise OnecToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise OnecToolError(str(exc)) from exc
@@ -1508,6 +1521,8 @@ STUB_HANDLERS = {
     "onec.erp_subordinate_tasks": _stub_erp_subordinate_tasks,
     "onec.erp_assignments": _stub_erp_assignments,
     "onec.erp_assignments_write": _stub_erp_assignments_write,
+    "onec.incoming_correspondence": _stub_erp_incoming_correspondence,
+    "onec.incoming_correspondence_write": _stub_erp_incoming_correspondence_write,
     "onec.download_artifact": _stub_download_artifact,
     "onec.erp_write_probe": _stub_erp_write_probe,
     "onec.docflow_tasks": _stub_docflow_tasks,
@@ -1528,6 +1543,8 @@ REAL_HANDLERS = {
     "onec.erp_subordinate_tasks": _erp_subordinate_tasks,
     "onec.erp_assignments": _erp_assignments,
     "onec.erp_assignments_write": _erp_assignments_write,
+    "onec.incoming_correspondence": _erp_incoming_correspondence,
+    "onec.incoming_correspondence_write": _erp_incoming_correspondence_write,
     "onec.download_artifact": _download_artifact,
     "onec.erp_write_probe": _erp_write_probe,
     "onec.docflow_tasks": _docflow_tasks,

@@ -15,6 +15,7 @@ import { StandardTabChrome } from './TabChromeGrid'
 import { DEFAULT_AGENT_LIBRARY_LAYOUT } from './useTabChromeLayout'
 import './extensionsGrid.css'
 import './agentLibraryGrid.css'
+import { usePageSearch } from '../../layout/pageSearchContext'
 
 function normSearch(value: string): string {
   return (value || '').trim().toLowerCase().replace(/ё/g, 'е')
@@ -88,7 +89,8 @@ function AgentLibraryTile({
         }
       }}
     >
-      <div className="agent-library-tile-actions">
+      <div className="agent-library-tile-top">
+        <AgentSharePreview entry={entry} />
         {variant === 'catalog' ? (
           <button
             type="button"
@@ -105,7 +107,7 @@ function AgentLibraryTile({
         ) : (
           <button
             type="button"
-            className="agent-library-tile-remove"
+            className="agent-library-tile-remove agent-library-tile-remove--corner"
             disabled={busy}
             onClick={(event) => {
               event.stopPropagation()
@@ -116,7 +118,6 @@ function AgentLibraryTile({
           </button>
         )}
       </div>
-      <AgentSharePreview entry={entry} />
       <div className="agent-library-tile-body">
         {lines.map((line, index) => (
           <p key={`${entry.workflowId}-${index}`}>{line}</p>
@@ -212,7 +213,7 @@ export function AgentLibraryGridTab({
   const [refreshing, setRefreshing] = useState(false)
   const [busyId, setBusyId] = useState('')
   const [error, setError] = useState('')
-  const [search, setSearch] = useState('')
+  const { query: search, setQuery: setSearch } = usePageSearch()
   const [info, setInfo] = useState<{ entry: AgentLibraryEntry; variant: 'catalog' | 'adopted' } | null>(
     null
   )
@@ -316,8 +317,8 @@ export function AgentLibraryGridTab({
         defaults={DEFAULT_AGENT_LIBRARY_LAYOUT}
         hideGlobalPeriod
         labels={{
-          main: 'Доступные для добавления',
-          botA: 'Ваши добавленные агенты'
+          main: 'Доступные к подключению',
+          botA: 'Мои агенты'
         }}
         widgets={{
           filters: (
@@ -349,7 +350,8 @@ export function AgentLibraryGridTab({
             </div>
           ),
           main: (
-            <div className="agent-library-widget agent-library-widget--catalog wp-card">
+            <div className="agent-library-widget agent-library-widget--catalog">
+              <h2 className="agent-library-widget-title">Доступные к подключению</h2>
               {error ? <div className="agent-library-error">{error}</div> : null}
               <div className="agent-library-widget-scroll">
                 <div className="agent-library-cards agent-library-cards--catalog">
@@ -380,7 +382,8 @@ export function AgentLibraryGridTab({
             </div>
           ),
           botA: (
-            <div className="agent-library-widget agent-library-widget--adopted wp-card">
+            <div className="agent-library-widget agent-library-widget--adopted">
+              <h2 className="agent-library-widget-title">Мои агенты</h2>
               <div className="agent-library-widget-scroll">
                 <div className="agent-library-cards agent-library-cards--adopted">
                   {!showSkeleton && filteredAdopted.length === 0 ? (

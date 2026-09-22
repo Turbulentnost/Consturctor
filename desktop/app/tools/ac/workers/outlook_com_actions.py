@@ -1718,6 +1718,65 @@ def display_mail_message(input_data: dict) -> dict:
     return _run_com_read(_write, "Ошибка открытия письма Outlook")
 
 
+OL_SAVEAS_MSG = 3
+
+
+def _safe_mail_file_stem(subject: str, entry_id: str) -> str:
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (subject or "").strip())[:80]
+    if not stem:
+        stem = "message"
+    suffix = (entry_id or "")[:8].replace("{", "").replace("}", "")
+    return f"{stem}-{suffix}" if suffix else stem
+
+
+def save_mail_message(input_data: dict) -> dict:
+    """Сохранить письмо Outlook как .msg для прикрепления в 1С."""
+    save_dir = _safe_str(input_data.get("save_dir") or "").strip()
+
+    def _write(win32com_client: Any) -> dict:
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = _mapi_namespace(outlook)
+        entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+        message = _resolve_mail_item(namespace, entry_id)
+        subject = _safe_str(getattr(message, "Subject", ""))
+        base_dir = Path(save_dir) if save_dir else Path(tempfile.gettempdir()) / "Constructor" / "outlook" / "messages"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        target = base_dir / f"{_safe_mail_file_stem(subject, entry_id)}.msg"
+        try:
+            message.SaveAs(str(target.resolve()), OL_SAVEAS_MSG)
+        except Exception as exc:
+            raise OutlookAccessError(f"Не удалось сохранить письмо как .msg: {exc}") from exc
+        out = {
+            "ok": True,
+            "entry_id": entry_id,
+            "saved_path": str(target),
+            "file_name": target.name,
+            "subject": subject,
+            "source": "outlook_com",
+        }
+        if _truthy(input_data.get("stage_for_incoming")):
+            from app.tools.ac.workers.mail_incoming_onec import stage_incoming_msg_file
+
+            staged = stage_incoming_msg_file(
+                str(target),
+                entry_id=entry_id,
+                file_name=target.name,
+            )
+            out["staged_path"] = str(staged)
+            try:
+                raw = staged.read_bytes()
+                if len(raw) <= 12 * 1024 * 1024:
+                    import base64
+
+                    out["msg_base64"] = base64.b64encode(raw).decode("ascii")
+                    out["msg_filename"] = staged.name
+            except OSError:
+                pass
+        return out
+
+    return _run_com_read(_write, "Ошибка сохранения письма Outlook")
+
+
 def save_mail_attachment(input_data: dict) -> dict:
     """Сохранить вложение письма Outlook на диск."""
     attachment_index = _clamp_int(

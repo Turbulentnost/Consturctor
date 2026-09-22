@@ -19,6 +19,7 @@ import {
 } from '../../workplace/useTurboProjectOpenTasks'
 import { openHttpUrl } from '../../workplace/workplaceNav'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { usePageSearch } from '../../layout/pageSearchContext'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 import { hasTurboSessionCredentials } from '../../workplace/userContext'
@@ -121,7 +122,7 @@ export function ProjectsGridTab({
   const [tileFilter, setTileFilter] = useState('all')
   const [selectedId, setSelectedId] = useState('')
   const [selectedProjectTaskId, setSelectedProjectTaskId] = useState('')
-  const [query, setQuery] = useState('')
+  const { query, setQuery } = usePageSearch()
   const [barStatus, setBarStatus] = useState('')
   const [barRisk, setBarRisk] = useState('')
   const [barMine, setBarMine] = useState(false)

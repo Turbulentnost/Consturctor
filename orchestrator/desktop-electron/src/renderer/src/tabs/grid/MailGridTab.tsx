@@ -8,9 +8,11 @@ import { type SpecMailRow } from '../../workplace/specV04DemoData'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { countMailTiles, mailMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import { mailListEmptyHint } from '../../workplace/mailProbe'
+import { formatMailTime } from '../../utils/outlookMail'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { MailDetailPanel } from './MailDetailPanel'
+import { usePageSearch } from '../../layout/pageSearchContext'
 
 export function MailGridTab({
   user,
@@ -28,7 +30,7 @@ export function MailGridTab({
   )
   const [selectedId, setSelectedId] = useState('')
   const [tileFilter, setTileFilter] = useState('all')
-  const [query, setQuery] = useState('')
+  const { query, setQuery } = usePageSearch()
   const [barPriority, setBarPriority] = useState('')
   const [barStatus, setBarStatus] = useState('')
   const visibleMail = useMemo(() => {
@@ -136,7 +138,7 @@ export function MailGridTab({
                 <tr key={row.id} className={selected?.id === row.id ? 'selected' : ''} onClick={() => setSelectedId(row.id)}>
                   <td>{row.sender}</td>
                   <td>{row.subject}</td>
-                  <td>{row.time}</td>
+                  <td>{formatMailTime(row.time)}</td>
                   <td>
                     <SpecPill tone={row.priTone}>{row.priority}</SpecPill>
                   </td>
@@ -150,7 +152,7 @@ export function MailGridTab({
         </div>
         ),
         side: selected ? (
-          <MailDetailPanel mail={selected} onPatchRow={patchRow} onAskOrchestrator={ask} />
+          <MailDetailPanel mail={selected} user={user} onPatchRow={patchRow} onAskOrchestrator={ask} />
         ) : (
           <div className="wp-card spec-v04-muted">Выберите письмо</div>
         )

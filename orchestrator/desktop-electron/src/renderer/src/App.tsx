@@ -30,6 +30,7 @@ import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
 import { FilesPage } from './pages/FilesPage'
 import { OrchGridShell } from './layout/OrchGridShell'
+import { PageSearchProvider } from './layout/pageSearchContext'
 import type { WorkplaceTabKey } from './layout/tabRegistry'
 import { ProcessesGridTab } from './tabs/grid/ProcessesGridTab'
 import { TasksGridTab } from './tabs/grid/TasksGridTab'
@@ -1006,6 +1007,7 @@ function AppShell(): React.JSX.Element {
             {(pinnedExtensionNav) =>
               workplaceShellKey ? (
           <div className="app-root orch-app-root">
+            <PageSearchProvider tabKey={workplaceShellKey}>
             <OrchGridShell
               activeKey={workplaceShellKey}
               pinnedExtensionNav={pinnedExtensionNav}
@@ -1050,6 +1052,7 @@ function AppShell(): React.JSX.Element {
             >
               {renderWorkplaceGridTab(workplaceShellKey)}
             </OrchGridShell>
+            </PageSearchProvider>
             <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
           </div>
               ) : (

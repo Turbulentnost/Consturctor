@@ -1276,6 +1276,11 @@ input {
   color: var(--main-text);
   cursor: pointer;
 }
+.fio-option-muted {
+  cursor: default;
+  color: var(--content-muted, #8a919c);
+  font-size: 12px;
+}
 .fio-option-avatar {
   width: 28px;
   height: 28px;
