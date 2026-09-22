@@ -140,7 +140,8 @@
   font-size: 12px;
 }
 
-.orch-grid-registry .tab-chrome-filters-bar .registry-create-open-btn {
+.orch-grid-registry .tab-chrome-filters-bar .registry-create-open-btn,
+.orch-grid-registry .tab-chrome-filters-bar .registry-report-filter-btn {
   flex-shrink: 0;
   white-space: nowrap;
 }

@@ -292,7 +292,7 @@ def _fetch_lines_for_document(ref_key: str) -> tuple[str, list[dict[str, Any]]]:
     """Tabular rows: navigation from document, not Ref_Key on the lines register."""
     path = f"{ASSIGNMENT_ENTITY}(guid'{ref_key}')/{ASSIGNMENT_LINES_NAV}"
     try:
-        result = _odata_get({"path": path, "entity": ASSIGNMENT_ENTITY, "top": 50})
+        result = _odata_get({"path": path, "entity": ASSIGNMENT_ENTITY, "top": 500})
     except Exception:  # noqa: BLE001
         return ref_key, []
     rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]

@@ -6,6 +6,7 @@ import {
   type AssignmentRegistryRow
 } from '../../workplace/assignmentRegistryTypes'
 import { rowDateSortKey } from '../../workplace/assignmentRegistryMappers'
+import { selectRegistryReportRows } from '../../workplace/registryReportRows'
 
 type SortDir = 'asc' | 'desc'
 
@@ -85,6 +86,115 @@ function writeTableState(key: string, sort: SortState, collapsed: Set<Assignment
   } catch {
     /* ignore */
   }
+}
+
+function ReportMeasures({ row }: { row: AssignmentRegistryRow }): React.JSX.Element {
+  if (!row.lines.length) {
+    return <p className="registry-report-empty">Мероприятия не указаны.</p>
+  }
+  return (
+    <ol className="registry-report-measures">
+      {row.lines.map((line, index) => (
+        <li key={`${row.id}-${line.line}-${index}`}>
+          <p className="registry-report-measure-text">
+            <b>{line.line || index + 1}.</b> {line.text || '—'}
+          </p>
+          <p className="registry-report-measure-meta">
+            Исполнитель: {line.executor || '—'} · Срок: {line.due || '—'}
+            {line.priority && line.priority !== '—' ? ` · ${line.priority}` : ''}
+          </p>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function ReportSection({
+  title,
+  rows,
+  selectedId,
+  onSelectRow
+}: {
+  title: string
+  rows: AssignmentRegistryRow[]
+  selectedId?: string | null
+  onSelectRow?: (row: AssignmentRegistryRow) => void
+}): React.JSX.Element | null {
+  if (!rows.length) return null
+  return (
+    <section className="registry-report-section">
+      <h3 className="registry-report-section-title">{title}</h3>
+      {rows.map((row) => (
+        <article
+          key={row.id}
+          className={[
+            'registry-report-card',
+            `tone-${row.tone}`,
+            selectedId === row.id ? 'is-selected' : ''
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          onClick={() => onSelectRow?.(row)}
+        >
+          <header className="registry-report-card-head">
+            <strong>
+              {row.number} · {row.topic}
+            </strong>
+            <span>
+              {row.status} · срок {row.fullRemediationDue} · {row.manager}
+            </span>
+          </header>
+          <h4 className="registry-report-measures-title">Мероприятия ({row.lines.length})</h4>
+          <ReportMeasures row={row} />
+        </article>
+      ))}
+    </section>
+  )
+}
+
+/** Таблица отчёта: те же группы, что в печати/PDF, и все мероприятия поручения. */
+export function AssignmentsRegistryReportTable({
+  rows,
+  linesLoading,
+  selectedId,
+  onSelectRow
+}: {
+  rows: AssignmentRegistryRow[]
+  linesLoading?: boolean
+  selectedId?: string | null
+  onSelectRow?: (row: AssignmentRegistryRow) => void
+}): React.JSX.Element {
+  const { overdue, closedThisWeek, dueSoon } = useMemo(() => selectRegistryReportRows(rows), [rows])
+  const empty = !overdue.length && !closedThisWeek.length && !dueSoon.length
+  return (
+    <div className="registry-report">
+      {linesLoading ? <p className="registry-table-hint">Догружаем мероприятия из 1С…</p> : null}
+      {empty ? (
+        <p className="registry-table-status">Нет поручений для отчёта</p>
+      ) : (
+        <>
+          <ReportSection
+            title={`Просроченные (${overdue.length})`}
+            rows={overdue}
+            selectedId={selectedId}
+            onSelectRow={onSelectRow}
+          />
+          <ReportSection
+            title={`Закрытые за текущую неделю (${closedThisWeek.length})`}
+            rows={closedThisWeek}
+            selectedId={selectedId}
+            onSelectRow={onSelectRow}
+          />
+          <ReportSection
+            title={`Срок в ближайшие 3 рабочих дня (${dueSoon.length})`}
+            rows={dueSoon}
+            selectedId={selectedId}
+            onSelectRow={onSelectRow}
+          />
+        </>
+      )}
+    </div>
+  )
 }
 
 export function AssignmentsRegistryTable({

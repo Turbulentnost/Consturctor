@@ -7,13 +7,13 @@ import { DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT } from './useTabChromeLayout'
 import { KpiDayPicker } from '../../pages/KpiRangePicker'
 import { useAssignmentRegistry } from '../../workplace/useAssignmentRegistry'
 import { isDueWithinDays } from '../../workplace/assignmentRegistryMappers'
+import { selectRegistryReportRows } from '../../workplace/registryReportRows'
 import {
   fetchAssignmentLines,
   fetchAssignmentLinesBatch,
   mergeRowsWithLines,
   readCachedLines
 } from '../../workplace/assignmentRegistryLazyLoad'
-import { selectRegistryReportRows } from '../../workplace/registryReportRows'
 import type {
   AssignmentRegistryLine,
   AssignmentRegistryRow,
@@ -22,7 +22,7 @@ import type {
 import { toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { usePageSearch, valuesMatchPageSearch } from '../../layout/pageSearchContext'
 import { canUseExtension } from '../../extensions/extensionRegistry'
-import { AssignmentsRegistryTable } from './AssignmentsRegistryTable'
+import { AssignmentsRegistryReportTable, AssignmentsRegistryTable } from './AssignmentsRegistryTable'
 import { AssignmentsRegistryDetailPanel } from './AssignmentsRegistryDetailPanel'
 import { AssignmentsRegistryCreateDialog } from './AssignmentsRegistryCreateDialog'
 import { useRuns } from '../../store/runs'
@@ -33,7 +33,7 @@ import './registryGrid.css'
 
 export const ASSIGNMENTS_REGISTRY_AI_CONTEXT = 'Расширение «Реестр поручений»'
 
-const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon'])
+const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon', 'report'])
 
 type RegistryColumnFilterKey = 'reporter' | 'secretary' | 'status' | 'manager'
 
@@ -268,7 +268,8 @@ export function AssignmentsRegistryGridTab({
 
   const filteredRows = useMemo(() => {
     let list = rowsHydrated
-    if (tileFilter === 'done') list = list.filter((row) => !row.open)
+    if (tileFilter === 'report') list = selectRegistryReportRows(list).all
+    else if (tileFilter === 'done') list = list.filter((row) => !row.open)
     else if (tileFilter === 'overdue') list = list.filter((row) => row.open && row.overdue)
     else if (tileFilter === 'due_soon') list = list.filter((row) => row.open && isDueWithinDays(row, 3))
 
@@ -284,6 +285,34 @@ export function AssignmentsRegistryGridTab({
     return list
   }, [rowsHydrated, tileFilter, columnFilters, pageQuery])
 
+  const [reportLinesLoading, setReportLinesLoading] = useState(false)
+  useEffect(() => {
+    if (tileFilter !== 'report') return
+    const refKeys = filteredRows
+      .filter((row) => row.refKey && !row.lines.length)
+      .map((row) => row.refKey)
+    if (!refKeys.length) return
+    let cancelled = false
+    setReportLinesLoading(true)
+    void fetchAssignmentLinesBatch(refKeys)
+      .then((batch) => {
+        if (cancelled) return
+        const patch: Record<string, AssignmentRegistryLine[]> = {}
+        for (const [refKey, lines] of batch) {
+          if (lines.length) patch[refKey] = lines
+        }
+        if (Object.keys(patch).length) {
+          setLineOverlay((current) => ({ ...current, ...patch }))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReportLinesLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tileFilter, filteredRows])
+
   const filterRowCountLabel = useMemo((): string | null => {
     if (!firstRowReady && !filteredRows.length) return null
     if (loadingMore && filteredRows.length) return `${filteredRows.length} поручений…`
@@ -298,7 +327,7 @@ export function AssignmentsRegistryGridTab({
     changeTileFilter(tileFilter === id ? 'all' : (id as AssignmentRegistryTileId))
   }
 
-  const activeTileId = tileFilter === 'all' ? null : tileFilter
+  const activeTileId = tileFilter === 'all' || tileFilter === 'report' ? null : tileFilter
 
   const resetRegistryFilters = (): void => {
     const next = defaultRange()
@@ -516,6 +545,15 @@ export function AssignmentsRegistryGridTab({
               </button>
               <button
                 type="button"
+                className={`today-filter-layout-btn registry-report-filter-btn${tileFilter === 'report' ? ' is-active' : ''}`}
+                aria-pressed={tileFilter === 'report'}
+                title="Таблица для отчёта: просроченные, закрытые за неделю и срок в 3 рабочих дня, с мероприятиями"
+                onClick={() => changeTileFilter(tileFilter === 'report' ? 'all' : 'report')}
+              >
+                Отчёт
+              </button>
+              <button
+                type="button"
                 className="today-filter-layout-btn registry-create-open-btn"
                 title="Создать поручение в журнале АСТ00"
                 onClick={() => {
@@ -569,20 +607,29 @@ export function AssignmentsRegistryGridTab({
                 Загружено {rows.length}… подгружаем следующие поручения
               </p>
             ) : null}
-            <AssignmentsRegistryTable
-              rows={filteredRows}
-              loading={(!firstRowReady && !error) || (loading && !rows.length)}
-              selectedId={selectedId}
-              stateKey={tableStateKey}
-              onSelectRow={(row) => pickRow(row)}
-              emptyText={
-                pageQuery.trim() || Object.values(columnFilters).some(Boolean)
-                  ? 'Нет поручений по фильтрам и поиску'
-                  : tileFilter !== 'all'
-                    ? 'Нет поручений по выбранной плитке'
-                    : 'Нет поручений за период'
-              }
-            />
+            {tileFilter === 'report' ? (
+              <AssignmentsRegistryReportTable
+                rows={filteredRows}
+                linesLoading={reportLinesLoading}
+                selectedId={selectedId}
+                onSelectRow={(row) => pickRow(row)}
+              />
+            ) : (
+              <AssignmentsRegistryTable
+                rows={filteredRows}
+                loading={(!firstRowReady && !error) || (loading && !rows.length)}
+                selectedId={selectedId}
+                stateKey={tableStateKey}
+                onSelectRow={(row) => pickRow(row)}
+                emptyText={
+                  pageQuery.trim() || Object.values(columnFilters).some(Boolean)
+                    ? 'Нет поручений по фильтрам и поиску'
+                    : tileFilter !== 'all'
+                      ? 'Нет поручений по выбранной плитке'
+                      : 'Нет поручений за период'
+                }
+              />
+            )}
           </div>
         ),
         side: (

@@ -137,6 +137,29 @@ function printDocument(title: string, bodyHtml: string): string {
   .section.overdue h2 { border-left-color: #c62828; }
   .section.due_soon h2 { border-left-color: #e6a700; }
   .section.closed_week h2 { border-left-color: #2e9a6f; }
+  .assignment {
+    margin: 0 0 14px;
+    page-break-inside: auto;
+  }
+  .assignment > table.registry { margin: 0; }
+  .measures-title {
+    margin: 6px 0 4px;
+    font-size: 11px;
+    page-break-after: avoid;
+  }
+  ol.measures {
+    margin: 0 0 4px;
+    padding-left: 18px;
+  }
+  ol.measures li { margin: 0 0 6px; page-break-inside: avoid; }
+  .measure-text {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .measure-meta { margin: 2px 0 0; font-size: 10px; color: #333a45; }
 </style>
 </head>
 <body>
@@ -203,27 +226,47 @@ ${legend}`
   return printDocument('Реестр поручений', body)
 }
 
-function sectionTable(rows: AssignmentRegistryRow[]): string {
+function measuresHtml(row: AssignmentRegistryRow): string {
+  if (!row.lines.length) {
+    return '<p class="empty">Мероприятия не указаны.</p>'
+  }
+  const items = row.lines
+    .map((line, index) => {
+      const number = line.line || index + 1
+      const priority =
+        line.priority && line.priority !== '—' ? ` · ${escapeHtml(line.priority)}` : ''
+      return `<li>
+<p class="measure-text"><b>${escapeHtml(number)}.</b> ${escapeHtml(line.text || '—')}</p>
+<p class="measure-meta">Исполнитель: ${escapeHtml(line.executor || '—')} · Срок: ${escapeHtml(
+        line.due || '—'
+      )}${priority}</p>
+</li>`
+    })
+    .join('\n')
+  return `<ol class="measures">${items}</ol>`
+}
+
+function assignmentBlock(row: AssignmentRegistryRow): string {
+  const background = TONE_BACKGROUND[row.tone] || TONE_BACKGROUND.neutral
   const headCells = ASSIGNMENT_REGISTRY_COLUMNS.map(
     (column) => `<th${column.compact ? ' style="width:7%"' : ''}>${escapeHtml(column.label)}</th>`
   ).join('')
-  const bodyRows = rows.length
-    ? rows
-        .map((row) => {
-          const background = TONE_BACKGROUND[row.tone] || TONE_BACKGROUND.neutral
-          const cells = ASSIGNMENT_REGISTRY_COLUMNS.map(
-            (column) => `<td>${escapeHtml(row[column.id])}</td>`
-          ).join('')
-          return `<tr style="background:${background}">${cells}</tr>`
-        })
-        .join('\n')
-    : `<tr><td colspan="${ASSIGNMENT_REGISTRY_COLUMNS.length}" class="empty">Нет поручений</td></tr>`
-  return `<table class="registry">
+  const cells = ASSIGNMENT_REGISTRY_COLUMNS.map(
+    (column) => `<td>${escapeHtml(row[column.id])}</td>`
+  ).join('')
+  return `<article class="assignment">
+<table class="registry">
 <thead><tr>${headCells}</tr></thead>
-<tbody>
-${bodyRows}
-</tbody>
-</table>`
+<tbody><tr style="background:${background}">${cells}</tr></tbody>
+</table>
+<h3 class="measures-title">Мероприятия (${row.lines.length})</h3>
+${measuresHtml(row)}
+</article>`
+}
+
+function sectionTable(rows: AssignmentRegistryRow[]): string {
+  if (!rows.length) return '<p class="empty">Нет поручений</p>'
+  return rows.map((row) => assignmentBlock(row)).join('\n')
 }
 
 /**
