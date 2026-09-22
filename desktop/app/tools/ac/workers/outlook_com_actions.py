@@ -1690,8 +1690,13 @@ def mark_mail_read(input_data: dict) -> dict:
 
 
 def display_mail_message(input_data: dict) -> dict:
-    """Открыть письмо или черновик ответа в Outlook."""
+    """Открыть письмо или черновик ответа в Outlook.
+
+    mode=forward, to=адрес, send=true — переслать и отправить без окна.
+    """
     mode = _safe_str(input_data.get("mode") or "open").strip().casefold()
+    send = bool(input_data.get("send"))
+    to_addr = _safe_str(input_data.get("to") or "").strip()
 
     def _write(win32com_client: Any) -> dict:
         outlook = _dispatch_outlook(win32com_client)
@@ -1707,6 +1712,26 @@ def display_mail_message(input_data: dict) -> dict:
         else:
             message.Display(False)
             return {"ok": True, "entry_id": entry_id, "mode": "open", "source": "outlook_com"}
+        if to_addr:
+            try:
+                draft.To = to_addr
+            except Exception as exc:
+                raise OutlookAccessError(f"Не удалось указать получателя: {exc}") from exc
+        if send:
+            if not to_addr:
+                raise OutlookAccessError("Для отправки укажите получателя")
+            try:
+                draft.Send()
+            except Exception as exc:
+                raise OutlookAccessError(f"Не удалось отправить письмо: {exc}") from exc
+            return {
+                "ok": True,
+                "entry_id": entry_id,
+                "mode": mode,
+                "sent": True,
+                "to": to_addr,
+                "source": "outlook_com",
+            }
         draft.Display(False)
         return {
             "ok": True,

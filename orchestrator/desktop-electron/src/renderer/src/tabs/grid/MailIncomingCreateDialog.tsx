@@ -7,68 +7,177 @@ import type { OutlookMailDetail } from '../../utils/outlookMailActions'
 import {
   createIncomingFromMail,
   emptyIncomingCreateDraft,
-  fetchIncomingDepartments,
+  fetchIncomingCatalog,
+  forwardIncomingMailToAi,
+  INCOMING_AI_MAILBOX,
+  INCOMING_DEPARTMENTS,
+  INCOMING_ORGANIZATIONS,
+  organizationLabel,
   type IncomingCreateDraft,
-  type IncomingDepartmentOption
+  type IncomingDepartmentOption,
+  type IncomingOrganizationOption
 } from '../../workplace/mailIncomingCreate'
+import './extensionsGrid.css'
+import './mailGrid.css'
 
-function DeptSelect({
+const DEPT_HINTS: Record<string, string> = {
+  '00-000001': 'председатель совет директоров руководство',
+  '00-000002': 'бухгалтерия счета учет финансы',
+  '00-000013': 'развитие',
+  '00-000015': 'вэд внешняя торговля экспорт',
+  '00-000025': 'метрология сертификация поверка',
+  '00-000035': 'милака директор',
+  '00-000040': 'качество технический директор',
+  '00-000042': 'ключевые клиенты оркк продажи',
+  '00-000044': 'юрист юристы договор юридический',
+  '00-000046': 'ахо хозяйство административный',
+  '00-000049': 'финансы финансовый директор',
+  '00-000054': 'тендер закупка конкурс',
+  '00-000058': 'коммерция продажи коммерческий директор',
+  '00-000059': 'безопасность экономическая',
+  '00-000063': 'кадры персонал hr сотрудники',
+  '00-000065': 'омто снабжение закупки мто склад',
+  '00-000066': 'дела канцелярия секретариат входящие корреспонденция',
+  '00-000068': 'логистика доставка транспорт',
+  '00-000074': 'опму продажи оборудование',
+  '00-000076': 'газпром пао',
+  '00-000080': 'метрогазсервис директор',
+  '00-000099': 'поддержка техническая it helpdesk',
+  '00-000100': 'отк качество контроль',
+  '00-000101': 'отк качество контроль',
+  '00-000104': 'сервис обслуживание ремонт',
+  '00-000119': 'по асу программирование it софт',
+  '00-000128': 'бми продажи блочно модульные',
+  '00-000152': 'операционный директор руководство',
+  '00-000155': 'дилеры продажи',
+  '00-000163': 'технический директор',
+  '00-000172': 'перспективные проекты',
+  '00-000182': 'помощник операционный'
+}
+
+const ORG_HINTS: Record<string, string> = {
+  НП: 'нпо турбулентность дон головная',
+  АЛ: 'алмаз гранд счетчики',
+  МГ: 'метрогазсервис',
+  АМ: 'амурская легенда',
+  МИ: 'милака',
+  БМ: 'бми блочно модульные изделия'
+}
+
+function foldText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[«»"'`().,:;]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function matchScore(query: string, label: string, hints: string): number {
+  const q = foldText(query)
+  if (!q) return 1
+  const name = foldText(label)
+  const extra = foldText(hints)
+  const hay = `${name} ${extra}`
+  if (name.startsWith(q) || hay.includes(q)) return 8
+  const tokens = q.split(' ').filter((token) => token.length >= 2)
+  if (!tokens.length) return 0
+  let score = 0
+  for (const token of tokens) {
+    if (name.includes(token)) score += 4
+    else if (extra.includes(token)) score += 3
+    else if (name.split(' ').some((word) => word.startsWith(token) || token.startsWith(word.slice(0, 4)))) {
+      score += 2
+    }
+  }
+  return score
+}
+
+function SemanticCombo({
   id,
   label,
-  value,
-  nameValue,
+  required,
+  placeholder,
+  query,
   options,
+  hints,
+  onQuery,
   onPick
 }: {
   id: string
   label: string
-  value: string
-  nameValue: string
-  options: IncomingDepartmentOption[]
+  required?: boolean
+  placeholder?: string
+  query: string
+  options: { code: string; name: string }[]
+  hints: Record<string, string>
+  onQuery: (value: string) => void
   onPick: (code: string, name: string) => void
 }): React.JSX.Element {
-  const listId = `${id}-list`
-  const filtered = useMemo(() => {
-    const q = value.trim().toLowerCase()
-    if (!q) return options.slice(0, 120)
+  const [open, setOpen] = useState(false)
+  const matches = useMemo(() => {
     return options
-      .filter(
-        (item) =>
-          item.code.toLowerCase().includes(q) ||
-          item.name.toLowerCase().includes(q)
-      )
-      .slice(0, 120)
-  }, [options, value])
+      .map((item) => ({ item, score: matchScore(query, item.name, hints[item.code] || '') }))
+      .filter((row) => row.score > 0)
+      .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name, 'ru'))
+      .map((row) => row.item)
+  }, [hints, options, query])
 
   return (
-    <label className="registry-create-field registry-create-field--wide" htmlFor={id}>
-      <span className="modal-label">{label} *</span>
+    <div className="registry-create-field registry-create-field--wide incoming-combo">
+      <label className="modal-label" htmlFor={id}>
+        {label}
+        {required ? ' *' : ''}
+      </label>
       <input
         id={id}
-        className="onec-reconnect-input"
+        className="onec-reconnect-input incoming-combo-input"
         type="text"
-        list={listId}
-        value={value}
-        placeholder="00-000066 — код подразделения"
+        autoComplete="off"
+        value={query}
+        placeholder={placeholder}
+        onFocus={() => setOpen(true)}
         onChange={(event) => {
-          const next = event.target.value
-          const hit = options.find((item) => item.code === next.trim())
-          onPick(next, hit?.name || nameValue)
+          setOpen(true)
+          onQuery(event.target.value)
         }}
         onBlur={() => {
-          const hit = options.find((item) => item.code === value.trim())
-          if (hit) onPick(hit.code, hit.name)
+          window.setTimeout(() => setOpen(false), 160)
         }}
       />
-      <datalist id={listId}>
-        {filtered.map((item) => (
-          <option key={item.code} value={item.code}>
-            {item.name}
-          </option>
-        ))}
-      </datalist>
-      {nameValue ? <span className="modal-note">{nameValue}</span> : null}
-    </label>
+      {open ? (
+        <ul className="incoming-combo-list" role="listbox">
+          {matches.length ? (
+            matches.map((item) => (
+              <li key={item.code}>
+                <button
+                  type="button"
+                  className="incoming-combo-option"
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    onPick(item.code, item.name)
+                    setOpen(false)
+                  }}
+                >
+                  {item.name}
+                </button>
+              </li>
+            ))
+          ) : (
+            <li className="incoming-combo-empty">Нет подходящих вариантов</li>
+          )}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
+function ReviewRow({ label, value }: { label: string; value: string }): React.JSX.Element {
+  return (
+    <div className="incoming-review-row">
+      <dt>{label}</dt>
+      <dd>{value.trim() || '—'}</dd>
+    </div>
   )
 }
 
@@ -95,9 +204,9 @@ export function MailIncomingCreateDialog({
       bodyPreview: detail?.bodyPreview
     })
   )
-  const [departments, setDepartments] = useState<IncomingDepartmentOption[]>([])
-  const [step, setStep] = useState<'form' | 'confirm'>('form')
-  const [confirmed, setConfirmed] = useState(false)
+  const [departments, setDepartments] = useState<IncomingDepartmentOption[]>(INCOMING_DEPARTMENTS)
+  const [organizations, setOrganizations] = useState<IncomingOrganizationOption[]>(INCOMING_ORGANIZATIONS)
+  const [step, setStep] = useState<'choice' | 'form' | 'confirm'>('choice')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -110,17 +219,21 @@ export function MailIncomingCreateDialog({
         bodyPreview: detail?.bodyPreview
       })
     )
-    setStep('form')
-    setConfirmed(false)
+    setStep('choice')
     setError('')
     setBusy(false)
-  }, [open, mail.id, detail?.subject, detail?.sender, mail.subject, mail.sender, detail?.bodyPreview])
+    // Reset only when the dialog opens for another letter. Letter preview
+    // updates must not wipe a filled form or abort the 1C submit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open + mail identity only
+  }, [open, mail.id])
 
   useEffect(() => {
     if (!open) return
     let cancelled = false
-    void fetchIncomingDepartments().then((items) => {
-      if (!cancelled) setDepartments(items)
+    void fetchIncomingCatalog().then((catalog) => {
+      if (cancelled) return
+      setDepartments(catalog.departments)
+      if (catalog.organizations.length) setOrganizations(catalog.organizations)
     })
     return () => {
       cancelled = true
@@ -136,25 +249,49 @@ export function MailIncomingCreateDialog({
     return () => window.removeEventListener('keydown', onKey)
   }, [open, busy, onClose])
 
+  const orgFullName = useMemo(() => {
+    const hit = organizations.find((item) => item.code === draft.organization)
+    return hit?.name || organizationLabel(draft.organization)
+  }, [draft.organization, organizations])
+
   const goConfirm = (): void => {
     setError('')
     if (!draft.departmentId.trim()) {
-      setError('Укажите подразделение (кому на исполнение)')
+      setError('Выберите подразделение из подсказок под полем')
+      return
+    }
+    if (!organizations.some((item) => item.code === draft.organization)) {
+      setError('Выберите организацию из подсказок под полем')
       return
     }
     if (!draft.theme.trim()) {
       setError('Укажите тему входящей')
       return
     }
+    if (!draft.partner.trim()) {
+      setError('Укажите партнёра — без него 1С не записывает входящую')
+      return
+    }
     setStep('confirm')
-    setConfirmed(false)
+  }
+
+  async function submitForward(): Promise<void> {
+    setBusy(true)
+    setError('')
+    try {
+      const result = await forwardIncomingMailToAi(mail)
+      if (!result.ok) {
+        setError(result.error || 'Не удалось переслать письмо')
+        return
+      }
+      onCreated(`Письмо переслано на ${INCOMING_AI_MAILBOX} для обработки ИИ`)
+      onClose()
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function submitCreate(): Promise<void> {
-    if (!confirmed) {
-      setError('Подтвердите запись документа в 1С')
-      return
-    }
     setBusy(true)
     setError('')
     try {
@@ -165,12 +302,21 @@ export function MailIncomingCreateDialog({
         setError(result.error || 'Ошибка создания')
         return
       }
+      if (result.attachmentWarning) {
+        const createdLabel = result.number
+          ? `Документ ${result.number} создан`
+          : 'Документ создан'
+        setError(
+          `${createdLabel}, но .msg не прикреплён: ${result.attachmentWarning}. Проверьте вложение в 1С или повторите.`
+        )
+        onCreated(
+          `${createdLabel}, но без вложения .msg: ${result.attachmentWarning}`
+        )
+        return
+      }
       let msg = result.number
         ? `Создана входящая ${result.number}`
         : result.summary || 'Входящая создана в 1С (OData)'
-      if (result.attachmentWarning) {
-        msg += `. Вложение .msg: ${result.attachmentWarning}`
-      }
       onCreated(msg)
       onClose()
     } finally {
@@ -195,12 +341,16 @@ export function MailIncomingCreateDialog({
               Входящая из письма
             </h2>
             <p className="modal-note registry-create-sub">
-              Как agent-pochta: заполните маршрут (кому на исполнение), затем запись в 1С через OData HTTP и
-              прикрепление .msg.
+              {step === 'choice'
+                ? `Сначала можно переслать письмо на ${INCOMING_AI_MAILBOX}: его разберёт ИИ. Либо заполните входящую вручную.`
+                : step === 'form'
+                  ? 'Заполните маршрут и реквизиты. На следующем шаге проверьте сводку и создайте документ в 1С.'
+                  : 'Проверьте сводку и нажмите «Создать в 1С» — документ запишется непроведённым, к нему прикрепится .msg.'}
             </p>
             <div className="registry-create-steps" aria-hidden>
-              <span className={step === 'form' ? 'is-active' : ''}>1. Маршрут</span>
-              <span className={step === 'confirm' ? 'is-active' : ''}>2. Проверка</span>
+              <span className={step === 'choice' ? 'is-active' : ''}>1. Способ</span>
+              <span className={step === 'form' ? 'is-active' : ''}>2. Маршрут</span>
+              <span className={step === 'confirm' ? 'is-active' : ''}>3. Проверка</span>
             </div>
           </div>
           <button
@@ -214,15 +364,55 @@ export function MailIncomingCreateDialog({
           </button>
         </header>
 
-        {step === 'form' ? (
+        {step === 'choice' ? (
           <div className="registry-create-body">
             <section className="registry-create-section">
-              <DeptSelect
+              <p className="modal-note">
+                Переадресация уйдёт из Outlook на {INCOMING_AI_MAILBOX}. Тема письма:{' '}
+                {mail.subject || draft.theme || 'без темы'}.
+              </p>
+            </section>
+            {error ? <p className="modal-error">{error}</p> : null}
+            <footer className="registry-create-foot modal-actions">
+              <button
+                type="button"
+                className="spec-btn-outline"
+                disabled={busy}
+                onClick={() => {
+                  setError('')
+                  setStep('form')
+                }}
+              >
+                Продолжить заполнение вручную
+              </button>
+              <button
+                type="button"
+                className="spec-btn-launch"
+                disabled={busy}
+                onClick={() => void submitForward()}
+              >
+                {busy ? 'Отправка…' : 'Отправить на переадресацию ИИ'}
+              </button>
+            </footer>
+          </div>
+        ) : step === 'form' ? (
+          <div className="registry-create-body">
+            <section className="registry-create-section">
+              <SemanticCombo
                 id="incoming-dept"
-                label="Кому на исполнение (код подразделения)"
-                value={draft.departmentId}
-                nameValue={draft.departmentName}
+                label="Кому на исполнение"
+                required
+                placeholder="Начните вводить: кадры, юристы, дела…"
+                query={draft.departmentName}
                 options={departments}
+                hints={DEPT_HINTS}
+                onQuery={(value) =>
+                  setDraft((current) => ({
+                    ...current,
+                    departmentName: value,
+                    departmentId: ''
+                  }))
+                }
                 onPick={(code, name) =>
                   setDraft((current) => ({
                     ...current,
@@ -240,21 +430,33 @@ export function MailIncomingCreateDialog({
                 />
               </label>
               <label className="registry-create-field">
-                <span className="modal-label">Партнёр</span>
+                <span className="modal-label">Партнёр *</span>
                 <input
                   className="onec-reconnect-input"
                   value={draft.partner}
+                  placeholder="Название контрагента"
                   onChange={(event) => setDraft((c) => ({ ...c, partner: event.target.value }))}
                 />
               </label>
-              <label className="registry-create-field">
-                <span className="modal-label">Организация</span>
-                <input
-                  className="onec-reconnect-input"
-                  value={draft.organization}
-                  onChange={(event) => setDraft((c) => ({ ...c, organization: event.target.value }))}
-                />
-              </label>
+              <SemanticCombo
+                id="incoming-org"
+                label="Организация"
+                required
+                placeholder="Например: турбулентность, алмаз, милака"
+                query={organizationLabel(draft.organization)}
+                options={organizations}
+                hints={ORG_HINTS}
+                onQuery={(value) => {
+                  const hit = organizations.find(
+                    (item) => item.name.toLowerCase() === value.trim().toLowerCase()
+                  )
+                  setDraft((current) => ({
+                    ...current,
+                    organization: hit?.code || value
+                  }))
+                }}
+                onPick={(code) => setDraft((current) => ({ ...current, organization: code }))}
+              />
               <label className="registry-create-field registry-create-field--wide">
                 <span className="modal-label">Отправитель (e-mail)</span>
                 <input
@@ -285,33 +487,20 @@ export function MailIncomingCreateDialog({
           </div>
         ) : (
           <div className="registry-create-body">
-            <dl className="registry-create-review">
-              <div>
-                <dt>Подразделение</dt>
-                <dd>
-                  {draft.departmentId}
-                  {draft.departmentName ? ` — ${draft.departmentName}` : ''}
-                </dd>
-              </div>
-              <div>
-                <dt>Тема</dt>
-                <dd>{draft.theme}</dd>
-              </div>
-              {draft.partner ? (
-                <div>
-                  <dt>Партнёр</dt>
-                  <dd>{draft.partner}</dd>
-                </div>
+            <dl className="incoming-review">
+              <ReviewRow label="Организация" value={orgFullName} />
+              <ReviewRow label="Кому на исполнение" value={draft.departmentName} />
+              <ReviewRow label="Тема" value={draft.theme} />
+              <ReviewRow label="Партнёр" value={draft.partner} />
+              <ReviewRow label="Отправитель" value={draft.emailSender || mail.sender || ''} />
+              {draft.content.trim() ? (
+                <ReviewRow label="Содержание" value={draft.content} />
               ) : null}
             </dl>
-            <label className="registry-create-confirm">
-              <input
-                type="checkbox"
-                checked={confirmed}
-                onChange={(event) => setConfirmed(event.target.checked)}
-              />
-              Создать документ входящей в 1С (OData) и прикрепить .msg письма
-            </label>
+            <p className="modal-note incoming-review-note">
+              Будет создан непроведённый документ входящей корреспонденции в 1С, к нему
+              прикрепится файл письма (.msg).
+            </p>
             {error ? <p className="modal-error">{error}</p> : null}
             <footer className="registry-create-foot">
               <button
@@ -323,7 +512,7 @@ export function MailIncomingCreateDialog({
                 Назад
               </button>
               <button type="button" className="spec-btn-launch" disabled={busy} onClick={() => void submitCreate()}>
-                {busy ? '1С OData…' : 'Создать в 1С'}
+                {busy ? 'Запись в 1С…' : 'Создать в 1С'}
               </button>
             </footer>
           </div>

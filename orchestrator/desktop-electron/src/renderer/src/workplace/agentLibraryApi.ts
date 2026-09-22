@@ -25,6 +25,15 @@ export type AgentLibrarySnapshot = {
   adopted: AgentLibraryEntry[]
 }
 
+/** In-memory cache so revisiting the tab paints immediately while a refresh runs. */
+let cachedSnapshot: AgentLibrarySnapshot | null = null
+/** Dedupes StrictMode double-mount and overlapping refresh calls. */
+let inflight: Promise<AgentLibrarySnapshot> | null = null
+
+export function getCachedAgentLibrary(): AgentLibrarySnapshot | null {
+  return cachedSnapshot
+}
+
 function parseEntry(raw: Record<string, unknown>): AgentLibraryEntry {
   return {
     type: 'agent_card',
@@ -45,11 +54,22 @@ function parseEntry(raw: Record<string, unknown>): AgentLibraryEntry {
   }
 }
 
-export async function fetchAgentLibrary(): Promise<AgentLibrarySnapshot> {
-  const data = await api.listAgentLibrary()
-  return {
-    catalog: data.catalog.map(parseEntry),
-    adopted: data.adopted.map(parseEntry)
+export async function fetchAgentLibrary(opts?: { force?: boolean }): Promise<AgentLibrarySnapshot> {
+  if (!opts?.force && inflight) return inflight
+  const run = (async () => {
+    const data = await api.listAgentLibrary()
+    const snap: AgentLibrarySnapshot = {
+      catalog: data.catalog.map(parseEntry),
+      adopted: data.adopted.map(parseEntry)
+    }
+    cachedSnapshot = snap
+    return snap
+  })()
+  inflight = run
+  try {
+    return await run
+  } finally {
+    if (inflight === run) inflight = null
   }
 }
 

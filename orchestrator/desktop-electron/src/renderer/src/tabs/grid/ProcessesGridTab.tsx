@@ -308,12 +308,12 @@ export function ProcessesGridTab({
   const linkedErpTask = useMemo(() => {
     if (!selected?.id.startsWith('erp:')) return null
     const ref = selected.id.slice(4)
-    return data.tasks.find((task) => task.id === ref) ?? null
-  }, [selected?.id, data.tasks])
+    return (data.erpTasks ?? []).find((task) => task.id === ref) ?? null
+  }, [selected?.id, data.erpTasks])
   const linkedTurboProject = useMemo(() => {
     if (!selected?.id.startsWith('proj:')) return null
     const projectId = selected.id.slice(5)
-    return data.projects.find((project) => project.id === projectId) ?? null
+    return (data.projects ?? []).find((project) => project.id === projectId) ?? null
   }, [selected?.id, data.projects])
 
   const tabs = useMemo(

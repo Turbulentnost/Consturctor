@@ -265,7 +265,7 @@ export function MailDetailPanel({
           </button>
           <button
             type="button"
-            className="spec-btn-outline"
+            className="spec-btn-launch"
             disabled={Boolean(busy) || !canOutlookActions}
             onClick={() => void runAction('open', () => displayOutlookMail(mail, 'open'))}
           >
@@ -274,7 +274,7 @@ export function MailDetailPanel({
           {onAskOrchestrator ? (
             <button
               type="button"
-              className="spec-btn-launch"
+              className="spec-btn-outline"
               disabled={Boolean(busy)}
               onClick={() =>
                 onAskOrchestrator(`Помоги с письмом «${mail.subject}» от ${mail.sender}`)
@@ -288,7 +288,7 @@ export function MailDetailPanel({
           <div className="spec-mail-read-row">
             <button
               type="button"
-              className="spec-btn-outline spec-mail-read-btn"
+              className="spec-btn-launch spec-mail-read-btn"
               disabled={Boolean(busy) || !canOutlookActions}
               onClick={() =>
                 void runAction('read', async () => {

@@ -1303,7 +1303,7 @@ export class ApiClient {
     adopted: Record<string, unknown>[]
   }> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/agents/library', {
-      timeoutMs: 25_000
+      timeoutMs: 12_000
     })
     const catalog = Array.isArray(data.catalog) ? (data.catalog as Record<string, unknown>[]) : []
     const adopted = Array.isArray(data.adopted) ? (data.adopted as Record<string, unknown>[]) : []

@@ -1347,7 +1347,7 @@
   max-height: calc(min(38vh, 380px) - 52px);
 }
 
-.agent-library-cards {
+.agent-library-page .agent-library-cards {
   display: grid;
   gap: 12px;
   width: 100%;
@@ -1355,11 +1355,11 @@
   grid-auto-rows: auto;
 }
 
-.agent-library-cards--catalog {
+.agent-library-page .agent-library-cards--catalog {
   grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
 }
 
-.agent-library-cards--adopted {
+.agent-library-page .agent-library-cards--adopted {
   grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
 }
 

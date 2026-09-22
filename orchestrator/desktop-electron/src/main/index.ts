@@ -460,12 +460,16 @@ async function backendBasesForRequest(opts: RequestOptions): Promise<string[]> {
   const primary = CONFIG.backendUrl.replace(/\/+$/, '')
   // Login / FIO search always via configured backend (loopback); gateway proxy is in backend/.env.
   if (pathIsAuthApi(opts.path)) return [primary]
-  // Agent library: JWT must match the backend that issued it (LAN vs 127.0.0.1).
-  // Local backend first only when BACKEND_URL is already loopback; LAN → gateway only (404 → fallback).
+  // Agent library: route often exists only on local backend while BACKEND_URL points at LAN gateway.
+  // Prefer local when healthy; on 401/403 (JWT host mismatch) fall through to primary.
   if (!app.isPackaged && pathIsAgentLibraryApi(opts.path)) {
     if (isLoopback(primary)) {
       await ensureLocalBackend(LOCAL_BACKEND)
       return [primary]
+    }
+    const localUp = await pingBackendHealth(LOCAL_BACKEND, 800)
+    if (localUp) {
+      return [LOCAL_BACKEND, primary]
     }
     return [primary]
   }

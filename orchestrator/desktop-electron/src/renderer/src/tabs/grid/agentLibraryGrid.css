@@ -188,6 +188,15 @@
   border-radius: 22px;
 }
 
+/* Global orchGrid.css still sets min-height: 280px on .agent-library-tile — keep chrome tiles compact. */
+.orch-grid-agent-library .agent-library-tile {
+  min-height: 0;
+}
+
+.orch-grid-agent-library .agent-library-empty--dashed {
+  min-height: 72px;
+}
+
 .agent-library-tile-top {
   display: flex;
   align-items: flex-start;

@@ -57,15 +57,19 @@ export function docflowActionButtons(ctx: TaskActionContext): Array<{
   return buttons
 }
 
-export function turboActionButtons(): Array<{
+export function turboActionButtons(opts?: { taskUid?: string }): Array<{
   id: TurboUiAction
   label: string
   tone?: 'primary' | 'outline'
 }> {
-  return [
-    { id: 'open_project', label: 'Открыть в TurboProject', tone: 'outline' },
-    { id: 'mark_done', label: 'Исполнено (100%)', tone: 'primary' }
+  const buttons: Array<{ id: TurboUiAction; label: string; tone?: 'primary' | 'outline' }> = [
+    { id: 'open_project', label: 'Открыть в TurboProject', tone: 'outline' }
   ]
+  // «Исполнено» только у задачи проекта, не у карточки самого проекта.
+  if ((opts?.taskUid || '').trim()) {
+    buttons.push({ id: 'mark_done', label: 'Исполнено (100%)', tone: 'primary' })
+  }
+  return buttons
 }
 
 const DOCFLOW_ACTION_API: Record<DocflowUiAction, string | null> = {

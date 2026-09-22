@@ -124,7 +124,10 @@ class OutlookDisplayMessageComTool(ComBackedTool):
             ToolDefinition(
                 name="outlook.display_message",
                 title="Открыть письмо в Outlook",
-                description="mode: open | reply | reply_all | forward — окно Outlook.",
+                description=(
+                    "mode: open | reply | reply_all | forward. "
+                    "forward + to + send=true пересылает письмо без окна."
+                ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
@@ -136,6 +139,14 @@ class OutlookDisplayMessageComTool(ComBackedTool):
                         "mode": {
                             "type": "string",
                             "description": "open, reply, reply_all или forward",
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "Получатель черновика или пересылки",
+                        },
+                        "send": {
+                            "type": "boolean",
+                            "description": "true — отправить сразу, без окна Outlook",
                         },
                     },
                     "required": ["entry_id"],

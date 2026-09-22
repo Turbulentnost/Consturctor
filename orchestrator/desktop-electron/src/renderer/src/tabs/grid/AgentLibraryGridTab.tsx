@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, RefreshCw, Search } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { api } from '../../api/client'
@@ -7,13 +7,13 @@ import {
   adoptAgentFromLibrary,
   agentPurposeLabel,
   fetchAgentLibrary,
+  getCachedAgentLibrary,
   type AgentLibraryEntry
 } from '../../workplace/agentLibraryApi'
 import { localizeStatusText } from '../../utils/statusText'
 import type { PassportTab } from '../../pages/AgentPassportPage'
 import { StandardTabChrome } from './TabChromeGrid'
 import { DEFAULT_AGENT_LIBRARY_LAYOUT } from './useTabChromeLayout'
-import './extensionsGrid.css'
 import './agentLibraryGrid.css'
 import { usePageSearch } from '../../layout/pageSearchContext'
 
@@ -207,9 +207,12 @@ export function AgentLibraryGridTab({
   user: UserProfile
   onOpenPassport: (workflowId: string, title: string, tab?: PassportTab) => void
 }): React.JSX.Element {
-  const [catalog, setCatalog] = useState<AgentLibraryEntry[]>([])
-  const [adopted, setAdopted] = useState<AgentLibraryEntry[]>([])
-  const [initialLoading, setInitialLoading] = useState(true)
+  const cached = getCachedAgentLibrary()
+  const [catalog, setCatalog] = useState<AgentLibraryEntry[]>(() =>
+    (cached?.catalog ?? []).filter((item) => !item.alreadyAdded)
+  )
+  const [adopted, setAdopted] = useState<AgentLibraryEntry[]>(() => cached?.adopted ?? [])
+  const [initialLoading, setInitialLoading] = useState(() => !cached)
   const [refreshing, setRefreshing] = useState(false)
   const [busyId, setBusyId] = useState('')
   const [error, setError] = useState('')
@@ -217,16 +220,26 @@ export function AgentLibraryGridTab({
   const [info, setInfo] = useState<{ entry: AgentLibraryEntry; variant: 'catalog' | 'adopted' } | null>(
     null
   )
+  const loadGen = useRef(0)
+  const hasPaintedRef = useRef(Boolean(cached))
+
+  const applySnapshot = useCallback((snap: { catalog: AgentLibraryEntry[]; adopted: AgentLibraryEntry[] }) => {
+    setCatalog(snap.catalog.filter((item) => !item.alreadyAdded))
+    setAdopted(snap.adopted)
+    hasPaintedRef.current = true
+  }, [])
 
   const reload = useCallback(async (mode: 'initial' | 'refresh') => {
+    const gen = ++loadGen.current
     setError('')
-    if (mode === 'initial') setInitialLoading(true)
+    if (mode === 'initial' && !hasPaintedRef.current) setInitialLoading(true)
     else setRefreshing(true)
     try {
-      const snap = await fetchAgentLibrary()
-      setCatalog(snap.catalog.filter((item) => !item.alreadyAdded))
-      setAdopted(snap.adopted)
+      const snap = await fetchAgentLibrary({ force: mode === 'refresh' })
+      if (gen !== loadGen.current) return
+      applySnapshot(snap)
     } catch (err) {
+      if (gen !== loadGen.current) return
       if (err instanceof ApiError && err.status === 404) {
         setError(
           'Сервис библиотеки недоступен. Запустите локальный backend (run_dev.bat) или обновите gateway.'
@@ -237,13 +250,18 @@ export function AgentLibraryGridTab({
         setError(err instanceof Error ? err.message : 'Не удалось загрузить библиотеку')
       }
     } finally {
-      setInitialLoading(false)
-      setRefreshing(false)
+      if (gen === loadGen.current) {
+        setInitialLoading(false)
+        setRefreshing(false)
+      }
     }
-  }, [])
+  }, [applySnapshot])
 
   useEffect(() => {
     void reload('initial')
+    return () => {
+      loadGen.current += 1
+    }
   }, [reload, user.id])
 
   const query = normSearch(search)

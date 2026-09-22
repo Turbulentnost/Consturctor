@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
 import { PAGE_LABELS } from '../components/Sidebar'
-import agentLibraryLogo from '../assets/nav-orchestrator.svg'
 import {
   SpecProcessMapButton,
   SpecQuickLaunchButton,
@@ -98,7 +97,6 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   },
   agent_library: {
     title: 'Библиотека агентов',
-    subtitle: 'Опубликованные ИИ-агенты всех сотрудников: добавьте к себе и откройте паспорт',
-    titleLogoSrc: agentLibraryLogo
+    subtitle: 'Опубликованные ИИ-агенты всех сотрудников: добавьте к себе и откройте паспорт'
   }
 }

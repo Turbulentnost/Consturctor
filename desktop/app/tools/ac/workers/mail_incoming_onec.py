@@ -92,8 +92,10 @@ def stage_incoming_msg_file(src_path: str, *, entry_id: str, file_name: str | No
     local_dir.mkdir(parents=True, exist_ok=True)
     local_copy = (local_dir / _UNSAFE_PATH.sub("_", name)).resolve()
     shutil.copy2(src, local_copy)
-    volume_copy = _copy_to_volume_if_configured(local_copy, local_copy.name)
-    return volume_copy or local_copy
+    # Volume preupload is optional for 1С volume mode; OData Base64 attach must
+    # read a path the backend can open — always return the local staged copy.
+    _copy_to_volume_if_configured(local_copy, local_copy.name)
+    return local_copy
 
 
 def save_incoming_mail_msg(input_data: dict[str, Any]) -> dict[str, Any]:
