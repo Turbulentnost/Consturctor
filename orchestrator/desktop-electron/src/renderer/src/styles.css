@@ -1377,14 +1377,15 @@ input {
 }
 .avatar-status {
   position: absolute;
-  right: -1px;
-  bottom: -1px;
+  right: 0;
+  bottom: 0;
   width: 10px;
   height: 10px;
   border-radius: 5px;
   background: #2f80ed;
   border: 2px solid #f7fafd;
   box-sizing: content-box;
+  z-index: 2;
 }
 .avatar-status.busy {
   background: #e67e22;
@@ -11601,8 +11602,15 @@ button.spec-v04-tile {
   color: #2e9a6f;
 }
 .spec-tile-icon-wrap.tone-onec {
-  background: rgba(21, 101, 192, 0.12);
-  color: #1565c0;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(227, 6, 19, 0.16);
+  color: #e30613;
+}
+.spec-icon-onec {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 .spec-tile-icon-wrap.tone-proj {
   background: rgba(123, 79, 214, 0.12);
@@ -12399,24 +12407,30 @@ button.spec-v04-tile {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 .spec-quick-action-btn {
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   text-align: left;
   display: flex;
   align-items: center;
-  gap: 5px;
-  min-height: 0;
+  gap: 8px;
+  min-height: 34px;
   border: 1px solid transparent;
   background: #f4f7f6;
-  padding: 4px 8px 4px 6px;
-  border-radius: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--content-primary, #10141a);
-  box-shadow: 0 1px 3px rgba(16, 20, 26, 0.05);
+  box-shadow: none;
+  overflow: hidden;
   transition: filter 0.15s ease, transform 0.1s ease;
   font-family: inherit;
 }
@@ -12424,18 +12438,34 @@ button.spec-v04-tile {
   flex: 1;
   min-width: 0;
   line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .spec-quick-action-ico {
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.65);
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.75);
   display: grid;
   place-items: center;
   flex-shrink: 0;
   color: inherit;
 }
-.spec-quick-action-ico .spec-tile-ico,
+.spec-quick-action-ico svg {
+  width: 14px;
+  height: 14px;
+}
+.spec-quick-action-ico--onec {
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(227, 6, 19, 0.16);
+}
+.spec-quick-action-ico--onec .spec-icon-onec {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+.spec-quick-action-ico .spec-tile-ico:not(.spec-icon-onec),
 .spec-quick-action-ico .spec-filter-ico,
 .spec-quick-action-ico .spec-launch-play {
   width: 12px;

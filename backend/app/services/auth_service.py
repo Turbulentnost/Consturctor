@@ -424,7 +424,7 @@ async def list_user_fios(search: str | None = None) -> list[str]:
             return []
         return [fio]
     gateway = _auth_gateway_base()
-    if gateway and not await _local_erp_reachable():
+    if gateway and not await _local_erp_reachable_quick():
         items = await asyncio.to_thread(_list_fios_via_erp_gateway, search)
         if items or search:
             return items

@@ -156,6 +156,30 @@
   overflow: auto;
 }
 
+.orch-process-main .spec-v04-table th,
+.orch-process-main .spec-v04-table td {
+  padding: 6px 8px;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-v04-panel {
+  padding: 10px 12px;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-v04-panel-head {
+  margin-bottom: 6px;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-detail-card {
+  padding: 10px 12px;
+  gap: 8px;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-detail-head h2,
+.tab-chrome-shell[data-widget-id='side'] .spec-detail-card h2 {
+  font-size: 15px;
+  line-height: 1.25;
+}
+
 .tab-chrome-filters-bar {
   grid-area: filters;
   height: 40px;
@@ -361,6 +385,13 @@
 .tab-chrome-shell[data-widget-id^='tile:'] .spec-tile-ico {
   width: 62%;
   height: 62%;
+}
+
+.tab-chrome-shell[data-widget-id='tiles'] .spec-icon-onec,
+.tab-chrome-shell[data-widget-id^='tile:'] .spec-icon-onec {
+  width: 86%;
+  height: 86%;
+  object-fit: contain;
 }
 
 @container orch-tile (max-height: 78px) {

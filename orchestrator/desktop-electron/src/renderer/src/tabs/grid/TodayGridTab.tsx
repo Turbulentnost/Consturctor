@@ -28,6 +28,7 @@ import {
   EMPTY_TODAY_KPI_TILE
 } from '../../workplace/tileFilters'
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
+import { TodayFullPlanModal } from './TodayFullPlanModal'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
 
@@ -173,6 +174,7 @@ export function TodayGridTab({
   const [periodDay, setPeriodDay] = useState(startOfToday)
   const { data, tiles } = useTodayKpiData(user, periodDay)
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
+  const [fullPlanOpen, setFullPlanOpen] = useState(false)
   const [kpiTiles, setKpiTiles] = useState(EMPTY_TODAY_KPI_TILE)
   const onecFromMe = kpiTiles.onecFromMe
   const outlookFromMe = kpiTiles.outlookFromMe
@@ -282,7 +284,12 @@ export function TodayGridTab({
     () => ({
       plan: (
         <TodayWindow>
-          <TodayPlanPanel periodDay={periodDay} userId={user.id || ''} fio={erpFio} />
+          <TodayPlanPanel
+            periodDay={periodDay}
+            userId={user.id || ''}
+            fio={erpFio}
+            onOpenFullPlan={() => setFullPlanOpen(true)}
+          />
         </TodayWindow>
       ),
       results: (
@@ -590,6 +597,13 @@ export function TodayGridTab({
         onClose={() => setOnecDialogOpen(false)}
         user={user}
         errorHint={data.erpError || data.error}
+      />
+      <TodayFullPlanModal
+        open={fullPlanOpen}
+        periodDay={periodDay}
+        fio={erpFio}
+        onClose={() => setFullPlanOpen(false)}
+        onOpenRun={onOpenRun}
       />
     </>
   )

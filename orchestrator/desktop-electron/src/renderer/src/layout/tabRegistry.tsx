@@ -15,6 +15,7 @@ export type WorkplaceTabKey =
   | 'tasks'
   | 'projects'
   | 'mail'
+  | 'docflow'
   | 'meetings'
   | 'decisions'
   | 'kpi'
@@ -62,6 +63,10 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
     title: PAGE_LABELS.mail,
     subtitle: 'Ваши письма в Outlook и связанные процессы',
     headerActions: <SpecQuickLaunchButton />
+  },
+  docflow: {
+    title: PAGE_LABELS.docflow,
+    subtitle: 'Корреспонденция, служебные записки, приказы, поручения и протоколы'
   },
   meetings: {
     title: PAGE_LABELS.meetings,

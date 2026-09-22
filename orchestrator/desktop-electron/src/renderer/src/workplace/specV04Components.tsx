@@ -1,21 +1,27 @@
 import type { ReactNode } from 'react'
+import { BookOpen, Calendar, Mail, Plus, Play } from 'lucide-react'
 import { stageProgressTone } from './specV04Shell'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecPillTone } from './specV04DemoData'
-import { SpecIconCalendar, SpecIconOnec, SpecIconPlay, SpecTileIcon } from './specV04Icons'
+import { SpecIconOnec, SpecIconPlay, SpecTileIcon } from './specV04Icons'
 import type { SpecQuickActionIcon } from './specGridQuickActions'
 import { openWorkplaceTab } from './workplaceNav'
 
+function SpecQuickActionGlyph({ kind }: { kind: SpecQuickActionIcon }): React.JSX.Element {
+  if (kind === 'plus') return <Plus strokeWidth={2.4} />
+  if (kind === 'play') return <Play strokeWidth={2.4} />
+  if (kind === 'calendar') return <Calendar strokeWidth={2.2} />
+  if (kind === 'mail') return <Mail strokeWidth={2.2} />
+  if (kind === 'book') return <BookOpen strokeWidth={2.2} />
+  return <SpecIconOnec />
+}
+
 function SpecQuickActionIcon({ kind }: { kind: SpecQuickActionIcon }): React.JSX.Element {
-  const icon =
-    kind === 'play' ? (
-      <SpecIconPlay />
-    ) : kind === 'calendar' ? (
-      <SpecIconCalendar />
-    ) : (
-      <SpecIconOnec />
-    )
-  return <span className="spec-quick-action-ico">{icon}</span>
+  return (
+    <span className={`spec-quick-action-ico${kind === 'onec' ? ' spec-quick-action-ico--onec' : ''}`}>
+      <SpecQuickActionGlyph kind={kind} />
+    </span>
+  )
 }
 
 export function SpecPill({

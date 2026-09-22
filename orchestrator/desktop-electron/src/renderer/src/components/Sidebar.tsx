@@ -21,6 +21,7 @@ export type UserPageKey =
   | 'tasks'
   | 'projects'
   | 'mail'
+  | 'docflow'
   | 'meetings'
   | 'decisions'
   | 'knowledge'
@@ -44,6 +45,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   tasks: 'Задачи',
   projects: 'Проекты',
   mail: 'Письма',
+  docflow: 'Документооборот',
   meetings: 'Совещания',
   decisions: 'Решения',
   knowledge: 'База знаний',
@@ -72,6 +74,7 @@ const USER_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'tasks', label: PAGE_LABELS.tasks },
   { key: 'projects', label: PAGE_LABELS.projects },
   { key: 'mail', label: PAGE_LABELS.mail },
+  { key: 'docflow', label: PAGE_LABELS.docflow },
   { key: 'meetings', label: PAGE_LABELS.meetings },
   { key: 'decisions', label: PAGE_LABELS.decisions },
   { key: 'kpi', label: PAGE_LABELS.kpi },

@@ -35,6 +35,7 @@ import { ProcessesGridTab } from './tabs/grid/ProcessesGridTab'
 import { TasksGridTab } from './tabs/grid/TasksGridTab'
 import { ProjectsGridTab } from './tabs/grid/ProjectsGridTab'
 import { MailGridTab } from './tabs/grid/MailGridTab'
+import { DocflowGridTab } from './tabs/grid/DocflowGridTab'
 import { MeetingsGridTab } from './tabs/grid/MeetingsGridTab'
 import { KnowledgeGridTab } from './tabs/grid/KnowledgeGridTab'
 import { TodayGridTab } from './tabs/grid/TodayGridTab'
@@ -85,6 +86,7 @@ const WORKPLACE_TAB_KEYS: WorkplaceTabKey[] = [
   'tasks',
   'projects',
   'mail',
+  'docflow',
   'meetings',
   'decisions',
   'kpi',
@@ -884,6 +886,8 @@ function AppShell(): React.JSX.Element {
         return <ProjectsGridTab user={activeUser} />
       case 'mail':
         return <MailGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+      case 'docflow':
+        return <DocflowGridTab user={activeUser} />
       case 'meetings':
         return <MeetingsGridTab user={activeUser} />
       case 'decisions':
@@ -1022,7 +1026,11 @@ function AppShell(): React.JSX.Element {
                           ? 'orch-grid-extensions'
                           : workplaceShellKey === 'agent_library'
                             ? 'orch-grid-agent-library'
-                            : ''
+                            : workplaceShellKey === 'processes'
+                              ? 'orch-grid-processes'
+                              : workplaceShellKey === 'docflow'
+                                ? 'orch-grid-docflow'
+                                : ''
               }
               user={activeUser}
               avatarUrl={avatarUrl}

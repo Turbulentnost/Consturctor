@@ -307,8 +307,8 @@ export function ProcessesGridTab({
   const linkedErpTask = useMemo(() => {
     if (!selected?.id.startsWith('erp:')) return null
     const ref = selected.id.slice(4)
-    return data.tasks.find((task) => task.id === ref) ?? null
-  }, [selected?.id, data.tasks])
+    return (data.erpTasks ?? []).find((task) => task.id === ref) ?? null
+  }, [selected?.id, data.erpTasks])
   const linkedTurboProject = useMemo(() => {
     if (!selected?.id.startsWith('proj:')) return null
     const projectId = selected.id.slice(5)
@@ -329,14 +329,14 @@ export function ProcessesGridTab({
 
   const quickActions = useMemo(
     () =>
-      buildProcessesQuickActions({}).map((action) => ({
+      buildProcessesQuickActions(user).map((action) => ({
         id: action.id,
         label: action.label,
         tone: action.tone,
         icon: action.icon,
         onClick: () => void action.run()
       })),
-    []
+    [user]
   )
 
   const chromeTiles = useMemo(

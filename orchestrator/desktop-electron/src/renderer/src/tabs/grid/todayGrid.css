@@ -122,6 +122,12 @@
   height: 16px;
 }
 
+.orch-grid-today .spec-tile-ico.spec-icon-onec {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 .orch-grid-today .spec-v04-tile-top {
   align-items: center;
   gap: 4px;
@@ -851,6 +857,21 @@
 .today-plan-card.today-plan-tz .today-plan-timeline {
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+.today-plan-tz--compact .today-plan-timeline {
+  overflow: hidden;
+}
+
+.today-plan-tz--compact .today-plan-lanes,
+.today-plan-tz--compact .today-plan-lane {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.today-plan-tz--compact .today-plan-track-meetings {
+  flex: 1 1 auto;
+  min-height: 52px;
 }
 
 .today-plan-head {
