@@ -21,7 +21,7 @@ from app.schemas.regulation import (
 )
 from app.services.readiness.service import create_readiness_run
 from app.services.regulation import RegulationError, parse_upload
-from app.services.role_matching import RoleMatchError, create_role_match_run
+from app.services.role_matching import RoleMatchError, create_role_match_run, get_run_row
 
 
 class AgentDraftError(Exception):
@@ -57,8 +57,8 @@ def create_or_get_draft(
     draft = AgentDraft(
         id=f"agent-draft-{uuid4().hex[:12]}",
         user_id=user_id,
-        regulation_id=regulation_id,
-        role_match_run_id=role_match_run_id,
+        regulation_id=role_run.regulation_id,
+        role_match_run_id=role_run.id,
         title=title[:512],
         position=role_result.profile.canonicalTitle or role_run.position,
         department=role_result.profile.department or role_run.department,
@@ -468,22 +468,20 @@ def _get_doc_and_role_run(
     regulation_id: str,
     role_match_run_id: str,
 ) -> tuple[RegulationDocument, RoleMatchRun]:
+    try:
+        run = get_run_row(
+            db,
+            user_id=user_id,
+            regulation_id=regulation_id,
+            run_id=role_match_run_id,
+        )
+    except RoleMatchError as exc:
+        raise AgentDraftError("Запуск поиска функций не найден", status_code=404) from exc
     doc = (
         db.query(RegulationDocument)
-        .filter(RegulationDocument.id == regulation_id, RegulationDocument.user_id == user_id)
+        .filter(RegulationDocument.id == run.regulation_id, RegulationDocument.user_id == user_id)
         .first()
     )
     if doc is None:
         raise AgentDraftError("Регламент не найден", status_code=404)
-    run = (
-        db.query(RoleMatchRun)
-        .filter(
-            RoleMatchRun.id == role_match_run_id,
-            RoleMatchRun.user_id == user_id,
-            RoleMatchRun.regulation_id == regulation_id,
-        )
-        .first()
-    )
-    if run is None:
-        raise AgentDraftError("Запуск поиска функций не найден", status_code=404)
     return doc, run

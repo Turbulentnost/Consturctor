@@ -509,8 +509,8 @@ function parseMatch(item: Record<string, unknown>): RoleMatch {
 export function parseRoleMatch(data: Record<string, unknown>): RoleMatchResult {
   const profile = asRecord(data.profile)
   return {
-    runId: String(data.runId ?? ''),
-    regulationId: String(data.regulationId ?? ''),
+    runId: String(data.runId ?? data.run_id ?? ''),
+    regulationId: String(data.regulationId ?? data.regulation_id ?? ''),
     canonicalTitle: String(profile.canonicalTitle ?? ''),
     department: String(profile.department ?? ''),
     matches: ((data.matches as Record<string, unknown>[]) ?? []).map((item) => parseMatch(item)),
@@ -1450,8 +1450,8 @@ export class ApiClient {
   ): Promise<RoleMatchResult> {
     const data = await this.request<Record<string, unknown>>(
       'PATCH',
-      `/api/v1/regulations/${regulationId}/role-matches/${runId}/${matchId}`,
-      { body: { status }, timeoutMs: 60_000 }
+      `/api/v1/regulations/${encodeURIComponent(regulationId)}/role-matches/${encodeURIComponent(runId)}/${encodeURIComponent(matchId)}`,
+      { body: { status, runId, regulationId }, timeoutMs: 60_000 }
     )
     return parseRoleMatch(data)
   }

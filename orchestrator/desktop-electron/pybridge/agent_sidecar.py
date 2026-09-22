@@ -139,7 +139,9 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_sdk_prompt,
     text_has_finished_work_result,
 )
-from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
+from app.sdk_agent.tool_adapter import ASK_QUESTION_SPEC, sdk_tool_specs  # noqa: E402
+
+READINESS_SDK_TOOLS = (dict(ASK_QUESTION_SPEC),)
 
 # HITL classification replicated from app.tools.hitl.needs_confirmation.
 # We do NOT import that module because it pulls in PySide6/Qt at import time,
@@ -2080,14 +2082,31 @@ def _write_text(cwd: str, relative: str, text: str) -> str:
     return relative.replace("\\", "/")
 
 
-def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> None:
-    regulation = api.get_regulation(draft.regulation_id)
+def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> bool:
     suggestions = list(draft.agent_suggestions or [])
-    by_block = {item.fragment_id: item for item in regulation.fragments}
+    fragments: list[Any] = []
+    file_name = "Регламент"
+    regulation_id = str(getattr(draft, "regulation_id", "") or "").strip()
+    if regulation_id:
+        try:
+            regulation = api.get_regulation(regulation_id)
+        except ApiError as exc:
+            if exc.status_code not in {404, 502, 503}:
+                raise
+            regulation = None
+        if regulation is not None:
+            fragments = list(regulation.fragments or [])
+            file_name = str(getattr(regulation, "file_name", "") or file_name)
+    by_block = {item.fragment_id: item for item in fragments}
 
     _write_text(cwd, "AGENTS.md", READINESS_AGENTS_MD)
-    regulation_lines = [f"# {regulation.file_name}", ""]
-    for fragment in regulation.fragments:
+    regulation_lines = [f"# {file_name}", ""]
+    if not fragments:
+        regulation_lines.append(
+            "Полный текст регламента сейчас недоступен. "
+            "Опирайся на блоки из materials/functions.md и не вызывай внешние системы."
+        )
+    for fragment in fragments:
         text = (fragment.text or "").strip()
         if not text:
             continue
@@ -2128,14 +2147,21 @@ def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> None:
         (previous or "Ответов пользователя пока нет.") + "\n",
     )
     _write_text(cwd, "materials/manifest.json", json.dumps({"files": []}, ensure_ascii=False, indent=2) + "\n")
+    return bool(previous)
 
 
-def _build_readiness_prompt() -> str:
+def _build_readiness_prompt(*, has_answers: bool = False) -> str:
+    extra = (
+        " В materials/answers.md уже есть ответы пользователя — не спрашивай то же самое."
+        if has_answers
+        else ""
+    )
     return (
         "Прочитай AGENTS.md и все файлы в materials. "
         "Закрой через askQuestion пробелы логики по каждому функциональному блоку. "
         "В каждом askQuestion передай 2-6 конкретных вариантов в options. "
         "Когда все пробелы закрыты, верни JSON readiness и остановись."
+        + extra
     )
 
 
@@ -2595,11 +2621,16 @@ class Sidecar:
             )
         except ApiError as exc:
             self._finish_active_history(active, "Cursor SDK не отвечает")
+            message = _exc_text(exc, "Ошибка backend во время запуска агента")
+            if exc.status_code in {502, 503}:
+                backend = str(getattr(self._api, "base_url", "") or "").rstrip("/")
+                if backend and backend not in message:
+                    message = f"{message} ({backend})"
             emit(
                 {
                     "type": "error",
                     "runId": active.run_id,
-                    "message": _exc_text(exc, "Ошибка backend во время запуска агента"),
+                    "message": message,
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -2792,17 +2823,18 @@ class Sidecar:
         draft = self._api.get_agent_draft(draft_id)
         run_cwd = bridge.workspace_cwd(f"draft-{draft_id}")
         active.run_cwd = run_cwd
-        _prepare_readiness_workspace(self._api, draft, run_cwd)
+        has_answers = _prepare_readiness_workspace(self._api, draft, run_cwd)
         events = active.events
         result = bridge.run(
-            prompt=_build_readiness_prompt(),
+            prompt=_build_readiness_prompt(has_answers=has_answers),
             workflow_id=f"draft-{draft_id}",
             cwd=run_cwd,
             mode="design",
+            tools=[dict(item) for item in READINESS_SDK_TOOLS],
             on_event=self._forward_events(active, events),
             on_question=active.gate.ask_question,
             should_stop=active.stop.is_set,
-            confirm_writes=True,
+            confirm_writes=False,
         )
         answer = str(result.get("answer") or "").strip()
         updated = self._api.finish_sdk_readiness(draft_id, answer=answer, events=events)
