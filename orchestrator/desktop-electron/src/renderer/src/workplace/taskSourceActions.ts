@@ -1,60 +1,33 @@
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
-import { invokeLocalAcTool } from '../utils/localAcTool'
 import { onecGatewayInvokeArgs } from './userContext'
 import { turboProjectInvokeArgs } from './userContext'
 import type { TaskActionContext } from './taskSourceKind'
+import {
+  docflowKindActions,
+  docflowTaskKind,
+  type DocflowActionId,
+  type DocflowActionSpec,
+  type DocflowTaskKind
+} from './docflowTaskKind'
 
-export type DocflowUiAction =
-  | 'acquaint'
-  | 'execute'
-  | 'reject'
-  | 'consider'
-  | 'approve'
-  | 'open_card'
+export type DocflowUiAction = DocflowActionId | 'open_card'
 
 export type TurboUiAction = 'open_project' | 'mark_done' | 'refresh'
 
 export type TaskActionResult = { ok: boolean; message: string }
 
-function inferDocflowActions(step: string, title: string): DocflowUiAction[] {
-  const blob = `${step} ${title}`.toLowerCase()
-  if (/ознаком/i.test(blob)) return ['acquaint', 'reject']
-  if (/рассмотр/i.test(blob)) return ['consider', 'reject']
-  if (/соглас/i.test(blob)) return ['approve', 'reject']
-  if (/исполн/i.test(blob)) return ['execute', 'reject']
-  return ['execute', 'acquaint', 'reject']
+export function docflowKindOfContext(ctx: TaskActionContext): DocflowTaskKind {
+  return ctx.docflowKind ?? docflowTaskKind(ctx.step, ctx.taskName)
 }
 
-export function docflowActionButtons(ctx: TaskActionContext): Array<{
-  id: DocflowUiAction
-  label: string
-  tone?: 'primary' | 'outline' | 'danger'
-}> {
-  const step = (ctx.step || ctx.title || '').trim()
-  const ids = inferDocflowActions(step, ctx.title)
-  const labels: Record<DocflowUiAction, string> = {
-    acquaint: 'Ознакомиться',
-    execute: 'Исполнено',
-    reject: 'Отказаться от исполнения',
-    consider: 'Рассмотреть',
-    approve: 'Согласовать',
-    open_card: 'Карточка в 1С'
-  }
-  const tones: Partial<Record<DocflowUiAction, 'primary' | 'outline' | 'danger'>> = {
-    execute: 'primary',
-    acquaint: 'primary',
-    reject: 'danger',
-    consider: 'outline',
-    approve: 'primary'
-  }
-  const buttons = ids.map((id) => ({
-    id,
-    label: labels[id],
-    tone: tones[id]
-  }))
-  buttons.push({ id: 'open_card', label: labels.open_card, tone: 'outline' })
-  return buttons
+/** Задачи «от меня» завершает исполнитель, у автора остаётся только карточка. */
+export function canActOnDocflowTask(ctx: TaskActionContext): boolean {
+  return String(ctx.role || '').trim().toLowerCase() !== 'author'
+}
+
+export function docflowActionButtons(ctx: TaskActionContext): DocflowActionSpec[] {
+  return canActOnDocflowTask(ctx) ? docflowKindActions(docflowKindOfContext(ctx)) : []
 }
 
 export function turboActionButtons(): Array<{
@@ -68,56 +41,40 @@ export function turboActionButtons(): Array<{
   ]
 }
 
-const DOCFLOW_ACTION_API: Record<DocflowUiAction, string | null> = {
-  acquaint: 'acquaint',
-  execute: 'execute',
-  reject: 'reject',
-  consider: 'consider',
-  approve: 'approve',
-  open_card: null
-}
-
 export async function runDocflowAction(
   user: UserProfile,
   ctx: TaskActionContext,
-  action: DocflowUiAction
+  action: DocflowUiAction,
+  comment = ''
 ): Promise<TaskActionResult> {
-  const refKey = (ctx.refKey || ctx.taskNumber || '').trim()
-  if (!refKey && action !== 'open_card') {
+  const refKey = (ctx.refKey || '').trim()
+  if (!refKey) {
     return { ok: false, message: 'Нет идентификатора задачи 1С (ref_key).' }
   }
   if (action === 'open_card') {
-    const number = (ctx.taskNumber || ctx.refKey || '').trim()
-    if (!number) return { ok: false, message: 'Нет номера задачи для карточки.' }
-    const com = await invokeLocalAcTool('onec.get_task_card', { number, task_ref: number }, 120_000, user)
-    if (com.ok) {
-      return { ok: true, message: 'Карточка задачи загружена через COM (только чтение).' }
-    }
     const res = await api.invokeServerTool(
       'onec.docflow_task_action',
-      onecGatewayInvokeArgs(user, {
-        action: 'retrieve',
-        task_id: ctx.refKey,
-        number: ctx.taskNumber
-      }),
-      120_000
+      onecGatewayInvokeArgs(user, { action: 'web_url', task_id: refKey }),
+      60_000
     )
-    if (res.ok) return { ok: true, message: 'Данные задачи получены с сервера документооборота.' }
-    return {
-      ok: false,
-      message: com.error || res.error || 'Не удалось открыть карточку задачи.'
-    }
+    const url =
+      res.ok && res.result && typeof res.result === 'object'
+        ? String((res.result as Record<string, unknown>).web_url || '').trim()
+        : ''
+    if (!url) return { ok: false, message: res.error || 'Не удалось открыть карточку задачи.' }
+    window.open(url, '_blank', 'noopener,noreferrer')
+    return { ok: true, message: 'Карточка задачи открыта в веб-клиенте 1С:Документооборот.' }
   }
-  const apiAction = DOCFLOW_ACTION_API[action]
   const res = await api.invokeServerTool(
     'onec.docflow_task_action',
     onecGatewayInvokeArgs(user, {
-      action: apiAction,
-      task_id: ctx.refKey,
+      action,
+      task_id: refKey,
       number: ctx.taskNumber,
       target_id: ctx.targetId,
       step: ctx.step,
-      title: ctx.title
+      title: ctx.title,
+      comment: comment.trim()
     }),
     180_000
   )

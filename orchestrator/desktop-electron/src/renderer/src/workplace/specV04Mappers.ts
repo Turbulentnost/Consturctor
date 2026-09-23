@@ -2,6 +2,7 @@ import type { WorkplaceAgent } from './WorkplaceBoard'
 import type { SpecMailRow, SpecPillTone, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { parseIso, sameDay } from '../utils/calendar'
 import { personNameMatches } from './turboAssigneeMatch'
+import { docflowTaskKind } from './docflowTaskKind'
 
 function toneForStatus(text: string): SpecPillTone {
   const key = text.toLowerCase()
@@ -79,7 +80,8 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
   } else if (taskSource.includes('odata')) {
     sourceLabel = '1С ERP (OData)'
   }
-  const step = String(task.step || task.approval || '').trim()
+  const step = String(task.step || '').trim()
+  const taskName = String(task.task_name || '').trim()
   return {
     id: refKey || number || title,
     title,
@@ -104,6 +106,8 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
     refKey: refKey || undefined,
     taskNumber: number || undefined,
     step: step || undefined,
+    taskName: taskName || undefined,
+    docflowKind: isDocflow ? docflowTaskKind(step, taskName, String(task.kind || '')) : undefined,
     targetId: String(task.target_id || task.targetId || '').trim() || undefined
   }
 }

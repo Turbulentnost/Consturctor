@@ -1443,6 +1443,24 @@
   background: rgba(230, 167, 0, 0.18);
 }
 
+.today-mini-table tr.today-tr-new-onec td:first-child {
+  box-shadow: inset 3px 0 0 #e53935;
+}
+
+.today-cell-with-mark {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.today-cell-with-mark .today-cell-text {
+  min-width: 0;
+}
+
+.today-cell-with-mark .onec-new-mark {
+  flex-shrink: 0;
+}
+
 .today-mini-table tr:last-child td {
   border-bottom: none;
 }

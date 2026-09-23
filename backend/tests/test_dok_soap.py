@@ -54,6 +54,47 @@ def test_parse_users_from_dm_list() -> None:
     ]
 
 
+def test_mark_task_executed_sends_update_with_executed_true(monkeypatch) -> None:
+    from app.tools.onec import dok_soap
+
+    sent: list[str] = []
+    retrieved = _soap(
+        '<dm:return xmlns:dm="http://www.1c.ru/dm" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:type="dm:DMRetrieveResponse">'
+        '<dm:objects xsi:type="dm:DMBusinessProcessTask">'
+        "<dm:name>Исполнить задачу</dm:name>"
+        "<dm:objectID><dm:id>task-9</dm:id><dm:type>DMBusinessProcessTask</dm:type></dm:objectID>"
+        "<dm:executed>false</dm:executed>"
+        "<dm:executionComment></dm:executionComment>"
+        "<dm:businessProcessStep>Исполнить</dm:businessProcessStep>"
+        "</dm:objects></dm:return>"
+    )
+
+    def fake_execute(_config, request_xml: str, *, timeout: float) -> ET.Element:
+        sent.append(request_xml)
+        return retrieved
+
+    monkeypatch.setattr(dok_soap, "execute_dm", fake_execute)
+    config = DokConfig(
+        server="192.168.2.229", port=81, user="u", password="p", timeout=30.0, base_path="/doc"
+    )
+
+    dok_soap.mark_task_executed(config, "task-9", timeout=10.0, comment="Закрыто из Оркестратора")
+
+    assert 'xsi:type="dm:DMRetrieveRequest"' in sent[0]
+    # Карточка без accepted: сначала принимаем задачу, затем перечитываем её.
+    assert 'xsi:type="dm:DMAcceptTasksRequest"' in sent[1]
+    assert 'xsi:type="dm:DMRetrieveRequest"' in sent[2]
+    update = sent[3]
+    assert 'xsi:type="dm:DMUpdateRequest"' in update
+    assert 'xsi:type="dm:DMBusinessProcessTask"' in update
+    assert "<dm:executed>true</dm:executed>" in update
+    assert "<dm:executionMark>ExecutedPositive</dm:executionMark>" in update
+    assert "Закрыто из Оркестратора" in update
+    assert ET.fromstring(envelope(update)) is not None
+
+
 def test_parse_tasks_and_map_inbox_row() -> None:
     root = _soap(
         '<dm:return xmlns:dm="http://www.1c.ru/dm" '

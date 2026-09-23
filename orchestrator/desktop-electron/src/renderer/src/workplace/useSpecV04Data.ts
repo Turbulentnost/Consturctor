@@ -70,6 +70,8 @@ export interface SpecV04SourcesState {
   comPasswordInSession: boolean
   /** Нужен повторный ввод пароля 1С (COM / gateway / OData). */
   oneCAuthFailure: boolean
+  /** Ключи onecTaskKey задач 1С, которых не было при предыдущем входе сегодня (на всю сессию). */
+  newOneCTaskKeys: ReadonlySet<string>
 }
 
 function pct(done: number, total: number): number {

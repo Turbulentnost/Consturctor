@@ -217,12 +217,14 @@ def _login_via_erp_gateway(fio: str, password: str, client: str = DEFAULT_CLIENT
     return LoginResponse(access_token=token, user=user_out)
 
 
-def _list_fios_via_erp_gateway(search: str | None) -> list[str]:
+def _list_fios_via_erp_gateway(search: str | None, limit: int = 200) -> list[str]:
     base = _auth_gateway_base()
     if not base:
         return []
     url = f"{base}/api/v1/auth/users"
-    params = {"search": search} if search else None
+    params: dict[str, str | int] = {"limit": limit}
+    if search:
+        params["search"] = search
     try:
         with httpx.Client(timeout=30.0) as http:
             response = http.get(url, params=params)
@@ -415,7 +417,7 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
     return LoginResponse(access_token=token, user=user_out)
 
 
-async def list_user_fios(search: str | None = None) -> list[str]:
+async def list_user_fios(search: str | None = None, *, limit: int = 200) -> list[str]:
     if _erp_sql_bypass_enabled():
         fio = settings.erp_login.strip()
         if not fio:
@@ -425,15 +427,15 @@ async def list_user_fios(search: str | None = None) -> list[str]:
         return [fio]
     gateway = _auth_gateway_base()
     if gateway and not await _local_erp_reachable_quick():
-        items = await asyncio.to_thread(_list_fios_via_erp_gateway, search)
+        items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit)
         if items or search:
             return items
     try:
-        return await asyncio.to_thread(search_user_fios, search)
+        return await asyncio.to_thread(search_user_fios, search, limit)
     except ErpSqlError as exc:
         logger.exception("ERP SQL error listing users")
         if gateway:
-            items = await asyncio.to_thread(_list_fios_via_erp_gateway, search)
+            items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit)
             if items:
                 return items
         raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc

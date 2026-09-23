@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,8 @@ from app.services.turboproject import (
     turboproject_configured,
 )
 from app.clients.erp_sql import ErpSqlError, ping as erp_ping
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -178,9 +181,12 @@ async def _invoke_with_gateway_fallback(
     auth: AuthContext,
     bearer_token: str,
 ) -> dict[str, Any]:
-    from app.services.docflow_tasks import docflow_url_ready
-
-    skip_gateway_first = tool_name == "onec.docflow_tasks" and docflow_url_ready()
+    # Задачи документооборота закрываются HTTP-сервисом базы ДО на этом сервере.
+    # Шлюз ERP этот вызов не выполняет и отвечает 400.
+    action = str((arguments or {}).get("action") or "").strip().lower()
+    skip_gateway_first = "docflow" in tool_name.lower() or action == "close"
+    if skip_gateway_first:
+        logger.info("tool %s stays local (docflow)", tool_name)
     proxy_first = (
         not skip_gateway_first
         and gateway_proxy_enabled()
@@ -188,9 +194,11 @@ async def _invoke_with_gateway_fallback(
         and tool_name.startswith("onec.")
         and not await _local_erp_reachable()
     )
+    # Шлюз отвечает до минуты и дольше: синхронный вызов в event loop остановил бы весь backend.
     if proxy_first and bearer_token:
         try:
-            return proxy_tool_invoke(
+            return await asyncio.to_thread(
+                proxy_tool_invoke,
                 tool_name=tool_name,
                 arguments=arguments,
                 bearer_token=bearer_token,
@@ -202,13 +210,17 @@ async def _invoke_with_gateway_fallback(
     try:
         return await asyncio.to_thread(_dispatch_server_tool, tool_name, arguments, auth)
     except HTTPException as exc:
+        if skip_gateway_first:
+            logger.warning("local tool %s failed: %s", tool_name, exc.detail)
+            raise
         if (
             exc.status_code == 502
             and gateway_proxy_enabled()
             and tool_should_proxy(tool_name)
             and bearer_token
         ):
-            return proxy_tool_invoke(
+            return await asyncio.to_thread(
+                proxy_tool_invoke,
                 tool_name=tool_name,
                 arguments=arguments,
                 bearer_token=bearer_token,

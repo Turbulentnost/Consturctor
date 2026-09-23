@@ -31,6 +31,7 @@ import { fetchOrchestratorCoreSources, ORCH_SOURCE_ID } from './orchestratorTask
 import { loadOrchestratorMail } from './mailProbe'
 import { useWorkplacePeriod } from './workplacePeriod'
 import type { SpecV04SourcesState } from './useSpecV04Data'
+import { diffAndStoreOneCTaskSnapshot } from './onecTaskSnapshot'
 
 const EMPTY: SpecV04SourcesState = {
   sourcesLoading: false,
@@ -71,6 +72,7 @@ const EMPTY: SpecV04SourcesState = {
   turboNoSession: false,
   comPasswordInSession: false,
   oneCAuthFailure: false,
+  newOneCTaskKeys: new Set(),
   user: null
 }
 
@@ -116,6 +118,8 @@ export function SpecV04SourcesProvider({
   const [mailImapStatus, setMailImapStatus] = useState('')
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
   const [oneCAuthFailure, setOneCAuthFailure] = useState(false)
+  const [newOneCTaskKeys, setNewOneCTaskKeys] = useState<ReadonlySet<string>>(() => new Set())
+  const snapshotUserRef = useRef('')
   const hasLoadedSourcesRef = useRef(false)
 
   useEffect(() => {
@@ -141,6 +145,14 @@ export function SpecV04SourcesProvider({
         setErpError(bundle.erp.error)
         setErpSecondaryHint(bundle.erp.erpSecondaryHint || '')
         setOneCAuthFailure(bundle.erp.oneCAuthFailure)
+        const erpLoaded =
+          !bundle.erp.oneCAuthFailure &&
+          bundle.erp.sourceLabel !== 'stub' &&
+          (bundle.erp.tasks.length > 0 || !bundle.erp.error?.trim())
+        if (erpLoaded && snapshotUserRef.current !== user.id) {
+          snapshotUserRef.current = user.id
+          setNewOneCTaskKeys(diffAndStoreOneCTaskSnapshot(user.id, bundle.erp.tasks))
+        }
         const blockingErp = bundle.erp.error?.trim() || ''
         if (blockingErp) {
           setError((prev) => (prev && prev.includes(blockingErp) ? prev : blockingErp))
@@ -297,6 +309,7 @@ export function SpecV04SourcesProvider({
       turboNoSession,
       comPasswordInSession: hasComPassword(),
       oneCAuthFailure,
+      newOneCTaskKeys,
       user
     }),
     [
@@ -330,6 +343,7 @@ export function SpecV04SourcesProvider({
       turboNoSession,
       comCredsRevision,
       oneCAuthFailure,
+      newOneCTaskKeys,
       user
     ]
   )

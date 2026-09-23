@@ -1120,10 +1120,14 @@ export class ApiClient {
     return parseUser(data)
   }
 
-  async searchUsers(search = ''): Promise<string[]> {
+  async searchUsers(search = '', limit?: number): Promise<string[]> {
     try {
+      const params: Record<string, string> = {}
+      if (search.trim()) params.search = search
+      if (limit) params.limit = String(limit)
       const data = await this.request<{ items?: unknown[] }>('GET', '/api/v1/auth/users', {
-        params: search.trim() ? { search } : undefined
+        params: Object.keys(params).length ? params : undefined,
+        timeoutMs: limit ? 120_000 : undefined
       })
       return (data.items ?? []).map((x) => String(x))
     } catch {

@@ -67,6 +67,7 @@ def proxy_http_json(
                 detail = str(payload["detail"])
         except Exception:
             pass
+        logger.warning("Gateway %s %s -> %s %s", method, path, response.status_code, detail[:300])
         raise HTTPException(status_code=response.status_code, detail=detail)
     if not response.content:
         return {}

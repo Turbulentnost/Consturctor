@@ -34,6 +34,15 @@ export function SpecPill({
   return <span className={`spec-pill tone-${tone}`}>{children}</span>
 }
 
+/** Метка задачи 1С, которой не было при предыдущем входе сегодня. */
+export function NewOneCTaskMark(): React.JSX.Element {
+  return (
+    <em className="onec-new-mark" title="Новая задача с прошлого входа">
+      новая
+    </em>
+  )
+}
+
 export function SpecProgress({ value }: { value: number }): React.JSX.Element {
   const tone = stageProgressTone(value / 100)
   return (

@@ -71,6 +71,7 @@ function ProcessDetail({
     row.id.startsWith('erp:') || row.id.startsWith('mail:') || row.id.startsWith('meet:') || row.id.startsWith('proj:')
       ? ''
       : row.id
+  const processAction = taskActionContextFromProcessRow(row, linkedTask)
   const [detailTab, setDetailTab] = useState<DetailTabId>('general')
   const [historyRuns, setHistoryRuns] = useState<AgentRunHistoryItem[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -163,7 +164,7 @@ function ProcessDetail({
             user={user}
             rowId={row.id}
             baseProgress={row.progress}
-            actionContext={taskActionContextFromProcessRow(row, linkedTask)}
+            actionContext={processAction?.kind === 'docflow' ? null : processAction}
             projectUrl={linkedProjectUrl}
           />
         </>

@@ -24,6 +24,7 @@ export type WorkplaceTabKey =
   | 'extensions'
   | 'assignments_registry'
   | 'agent_library'
+  | 'task_create'
 
 export interface TabRegistryEntry {
   title: string
@@ -100,6 +101,10 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   assignments_registry: {
     title: 'Реестр поручений',
     subtitle: 'Журнал поручений АСТ00: контроль сроков, статусов и проверка закрытия через ИИ'
+  },
+  task_create: {
+    title: PAGE_LABELS.task_create,
+    subtitle: 'Документ-основание, процесс и исполнители — задача запускается в 1С:Документооборот'
   },
   agent_library: {
     title: 'Библиотека агентов',

@@ -8,19 +8,26 @@ export function WorkplaceProgressSection({
   rowId,
   baseProgress,
   actionContext,
-  projectUrl
+  projectUrl,
+  onActionCompleted
 }: {
   user: UserProfile
   rowId: string
   baseProgress: number
   actionContext?: TaskActionContext | null
   projectUrl?: string
+  onActionCompleted?: () => void
 }): React.JSX.Element {
   return (
     <div className="workplace-progress-section">
       <TaskProgressEditor rowId={rowId} baseProgress={baseProgress} />
       {actionContext ? (
-        <TaskSourceActionsPanel user={user} ctx={actionContext} projectUrl={projectUrl} />
+        <TaskSourceActionsPanel
+          user={user}
+          ctx={actionContext}
+          projectUrl={projectUrl}
+          onCompleted={onActionCompleted}
+        />
       ) : null}
     </div>
   )

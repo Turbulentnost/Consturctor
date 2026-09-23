@@ -213,7 +213,7 @@
 }
 
 .orch-grid-processes .orch-grid-search {
-  z-index: 2;
+  min-width: 0;
 }
 
 .orch-grid-util {
@@ -229,28 +229,53 @@
   z-index: 12;
 }
 
+.orch-grid-util .icon-btn-help,
+.orch-grid-util .notify-wrap,
+.orch-grid-util .icon-btn {
+  flex: 0 0 36px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+}
+
 .orch-grid-util .user-menu {
   position: static;
   top: auto;
   right: auto;
   height: 44px;
-  width: max-content;
-  min-width: max-content;
-  max-width: none;
-  flex-shrink: 0;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
 }
 
 .orch-grid-util .user-menu--admin .user-menu__profile-wrap {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .orch-grid-util .user-menu--admin .user-menu__profile-btn {
-  max-width: none;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .orch-grid-util .user-menu--admin .who {
-  max-width: min(360px, 36vw);
-  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
+}
+
+.orch-grid-util .who .name,
+.orch-grid-util .who .pos {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .orch-grid-util .icon-btn-help {

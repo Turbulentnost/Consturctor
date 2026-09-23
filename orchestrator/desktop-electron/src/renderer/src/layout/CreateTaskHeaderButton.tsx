@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   CREATE_TASK_CHANNEL_LABEL,
+  openWorkplaceTab,
   requestCreateTask,
   type CreateTaskChannel
 } from '../workplace/workplaceNav'
 
-const CHANNELS: CreateTaskChannel[] = ['onec', 'turbo', 'draft']
+const CHANNELS: CreateTaskChannel[] = ['onec', 'platform']
 
 export function CreateTaskHeaderButton(): React.JSX.Element {
   const buttonRef = useRef<HTMLButtonElement | null>(null)
@@ -53,6 +54,10 @@ export function CreateTaskHeaderButton(): React.JSX.Element {
 
   const pick = (channel: CreateTaskChannel): void => {
     setOpen(false)
+    if (channel === 'onec') {
+      openWorkplaceTab('task_create')
+      return
+    }
     requestCreateTask(channel)
   }
 

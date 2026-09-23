@@ -5,7 +5,14 @@ import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../lay
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
 import { TODAY_WIDGET_IDS, type TodayWidgetId } from './useTodayWidgetLayout'
 import { TodayOutlookMailPanel } from './TodayOutlookMailPanel'
-import { SpecAskOrchestratorBlock, SpecPanel, SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
+import {
+  NewOneCTaskMark,
+  SpecAskOrchestratorBlock,
+  SpecPanel,
+  SpecPill,
+  SpecSummaryTiles
+} from '../../workplace/specV04Components'
+import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useTodayKpiData } from '../../workplace/useTodayKpiData'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
@@ -36,6 +43,16 @@ function TodayCellText({ text }: { text: string }): React.JSX.Element {
   return (
     <span className="today-cell-text" title={text}>
       {text}
+    </span>
+  )
+}
+
+function TodayTaskTitle({ text, isNew }: { text: string; isNew: boolean }): React.JSX.Element {
+  if (!isNew) return <TodayCellText text={text} />
+  return (
+    <span className="today-cell-with-mark">
+      <TodayCellText text={text} />
+      <NewOneCTaskMark />
     </span>
   )
 }
@@ -76,6 +93,7 @@ function MiniTableCard({
   columns,
   rows,
   rowTones,
+  rowClassNames,
   loading,
   error,
   emptyText,
@@ -88,6 +106,8 @@ function MiniTableCard({
   rows: React.ReactNode[][]
   /** Тона строк (по индексам rows): done | overdue | due_soon | neutral. */
   rowTones?: TodayRowTone[]
+  /** Дополнительные классы строк (по индексам rows). */
+  rowClassNames?: (string | undefined)[]
   loading?: boolean
   /** Shown above the table (KPI/banner), never as a fake data row. */
   error?: string
@@ -117,8 +137,11 @@ function MiniTableCard({
     }
     return rows.map((cells, index) => {
       const tone = rowTones?.[index]
+      const className = [tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : '', rowClassNames?.[index] || '']
+        .filter(Boolean)
+        .join(' ')
       return (
-        <tr key={index} className={tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : undefined}>
+        <tr key={index} className={className || undefined}>
           {cells.map((cell, cellIndex) => (
             <td key={cellIndex}>{cell}</td>
           ))}
@@ -361,10 +384,17 @@ export function TodayGridTab({
           emptyExtra={onecReconnectBlock}
           columns={onecFromMe ? ['Задача', 'Исполнитель', 'Статус'] : ['Задача', 'Статус']}
           rowTones={taskRows.map((row) => todayRowTone(row.status, row.deadline, row.urgent))}
+          rowClassNames={taskRows.map((row) =>
+            isNewOneCTask(data.newOneCTaskKeys, row) ? 'today-tr-new-onec' : undefined
+          )}
           rows={taskRows.map((row) =>
             onecFromMe
               ? [
-                  <TodayCellText key={`${row.id}-t`} text={row.title} />,
+                  <TodayTaskTitle
+                    key={`${row.id}-t`}
+                    text={row.title}
+                    isNew={isNewOneCTask(data.newOneCTaskKeys, row)}
+                  />,
                   <TodayCellText
                     key={`${row.id}-p`}
                     text={formatSurnameInitials(row.performer || row.executor)}
@@ -374,7 +404,11 @@ export function TodayGridTab({
                   </SpecPill>
                 ]
               : [
-                  <TodayCellText key={`${row.id}-t`} text={row.title} />,
+                  <TodayTaskTitle
+                    key={`${row.id}-t`}
+                    text={row.title}
+                    isNew={isNewOneCTask(data.newOneCTaskKeys, row)}
+                  />,
                   <SpecPill key={`${row.id}-st`} tone={row.statusTone}>
                     {row.status}
                   </SpecPill>
@@ -520,6 +554,7 @@ export function TodayGridTab({
       data.erpError,
       data.erpTasks,
       data.error,
+      data.newOneCTaskKeys,
       data.oneCAuthFailure,
       onecReconnectBlock,
       data.meetings,

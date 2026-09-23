@@ -7,6 +7,7 @@ import type { ChatMessage, ChatThread, DirectoryUser } from '../api/types'
 import logoUrl from '../assets/logo.png'
 import iconSearch from '../assets/search.png'
 import { NavIcon } from '../layout/navIcons'
+import { useSpecV04SourcesContext } from '../workplace/SpecV04SourcesProvider'
 
 export type AdminPageKey =
   | 'overview'
@@ -28,6 +29,7 @@ export type UserPageKey =
   | 'extensions'
   | 'assignments_registry'
   | 'agent_library'
+  | 'task_create'
 
 export type SharedPageKey = 'kpi' | 'history' | 'settings'
 export type PageKey = AdminPageKey | UserPageKey | SharedPageKey
@@ -52,6 +54,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   extensions: 'Расширения',
   assignments_registry: 'Реестр поручений',
   agent_library: 'Библиотека агентов',
+  task_create: 'Новая задача в 1С',
   kpi: 'KPI',
   history: 'История',
   settings: 'Настройки'
@@ -173,6 +176,8 @@ export function Sidebar({
   const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
   const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
   const [checking, setChecking] = useState(false)
+  const { newOneCTaskKeys } = useSpecV04SourcesContext()
+  const navBadges: Partial<Record<PageKey, number>> = { tasks: newOneCTaskKeys.size }
   const items = useMemo((): SidebarNavItem[] => {
     if (showAdminNav) return ADMIN_ITEMS
     const pinnedKeys = new Set(pinnedExtensionNav.map((item) => item.key))
@@ -331,6 +336,8 @@ export function Sidebar({
           const isActive = item.key === active
           const isExtensionModule = 'extension' in item && Boolean(item.extension)
           const isExtensionsHub = item.key === 'extensions'
+          const badge = showAdminNav ? 0 : navBadges[item.key] ?? 0
+          const badgeText = badge > 99 ? '99+' : String(badge)
           return (
             <button
               key={item.key}
@@ -343,12 +350,17 @@ export function Sidebar({
                 .filter(Boolean)
                 .join(' ')}
               onClick={() => onNavigate(item.key)}
-              title={item.label}
+              title={badge > 0 ? `${item.label}: новых задач 1С — ${badge}` : item.label}
             >
               <span className="nav-icon" aria-hidden>
                 <NavIcon page={item.key} />
               </span>
               {!collapsed && <span className="nav-label">{item.label}</span>}
+              {badge > 0 ? (
+                <em className="nav-badge" aria-label={`Новых: ${badge}`}>
+                  {badgeText}
+                </em>
+              ) : null}
             </button>
           )
         })}

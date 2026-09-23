@@ -22,6 +22,10 @@ from app.services.docflow_task_action import (
     handle_docflow_task_action as _docflow_task_action,
     stub_docflow_task_action as _stub_docflow_task_action,
 )
+from app.services.docflow_create import (
+    handle_docflow_create as _docflow_create,
+    stub_docflow_create as _stub_docflow_create,
+)
 from app.services.erp_assignments import (
     ASSIGNMENT_ENTITY,
     ASSIGNMENT_FILES_ENTITY,
@@ -158,6 +162,7 @@ ONEC_TOOLS = frozenset(
         "onec.erp_write_probe",
         "onec.docflow_tasks",
         "onec.docflow_task_action",
+        "onec.docflow_create",
         "onec.meeting_protocols",
     }
 )
@@ -169,7 +174,7 @@ ONEC_ODATA_WRITE_TOOLS = frozenset(
     }
 )
 ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset(
-    {"onec.erp_assignments_write", "onec.docflow_task_action"}
+    {"onec.erp_assignments_write", "onec.docflow_task_action", "onec.docflow_create"}
 )
 _ERP_TASK_TOOLS = frozenset(
     {
@@ -182,6 +187,7 @@ _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
     "onec.erp_tasks_odata",
     "onec.docflow_tasks",
     "onec.docflow_task_action",
+    "onec.docflow_create",
     "onec.erp_write_probe",
 }
 _ACCESS_TOOLS = frozenset(
@@ -300,6 +306,7 @@ def invoke_onec(
             **handlers,
             "onec.docflow_tasks": REAL_HANDLERS["onec.docflow_tasks"],
             "onec.docflow_task_action": REAL_HANDLERS["onec.docflow_task_action"],
+            "onec.docflow_create": REAL_HANDLERS["onec.docflow_create"],
         }
     handler = handlers.get(tool)
     if handler is None:
@@ -1512,6 +1519,7 @@ STUB_HANDLERS = {
     "onec.erp_write_probe": _stub_erp_write_probe,
     "onec.docflow_tasks": _stub_docflow_tasks,
     "onec.docflow_task_action": _stub_docflow_task_action,
+    "onec.docflow_create": _stub_docflow_create,
     "onec.meeting_protocols": _stub_meeting_protocols,
 }
 
@@ -1532,5 +1540,6 @@ REAL_HANDLERS = {
     "onec.erp_write_probe": _erp_write_probe,
     "onec.docflow_tasks": _docflow_tasks,
     "onec.docflow_task_action": _docflow_task_action,
+    "onec.docflow_create": _docflow_create,
     "onec.meeting_protocols": _list_meeting_protocols,
 }

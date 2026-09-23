@@ -45,6 +45,7 @@ const PAGE_ICONS: Record<PageKey, LucideIcon> = {
   extensions: Puzzle,
   assignments_registry: ScrollText,
   agent_library: Bot,
+  task_create: ListTodo,
   settings: Settings,
   overview: LayoutDashboard,
   launch_calendar: Rocket,

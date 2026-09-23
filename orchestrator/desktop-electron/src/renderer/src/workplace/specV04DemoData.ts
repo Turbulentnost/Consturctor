@@ -1,5 +1,7 @@
 /** Демо-данные по макетам v0.4 до подключения Task/Project/Mail/Knowledge API. */
 
+import type { DocflowTaskKind } from './docflowTaskKind'
+
 export type SpecPillTone = 'green' | 'blue' | 'orange' | 'red' | 'purple' | 'gray' | 'yellow'
 
 export interface SpecProcessRow {
@@ -119,6 +121,9 @@ export interface SpecTaskRow {
   refKey?: string
   taskNumber?: string
   step?: string
+  /** Имя задачи ДО: «Исполнить задачу №7», «Ознакомиться "Приказ …"». */
+  taskName?: string
+  docflowKind?: DocflowTaskKind
   targetId?: string
   projectId?: string
   taskUid?: string

@@ -7,6 +7,9 @@ import { SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import { WorkplaceProgressSection } from '../../workplace/WorkplaceProgressSection'
 import { displayTaskProgress } from '../../workplace/TaskProgressEditor'
 import { taskActionContextFromTaskRow } from '../../workplace/taskSourceKind'
+import { runDocflowAction } from '../../workplace/taskSourceActions'
+import { isDocflowToMe } from '../../workplace/tileFilters'
+import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
 import {
   comPasswordSessionHint,
   sessionOneCEmptyText,
@@ -35,6 +38,15 @@ import {
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
+import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
+import { NewOneCTaskMark } from '../../workplace/specV04Components'
+import {
+  DOCFLOW_KIND_LABEL,
+  DOCFLOW_KIND_TONE,
+  docflowPrimaryAction,
+  docflowTaskKind,
+  type DocflowTaskKind
+} from '../../workplace/docflowTaskKind'
 
 export function TasksGridTab({
   user,
@@ -44,6 +56,8 @@ export function TasksGridTab({
   navTaskFilter?: TaskTileFilter | null
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
+  const { softRefresh } = useGridDataRefreshContext()
+  const [executedIds, setExecutedIds] = useState<Set<string>>(() => new Set())
   const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const [tileFilter, setTileFilter] = useState(navTaskFilter ?? EMPTY_TASK_TILE_FILTER)
   const [query, setQuery] = useState('')
@@ -67,10 +81,16 @@ export function TasksGridTab({
     const q = query.trim().toLowerCase()
     const filtered = filterTaskRows(catalog.rows, effectiveTile, catalog.erpIds, catalog.turboIds).filter(
       (row) => {
+        if (executedIds.has(row.id)) return false
         if (!deadlineInWorkplacePeriod(row.deadline, periodFrom, periodTo)) return false
         if (barStatus && row.status !== barStatus) return false
         if (barProject && row.project !== barProject) return false
-        if (q && !`${row.title} ${row.source} ${row.process} ${row.project}`.toLowerCase().includes(q)) {
+        if (
+          q &&
+          !`${row.title} ${row.source} ${row.process} ${row.project} ${row.author || ''} ${row.performer || ''}`
+            .toLowerCase()
+            .includes(q)
+        ) {
           return false
         }
         if (barOverdue && !isOverdueTask(row)) return false
@@ -88,7 +108,7 @@ export function TasksGridTab({
       })
     }
     return [...filtered].sort(compareTasksByUrgency)
-  }, [catalog, effectiveTile, query, barStatus, barProject, barSort, barOverdue, periodFrom, periodTo])
+  }, [catalog, effectiveTile, query, barStatus, barProject, barSort, barOverdue, periodFrom, periodTo, executedIds])
   const onTileSelect = (id: string): void => {
     setTileFilter((current) => applyTaskTileClick(current, id, isDeadTaskSource(data, id)))
   }
@@ -124,6 +144,46 @@ export function TasksGridTab({
     setOnecDialogOpen(true)
   }, [data.erpLoading, showOneCReconnect, data.comPasswordInSession])
   const [selectedId, setSelectedId] = useState('')
+  const [closingId, setClosingId] = useState('')
+  const [closeNote, setCloseNote] = useState('')
+  const partyColumn =
+    effectiveTile.source === 'onec'
+      ? 'От кого'
+      : effectiveTile.source === 'onec-from-me'
+        ? 'Кому'
+        : 'Процесс'
+  const partyOf = (row: (typeof taskRows)[number]): string => {
+    if (effectiveTile.source === 'onec') return row.author || '—'
+    if (effectiveTile.source === 'onec-from-me') return row.performer || row.executor || '—'
+    return row.process
+  }
+  const kindOf = (row: (typeof taskRows)[number]): DocflowTaskKind | null =>
+    row.sourceKind === 'docflow' ? row.docflowKind ?? docflowTaskKind(row.step, row.taskName) : null
+  const rowAction = (row: (typeof taskRows)[number]) => {
+    const kind = kindOf(row)
+    if (!kind || !isDocflowToMe(row) || /выполн|закры|заверш/i.test(row.status)) return null
+    return docflowPrimaryAction(kind)
+  }
+  const hideExecuted = (id: string): void => {
+    setExecutedIds((current) => new Set(current).add(id))
+    setSelectedId('')
+    softRefresh()
+  }
+  const runRowAction = (row: (typeof taskRows)[number]): void => {
+    const action = rowAction(row)
+    if (!action || closingId) return
+    setClosingId(row.id)
+    setCloseNote('')
+    void runDocflowAction(user, taskActionContextFromTaskRow(row), action.id)
+      .then((result) => {
+        setCloseNote(result.message)
+        if (result.ok) hideExecuted(row.id)
+      })
+      .catch((err: unknown) => {
+        setCloseNote(err instanceof Error ? err.message : 'Документооборот не принял действие')
+      })
+      .finally(() => setClosingId(''))
+  }
   const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
   const effectiveId = selectedId || taskRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
@@ -131,7 +191,7 @@ export function TasksGridTab({
   useEffect(() => {
     const onCreate = (event: Event): void => {
       const channel = (event as CustomEvent<{ channel?: CreateTaskChannel }>).detail?.channel
-      if (channel === 'onec' || channel === 'turbo' || channel === 'draft') {
+      if (channel === 'platform') {
         setCreateChannel(channel)
       }
     }
@@ -221,22 +281,25 @@ export function TasksGridTab({
               {comPasswordSessionHint()}
             </p>
           ) : null}
+          {closeNote ? <p className="spec-v04-muted orch-process-close-note">{closeNote}</p> : null}
           <table className="spec-v04-table">
             <thead>
               <tr>
                 <th />
                 <th>Задача</th>
+                <th>Тип</th>
                 <th>Источник</th>
-                <th>Процесс</th>
+                <th>{partyColumn}</th>
                 <th>Срок</th>
                 <th>Статус</th>
                 <th>Прогресс</th>
+                <th />
               </tr>
             </thead>
             <tbody>
               {!taskRows.length ? (
                 <tr>
-                  <td colSpan={7} className="spec-v04-empty">
+                  <td colSpan={9} className="spec-v04-empty">
                     {showOneCReconnect ? (
                       <OneCReconnectInline
                         errorHint={reconnectHint}
@@ -248,10 +311,16 @@ export function TasksGridTab({
                   </td>
                 </tr>
               ) : null}
-              {taskRows.map((row) => (
+              {taskRows.map((row) => {
+                const isNew = catalog.erpIds.has(row.id) && isNewOneCTask(data.newOneCTaskKeys, row)
+                const kind = kindOf(row)
+                const action = rowAction(row)
+                return (
                 <tr
                   key={row.id}
-                  className={effectiveId === row.id ? 'selected' : ''}
+                  className={[effectiveId === row.id ? 'selected' : '', isNew ? 'is-new-onec' : '']
+                    .filter(Boolean)
+                    .join(' ')}
                   onClick={() => setSelectedId(row.id)}
                 >
                   <td>
@@ -259,9 +328,17 @@ export function TasksGridTab({
                   </td>
                   <td>
                     <strong>{row.title}</strong>
+                    {isNew ? <NewOneCTaskMark /> : null}
+                  </td>
+                  <td>
+                    {kind ? (
+                      <SpecPill tone={DOCFLOW_KIND_TONE[kind]}>{DOCFLOW_KIND_LABEL[kind]}</SpecPill>
+                    ) : (
+                      '—'
+                    )}
                   </td>
                   <td>{row.source}</td>
-                  <td>{row.process}</td>
+                  <td>{partyOf(row)}</td>
                   <td className={row.urgent ? 'spec-deadline-urgent' : undefined}>{row.deadline}</td>
                   <td>
                     <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
@@ -269,8 +346,25 @@ export function TasksGridTab({
                   <td>
                     <SpecProgress value={displayTaskProgress(row.id, row.progress)} />
                   </td>
+                  <td>
+                    {action ? (
+                      <button
+                        type="button"
+                        className="spec-row-action"
+                        title={`${action.label} в 1С:Документооборот`}
+                        disabled={Boolean(closingId)}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          runRowAction(row)
+                        }}
+                      >
+                        {closingId === row.id ? 'Отправляем…' : action.shortLabel}
+                      </button>
+                    ) : null}
+                  </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -311,6 +405,12 @@ export function TasksGridTab({
                 <dt>Источник</dt>
                 <dd>{selected.source}</dd>
               </div>
+              {selected.sourceKind === 'docflow' ? (
+                <div>
+                  <dt>Шаг процесса</dt>
+                  <dd>{selected.step || DOCFLOW_KIND_LABEL[kindOf(selected) ?? 'other']}</dd>
+                </div>
+              ) : null}
               <div>
                 <dt>Кто</dt>
                 <dd>{selected.who}</dd>
@@ -321,6 +421,7 @@ export function TasksGridTab({
               rowId={selected.id}
               baseProgress={selected.progress}
               actionContext={taskActionContextFromTaskRow(selected)}
+              onActionCompleted={() => hideExecuted(selected.id)}
             />
           </div>
         ) : (

@@ -3,12 +3,11 @@ import type { TaskTileFilter } from './tileFilters'
 export const ORCH_OPEN_TAB = 'orchestrator:open-tab'
 export const ORCH_CREATE_TASK = 'orchestrator:create-task'
 
-export type CreateTaskChannel = 'onec' | 'turbo' | 'draft'
+export type CreateTaskChannel = 'onec' | 'platform'
 
 export const CREATE_TASK_CHANNEL_LABEL: Record<CreateTaskChannel, string> = {
   onec: '1С',
-  turbo: 'Turbo',
-  draft: 'Локальный черновик'
+  platform: 'В платформе'
 }
 
 /** Optional filter applied after App switches the workplace tab. */

@@ -1,0 +1,171 @@
+.tc-main {
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.tc-step:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.tc-step.is-done strong::after {
+  content: ' ✓';
+  color: #2e7d32;
+}
+
+.tc-step span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tc-back {
+  margin-top: 8px;
+}
+
+.tc-kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.tc-search {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.tc-search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tc-search-input {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.tc-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tc-docs {
+  max-height: 360px;
+}
+
+.tc-docs tr.selected {
+  background: rgba(21, 101, 192, 0.12);
+}
+
+.tc-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tc-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.tc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tc-field--wide {
+  grid-column: 1 / -1;
+}
+
+.tc-textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+
+.tc-performers-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tc-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tc-performers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tc-performer {
+  display: grid;
+  grid-template-columns: minmax(200px, 2fr) 150px minmax(160px, 2fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.tc-combo-list {
+  position: fixed;
+  z-index: 1000;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #fff;
+  border: 1px solid rgba(13, 59, 115, 0.18);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(13, 32, 51, 0.18);
+}
+
+.tc-combo-list li {
+  padding: 7px 12px;
+  font-size: 13px;
+  color: #102033;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tc-combo-list li.is-active {
+  background: rgba(21, 101, 192, 0.1);
+}
+
+.tc-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.tc-review .docflow-detail-list {
+  overflow: visible;
+}
+
+.tc-confirm {
+  margin-top: 14px;
+  white-space: normal;
+}
+
+.tc-done h2 {
+  margin: 0 0 6px;
+}
+
+.tc-done p {
+  margin: 0 0 14px;
+}

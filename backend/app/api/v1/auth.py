@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from app.api.deps import get_current_user
@@ -22,9 +22,12 @@ def _trace(message: str) -> None:
 
 
 @router.get("/users", response_model=UserFioListResponse)
-async def list_users(search: str | None = None) -> UserFioListResponse:
+async def list_users(
+    search: str | None = None,
+    limit: int = Query(default=200, ge=1, le=20000),
+) -> UserFioListResponse:
     try:
-        items = await auth_service.list_user_fios(search)
+        items = await auth_service.list_user_fios(search, limit=limit)
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return UserFioListResponse(items=items)

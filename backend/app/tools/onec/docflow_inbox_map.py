@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from app.services.erp_tasks import from_1c_datetime, task_is_late
+from app.tools.onec.docflow_task_kinds import docflow_task_kind
 from app.tools.onec.dok_soap import (
     CHANNEL_SOAP,
     ROLE_AUTHOR,
@@ -37,6 +38,7 @@ def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
     done = bool(row.get("executed"))
     author = str(row.get("author") or "").strip()
     step = str(row.get("step") or "").strip()
+    name = " ".join(str(row.get("name") or "").split())
     target = str(row.get("target") or "").strip()
     raw_performer = str(row.get("performer") or "").strip()
     tagged_role = str(row.get("role") or "").strip()
@@ -65,6 +67,8 @@ def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
         "ref_key": str(row.get("id") or "").strip(),
         "target_id": str(row.get("target_id") or "").strip(),
         "step": step,
+        "task_name": name,
+        "kind": docflow_task_kind(step, name),
     }
 
 
