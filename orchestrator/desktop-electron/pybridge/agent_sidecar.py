@@ -20,6 +20,8 @@ Protocol: newline-delimited JSON.
     {"type": "check_trigger", "id": str, "triggerId": str}
     {"type": "form_orchestrator", "id": str}
     {"type": "calc_orchestrator", "id": str, "tileIds": [str, ...]}
+    {"type": "kpi_module", "id": str, "buildId": str, "workflowId": str,
+       "prompt": str, "filePaths": [str, ...]}
     {"type": "answer", "requestId": str, "ok": bool, "answer": str,
        "filePaths": [str, ...]}
     {"type": "hitl", "requestId": str, "approved": bool}
@@ -46,6 +48,8 @@ import json
 import os
 import queue
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -124,7 +128,12 @@ _AC_REGISTRY_LOGGED = False
 # Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
 from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.orchestrator.json_blob import extract_json_object  # noqa: E402
-from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkUnavailable  # noqa: E402
+from app.sdk_agent.bridge import (  # noqa: E402
+    CursorSdkBridge,
+    CursorSdkError,
+    CursorSdkUnavailable,
+    is_transient_cursor_error,
+)
 from app.sdk_agent.files import (  # noqa: E402
     _safe_filename,
     prepare_sdk_workspace,
@@ -139,7 +148,21 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_sdk_prompt,
     text_has_finished_work_result,
 )
-from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
+from app.sdk_agent.kpi_attach import (  # noqa: E402
+    KPI_SOURCE_OPTIONS,
+    catalog_from_jobs,
+    kpi_repair_prompt,
+    kpi_write_jobs,
+    needs_source_detail,
+    parse_kpi_rows,
+    unasked_kpi_rows,
+    write_kpi_example_files,
+)
+from app.sdk_agent.tool_adapter import (  # noqa: E402
+    sdk_kpi_tool_specs,
+    sdk_kpi_write_tool_specs,
+    sdk_tool_specs,
+)
 
 # HITL classification replicated from app.tools.hitl.needs_confirmation.
 # We do NOT import that module because it pulls in PySide6/Qt at import time,
@@ -489,6 +512,18 @@ ARTIFACT_CLOSE_HINT = (
     "Export Word, then ## WORK_RESULT. No 1C write without HITL."
 )
 
+DAILY_ASSIGNMENT_HINT = (
+    "This is the ACT00 journal plus PSD protocols into Action Tracker, "
+    "not artifact close and not an open-cards-only sync. "
+    "Call onec.erp_assignments action=list customer=Амураль Игорь Борисович "
+    "include_all=true only_open=false. Every status goes to the tracker. "
+    "Call onec.meeting_protocols meeting_kind=sd psd_mark=true review_only=false "
+    "include_closed=true. PSD mark means the number starts with ПСД; "
+    "the tool returns the whole series, including closed. "
+    "Write every returned assignment and every returned protocol into Action Tracker. "
+    "WORK_RESULT counts must equal the tool counts. Do not keep only open cards."
+)
+
 CALENDAR_CONTROL_HINT = (
     "This is calendar control / morning briefing, not a meeting-series job. "
     "Morning: users.current, outlook.read_calendar for today, outlook.search_mail once "
@@ -684,6 +719,21 @@ def _is_artifact_close_text(*parts: Any) -> bool:
     return any(tip in blob for tip in _ARTIFACT_CLOSE_TIPS)
 
 
+def _is_daily_assignment_prompt(prompt: str) -> bool:
+    blob = (prompt or "").casefold().replace("ё", "е")
+    if _is_artifact_close_text(blob):
+        return False
+    return any(
+        tip in blob
+        for tip in (
+            "ежедневный контроль поручений",
+            "контроль поручений по 1с",
+            "аст00 и action tracker",
+            "action tracker",
+        )
+    )
+
+
 def _is_assignment_journal_text(*parts: Any) -> bool:
     """Журнал поручений — не серия совещаний Outlook; playbook не подменяем."""
     blob = _meeting_blob(*parts)
@@ -857,17 +907,293 @@ def _is_outlook_series_prompt(prompt: str) -> bool:
     return any(tip in blob for tip in _SERIES_SCHEDULE_TIPS)
 
 
+KPI_MODULE_HINT = (
+    "This is a one-shot KPI constructor, not a published agent. "
+    "Do not ask when to run, Outlook cadence, triggers, schedule, or per-run files. "
+    "Do not design a recurring agent and do not call keepKnowledgeFile. "
+    "Step 1: read the PDF in chunks via office.read_file on the file path "
+    "from the prompt (start_page=2 skip cover, max_pages=1). Never pass the folder "
+    "materials/attachments — only the .pdf filename. "
+    "If next_start is present — immediately read the next chunk. "
+    "Do not request more than one page per call. "
+    "Do not Read extracted.json, methodology.txt or AGENTS.md. "
+    "Step 2: from the pages find ONLY KPIs for THIS logged-in position. "
+    "Step 3: if that job title is not in the document, write it in chat and STOP. "
+    "No more tools, no askQuestion, no files. "
+    "Step 4: if KPIs exist, list EVERY indicator of this position from all pages, "
+    "name+weight, one per line. Do not stop after the first two. "
+    "The last line must be exactly СПИСОК_ГОТОВ. Do not call askQuestion in this message. "
+    "Step 5 is later: the next turn asks where plan and fact come from, then writes modules."
+)
+
+def _kpi_position_missing(answer: str) -> bool:
+    blob = (answer or "").casefold().replace("ё", "е")
+    return any(
+        token in blob
+        for token in (
+            "должности нет",
+            "должности не найден",
+            "нет показателей",
+            "показателей нет",
+            "kpi этой должности нет",
+            "в положении нет",
+            "не нашла kpi",
+            "не нашел kpi",
+            "не относится к должности",
+        )
+    )
+
+
+KPI_EXTRACT_PROMPT = (
+    "Положение уже прочитано. "
+    "ЗАПРЕЩЕНО: office.read_file, excel.list_files, users.current, Read, Grep, Glob, askQuestion. "
+    "Выпиши ВСЕ KPI этой должности со всех страниц, не только первые два. "
+    "Каждый с новой строки, без вступления: 1. Название — вес N%. "
+    "Последняя строка ровно: СПИСОК_ГОТОВ. "
+    "Нет должности — одно предложение и стоп, без СПИСОК_ГОТОВ. "
+    "План и факт в этом сообщении не спрашивай: вопросы будут следующим шагом."
+)
+
+KPI_CONTINUE_PROMPT = KPI_EXTRACT_PROMPT
+
+KPI_ATTACHED_PROMPT = (
+    "Страницы положения уже в этом сообщении (со 2-й, без обложки). "
+    "Запрещены любые инструменты, в том числе askQuestion. "
+    "Первым сообщением — все показатели должности из задания, со всех страниц, "
+    "не только первые два. Без вступления, каждый с новой строки: "
+    "1. Название — вес N% "
+    "Последняя строка ровно: СПИСОК_ГОТОВ. "
+    "Если должности нет — одно предложение и стоп, без СПИСОК_ГОТОВ. "
+    "После списка ничего не спрашивай: откуда брать план и факт спросит следующий шаг."
+)
+
+KPI_REPAIR_LIMIT = 3
+KPI_CODE_TOOL_BUDGET = 12
+KPI_SDK_RETRIES = 3
+KPI_NETWORK_FALLBACK = (
+    "Страницы положения не дошли по сети. "
+    "Читай PDF кусками: office.read_file start_page=2, max_pages=1. "
+    "Если next_start есть — сразу следующий кусок. Не прикладывай все страницы сразу. "
+    "Выпиши ВСЕ KPI должности, каждый с новой строки «1. Название — вес N%», "
+    "последняя строка СПИСОК_ГОТОВ. Модули не пиши и источники не спрашивай."
+)
+
+
+def _kpi_retry_without_images(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Повтор без картинок: 10 страниц PDF часто рвут Cursor SDK по сети."""
+    call = dict(kwargs)
+    call["images"] = []
+    prompt = str(call.get("prompt") or "")
+    if KPI_NETWORK_FALLBACK not in prompt:
+        call["prompt"] = f"{KPI_NETWORK_FALLBACK}\n\n{prompt}".strip()
+    call["tools"] = sdk_kpi_tool_specs(read_file=True, write=False, run=False)
+    return call
+
+
+def _kpi_asked_blob(active: Any) -> str:
+    parts: list[str] = []
+    history = getattr(getattr(active, "gate", None), "qa_history", None) or []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        parts.append(str(item.get("question") or ""))
+        parts.append(str(item.get("answer") or ""))
+    return "\n".join(parts)
+
+
+def _session_text_blob(session: dict[str, Any] | None) -> str:
+    parts: list[str] = []
+    for item in (session or {}).get("messages") or []:
+        if isinstance(item, dict):
+            parts.append(str(item.get("content") or ""))
+    draft = (session or {}).get("catalog_draft")
+    if isinstance(draft, dict):
+        parts.append(str(draft.get("summary") or ""))
+        for metric in draft.get("metrics") or []:
+            if isinstance(metric, dict):
+                parts.append(str(metric.get("name") or ""))
+                parts.append(str(metric.get("code") or ""))
+    return "\n".join(parts)
+
+
+def _catalog_draft_from_kpi(
+    *,
+    session: dict[str, Any] | None,
+    rows: list[dict[str, str]],
+    source_notes: str,
+    position: str,
+    run_cwd: Path,
+) -> dict[str, Any]:
+    blob = "\n".join(part for part in (source_notes, _session_text_blob(session)) if part)
+    found = [item for item in (rows or []) if isinstance(item, dict)]
+    if not found:
+        found = parse_kpi_rows(blob)
+    if not found:
+        draft = (session or {}).get("catalog_draft") if isinstance((session or {}).get("catalog_draft"), dict) else {}
+        for metric in (draft or {}).get("metrics") or []:
+            if not isinstance(metric, dict):
+                continue
+            name = str(metric.get("name") or "").strip()
+            if len(name) < 3:
+                continue
+            found.append(
+                {
+                    "name": name,
+                    "weight": str(metric.get("weight") or ""),
+                    "slug": str(metric.get("code") or "").strip(),
+                    "source": str((metric.get("sources") or [{}])[-1].get("detail") or "")
+                    if isinstance(metric.get("sources"), list) and metric.get("sources")
+                    else "",
+                }
+            )
+    if not found:
+        for slug in _existing_kpi_slugs(run_cwd):
+            found.append({"name": slug, "weight": "", "slug": slug})
+    jobs = kpi_write_jobs(found, source_notes=blob, existing_slugs=[], position=position)
+    return catalog_from_jobs(jobs, position=position)
+
+
+def _kpi_source_notes(active: Any) -> str:
+    lines: list[str] = []
+    history = getattr(getattr(active, "gate", None), "qa_history", None) or []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        reply = str(item.get("answer") or "").strip()
+        if question and reply:
+            lines.append(f"{question} — {reply}")
+    return "\n".join(lines)
+
+
+def _ask_missing_kpi_sources(active: Any, rows: list[dict[str, str]]) -> str:
+    pending = unasked_kpi_rows(rows, _kpi_asked_blob(active))
+    notes: list[str] = []
+    for row in pending:
+        if active.stop.is_set():
+            break
+        name = str(row.get("name") or "").strip()
+        weight = str(row.get("weight") or "").strip()
+        label = f"{name} ({weight}%)" if weight else name
+        reply = active.gate.ask_question(
+            {
+                "question": f"Откуда брать план и факт по показателю «{label}»?",
+                "options": list(KPI_SOURCE_OPTIONS),
+            },
+            should_stop=active.stop.is_set,
+        )
+        picked = str(reply.get("answer") or reply.get("text") or "").strip()
+        if picked and needs_source_detail(picked) and not active.stop.is_set():
+            extra = active.gate.ask_question(
+                {
+                    "question": f"Какая система, отчёт или файл для показателя «{label}»?",
+                    "options": [],
+                },
+                should_stop=active.stop.is_set,
+            )
+            detail = str(extra.get("answer") or extra.get("text") or "").strip()
+            if detail:
+                picked = detail
+        if picked:
+            notes.append(f"{name}: {picked}")
+    if not notes:
+        return ""
+    return "Откуда брать план и факт:\n" + "\n".join(notes)
+
+
+def _kpi_already_read(prompt: str) -> bool:
+    blob = prompt or ""
+    return any(
+        token in blob
+        for token in (
+            "Положение уже прочитано",
+            "Положение уже в этом сообщении",
+            "уже в этом сообщении",
+            "Страницы уже сняты",
+            "ЗАПРЕЩЕНО: office.read_file",
+            "KPI уже выписаны",
+            "Не читай PDF",
+            "Тесты не прошли",
+        )
+    )
+
+
+def _emit_kpi_attached(
+    active: Any, images: list[dict[str, Any]], events: list[dict[str, Any]] | None = None
+) -> None:
+    pages = [item for item in images if isinstance(item, dict)]
+    count = len(pages)
+    if count <= 0:
+        return
+    start = next((int(item.get("page") or 0) for item in pages if item.get("page")), 2)
+    filename = str(pages[0].get("filename") or "")
+    request_id = f"kpi-attach-{uuid.uuid4().hex[:8]}"
+    summary = (
+        f"Положение приложено в чат: {count} стр."
+        + (" (без обложки)" if start > 1 else "")
+    )
+    payload_call = {
+        "type": "tool_call",
+        "tool": "office.read_file",
+        "status": "running",
+        "requestId": request_id,
+        "arguments": {"filename": filename} if filename else {},
+    }
+    payload_done = {
+        "type": "tool_result",
+        "tool": "office.read_file",
+        "status": "ok",
+        "requestId": request_id,
+        "ok": True,
+        "result": {
+            "vision": True,
+            "delivered_pages": count,
+            "start_page": start,
+            "filename": filename,
+            "summary": summary,
+        },
+    }
+    for payload in (payload_call, payload_done):
+        if events is not None:
+            events.append(payload)
+        emit(
+            {
+                "type": "event",
+                "runId": getattr(active, "run_id", ""),
+                "payload": payload,
+            }
+        )
+
+
+def _kpi_vision_ready(run_cwd: Path) -> bool:
+    vision = Path(run_cwd) / "materials" / "vision"
+    if not vision.is_dir():
+        return False
+    pages = [
+        path
+        for path in vision.iterdir()
+        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+    ]
+    return len(pages) >= 2
+
+
 def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
     folded = (mode or "").strip().casefold()
     text = (prompt or "").strip()
     # KPI explain / other one-shot evals must not inherit playbook tool hints.
     if folded == "eval":
         return text
+    if folded == "kpi":
+        if _kpi_already_read(text):
+            return text
+        return "\n\n".join(part for part in (KPI_MODULE_HINT, text) if part)
     parts = [KEEP_FILE_HINT]
     if _is_calendar_control_text(prompt):
         parts.append(CALENDAR_CONTROL_HINT)
     elif _is_artifact_close_text(prompt):
         parts.append(ARTIFACT_CLOSE_HINT)
+    elif _is_daily_assignment_prompt(prompt):
+        parts.append(DAILY_ASSIGNMENT_HINT)
     elif _is_sd_meeting_text(prompt):
         parts.append(SD_MEETING_HINT)
     elif _is_rk_text(prompt):
@@ -1309,8 +1635,14 @@ class ElectronBridge(CursorSdkBridge):
         should_stop: Any = None,
         confirm_writes: bool = False,
         include_app_tools: bool = True,
+        images: list[dict[str, Any]] | None = None,
+        stop_on_kpi_list: bool = True,
+        kpi_allow_read: bool = False,
     ) -> dict[str, Any]:
-        if include_app_tools:
+        kpi = (mode or "").strip().casefold() == "kpi"
+        if kpi:
+            specs = list(tools) if tools is not None else list(sdk_kpi_tool_specs())
+        elif include_app_tools:
             specs = list(tools) if tools is not None else list(sdk_tool_specs())
             if not any(_is_keep_knowledge_file(str(item.get("name") or "")) for item in specs):
                 specs.append(dict(KEEP_KNOWLEDGE_FILE_SPEC))
@@ -1334,7 +1666,10 @@ class ElectronBridge(CursorSdkBridge):
             on_question=on_question,
             should_stop=should_stop,
             confirm_writes=must_confirm,
-            restrict_builtins=tools is not None,
+            restrict_builtins=kpi or tools is not None,
+            images=images,
+            stop_on_kpi_list=stop_on_kpi_list,
+            kpi_allow_read=kpi_allow_read,
         )
 
     def _handle_tool_request(
@@ -1636,6 +1971,15 @@ class HitlGate:
         if question or answer:
             self.qa_history.append({"question": question, "answer": answer})
         return {"ok": ok, "answer": answer, "text": answer}
+
+    def release_pending_questions(self) -> None:
+        with self._lock:
+            pending = list(self._answers.items())
+        for _request_id, box in pending:
+            try:
+                box.put_nowait({"ok": False, "answer": "", "text": ""})
+            except Exception:
+                continue
 
     def consume_needs_file(self, request_id: str) -> bool:
         with self._lock:
@@ -2525,6 +2869,7 @@ class Sidecar:
         target = str(
             command.get("workflowId")
             or command.get("draftId")
+            or command.get("buildId")
             or command.get("triggerId")
             or ""
         ).strip()
@@ -2550,8 +2895,15 @@ class Sidecar:
         )
         overlap_run_id = ""
         skip_run_id = ""
+        skip_trigger = False
         with self._lock:
-            if dedup_key:
+            kpi_busy = any(
+                existing.kind == "kpi_module" and _sdk_run_alive(existing)
+                for existing in self._active.values()
+            )
+            if kind == "check_trigger" and kpi_busy:
+                skip_trigger = True
+            elif dedup_key:
                 for existing in list(self._active.values()):
                     if existing.dedup_key != dedup_key:
                         continue
@@ -2600,7 +2952,7 @@ class Sidecar:
                     )
                     skip_run_id = existing.run_id
                     break
-            if not overlap_run_id and not skip_run_id:
+            if not skip_trigger and not overlap_run_id and not skip_run_id:
                 gate = HitlGate(run_id)
                 stop = threading.Event()
                 bridge = ElectronBridge(gate)
@@ -2612,6 +2964,9 @@ class Sidecar:
                     gate.bind(workflow_id=active.workflow_id, kind=kind)
                 active.gate.on_events_changed = lambda current=active: self._flush_run_events(current)
                 self._active[run_id] = active
+        if skip_trigger:
+            log("skip trigger while kpi_module is running")
+            return
         if overlap_run_id:
             self._cancel_overlap_slot(command)
             emit(
@@ -2671,6 +3026,8 @@ class Sidecar:
                 self._run_trigger(command, active)
             elif kind in {"form_orchestrator", "calc_orchestrator"}:
                 self._run_orchestrator(command, active, kind)
+            elif kind == "kpi_module":
+                self._run_kpi_module(command, active)
             else:
                 emit({"type": "error", "runId": active.run_id, "message": f"unknown run kind: {kind}"})
         except CursorSdkUnavailable as exc:
@@ -2810,6 +3167,59 @@ class Sidecar:
 
         return on_event
 
+    def _stop_when_kpi_checked(
+        self,
+        active: ActiveRun,
+        events: list[dict[str, Any]],
+        run_cwd: Path,
+        slug: str = "",
+    ):
+        """Остановить ход, когда pytest этого slug прошёл, или когда бюджет кончился."""
+        inner = self._forward_events(active, events)
+        calls = 0
+        want = (slug or "").strip()
+
+        def on_event(payload: dict[str, Any]) -> None:
+            nonlocal calls
+            inner(payload)
+            if not isinstance(payload, dict):
+                return
+            tool = str(payload.get("tool") or payload.get("name") or "").casefold()
+            kind = str(payload.get("type") or "").casefold()
+            if kind != "tool_result":
+                return
+            if "write_python" not in tool and "run_python" not in tool:
+                return
+            calls += 1
+            _promote_kpi_artifacts(Path(run_cwd))
+            result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+            script = str(result.get("script") or "")
+            exit_code = result.get("exit_code")
+            this_slug = (not want) or f"test_{want}.py" in script or _kpi_slug_ready(Path(run_cwd), want)
+            passed = (
+                "run_python" in tool
+                and bool(payload.get("ok"))
+                and exit_code in {0, "0"}
+                and this_slug
+                and (_kpi_slug_ready(Path(run_cwd), want) if want else _kpi_artifacts_ready(Path(run_cwd)))
+            )
+            if passed or calls >= KPI_CODE_TOOL_BUDGET:
+                text = (
+                    f"Тесты {want or 'модуля'} прошли."
+                    if passed
+                    else "Лимит правок модуля. Проверяю тестами конструктора…"
+                )
+                emit(
+                    {
+                        "type": "event",
+                        "runId": active.run_id,
+                        "payload": {"type": "status", "text": text},
+                    }
+                )
+                active.stop.set()
+
+        return on_event
+
     def _run_design(self, command: dict[str, Any], active: ActiveRun) -> None:
         workflow_id = str(command.get("workflowId") or "").strip()
         if not workflow_id:
@@ -2904,6 +3314,520 @@ class Sidecar:
                 "draftId": draft_id,
                 "status": updated.status,
                 "answer": answer,
+            }
+        )
+
+    def _kpi_bridge_run(self, active: ActiveRun, bridge: Any, **kwargs: Any) -> dict[str, Any]:
+        last_exc: CursorSdkError | None = None
+        call = dict(kwargs)
+        for attempt in range(1, KPI_SDK_RETRIES + 1):
+            if active.stop.is_set():
+                break
+            try:
+                return bridge.run(**call)
+            except CursorSdkUnavailable:
+                raise
+            except CursorSdkError as exc:
+                last_exc = exc
+                if not is_transient_cursor_error(exc) or attempt >= KPI_SDK_RETRIES:
+                    raise
+                if call.get("images"):
+                    call = _kpi_retry_without_images(call)
+                    text = (
+                        f"Страницы не дошли по сети, читаю PDF повтор {attempt} из "
+                        f"{KPI_SDK_RETRIES - 1}…"
+                    )
+                else:
+                    text = (
+                        f"Cursor SDK не ответил, повтор {attempt} из "
+                        f"{KPI_SDK_RETRIES - 1}…"
+                    )
+                emit(
+                    {
+                        "type": "event",
+                        "runId": active.run_id,
+                        "payload": {"type": "status", "text": text},
+                    }
+                )
+                time.sleep(2 * attempt)
+        if last_exc is not None:
+            raise last_exc
+        return {"answer": "", "agent_id": str(kwargs.get("resume_agent_id") or "")}
+
+    def _run_kpi_code_turn(
+        self,
+        *,
+        active: ActiveRun,
+        bridge: Any,
+        run_cwd: Path,
+        workspace_id: str,
+        events: list[dict[str, Any]],
+        prompt: str,
+        slug: str,
+        resume_agent_id: str = "",
+    ) -> tuple[str, str]:
+        active.stop.clear()
+        result = self._kpi_bridge_run(
+            active,
+            bridge,
+            prompt=prompt,
+            workflow_id=workspace_id,
+            cwd=str(run_cwd),
+            mode="kpi",
+            tools=sdk_kpi_write_tool_specs(),
+            resume_agent_id=resume_agent_id,
+            on_event=self._stop_when_kpi_checked(active, events, run_cwd, slug=slug),
+            on_question=active.gate.ask_question,
+            should_stop=active.stop.is_set,
+            confirm_writes=True,
+            stop_on_kpi_list=False,
+            kpi_allow_read=True,
+        )
+        active.stop.clear()
+        _promote_kpi_artifacts(run_cwd)
+        return str(result.get("answer") or "").strip(), str(result.get("agent_id") or resume_agent_id).strip()
+
+    def _write_kpi_modules(
+        self,
+        *,
+        active: ActiveRun,
+        bridge: Any,
+        run_cwd: Path,
+        workspace_id: str,
+        events: list[dict[str, Any]],
+        answer: str,
+        position: str,
+        rows: list[dict[str, str]],
+        source_notes: str,
+    ) -> tuple[str, str]:
+        jobs = kpi_write_jobs(
+            rows,
+            source_notes=source_notes,
+            existing_slugs=_existing_kpi_slugs(run_cwd),
+            position=position,
+        )
+        writer_id = ""
+        for job in jobs:
+            if active.stop.is_set():
+                break
+            slug = str(job.get("slug") or "").strip()
+            if not slug:
+                continue
+            emit(
+                {
+                    "type": "event",
+                    "runId": active.run_id,
+                    "payload": {"type": "status", "text": f"Пишу модуль {slug}…"},
+                }
+            )
+            try:
+                more, writer_id = self._run_kpi_code_turn(
+                    active=active,
+                    bridge=bridge,
+                    run_cwd=run_cwd,
+                    workspace_id=workspace_id,
+                    events=events,
+                    prompt=str(job.get("prompt") or ""),
+                    slug=slug,
+                    resume_agent_id="",
+                )
+            except CursorSdkError as exc:
+                emit(
+                    {
+                        "type": "event",
+                        "runId": active.run_id,
+                        "payload": {
+                            "type": "status",
+                            "text": f"Модуль {slug}: Cursor SDK не ответил, перехожу к следующему.",
+                        },
+                    }
+                )
+                answer = f"{answer}\n\n{slug}: {exc}".strip()
+                continue
+            if more:
+                answer = f"{answer}\n\n{more}".strip()
+            ok, pytest_out = _run_kpi_slug_tests(run_cwd, slug)
+            attempt = 0
+            while not ok and attempt < KPI_REPAIR_LIMIT and not active.stop.is_set():
+                attempt += 1
+                emit(
+                    {
+                        "type": "event",
+                        "runId": active.run_id,
+                        "payload": {
+                            "type": "status",
+                            "text": f"Тесты {slug} не прошли, правка {attempt} из {KPI_REPAIR_LIMIT}…",
+                        },
+                    }
+                )
+                try:
+                    more, writer_id = self._run_kpi_code_turn(
+                        active=active,
+                        bridge=bridge,
+                        run_cwd=run_cwd,
+                        workspace_id=workspace_id,
+                        events=events,
+                        prompt=kpi_repair_prompt(slug, pytest_out),
+                        slug=slug,
+                        resume_agent_id=writer_id,
+                    )
+                except CursorSdkError as exc:
+                    answer = f"{answer}\n\n{slug}: правка не дошла, {exc}".strip()
+                    break
+                if more:
+                    answer = f"{answer}\n\n{more}".strip()
+                ok, pytest_out = _run_kpi_slug_tests(run_cwd, slug)
+            if not ok and pytest_out.strip():
+                answer = f"{answer}\n\n{slug}: тесты не прошли\n{pytest_out.strip()[:1500]}".strip()
+        return answer, writer_id
+
+    def _rewrite_kpi_until_tests_pass(
+        self,
+        active: ActiveRun,
+        bridge: Any,
+        run_cwd: Path,
+        workspace_id: str,
+        agent_id: str,
+        events: list[dict[str, Any]],
+        answer: str,
+    ) -> tuple[list[dict[str, Any]], bool, str, str, str]:
+        modules = _collect_kpi_modules(run_cwd)
+        if not modules:
+            return [], True, "", answer, agent_id
+        emit(
+            {
+                "type": "event",
+                "runId": active.run_id,
+                "payload": {"type": "status", "text": "Проверяю тесты модуля…"},
+            }
+        )
+        pytest_ok, pytest_out = _run_kpi_workspace_tests(run_cwd)
+        attempt = 0
+        while modules and not pytest_ok and attempt < KPI_REPAIR_LIMIT:
+            attempt += 1
+            for item in modules:
+                slug = str(item.get("metric_code") or "").strip()
+                if not slug:
+                    continue
+                slug_ok, slug_out = _run_kpi_slug_tests(run_cwd, slug)
+                if slug_ok:
+                    continue
+                emit(
+                    {
+                        "type": "event",
+                        "runId": active.run_id,
+                        "payload": {
+                            "type": "status",
+                            "text": f"Тесты {slug} не прошли, правка {attempt} из {KPI_REPAIR_LIMIT}…",
+                        },
+                    }
+                )
+                more, agent_id = self._run_kpi_code_turn(
+                    active=active,
+                    bridge=bridge,
+                    run_cwd=run_cwd,
+                    workspace_id=workspace_id,
+                    events=events,
+                    prompt=kpi_repair_prompt(slug, slug_out),
+                    slug=slug,
+                    resume_agent_id="",
+                )
+                if more:
+                    answer = f"{answer}\n\n{more}".strip()
+            modules = _collect_kpi_modules(run_cwd)
+            pytest_ok, pytest_out = _run_kpi_workspace_tests(run_cwd)
+        return modules, pytest_ok, pytest_out, answer, agent_id
+
+    def _run_kpi_module(self, command: dict[str, Any], active: ActiveRun) -> None:
+        build_id = str(command.get("buildId") or command.get("build_id") or "").strip()
+        if not build_id:
+            raise ValueError("kpi_module requires buildId")
+        bridge = active.bridge
+        bridge.check_ready()
+        session = self._api.get_position_kpi_build(build_id)
+        workspace_id = str(command.get("workflowId") or f"kpi-build-{build_id}").strip()
+        run_cwd = Path(bridge.workspace_cwd(workspace_id))
+        active.run_cwd = str(run_cwd)
+        active.workflow_id = workspace_id
+        active.gate.bind(workflow_id=workspace_id, kind="kpi_module")
+        _prepare_kpi_workspace(run_cwd, session)
+        events: list[dict[str, Any]] = []
+        answer = ""
+        agent_id = str(session.get("cursor_agent_id") or "").strip()
+        _promote_kpi_artifacts(run_cwd)
+        modules = _collect_kpi_modules(run_cwd)
+        session_modules = session.get("modules") if isinstance(session.get("modules"), list) else []
+        if session_modules and _kpi_artifacts_ready(run_cwd):
+            emit(
+                {
+                    "type": "event",
+                    "runId": active.run_id,
+                    "payload": {"type": "status", "text": "Модуль уже записан. Проверяю тесты…"},
+                }
+            )
+            modules, pytest_ok, pytest_out, answer, agent_id = self._rewrite_kpi_until_tests_pass(
+                active,
+                bridge,
+                run_cwd,
+                workspace_id,
+                agent_id,
+                events,
+                answer,
+            )
+            if pytest_out.strip():
+                answer = f"Тесты конструктора:\n{pytest_out.strip()[:2000]}"
+            if modules and pytest_ok:
+                emit(
+                    {
+                        "type": "event",
+                        "runId": active.run_id,
+                        "payload": {"type": "status", "text": "Тесты прошли. Подключаю KPI…"},
+                    }
+                )
+            finished = self._api.finish_position_kpi_build(
+                build_id,
+                answer=answer,
+                events=events,
+                modules=modules,
+                catalog_draft=_catalog_draft_from_kpi(
+                    session=session,
+                    rows=[],
+                    source_notes=_kpi_source_notes(active),
+                    position=str(session.get("position") or "").strip(),
+                    run_cwd=run_cwd,
+                ),
+                cursor_agent_id=agent_id,
+                connect=bool(modules) and pytest_ok,
+            )
+            if modules and pytest_ok and str(finished.get("status") or "") != "connected":
+                finished = self._api.connect_position_kpi_build(build_id)
+            emit(
+                {
+                    "type": "result",
+                    "runId": active.run_id,
+                    "kind": "kpi_module",
+                    "buildId": build_id,
+                    "status": str(finished.get("status") or ""),
+                    "agentId": agent_id,
+                    "answer": answer,
+                    "pytestOk": pytest_ok,
+                }
+            )
+            return
+        file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
+        copied = _copy_attachments(str(run_cwd), file_paths) or _existing_methodology_files(run_cwd)
+        position = str(session.get("position") or "").strip()
+        emit(
+            {
+                "type": "event",
+                "runId": active.run_id,
+                "payload": {"type": "status", "text": "Прикладываю положение в чат…"},
+            }
+        )
+        events: list[dict[str, Any]] = []
+        prompt = str(command.get("prompt") or session.get("sdk_prompt") or "").strip()
+        if not prompt:
+            prompt = "Прочитай методику и собери KPI должности пользователя."
+        note = _attachments_note(copied, position=position)
+        if note:
+            prompt = (
+                f"{prompt}\n\n{note}\n"
+                "Читай PDF кусками: office.read_file filename — точный путь к файлу выше, "
+                "не папка. Первый вызов start_page=2, max_pages=1. "
+                "Если next_start есть — сразу следующий кусок с этим start_page. "
+                "Не прикладывай все страницы сразу. "
+                f"Ищи только KPI должности «{position or 'из задания'}». "
+                "Нет в документе — напиши пользователю и остановись. "
+                "Когда куски кончились — выпиши ВСЕ показатели, каждый с новой строки "
+                "«1. Название — вес N%», последняя строка СПИСОК_ГОТОВ. "
+                "Модули пока не пиши и источники не спрашивай."
+            )
+        elif not str(session.get("sdk_prompt") or "").strip():
+            prompt += (
+                "\n\nФайла методики ещё нет — спроси через askQuestion с needsFile=true."
+            )
+        resume_id = str(
+            command.get("resumeAgentId")
+            or command.get("resume_agent_id")
+            or session.get("cursor_agent_id")
+            or ""
+        ).strip()
+        kpi_tools = sdk_kpi_tool_specs(read_file=True, write=False, run=False)
+        try:
+            result = self._kpi_bridge_run(
+                active,
+                bridge,
+                prompt=prompt,
+                workflow_id=workspace_id,
+                cwd=str(run_cwd),
+                mode="kpi",
+                tools=kpi_tools,
+                resume_agent_id=resume_id,
+                images=[],
+                on_event=self._forward_events(active, events),
+                on_question=active.gate.ask_question,
+                should_stop=active.stop.is_set,
+                confirm_writes=False,
+            )
+        except CursorSdkError as exc:
+            if not is_transient_cursor_error(exc) or active.stop.is_set():
+                raise
+            emit(
+                {
+                    "type": "event",
+                    "runId": active.run_id,
+                    "payload": {
+                        "type": "status",
+                        "text": "Сеть оборвалась, читаю положение ещё раз…",
+                    },
+                }
+            )
+            result = self._kpi_bridge_run(
+                active,
+                bridge,
+                prompt=prompt,
+                workflow_id=workspace_id,
+                cwd=str(run_cwd),
+                mode="kpi",
+                tools=kpi_tools,
+                resume_agent_id="",
+                images=[],
+                on_event=self._forward_events(active, events),
+                on_question=active.gate.ask_question,
+                should_stop=active.stop.is_set,
+                confirm_writes=False,
+            )
+        answer = str(result.get("answer") or "").strip()
+        agent_id = str(result.get("agent_id") or resume_id).strip()
+        modules = _collect_kpi_modules(run_cwd)
+
+        def _asked_kpi_clarify(items: list[dict[str, Any]]) -> bool:
+            for ev in items:
+                if not isinstance(ev, dict):
+                    continue
+                kind = str(ev.get("type") or "").casefold()
+                tool = str(ev.get("tool") or ev.get("name") or "").casefold()
+                if kind == "question" or tool in {"askquestion", "ask_question"}:
+                    return True
+            return False
+
+        rows = parse_kpi_rows(answer)
+        if (
+            not rows
+            and not modules
+            and not _asked_kpi_clarify(events)
+            and not _kpi_position_missing(answer)
+            and not active.stop.is_set()
+        ):
+            emit(
+                {
+                    "type": "event",
+                    "runId": active.run_id,
+                    "payload": {"type": "status", "text": "Выделяю KPI должности…"},
+                }
+            )
+            result = self._kpi_bridge_run(
+                active,
+                bridge,
+                prompt=KPI_CONTINUE_PROMPT,
+                workflow_id=workspace_id,
+                cwd=str(run_cwd),
+                mode="kpi",
+                tools=kpi_tools,
+                resume_agent_id=agent_id,
+                on_event=self._forward_events(active, events),
+                on_question=active.gate.ask_question,
+                should_stop=active.stop.is_set,
+                confirm_writes=False,
+            )
+            more = str(result.get("answer") or "").strip()
+            if more:
+                answer = more
+            agent_id = str(result.get("agent_id") or agent_id).strip()
+            modules = _collect_kpi_modules(run_cwd)
+            rows = parse_kpi_rows(answer)
+        source_notes = ""
+        if rows and not _kpi_position_missing(answer) and not active.stop.is_set():
+            emit(
+                {
+                    "type": "event",
+                    "runId": active.run_id,
+                    "payload": {"type": "status", "text": "Уточняю, откуда брать план и факт…"},
+                }
+            )
+            asked = _ask_missing_kpi_sources(active, rows)
+            if asked:
+                answer = f"{answer}\n\n{asked}".strip()
+            source_notes = _kpi_source_notes(active)
+            answer, writer_id = self._write_kpi_modules(
+                active=active,
+                bridge=bridge,
+                run_cwd=run_cwd,
+                workspace_id=workspace_id,
+                events=events,
+                answer=answer,
+                position=position,
+                rows=rows,
+                source_notes=source_notes,
+            )
+            if writer_id:
+                agent_id = writer_id
+        _promote_kpi_artifacts(run_cwd)
+        modules = _collect_kpi_modules(run_cwd)
+        if modules:
+            emit(
+                {
+                    "type": "event",
+                    "runId": active.run_id,
+                    "payload": {"type": "status", "text": "Проверяю тесты модуля…"},
+                }
+            )
+            pytest_ok, pytest_out = _run_kpi_workspace_tests(run_cwd)
+        else:
+            pytest_ok, pytest_out = True, ""
+        if pytest_out.strip():
+            answer = f"{answer}\n\nТесты конструктора:\n{pytest_out.strip()[:2000]}".strip()
+        catalog = _catalog_draft_from_kpi(
+            session=session,
+            rows=rows,
+            source_notes=source_notes,
+            position=position,
+            run_cwd=run_cwd,
+        )
+        parsed = extract_json_object(answer) if answer else None
+        if isinstance(parsed, dict) and not catalog.get("metrics"):
+            parsed_catalog = parsed.get("catalog") if isinstance(parsed.get("catalog"), dict) else parsed
+            if isinstance(parsed_catalog, dict) and parsed_catalog.get("metrics"):
+                catalog = parsed_catalog
+        if modules and pytest_ok:
+            emit(
+                {
+                    "type": "event",
+                    "runId": active.run_id,
+                    "payload": {"type": "status", "text": "Тесты прошли. Подключаю KPI…"},
+                }
+            )
+        finished = self._api.finish_position_kpi_build(
+            build_id,
+            answer=answer,
+            events=events,
+            modules=modules,
+            catalog_draft=catalog if isinstance(catalog, dict) else {},
+            cursor_agent_id=agent_id,
+            connect=bool(modules) and pytest_ok,
+        )
+        if modules and pytest_ok and str(finished.get("status") or "") != "connected":
+            finished = self._api.connect_position_kpi_build(build_id)
+        emit(
+            {
+                "type": "result",
+                "runId": active.run_id,
+                "kind": "kpi_module",
+                "buildId": build_id,
+                "status": str(finished.get("status") or ""),
+                "agentId": agent_id,
+                "answer": answer,
+                "pytestOk": pytest_ok,
             }
         )
 
@@ -4151,14 +5075,236 @@ def _copy_attachments(run_cwd: str, file_paths: list[str]) -> list[str]:
     return relative
 
 
-def _attachments_note(relative_paths: list[str]) -> str:
+def _existing_methodology_files(run_cwd: Path) -> list[str]:
+    folder = Path(run_cwd) / "materials" / "attachments"
+    if not folder.is_dir():
+        return []
+    allowed = {".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
+    found: list[str] = []
+    for path in sorted(folder.iterdir()):
+        if path.is_file() and path.suffix.lower() in allowed:
+            found.append(path.relative_to(run_cwd).as_posix())
+    return found
+
+
+def _attachments_note(relative_paths: list[str], *, position: str = "") -> str:
     if not relative_paths:
         return ""
     listing = ", ".join(relative_paths)
+    who = f" Должность: {position}." if position.strip() else ""
     return (
-        "Прикреплённые файлы (прочитай их из рабочей области): "
+        "PDF методики, не папка: office.read_file filename= "
         + listing
+        + "."
+        + who
     )
+
+
+def _backend_kpi_root() -> Path:
+    here = Path(__file__).resolve()
+    repo = here.parents[3]
+    return repo / "backend" / "kpi"
+
+
+def _prepare_kpi_workspace(run_cwd: Path, session: dict[str, Any]) -> None:
+    materials = run_cwd / "materials"
+    examples = run_cwd / "examples"
+    generated = run_cwd / "generated"
+    tests = run_cwd / "tests"
+    for folder in (materials, examples, generated, tests):
+        folder.mkdir(parents=True, exist_ok=True)
+    attached = materials / "vision" / ".attached"
+    if attached.is_file():
+        attached.unlink()
+    write_kpi_example_files(examples)
+    extracted = session.get("extracted") if isinstance(session.get("extracted"), dict) else {}
+    position = str(session.get("position") or "").strip()
+    source_text = ""
+    prompt = str(session.get("sdk_prompt") or "")
+    marker = "Текст методики (сокращённо):"
+    if marker in prompt:
+        source_text = prompt.split(marker, 1)[-1].strip()
+    if source_text:
+        methodology = source_text
+    elif extracted.get("needs_vision"):
+        methodology = (
+            "ТЕКСТА НЕТ. Это скан, не методика.\n"
+            "Не ищи KPI в этом файле и в extracted.json.\n"
+            f"Должность: {position or 'из задания'}.\n"
+            "Первое действие: office.read_file на файл .pdf внутри materials/attachments "
+            "(точный путь с именем файла, start_page=2, max_pages=1).\n"
+            "Если next_start есть — сразу следующий кусок. Не читай больше одной страницы за вызов.\n"
+            "Если должности нет в положении — напиши пользователю и остановись.\n"
+        )
+    else:
+        methodology = (
+            str(session.get("sdk_prompt") or "").strip()
+            or "Методика ещё не приложена. Спроси файл через askQuestion."
+        )
+    (materials / "methodology.txt").write_text(methodology, encoding="utf-8")
+    (materials / "extracted.json").write_text(
+        json.dumps(extracted or {}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (run_cwd / "AGENTS.md").write_text(
+        "\n".join(
+            [
+                "# KPI module contract",
+                "",
+                "List KPIs in the first turn. Write code in a later new-agent turn, one slug at a time.",
+                "A write turn has no PDF and no methodology images.",
+                "While listing KPIs, do not call office.read_file and do not Read extracted.json.",
+                "While writing code, Read examples/orders_on_time.py, then write one slug.",
+                "The write turn has every Constructor tool. Find the source with them.",
+                "1C: onec.odata_catalog then onec.odata_get. Do not invent EntitySet names.",
+                "extracted.json is metadata only. Do not read the PDF again.",
+                "code.write_python filename must be generated/<slug>.py and tests/test_<slug>.py.",
+                "Those paths are the workspace root, not the code/ folder.",
+                "Then code.run_python filename=tests/test_<slug>.py (pytest) and fix until it passes.",
+                "Finished modules are stored in backend/kpi/generated.",
+                "Export `SOURCE`, `load_<slug>_rows(ctx)`, `score_<slug>_kpi(rows, ...)`",
+                "and `compute_<slug>_kpi(ctx)` = load then score.",
+                "Daily run calls compute only. Extractor hands rows to the calculator.",
+                "Tests: FakeCtx for compute/load, dict fixtures for score. No live 1C/Outlook.",
+                "Never ask schedule, Outlook cadence, or when to run the agent.",
+                "Do not create live 1C documents.",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _collect_kpi_modules(run_cwd: Path) -> list[dict[str, Any]]:
+    generated = run_cwd / "generated"
+    tests = run_cwd / "tests"
+    modules: list[dict[str, Any]] = []
+    if not generated.is_dir():
+        return modules
+    for path in sorted(generated.glob("*.py")):
+        if path.name in {"__init__.py"} or path.name.startswith("test_"):
+            continue
+        stem = path.stem
+        test_path = tests / f"test_{stem}.py"
+        if not test_path.exists():
+            test_path = generated / f"test_{stem}.py"
+        modules.append(
+            {
+                "metric_code": stem,
+                "module": f"kpi.generated.{stem}",
+                "code_text": path.read_text(encoding="utf-8"),
+                "tests": test_path.read_text(encoding="utf-8") if test_path.exists() else "",
+            }
+        )
+    return modules
+
+
+def _kpi_artifacts_ready(run_cwd: Path) -> bool:
+    modules = _collect_kpi_modules(run_cwd)
+    return bool(modules) and all(str(item.get("tests") or "").strip() for item in modules)
+
+
+def _kpi_slug_ready(run_cwd: Path, slug: str) -> bool:
+    name = (slug or "").strip()
+    if not name:
+        return False
+    root = Path(run_cwd)
+    module = root / "generated" / f"{name}.py"
+    test = root / "tests" / f"test_{name}.py"
+    return module.is_file() and bool(module.read_text(encoding="utf-8").strip()) and test.is_file() and bool(
+        test.read_text(encoding="utf-8").strip()
+    )
+
+
+def _existing_kpi_slugs(run_cwd: Path) -> list[str]:
+    return [
+        str(item.get("metric_code") or "").strip()
+        for item in _collect_kpi_modules(run_cwd)
+        if str(item.get("metric_code") or "").strip() and str(item.get("tests") or "").strip()
+    ]
+
+
+def _run_kpi_slug_tests(run_cwd: Path, slug: str) -> tuple[bool, str]:
+    root = Path(run_cwd)
+    _promote_kpi_artifacts(root)
+    name = (slug or "").strip()
+    if not name:
+        return False, "slug пустой"
+    test = root / "tests" / f"test_{name}.py"
+    if not test.is_file() or not test.read_text(encoding="utf-8").strip():
+        return False, f"Нет tests/test_{name}.py"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(root), str(_backend_kpi_root().parent), env.get("PYTHONPATH") or ""]
+    )
+    from app.tools.ac.code_execution_tools import pytest_command_prefix
+
+    try:
+        completed = subprocess.run(
+            [*pytest_command_prefix(), "-m", "pytest", str(test.relative_to(root)), "-q"],
+            cwd=str(root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log("kpi slug pytest failed to start: " + repr(exc))
+        return False, repr(exc)
+    output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    if completed.returncode != 0:
+        log("kpi slug pytest failed: " + _ascii(output[:800]))
+        return False, output
+    return True, output or "passed"
+
+
+def _promote_kpi_artifacts(run_cwd: Path) -> None:
+    from app.tools.ac.code_execution_tools import promote_kpi_artifacts
+
+    promote_kpi_artifacts(Path(run_cwd))
+
+
+def _pytest_argv() -> list[str]:
+    from app.tools.ac.code_execution_tools import pytest_command_prefix
+
+    return [*pytest_command_prefix(), "-m", "pytest", "tests", "-q"]
+
+
+def _run_kpi_workspace_tests(run_cwd: Path) -> tuple[bool, str]:
+    root = Path(run_cwd)
+    _promote_kpi_artifacts(root)
+    modules = _collect_kpi_modules(root)
+    if modules and any(not str(item.get("tests") or "").strip() for item in modules):
+        missing = ", ".join(
+            str(item.get("metric_code") or "")
+            for item in modules
+            if not str(item.get("tests") or "").strip()
+        )
+        return False, f"Нет tests/test_<slug>.py для: {missing}"
+    tests = root / "tests"
+    if not tests.is_dir() or not any(tests.glob("test_*.py")):
+        return True, ""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(run_cwd), str(_backend_kpi_root().parent), env.get("PYTHONPATH") or ""]
+    )
+    try:
+        completed = subprocess.run(
+            _pytest_argv(),
+            cwd=str(run_cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log("kpi pytest failed to start: " + repr(exc))
+        return False, repr(exc)
+    output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    if completed.returncode != 0:
+        log("kpi pytest failed: " + _ascii(output[:800]))
+        return False, output
+    return True, output or "passed"
 
 
 def main() -> None:
@@ -4190,6 +5336,7 @@ def main() -> None:
                 "check_trigger",
                 "form_orchestrator",
                 "calc_orchestrator",
+                "kpi_module",
             }:
                 sidecar.start(ctype, command)
             elif ctype == "answer":

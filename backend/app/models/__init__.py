@@ -8,7 +8,11 @@ from app.models.trigger import AgentTrigger
 from app.models.kpi_daily_metric import WorkplaceKpiDailyMetric
 from app.models.position_kpi import (
     PositionCompRule,
+    PositionKpiBuild,
+    PositionKpiBuildMessage,
+    PositionKpiDailyFact,
     PositionKpiMetric,
+    PositionKpiModule,
     PositionKpiProfile,
     PositionKpiSource,
 )
@@ -29,5 +33,9 @@ __all__ = [
     "PositionKpiProfile",
     "PositionCompRule",
     "PositionKpiMetric",
+    "PositionKpiModule",
     "PositionKpiSource",
+    "PositionKpiDailyFact",
+    "PositionKpiBuild",
+    "PositionKpiBuildMessage",
 ]

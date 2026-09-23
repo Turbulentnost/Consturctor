@@ -834,7 +834,16 @@ async function handleDownload(
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   try {
     const response = await fetch(url, { headers })
-    if (!response.ok) return { ok: false, error: `Ошибка загрузки (${response.status})` }
+    if (!response.ok) {
+      let detail = ''
+      try {
+        const body = (await response.json()) as { detail?: unknown }
+        if (typeof body?.detail === 'string') detail = body.detail
+      } catch {
+        detail = ''
+      }
+      return { ok: false, error: detail || `Ошибка загрузки (${response.status})` }
+    }
     const arrayBuffer = await response.arrayBuffer()
     writeFileSync(result.filePath, Buffer.from(arrayBuffer))
     return { ok: true, path: result.filePath }

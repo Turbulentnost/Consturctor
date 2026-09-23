@@ -1762,6 +1762,76 @@ input {
 }
 
 /* ---------- Regulation AI chat ---------- */
+.kpi-build-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--content-muted);
+}
+
+.kpi-build-stages li.is-active {
+  color: #1565c0;
+  font-weight: 650;
+}
+
+.kpi-build-page.regchat-page {
+  height: 100%;
+  min-height: 0;
+}
+
+.kpi-build-page .regchat-scroll .feed-root,
+.kpi-build-page .agent-feed {
+  margin-top: 8px;
+}
+
+.kpi-build-page .agent-feed,
+.agent-feed--embed {
+  flex: 0 0 auto;
+  min-height: unset;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  max-width: 760px;
+}
+
+.kpi-build-page .regchat-composer {
+  flex: 0 0 auto;
+}
+
+.kpi-build-page .regchat-input-row textarea {
+  min-height: 46px;
+  max-height: 72px;
+}
+
+.kpi-build-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  padding: 10px 16px;
+  border-radius: 16px;
+  border-top-left-radius: 4px;
+  background: #e8f1fb;
+  color: #0d3b73;
+  font-size: 14px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kpi-build-live.is-wait {
+  background: #fff6e5;
+  color: #8a5a00;
+  white-space: normal;
+  flex-wrap: wrap;
+}
+
 .regchat-page {
   display: flex;
   flex-direction: column;

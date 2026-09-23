@@ -13,7 +13,7 @@ from app.models.position_kpi import (
 )
 
 SOURCE_CODE = "PL-NPO-010"
-SOURCE_VERSION = "06"
+SOURCE_VERSION = "08"
 SOURCE_TITLE = "Положение о материальном стимулировании работников управления делами"
 EFFECTIVE_FROM = date(2026, 3, 1)
 DEPARTMENT = "Управление делами"
@@ -136,21 +136,42 @@ CATALOG: list[dict[str, Any]] = [
                         "role": "fact",
                         "kind": "outlook",
                         "title": "Заседания СД и РК",
-                        "detail": "Zвсего — число заседаний СД+РК за период. T — дата заседания.",
+                        "detail": (
+                            "Zвсего — заседания СД+РК из календаря «Совещания», "
+                            "у которых уже наступил срок пакета T−2. "
+                            "К каждому совещанию ищем предыдущий протокол той же серии."
+                        ),
                         "update_rule": "Раз в месяц по итогам периода.",
                         "extra_json": {
                             "var": "z_total",
                             "legend": "Zвсего",
                             "filters": ["совет директоров", "СД", "ревизион", "РК"],
+                            "module": "kpi.sources.sd_rk_packages",
+                            "folder": "Совещания",
                         },
                     },
                     {
                         "role": "fact",
-                        "kind": "files",
-                        "title": "Рассылка пакета",
-                        "detail": "Zвовремя — пакет разослан не позднее T−2 рабочих дня.",
+                        "kind": "onec",
+                        "title": "Предыдущий протокол Закрыт / НаИсполнении",
+                        "detail": (
+                            "Когда протокол в статусе «Закрыт» или «НаИсполнении», "
+                            "по нему уже рассылают материалы. "
+                            "Zвовремя — дата предыдущего протокола той же серии "
+                            "не позже T−2 рабочих дня до следующего совещания в Outlook. "
+                            "Черновик «Подготовлен» не считается. Дату берём из Date."
+                        ),
                         "update_rule": "Раз в месяц по итогам периода.",
-                        "extra_json": {"var": "z_on_time", "legend": "Zвовремя", "deadline": "T-2d"},
+                        "extra_json": {
+                            "var": "z_on_time",
+                            "legend": "Zвовремя",
+                            "deadline": "T-2d",
+                            "module": "kpi.sources.sd_rk_packages",
+                            "entity": "Document_ТД_Протокол",
+                            "ready_field": "Date",
+                            "ready_status": ["Закрыт", "НаИсполнении"],
+                            "match": "previous_protocol_same_series",
+                        },
                     },
                 ],
             ),
@@ -172,9 +193,18 @@ CATALOG: list[dict[str, Any]] = [
                         "role": "fact",
                         "kind": "outlook",
                         "title": "Заседания СД и РК",
-                        "detail": "Pвсего — число заседаний, по которым уже наступил срок протокола T+2.",
+                        "detail": (
+                            "Pвсего — заседания СД+РК из календаря «Совещания», "
+                            "у которых уже наступил срок протокола T+2. "
+                            "Напоминания секретаря про повестку не считаем."
+                        ),
                         "update_rule": "Раз в месяц по итогам периода.",
-                        "extra_json": {"var": "p_total", "legend": "Pвсего"},
+                        "extra_json": {
+                            "var": "p_total",
+                            "legend": "Pвсего",
+                            "module": "kpi.sources.sd_rk_protocols",
+                            "folder": "Совещания",
+                        },
                     },
                     {
                         "role": "fact",
@@ -182,7 +212,13 @@ CATALOG: list[dict[str, Any]] = [
                         "title": "Протокол",
                         "detail": "Pвовремя — протокол выпущен не позднее T+2 рабочих дня.",
                         "update_rule": "Раз в месяц по итогам периода.",
-                        "extra_json": {"var": "p_on_time", "legend": "Pвовремя", "deadline": "T+2d"},
+                        "extra_json": {
+                            "var": "p_on_time",
+                            "legend": "Pвовремя",
+                            "deadline": "T+2d",
+                            "module": "kpi.sources.sd_rk_protocols",
+                            "entity": "Document_ТД_Протокол",
+                        },
                     },
                     {
                         "role": "fact",
@@ -190,7 +226,12 @@ CATALOG: list[dict[str, Any]] = [
                         "title": "Документ протокола в 1С",
                         "detail": "Дополнительный источник факта появления протокола.",
                         "update_rule": "Раз в месяц по итогам периода.",
-                        "extra_json": {"var": "p_on_time", "legend": "Pвовремя"},
+                        "extra_json": {
+                            "var": "p_on_time",
+                            "legend": "Pвовремя",
+                            "module": "kpi.sources.sd_rk_protocols",
+                            "entity": "Document_ТД_Протокол",
+                        },
                     },
                 ],
             ),
@@ -226,25 +267,63 @@ CATALOG: list[dict[str, Any]] = [
                 },
                 formula_human=(
                     "Факт = min(KPI3.1, KPI3.2). "
-                    "KPI3.1 = R24 / Rвсего: поручение в реестре за 24 часа. "
-                    "KPI3.2 = Rконтроль / Rактив: активное поручение обновлено не реже раза в 7 дней. "
+                    "KPI3.1 = R24 / Rвсего × 100%. "
+                    "KPI3.2 = Rконтроль / Rактив × 100%. "
                     "Цель ≥ 95%. Если факт ≥ 95% → 100%, иначе (факт / 95%) × 100%."
                 ),
                 plan_value=95,
                 sources=[
                     {
                         "role": "fact",
-                        "kind": "onec",
-                        "title": "Реестр поручений СД и РК",
+                        "kind": "files",
+                        "title": "Action Tracker",
                         "detail": (
-                            "Rвсего — все поручения/предписания. "
-                            "R24 — внесены в реестр корректно в течение 24 часов. "
-                            "Rактив — активные. Rконтроль — обновлены не реже раза в 7 дней."
+                            "Факт месяца — номера из 1С есть в ActionTracker.xlsx агента. "
+                            "Rвсего = протоколы ПСД + поручения АСТ00 с Date в периоде. "
+                            "R24 — строка с этим номером есть в Excel, поручение заполнено, ≤24 часа. "
+                            "Протокол в Excel считается внесённым. "
+                            "Rактив — открытые поручения 1С."
                         ),
-                        "update_rule": "Раз в месяц, оперативно чаще.",
+                        "update_rule": "По снимку файла после ежедневного прогона агента.",
                         "extra_json": {
-                            "vars": ["r24", "r_total", "r_control", "r_active"],
-                            "legend": ["R24", "Rвсего", "Rконтроль", "Rактив"],
+                            "vars": ["r_total", "r_active"],
+                            "legend": ["Rвсего", "Rактив"],
+                            "module": "kpi.sources.sd_rk_instructions",
+                            "file": "ActionTracker.xlsx",
+                            "sheet": "Action Tracker",
+                            "filters": ["ПСД", "РК", "совет директоров", "ревизион"],
+                            "columns": {
+                                "id": "ID",
+                                "source": "Источник",
+                                "decided": "Дата решения",
+                                "text": "Поручение (результат/артефакт)",
+                                "owner": "Владелец",
+                                "due": "Срок",
+                                "status": "Статус",
+                                "evidence": "Ссылка на результат/документы",
+                            },
+                        },
+                    },
+                    {
+                        "role": "fact",
+                        "kind": "onec",
+                        "title": "Карточка поручения в 1С",
+                        "detail": (
+                            "Источник трекера = Number Document_ТД_Поручения. "
+                            "R24 — Date карточки не позже 24 часов после «Даты решения», "
+                            "заполнены поручение, владелец, срок. "
+                            "Rконтроль — вложение с ДатаСоздания или "
+                            "ДатаЕженедельногоОтчетаОВыполненииМероприятий не старше 7 дней. "
+                            "Пустая ссылка в Excel без даты не считается контролем."
+                        ),
+                        "update_rule": "Раз в месяц по итогам периода; оперативно чаще.",
+                        "extra_json": {
+                            "vars": ["r24", "r_control"],
+                            "legend": ["R24", "Rконтроль"],
+                            "module": "kpi.sources.sd_rk_instructions",
+                            "entity": "Document_ТД_Поручения",
+                            "deadline": "24h",
+                            "control_window": "7d",
                         },
                     },
                 ],
@@ -266,29 +345,29 @@ CATALOG: list[dict[str, Any]] = [
                     "cap": 100,
                 },
                 formula_human=(
-                    "Факт = 1 − Vоши / Vвсего. Цель ≥ 98% или не более 1 случая в квартал. "
-                    "Если цель выполнена → 100%, иначе (факт / 98%) × 100%, не больше 100%."
+                    "В карточке Document_ТД_Протокол нет поля возврата. "
+                    "Протоколы Ильченко считаем без возвратов: Vоши = 0. "
+                    "Если Vвсего > 0 → факт 100%."
                 ),
                 plan_value=98,
                 sources=[
                     {
                         "role": "fact",
                         "kind": "onec",
-                        "title": "Возвраты пакетов и протоколов",
-                        "detail": "Vоши — возврат на исправление по вине секретаря. Vвсего — все пакеты/протоколы.",
+                        "title": "Протоколы Ильченко без возвратов",
+                        "detail": (
+                            "Vвсего — протоколы СД/РК, которые создавала Ильченко. "
+                            "Vоши = 0: в 1С нет поля возврата, все её протоколы считаем принятыми."
+                        ),
                         "update_rule": "Раз в месяц / квартал.",
                         "extra_json": {
                             "vars": ["v_errors", "v_total"],
                             "legend": ["Vоши", "Vвсего"],
+                            "module": "kpi.sources.sd_rk_quality",
+                            "entity": "Document_ТД_Протокол",
+                            "returns_assumed_zero": True,
+                            "author": "ilchenko",
                         },
-                    },
-                    {
-                        "role": "fact",
-                        "kind": "agent_runs",
-                        "title": "События возврата в запусках агента",
-                        "detail": "Дополнительный признак returned / на доработке.",
-                        "update_rule": "Раз в месяц.",
-                        "extra_json": {"event_types": ["returned"]},
                     },
                 ],
             ),
@@ -324,10 +403,7 @@ CATALOG: list[dict[str, Any]] = [
                         ),
                         "update_rule": "Раз в расчётный месяц.",
                         "extra_json": {
-                            "module": "kpi.sources.onec_meetings",
-                            "leader": "Донцова Анна Егоровна",
-                            "theme_entity": "Catalog_ТД_ТемыСовещаний",
-                            "fact_entity": "Document_ТД_Протокол",
+                            "loader": "odata",
                         },
                     }
                 ],
@@ -502,6 +578,18 @@ def _upsert(db: Session, model, item_id: str, **values: Any) -> None:
         setattr(row, key, value)
 
 
+def _profile_for_position(db: Session, position: str) -> PositionKpiProfile | None:
+    from app.services.position_kpi.daily import resolve_profile
+
+    return resolve_profile(db, position)
+
+
+def _profile_for_position(db: Session, position: str) -> PositionKpiProfile | None:
+    from app.services.position_kpi.daily import resolve_profile
+
+    return resolve_profile(db, position)
+
+
 def upsert_catalog(db: Session) -> list[str]:
     """Idempotent seed: четыре должности из ПЛ-НПО-010."""
     ids: list[str] = []
@@ -512,6 +600,9 @@ def upsert_catalog(db: Session) -> list[str]:
     for item in CATALOG:
         profile_id = str(item["id"])
         ids.append(profile_id)
+        occupied = _profile_for_position(db, str(item["position_name"]))
+        if occupied is not None and occupied.id != profile_id:
+            continue
         _upsert(
             db,
             PositionKpiProfile,

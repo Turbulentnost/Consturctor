@@ -20,6 +20,7 @@ def test_is_calendar_control_agent() -> None:
     assert not is_calendar_control_agent("Подготовка заседаний Совета директоров", "ПЛ-34-242")
     assert not is_calendar_control_agent("Подготовка заседаний Ревизионной комиссии", "ПЛ-01-001")
     assert not is_calendar_control_agent("Проверка артефактов и предложение поручений к закрытию")
+    assert not is_calendar_control_agent("Ежедневный контроль поручений по 1С ERP и Excel")
 
 
 def test_calendar_control_schedule_has_morning_and_evening() -> None:

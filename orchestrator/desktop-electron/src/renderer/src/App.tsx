@@ -39,6 +39,7 @@ import { MeetingsGridTab } from './tabs/grid/MeetingsGridTab'
 import { KnowledgeGridTab } from './tabs/grid/KnowledgeGridTab'
 import { TodayGridTab } from './tabs/grid/TodayGridTab'
 import { KpiGridTab } from './tabs/grid/KpiGridTab'
+import { PositionKpiBuildPage } from './pages/PositionKpiBuildPage'
 import { DecisionsGridTab } from './tabs/grid/DecisionsGridTab'
 import { HistoryGridTab } from './tabs/grid/HistoryGridTab'
 import { RunProvider, useRuns } from './store/runs'
@@ -98,6 +99,7 @@ type View =
   | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'schedule'; workflowId: string; title: string; published?: boolean }
+  | { kind: 'kpi-build'; position: string; buildId?: string }
 
 function decodeJwtPart(part: string): string {
   const normalized = part.replace(/-/g, '+').replace(/_/g, '/')
@@ -157,6 +159,7 @@ function windowTitle(view: View, signedIn: boolean): string {
   if (view.kind === 'agentrun') return `${view.title || 'Запуск'} — ${APP_TITLE}`
   if (view.kind === 'history') return `История: ${view.title || 'агент'} — ${APP_TITLE}`
   if (view.kind === 'schedule') return `Расписание: ${view.title || 'агент'} — ${APP_TITLE}`
+  if (view.kind === 'kpi-build') return `Методика KPI — ${APP_TITLE}`
   return APP_TITLE
 }
 
@@ -891,7 +894,17 @@ function AppShell(): React.JSX.Element {
       case 'decisions':
         return <DecisionsGridTab user={activeUser} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
       case 'kpi':
-        return <KpiGridTab user={activeUser} onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
+        return (
+          <KpiGridTab
+            user={activeUser}
+            onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })}
+            onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })}
+            onUploadMethodology={(position) => {
+              setLastTab('kpi')
+              setView({ kind: 'kpi-build', position: position || activeUser.position || '' })
+            }}
+          />
+        )
       case 'knowledge':
         return <KnowledgeGridTab user={activeUser} />
       case 'history':
@@ -945,6 +958,16 @@ function AppShell(): React.JSX.Element {
     if (view.kind === 'schedule') {
       return <AgentSchedulePage workflowId={view.workflowId} title={view.title} published={Boolean(view.published)} onBack={() => setView({ kind: 'tab', key: lastTab })} onNext={() => setView({ kind: 'tab', key: lastTab })} />
     }
+    if (view.kind === 'kpi-build') {
+      return (
+        <PositionKpiBuildPage
+          position={view.position}
+          buildId={view.buildId}
+          onBack={() => setView({ kind: 'tab', key: 'kpi' })}
+          onReady={() => setView({ kind: 'tab', key: 'kpi' })}
+        />
+      )
+    }
     return (
       <SettingsTab
         user={activeUser}
@@ -969,16 +992,19 @@ function AppShell(): React.JSX.Element {
     (view.kind === 'history' ||
       view.kind === 'agentrun' ||
       view.kind === 'passport' ||
-      view.kind === 'schedule')
+      view.kind === 'schedule' ||
+      view.kind === 'kpi-build')
   const tabKey = workplaceGrid && view.kind === 'tab' ? view.key : null
   const workplaceShellKey: WorkplaceTabKey | null = tabKey
     ? tabKey
     : workplaceSubpage
       ? view.kind === 'history'
         ? 'history'
-        : isWorkplaceTabKey(lastTab)
-          ? lastTab
-          : 'today'
+        : view.kind === 'kpi-build'
+          ? 'kpi'
+          : isWorkplaceTabKey(lastTab)
+            ? lastTab
+            : 'today'
       : null
   const content = isAdminMode ? renderAdminContent() : renderUserContent()
   // #region agent log
@@ -1033,7 +1059,7 @@ function AppShell(): React.JSX.Element {
                 renderUserContent()
               )}
             </OrchGridShell>
-            {view.kind === 'chat' || view.kind === 'agentrun' ? null : (
+            {view.kind === 'chat' || view.kind === 'agentrun' || view.kind === 'kpi-build' ? null : (
               <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
             )}
           </div>
@@ -1079,7 +1105,7 @@ function AppShell(): React.JSX.Element {
                 {content}
               </div>
             </main>
-            {view.kind === 'chat' || view.kind === 'agentrun' ? null : (
+            {view.kind === 'chat' || view.kind === 'agentrun' || view.kind === 'kpi-build' ? null : (
               <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
             )}
           </div>

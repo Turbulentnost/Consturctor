@@ -14,6 +14,11 @@ from app.services.workflows.calendar_control_playbook import (
     apply_calendar_control_plan_runtime,
     is_calendar_control_agent,
 )
+from app.services.workflows.daily_assignment_playbook import (
+    apply_daily_assignment_config,
+    apply_daily_assignment_plan_runtime,
+    is_daily_assignment_agent,
+)
 from app.services.workflows.rk_meeting_playbook import (
     apply_rk_config,
     apply_rk_plan_runtime,
@@ -32,6 +37,7 @@ def is_meeting_agent(*parts: str) -> bool:
         is_artifact_close_agent(blob)
         or is_rk_meeting_agent(blob)
         or is_sd_meeting_agent(blob)
+        or is_daily_assignment_agent(blob)
         or is_calendar_control_agent(blob)
     )
 
@@ -74,6 +80,9 @@ def apply_meeting_agent_config(
     local = apply_sd_config(local, title=title, notes=notes)
     if is_sd_meeting_agent(title, notes):
         return local
+    local = apply_daily_assignment_config(local, title=title, notes=notes)
+    if is_daily_assignment_agent(title, notes):
+        return local
     return apply_calendar_control_config(local, title=title, notes=notes)
 
 
@@ -91,5 +100,8 @@ def apply_meeting_plan_runtime(
         return plan
     plan = apply_sd_plan_runtime(plan, title=title, notes=notes)
     if is_sd_meeting_agent(title, notes, (plan or {}).get("goal") or ""):
+        return plan
+    plan = apply_daily_assignment_plan_runtime(plan, title=title, notes=notes)
+    if is_daily_assignment_agent(title, notes, (plan or {}).get("goal") or ""):
         return plan
     return apply_calendar_control_plan_runtime(plan, title=title, notes=notes)

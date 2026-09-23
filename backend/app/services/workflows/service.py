@@ -434,6 +434,10 @@ def _validate_and_store_draft(
     )
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_playbook_draft
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_playbook_draft
+    from app.services.workflows.daily_assignment_playbook import (
+        daily_assignment_playbook_draft,
+        is_daily_assignment_agent,
+    )
 
     _fill_when_to_run_from_materials(row, draft)
     allow_web = regulation_allows_web(_regulation_blob(row))
@@ -464,6 +468,16 @@ def _validate_and_store_draft(
             **seed,
             **enriched,
             "steps": enriched.get("steps") or seed["steps"],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
+    elif is_daily_assignment_agent(row.title or "", row.notes or "", blob):
+        seed = daily_assignment_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": seed["steps"],
+            "run_inputs": [],
             "runtime": seed.get("runtime") or enriched.get("runtime"),
         }
         enriched = attach_tool_candidates(enriched, allow_web=allow_web)
@@ -2614,6 +2628,10 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
     )
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_runtime_tools
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_runtime_tools
+    from app.services.workflows.daily_assignment_playbook import (
+        daily_assignment_runtime_tools,
+        is_daily_assignment_agent,
+    )
 
     collected = collect_runtime_whitelist(
         row=row,
@@ -2647,6 +2665,9 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
 
     if kind == "board_meeting" or is_sd_meeting_agent(blob):
         return sd_runtime_tools()
+
+    if is_daily_assignment_agent(blob):
+        return daily_assignment_runtime_tools()
 
     if kind == "calendar_control" or is_calendar_control_agent(blob):
         return calendar_control_runtime_tools()

@@ -44,3 +44,21 @@ def test_read_pdf_bytes_ocr_fallback_when_empty(monkeypatch: pytest.MonkeyPatch)
         with patch("app.services.regulation.pdf_ocr.extract_pdf_scan", return_value=_Extracted()):
             text = _read_pdf_bytes(raw)
     assert "OCR line from scan" in text
+
+
+def test_read_pdf_bytes_skips_ocr_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    try:
+        import fitz
+    except ImportError:
+        pytest.skip("pymupdf not installed")
+
+    doc = fitz.open()
+    doc.new_page()
+    raw = doc.tobytes()
+    doc.close()
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("LM Studio OCR must not run")
+
+    monkeypatch.setattr("app.services.regulation.pdf_ocr.extract_pdf_scan", boom)
+    assert _read_pdf_bytes(raw, ocr=False) == ""

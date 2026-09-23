@@ -31,7 +31,7 @@ CLOSED_STATUSES = {
 
 _GUID_EMPTY = "00000000-0000-0000-0000-000000000000"
 _FILE_LIST_SELECT = (
-    "Ref_Key,Description,Subject,Расширение,Размер,ПутьКФайлу,"
+    "Ref_Key,Description,Расширение,Размер,ПутьКФайлу,"
     "ДатаСоздания,ВладелецФайла_Key"
 )
 
@@ -413,6 +413,47 @@ def _fetch_files_map(ref_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
     return out
 
 
+def _arg_flag(value: Any, default: bool | None = None) -> bool | None:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "да", "истина"}:
+        return True
+    if text in {"0", "false", "no", "нет", "ложь", ""}:
+        return False
+    return default
+
+
+_ASSIGNMENT_PAGE = 100
+
+
+def _odata_assignment_pages(
+    filt: str,
+    *,
+    top: int,
+    full_journal: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    if not full_journal:
+        result = _odata_get({"entity": ASSIGNMENT_ENTITY, "top": top, "filter": filt})
+        rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+        return rows, False
+    rows: list[dict[str, Any]] = []
+    skip = 0
+    while len(rows) < top:
+        take = min(_ASSIGNMENT_PAGE, top - len(rows))
+        result = _odata_get(
+            {"entity": ASSIGNMENT_ENTITY, "top": take, "skip": skip, "filter": filt}
+        )
+        batch = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+        rows.extend(batch)
+        if len(batch) < take:
+            return rows, False
+        skip += len(batch)
+    return rows, True
+
+
 def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
     customer = str(args.get("customer") or args.get("zakazchik") or args.get("fio") or "").strip()
     customer_key = str(args.get("customer_key") or args.get("Руководитель_Key") or "").strip()
@@ -425,20 +466,28 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
     query = str(args.get("query") or args.get("topic") or "").strip()
     date_from = _parse_day(str(args.get("date_from") or ""))
     date_to = _parse_day(str(args.get("date_to") or ""), end=True)
-    only_open = args.get("only_open")
-    include_day = args.get("include_last_day")
+    only_open_flag = _arg_flag(args.get("only_open"))
+    include_day = _arg_flag(args.get("include_last_day"))
+    include_all = _arg_flag(args.get("include_all")) is True
+    full_journal = include_all or only_open_flag is False
     changed_since = None
     open_only = False
-    if date_from is None and date_to is None:
-        if only_open is True and include_day is False:
+    if full_journal:
+        open_only = False
+        changed_since = None
+    elif date_from is None and date_to is None:
+        if only_open_flag is True and include_day is False:
             open_only = True
-        elif only_open is True and include_day is not True:
+        elif only_open_flag is True and include_day is not True:
             open_only = True
         else:
             changed_since = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    elif only_open is True:
+    elif only_open_flag is True:
         open_only = True
-    top = max(1, min(int(args.get("limit") or args.get("top") or 40), 100))
+    if full_journal:
+        top = 2000
+    else:
+        top = max(1, min(int(args.get("limit") or args.get("top") or 40), 100))
     include_files = bool(args.get("include_files"))
     filt = build_assignment_filter(
         customer_key=customer_key,
@@ -449,8 +498,8 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         only_open=open_only,
         changed_since=changed_since,
     )
-    result = _odata_get({"entity": ASSIGNMENT_ENTITY, "top": top, "filter": filt})
-    raw_rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+    raw_rows, truncated = _odata_assignment_pages(filt, top=top, full_journal=full_journal)
+    result = {"source": "odata"}
     _attach_missing_lines(raw_rows)
     file_map = (
         _fetch_files_map([str(row.get("Ref_Key") or "") for row in raw_rows])
@@ -474,6 +523,7 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         "filter": filt,
         "count": len(items),
         "assignments": items,
+        "truncated": truncated,
         "source": result.get("source") or "odata",
     }
     if not items:
@@ -642,25 +692,46 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _list_protocols(args: dict[str, Any]) -> dict[str, Any]:
-    date_from = _parse_day(str(args.get("date_from") or "")) or (
-        datetime.now() - timedelta(days=14)
-    )
+    psd_mark = _arg_flag(args.get("psd_mark") if "psd_mark" in args else args.get("psd_only")) is True
+    raw_from = str(args.get("date_from") or "").strip()
+    date_from = _parse_day(raw_from)
+    if date_from is None and not psd_mark:
+        date_from = datetime.now() - timedelta(days=14)
     date_to = _parse_day(str(args.get("date_to") or ""), end=True)
     number = str(args.get("number") or "").strip()
-    top = max(1, min(int(args.get("limit") or 10), 50))
-    parts = [
-        "DeletionMark eq false",
-        f"Date ge datetime'{_odata_datetime(date_from)}'",
-    ]
+    filt_parts = ["DeletionMark eq false"]
+    if date_from is not None:
+        filt_parts.append(f"Date ge datetime'{_odata_datetime(date_from)}'")
     if date_to is not None:
-        parts.append(f"Date le datetime'{_odata_datetime(date_to)}'")
+        filt_parts.append(f"Date le datetime'{_odata_datetime(date_to)}'")
     if number:
-        parts.append(f"Number eq '{number.replace(chr(39), chr(39)+chr(39))}'")
-    result = _odata_get({"entity": PROTOCOL_ENTITY, "top": top, "filter": " and ".join(parts)})
+        filt_parts.append(f"Number eq '{number.replace(chr(39), chr(39)+chr(39))}'")
+    elif psd_mark:
+        filt_parts.append("startswith(Number,'ПСД')")
+    filt = " and ".join(filt_parts)
+    truncated = False
+    raw_rows: list[dict[str, Any]] = []
+    if psd_mark and not number:
+        skip = 0
+        cap = 2000
+        while len(raw_rows) < cap:
+            take = min(100, cap - len(raw_rows))
+            result = _odata_get(
+                {"entity": PROTOCOL_ENTITY, "top": take, "skip": skip, "filter": filt}
+            )
+            batch = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+            raw_rows.extend(batch)
+            if len(batch) < take:
+                break
+            skip += len(batch)
+        else:
+            truncated = True
+    else:
+        top = max(1, min(int(args.get("limit") or 10), 100))
+        result = _odata_get({"entity": PROTOCOL_ENTITY, "top": top, "filter": filt})
+        raw_rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
     items = []
-    for row in result.get("value") or []:
-        if not isinstance(row, dict):
-            continue
+    for row in raw_rows:
         decisions = row.get("Решения")
         if not isinstance(decisions, list):
             parts_map = row.get("tabular_parts")
@@ -682,6 +753,8 @@ def _list_protocols(args: dict[str, Any]) -> dict[str, Any]:
         "entity": PROTOCOL_ENTITY,
         "count": len(items),
         "protocols": items,
+        "psd_mark": psd_mark,
+        "truncated": truncated,
         "source": result.get("source") or "odata",
     }
 

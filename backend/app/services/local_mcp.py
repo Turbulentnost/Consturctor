@@ -223,6 +223,7 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "Логика списка как в форме 1С: РК — номера с префиксом «РК», "
                 "СД — «ПСД» (основной), также «СПГ»/«СД». По умолчанию — черновики на проверку "
                 "(Posted=false или Статус=«Подготовлен»). "
+                "psd_mark=true — только пометка ПСД (номер ПСД*), все статусы, включая закрытые. "
                 "meeting_kind: rk или sd. date или date_from/date_to — период."
             ),
             "execution": "server",
@@ -241,6 +242,14 @@ def _raw_tools() -> list[dict[str, Any]]:
                         "boolean",
                         "Только на проверку (Posted=false или Подготовлен). По умолчанию true",
                         default=True,
+                    ),
+                    "psd_mark": _prop(
+                        "boolean",
+                        "Только протоколы с пометкой ПСД (номер начинается с ПСД)",
+                    ),
+                    "include_closed": _prop(
+                        "boolean",
+                        "Включать закрытые. Для psd_mark по умолчанию true",
                     ),
                     "max_results": _prop("integer", "Максимум протоколов, не больше 100"),
                 },
@@ -414,9 +423,11 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "Это и есть проверка поручений: агент сам читает журнал, "
                 "задачи 1С «Проверить поручение» нет. "
                 "Заказчик в 1С — реквизит Руководитель, не текущий пользователь. "
-                "action=list: открытые + за сегодня, фильтр customer=ФИО. "
+                "action=list: по умолчанию открытые + за сегодня, фильтр customer=ФИО. "
+                "include_all=true — все статусы, без отсечения «только открытые/сегодня». "
                 "action=get: карточка по number (АСТ00-00093) со строками и файлами. "
                 "action=files / download / tasks / protocols. "
+                "action=protocols + psd_mark=true — только протоколы с номером ПСД*. "
                 "Содержимое файла: onec.download_artifact с file_id из action=files. "
                 "Не выдумывай ACT латиницей — номер кириллический АСТ. "
                 "Сервер, OData."
@@ -437,10 +448,18 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "date_from": _prop("string", "YYYY-MM-DD"),
                     "date_to": _prop("string", "YYYY-MM-DD"),
                     "only_open": _prop("boolean", "Только статусы Создано/ВРаботе"),
+                    "include_all": _prop(
+                        "boolean",
+                        "Все поручения, без фильтра открытые/сегодня",
+                    ),
                     "include_last_day": _prop(
                         "boolean",
                         "По умолчанию открытые плюс все за сегодня",
                         default=True,
+                    ),
+                    "psd_mark": _prop(
+                        "boolean",
+                        "Для action=protocols: только номера, которые начинаются с ПСД",
                     ),
                     "include_files": _prop("boolean", "Для list сразу вернуть файлы", default=False),
                     "file_id": _prop("string", "GUID вложения для action=download"),
@@ -994,12 +1013,12 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "command": _prop("string", "Команда PowerShell без выхода из папки агента"),
             "timeout_seconds": _prop("integer", "Таймаут выполнения"),
         }),
-        ("code.write_python", "Сохранить .py в папку code агента.", {
+        ("code.write_python", "Сохранить .py в папку code. Для KPI: generated/<slug>.py и tests/test_<slug>.py в корне workspace.", {
             "code": _prop("string", "Текст программы Python"),
-            "filename": _prop("string", "Имя файла, например script.py"),
+            "filename": _prop("string", "script.py, generated/<slug>.py или tests/test_<slug>.py"),
         }),
-        ("code.run_python", "Запустить .py из папки агента.", {
-            "filename": _prop("string", "Имя файла из папки code"),
+        ("code.run_python", "Запустить .py из папки агента. tests/test_<slug>.py гоняется через pytest.", {
+            "filename": _prop("string", "Файл из code/ или tests/test_<slug>.py"),
             "code": _prop("string", "Либо сам код, если файла ещё нет"),
             "timeout_seconds": _prop("integer", "Таймаут выполнения"),
         }),

@@ -21,7 +21,14 @@ def is_calendar_control_agent(*parts: str) -> bool:
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent
 
-    if is_artifact_close_agent(blob) or is_rk_meeting_agent(blob) or is_sd_meeting_agent(blob):
+    from app.services.workflows.daily_assignment_playbook import is_daily_assignment_agent
+
+    if (
+        is_artifact_close_agent(blob)
+        or is_rk_meeting_agent(blob)
+        or is_sd_meeting_agent(blob)
+        or is_daily_assignment_agent(blob)
+    ):
         return False
     return any(hint in blob for hint in _TITLE_HINTS)
 

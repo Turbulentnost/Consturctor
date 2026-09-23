@@ -85,7 +85,7 @@ def load_attachment_bytes(name: str, raw: bytes, *, ocr: bool = True) -> dict:
         )
     if suffix == ".pdf":
         try:
-            text = _read_pdf_bytes(raw)
+            text = _read_pdf_bytes(raw, ocr=ocr)
         except DocumentError:
             text = ""
         if not text.strip() and ocr:
@@ -247,7 +247,7 @@ def _read_text_bytes(raw: bytes) -> str:
     raise DocumentError("Не удалось прочитать текстовый файл (кодировка).")
 
 
-def _read_pdf_bytes(raw: bytes) -> str:
+def _read_pdf_bytes(raw: bytes, *, ocr: bool = True) -> str:
     try:
         import fitz  # pymupdf
     except ImportError as exc:
@@ -259,7 +259,7 @@ def _read_pdf_bytes(raw: bytes) -> str:
     except Exception as exc:  # noqa: BLE001
         raise DocumentError(f"Не удалось разобрать PDF: {exc}") from exc
     text = "\n\n".join(parts).strip()
-    if len(text) >= 80:
+    if len(text) >= 80 or not ocr:
         return text
     ocr_text = _read_pdf_bytes_ocr(raw)
     if ocr_text.strip():

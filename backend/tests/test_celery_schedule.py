@@ -156,6 +156,13 @@ def test_celery_beat_includes_orchestrator_kpi() -> None:
     assert item["task"] == "app.tasks.scheduled.enqueue_due_orchestrator_kpi"
 
 
+def test_celery_beat_includes_position_kpi_daily() -> None:
+    from app.celery_app import celery_app
+
+    item = celery_app.conf.beat_schedule["refresh-position-kpi-daily"]
+    assert item["task"] == "app.tasks.scheduled.refresh_position_kpi_daily"
+
+
 def test_execute_scheduled_skips_paused() -> None:
     db = _session()
     user_id, workflow_id = _seed(db)

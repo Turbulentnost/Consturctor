@@ -41,6 +41,10 @@ import {
   type IntervalUnit,
   type AgentKpi,
   type PositionOrchestrator,
+  type PositionKpiDaily,
+  type PositionKpiTile,
+  type PositionKpiBuildMessage,
+  type PositionKpiBuildSession,
   type KpiTile,
   type KpiSide,
   type KpiMethod,
@@ -127,6 +131,11 @@ function isLocalAdminFio(value: string): boolean {
 }
 
 const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
+  {
+    needle: 'комарков',
+    position: 'Помощник руководителя',
+    department: 'Управление делами'
+  },
   {
     needle: 'мангасарян',
     position: 'Помощник Председателя совета директоров',
@@ -918,6 +927,76 @@ export function scheduleDraftFromRecord(
   return parseScheduleDraft(asRecord(raw))
 }
 
+function asNullableNumber(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+export function parsePositionKpiDaily(raw: Record<string, unknown> | null | undefined): PositionKpiDaily {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const tiles = ((data.tiles as Record<string, unknown>[]) ?? [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const row = asRecord(item)
+      return {
+        code: String(row.code ?? ''),
+        name: String(row.name ?? ''),
+        weight: asNullableNumber(row.weight) ?? 0,
+        unit: String(row.unit ?? '%'),
+        plan: asNullableNumber(row.plan),
+        fact: asNullableNumber(row.fact),
+        score: asNullableNumber(row.score),
+        contrib: asNullableNumber(row.contrib),
+        evidence: String(row.evidence ?? '')
+      } satisfies PositionKpiTile
+    })
+  return {
+    position: String(data.position ?? ''),
+    profileId: String(data.profile_id ?? data.profileId ?? ''),
+    periodFrom: String(data.period_from ?? data.periodFrom ?? ''),
+    periodTo: String(data.period_to ?? data.periodTo ?? ''),
+    asOf: String(data.as_of ?? data.asOf ?? ''),
+    computedAt: String(data.computed_at ?? data.computedAt ?? ''),
+    cached: Boolean(data.cached),
+    stale: Boolean(data.stale),
+    tiles
+  }
+}
+
+export function parsePositionKpiBuild(raw: Record<string, unknown> | null | undefined): PositionKpiBuildSession {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const messages = ((data.messages as Record<string, unknown>[]) ?? [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const row = asRecord(item)
+      return {
+        messageId: String(row.message_id ?? row.messageId ?? ''),
+        role: String(row.role ?? ''),
+        content: String(row.content ?? ''),
+        structured: asRecord(row.structured ?? row.structured_json),
+        createdAt: String(row.created_at ?? row.createdAt ?? '')
+      } satisfies PositionKpiBuildMessage
+    })
+  const modules = ((data.modules as Record<string, unknown>[]) ?? []).filter(
+    (item) => item && typeof item === 'object'
+  )
+  return {
+    buildId: String(data.build_id ?? data.buildId ?? ''),
+    position: String(data.position ?? ''),
+    status: String(data.status ?? ''),
+    cursorAgentId: String(data.cursor_agent_id ?? data.cursorAgentId ?? ''),
+    extracted: asRecord(data.extracted),
+    catalogDraft: asRecord(data.catalog_draft ?? data.catalogDraft),
+    modules,
+    profileId: String(data.profile_id ?? data.profileId ?? ''),
+    sdkPrompt: String(data.sdk_prompt ?? data.sdkPrompt ?? ''),
+    messages,
+    createdAt: String(data.created_at ?? data.createdAt ?? ''),
+    updatedAt: String(data.updated_at ?? data.updatedAt ?? '')
+  }
+}
+
 export function parsePositionOrchestrator(raw: Record<string, unknown> | null | undefined): PositionOrchestrator {
   const data = raw && typeof raw === 'object' ? raw : {}
   const tiles = ((data.tiles as Record<string, unknown>[]) ?? [])
@@ -1576,6 +1655,92 @@ export class ApiClient {
       { timeoutMs: 180_000 }
     )
     return parseAgentKpi(data ?? {})
+  }
+
+  async getPositionKpi(position = ''): Promise<PositionKpiDaily> {
+    const query = position.trim() ? `?position=${encodeURIComponent(position.trim())}` : ''
+    const data = await this.request<Record<string, unknown>>('GET', `/api/v1/position-kpi${query}`, {
+      timeoutMs: 60_000
+    })
+    return parsePositionKpiDaily(data ?? {})
+  }
+
+  async getPositionKpiSubject(fio: string): Promise<{ fio: string; position: string }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/subject', {
+      params: { fio: fio.trim() },
+      timeoutMs: 30_000
+    })
+    return {
+      fio: String(data.fio || fio).trim(),
+      position: String(data.position || '').trim()
+    }
+  }
+
+  async downloadPositionKpiForm(
+    fio: string,
+    from = '',
+    to = ''
+  ): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
+    const params = new URLSearchParams()
+    if (fio.trim()) params.set('fio', fio.trim())
+    if (from) params.set('from', from)
+    if (to) params.set('to', to)
+    const surname = fio.trim().split(/\s+/)[0] || 'сотрудник'
+    const stamp = (from || '').slice(0, 7) || 'period'
+    return window.api.download({
+      url: `/api/v1/position-kpi/bonus-form?${params.toString()}`,
+      defaultName: `ИЦПП_${surname}_${stamp}.xlsx`,
+      token: this.resolveToken()
+    })
+  }
+
+  async startPositionKpiBuild(position = ''): Promise<PositionKpiBuildSession> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/position-kpi/builds', {
+      body: { position },
+      timeoutMs: 60_000
+    })
+    return parsePositionKpiBuild(data ?? {})
+  }
+
+  async getPositionKpiBuild(buildId: string): Promise<PositionKpiBuildSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/position-kpi/builds/${buildId}`,
+      { timeoutMs: 60_000 }
+    )
+    return parsePositionKpiBuild(data ?? {})
+  }
+
+  async uploadPositionKpiBuildFiles(
+    buildId: string,
+    filePaths: string[]
+  ): Promise<PositionKpiBuildSession> {
+    let latest: PositionKpiBuildSession | null = null
+    for (const filePath of filePaths) {
+      const res = await window.api.upload<Record<string, unknown>>({
+        endpoint: `/api/v1/position-kpi/builds/${buildId}/files`,
+        filePath,
+        fieldName: 'files',
+        token: this.resolveToken(),
+        timeoutMs: 180_000
+      })
+      if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить методику', res.status)
+      latest = parsePositionKpiBuild(res.data ?? {})
+    }
+    if (!latest) throw new ApiError('Не удалось загрузить методику')
+    return latest
+  }
+
+  async sendPositionKpiBuildTurn(
+    buildId: string,
+    message: string
+  ): Promise<PositionKpiBuildSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/position-kpi/builds/${buildId}/turns`,
+      { body: { message }, timeoutMs: 120_000 }
+    )
+    return parsePositionKpiBuild(data ?? {})
   }
 
   async getOrchestrator(): Promise<PositionOrchestrator> {

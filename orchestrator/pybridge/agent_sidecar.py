@@ -447,6 +447,18 @@ ARTIFACT_CLOSE_HINT = (
     "Export Word, then ## WORK_RESULT. No 1C write without HITL."
 )
 
+DAILY_ASSIGNMENT_HINT = (
+    "This is the ACT00 journal plus PSD protocols into Action Tracker, "
+    "not artifact close and not an open-cards-only sync. "
+    "Call onec.erp_assignments action=list customer=Амураль Игорь Борисович "
+    "include_all=true only_open=false. Every status goes to the tracker. "
+    "Call onec.meeting_protocols meeting_kind=sd psd_mark=true review_only=false "
+    "include_closed=true. PSD mark means the number starts with ПСД; "
+    "the tool returns the whole series, including closed. "
+    "Write every returned assignment and every returned protocol into Action Tracker. "
+    "WORK_RESULT counts must equal the tool counts. Do not keep only open cards."
+)
+
 CALENDAR_CONTROL_HINT = (
     "This is calendar control / morning briefing, not a meeting-series job. "
     "Morning: users.current, outlook.read_calendar for today, outlook.search_mail once "
@@ -615,6 +627,21 @@ def _is_calendar_control_text(*parts: Any) -> bool:
 def _is_artifact_close_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _ARTIFACT_CLOSE_TIPS)
+
+
+def _is_daily_assignment_prompt(prompt: str) -> bool:
+    blob = (prompt or "").casefold().replace("ё", "е")
+    if _is_artifact_close_text(blob):
+        return False
+    return any(
+        tip in blob
+        for tip in (
+            "ежедневный контроль поручений",
+            "контроль поручений по 1с",
+            "аст00 и action tracker",
+            "action tracker",
+        )
+    )
 
 
 def _is_assignment_journal_text(*parts: Any) -> bool:
@@ -796,6 +823,8 @@ def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
         parts.append(CALENDAR_CONTROL_HINT)
     elif _is_artifact_close_text(prompt):
         parts.append(ARTIFACT_CLOSE_HINT)
+    elif _is_daily_assignment_prompt(prompt):
+        parts.append(DAILY_ASSIGNMENT_HINT)
     elif _is_sd_meeting_text(prompt):
         parts.append(SD_MEETING_HINT)
     elif _is_rk_text(prompt):

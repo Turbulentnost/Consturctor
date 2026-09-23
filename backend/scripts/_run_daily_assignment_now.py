@@ -18,11 +18,12 @@ REPO = BACKEND_ROOT.parent
 DESKTOP = REPO / "desktop"
 SIDECAR = REPO / "desktop-electron" / "pybridge" / "agent_sidecar.py"
 WORKFLOW_ID = "af314914-bb0a-4cb7-95e0-6ef87698d3f5"
-TIMEOUT_SEC = 900
+TIMEOUT_SEC = 1800
 RUN_MESSAGE = (
-    "Проверь журнал АСТ00 заказчика Амураль Игорь Борисович и доложи устно: "
-    "просрочки и список на сегодня. Повтори проверенную цепочку. "
-    "Запись в 1С не делай."
+    "Сними все поручения АСТ00 заказчика Амураль Игорь Борисович — все статусы, "
+    "не только открытые и просроченные. Сними протоколы только с пометкой ПСД "
+    "(номер ПСД_*). Запиши обе выборки в Action Tracker. "
+    "Повтори проверенную цепочку. Запись в 1С не делай."
 )
 EXCEL_WRITE = {"excel.create_workbook", "excel.edit_workbook"}
 ONEC_WRITE = {
@@ -116,13 +117,13 @@ def _decide_hitl(tool: str) -> bool:
 
 def _decide_answer(question: str) -> str:
     text = (question or "").casefold()
-    if any(word in text for word in ("запис", "закры", "исполн", "1с", "поручен")):
+    if any(word in text for word in ("запис", "закры", "исполн", "1с", "поручен")) and "трекер" not in text and "excel" not in text:
         return (
-            "Нет. Запись в 1С не нужна. Сделай устный доклад по журналу АСТ00 "
-            "заказчика Амураль Игорь Борисович."
+            "Нет. Запись в 1С не нужна. Запиши все поручения и протоколы ПСД "
+            "в Action Tracker и доложи устно."
         )
     if "excel" in text or "трекер" in text or "файл" in text:
-        return "Да, если файла нет — создай Action Tracker из списка журнала."
+        return "Да. Запиши в Action Tracker все поручения АСТ00 и все протоколы с пометкой ПСД."
     return (
         "Продолжай проверенную цепочку. Заказчик Амураль Игорь Борисович. "
         "Без задач, OCR и записи в 1С."

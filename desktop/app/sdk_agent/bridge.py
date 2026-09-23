@@ -18,6 +18,7 @@ from app.sdk_agent.prompt import strip_to_work_result
 from app.sdk_agent.tool_adapter import (
     invoke_sdk_tool,
     is_ask_question,
+    sdk_kpi_tool_specs,
     sdk_tool_specs,
     tool_timeout_seconds,
 )
@@ -31,6 +32,10 @@ REGULATION_SDK_MODEL_PARAMS = (
     {"id": "fast", "value": "true"},
 )
 REGULATION_SDK_QUESTION_PARAMS = (
+    {"id": "effort", "value": "low"},
+    {"id": "fast", "value": "true"},
+)
+KPI_SDK_MODEL_PARAMS = (
     {"id": "effort", "value": "low"},
     {"id": "fast", "value": "true"},
 )
@@ -50,6 +55,40 @@ class CursorSdkError(RuntimeError):
 
 class CursorSdkUnavailable(CursorSdkError):
     pass
+
+
+_TRANSIENT_SDK_MARKERS = (
+    "network request failed",
+    "cursor sdk run failed",
+    "econnreset",
+    "etimedout",
+    "socket hang up",
+    "fetch failed",
+    "database is locked",
+    "without result",
+    "завершился без результата",
+)
+
+
+def is_transient_cursor_error(exc: BaseException | str) -> bool:
+    blob = str(exc or "").casefold()
+    return any(token in blob for token in _TRANSIENT_SDK_MARKERS)
+
+
+def cursor_sdk_error_text(
+    *,
+    status: str,
+    answer: str,
+    error_events: list[str],
+    stderr: str = "",
+) -> str:
+    if (status or "").strip().casefold() != "error":
+        return ""
+    for item in (answer, *(error_events[-1:] if error_events else []), stderr.strip()):
+        text = str(item or "").strip()
+        if text:
+            return text
+    return "Cursor SDK run failed"
 
 
 SdkEventCallback = Callable[[dict[str, Any]], None]
@@ -219,6 +258,9 @@ class CursorSdkBridge:
         should_stop: Callable[[], bool] | None = None,
         confirm_writes: bool = False,
         restrict_builtins: bool = False,
+        images: list[dict[str, Any]] | None = None,
+        stop_on_kpi_list: bool = True,
+        kpi_allow_read: bool = False,
     ) -> dict[str, Any]:
         reload_cursor_api_key()
         self._ensure_ready()
@@ -260,6 +302,8 @@ class CursorSdkBridge:
                 run_params = list(model_params)
             elif interview:
                 run_params = [dict(item) for item in REGULATION_SDK_MODEL_PARAMS]
+            elif (mode or "").strip().casefold() == "kpi":
+                run_params = [dict(item) for item in KPI_SDK_MODEL_PARAMS]
             else:
                 run_params = []
             self._send(
@@ -271,17 +315,39 @@ class CursorSdkBridge:
                     "model": run_model,
                     "modelParams": run_params,
                     "cwd": run_cwd,
-                    "mode": "interview" if interview else "design" if mode == "design" else "run",
+                    "mode": (
+                        "interview"
+                        if interview
+                        else "design"
+                        if mode == "design"
+                        else "kpi"
+                        if (mode or "").strip().casefold() == "kpi"
+                        else "run"
+                    ),
                     "writeDocument": bool(write_document),
                     "useTools": bool(use_tools or write_document),
-                    "tools": sdk_tool_specs() if tools is None else tools,
+                    "tools": (
+                        sdk_kpi_tool_specs()
+                        if tools is None and (mode or "").strip().casefold() == "kpi"
+                        else sdk_tool_specs()
+                        if tools is None
+                        else tools
+                    ),
                     "resumeAgentId": agent_id or None,
                     "workflowId": workflow_id,
                     "restrictBuiltins": bool(restrict_builtins),
+                    "stopOnKpiList": bool(stop_on_kpi_list),
+                    "kpiAllowRead": bool(kpi_allow_read),
+                    "images": [
+                        item
+                        for item in (images or [])
+                        if isinstance(item, dict) and (item.get("path") or item.get("data"))
+                    ],
                 },
             )
             assert process.stdout is not None
             answer_parts: list[str] = []
+            error_events: list[str] = []
             for line in process.stdout:
                 payload = self._parse_line(line)
                 if not payload:
@@ -289,6 +355,10 @@ class CursorSdkBridge:
                 event_type = str(payload.get("type") or "")
                 if event_type == "ready":
                     continue
+                if event_type == "error":
+                    message = str(payload.get("message") or payload.get("error") or "").strip()
+                    if message:
+                        error_events.append(message)
                 if should_stop is not None and should_stop():
                     if event_type == "tool_request":
                         self._handle_tool_request(
@@ -374,7 +444,14 @@ class CursorSdkBridge:
             status = str(final.get("status") or "")
             answer = str(final.get("answer") or "") or "\n\n".join(answer_parts).strip()
             if status == "error":
-                raise CursorSdkError(answer or "Cursor SDK run failed")
+                raise CursorSdkError(
+                    cursor_sdk_error_text(
+                        status=status,
+                        answer=answer,
+                        error_events=error_events,
+                        stderr="\n".join(stderr_lines[-8:]),
+                    )
+                )
             if mode == "run":
                 answer = strip_to_work_result(answer)
             return {

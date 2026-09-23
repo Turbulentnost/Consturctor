@@ -136,11 +136,23 @@ async def lifespan(_app: FastAPI):
                     logger.exception("KPI scheduler tick failed")
                 await asyncio.sleep(60)
 
+        async def position_kpi_cache_scheduler() -> None:
+            from app.services.position_kpi.daily import run_daily_position_kpi_cache
+
+            await asyncio.sleep(25)
+            while True:
+                try:
+                    await asyncio.to_thread(run_daily_position_kpi_cache)
+                except Exception:
+                    logger.exception("Position KPI daily cache tick failed")
+                await asyncio.sleep(300)
+
         scheduler_tasks = [
             asyncio.create_task(notification_scheduler()),
             asyncio.create_task(board_live_subscriber()),
             asyncio.create_task(trigger_scheduler()),
             asyncio.create_task(kpi_scheduler()),
+            asyncio.create_task(position_kpi_cache_scheduler()),
         ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")

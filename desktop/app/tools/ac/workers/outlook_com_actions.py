@@ -1840,14 +1840,27 @@ def _collect_calendar_events(
 
         body = ""
         if include_body:
-            body = _safe_str(getattr(event, "Body", ""))[:CALENDAR_BODY_PREVIEW_LIMIT]
+            try:
+                body = _safe_str(getattr(event, "Body", ""))[:CALENDAR_BODY_PREVIEW_LIMIT]
+            except Exception:
+                body = ""
+        try:
+            entry_id = _safe_str(getattr(event, "EntryID", ""))
+        except Exception:
+            entry_id = ""
+        try:
+            subject = _safe_str(getattr(event, "Subject", ""))
+            location = _safe_str(getattr(event, "Location", ""))
+        except Exception as exc:
+            _log_progress(f"step=item_skip progress={checked_count}: {exc}")
+            continue
         events.append(
             {
-                "entry_id": _safe_str(getattr(event, "EntryID", "")),
-                "subject": _safe_str(getattr(event, "Subject", "")),
+                "entry_id": entry_id,
+                "subject": subject,
                 "start": _iso_com_datetime(event_start),
                 "end": _iso_com_datetime(event_end),
-                "location": _safe_str(getattr(event, "Location", "")),
+                "location": location,
                 "calendar_owner": calendar_owner,
                 "own_calendar": bool(own_calendar),
                 "organizer": _read_guarded_property(event, PR_SENT_REPRESENTING_NAME_W),

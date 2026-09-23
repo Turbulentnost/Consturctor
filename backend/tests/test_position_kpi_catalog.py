@@ -23,5 +23,26 @@ def test_psd_uses_regulation_deadlines():
     protocol = next(metric for metric in psd["metrics"] if metric["code"] == "protocol_on_time")
     assert protocol["plan_value"] == 95
     assert "T+2" in protocol["formula_human"]
+    assert any(
+        source.get("extra_json", {}).get("module") == "kpi.sources.sd_rk_protocols"
+        for source in protocol["sources"]
+    )
     package = next(metric for metric in psd["metrics"] if metric["code"] == "package_on_time")
     assert any(source.get("extra_json", {}).get("deadline") == "T-2d" for source in package["sources"])
+    assert any(
+        source.get("extra_json", {}).get("module") == "kpi.sources.sd_rk_packages"
+        for source in package["sources"]
+    )
+    instructions = next(metric for metric in psd["metrics"] if metric["code"] == "instructions")
+    assert instructions["formula_kind"] == "min_of"
+    assert any(
+        source.get("extra_json", {}).get("module") == "kpi.sources.sd_rk_instructions"
+        for source in instructions["sources"]
+    )
+    quality = next(metric for metric in psd["metrics"] if metric["code"] == "quality")
+    assert quality["formula_kind"] == "complement_ratio"
+    assert any(
+        source.get("extra_json", {}).get("module") == "kpi.sources.sd_rk_quality"
+        and source.get("extra_json", {}).get("returns_assumed_zero") is True
+        for source in quality["sources"]
+    )

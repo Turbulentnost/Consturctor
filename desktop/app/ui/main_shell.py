@@ -519,7 +519,7 @@ class MainShell(QWidget):
             activity_status=user.activity_status,
         )
         self._page_chat.set_user(user)
-        self._page_orchestrator.set_user(user.id, user.fio)
+        self._page_orchestrator.set_user(user.id, user.fio, user.position)
         self._sync_sidebar_dialogs()
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap

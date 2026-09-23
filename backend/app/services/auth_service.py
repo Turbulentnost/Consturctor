@@ -22,6 +22,7 @@ from app.config import settings
 from app.core.jwt import create_access_token
 from app.schemas.auth import LoginResponse, UserDirectoryItem, UserOut
 from app.services import app_users
+from app.services.profile_overrides import apply_profile_overrides
 from app.services.sessions import DEFAULT_CLIENT, new_session_id, normalize_client, replace_session
 from tools.onec.password import verify_password
 
@@ -38,38 +39,12 @@ def _trace(message: str) -> None:
     except OSError:
         pass
 
-# Локальные оверрайды должности и отдела по подстроке ФИО (без учёта ь/ъ).
-_POSITION_OVERRIDES: tuple[tuple[str, str], ...] = (
-    ("комарков", "менеджер тендерного офиса"),
-    ("мангасарян", "Помощник Председателя совета директоров"),
-)
-_DEPARTMENT_OVERRIDES: tuple[tuple[str, str], ...] = (
-    ("мангасарян", "Управление делами"),
-)
-
-
-def _normalize_fio_key(value: str) -> str:
-    text = (value or "").casefold()
-    for ch in ("ь", "ъ", "\u0301"):
-        text = text.replace(ch, "")
-    return text
-
-
 def _apply_overrides(fio: str, department: str, position: str) -> tuple[str, str]:
-    key = _normalize_fio_key(fio)
-    for needle, override in _DEPARTMENT_OVERRIDES:
-        if _normalize_fio_key(needle) in key:
-            department = override
-            break
-    for needle, override in _POSITION_OVERRIDES:
-        if _normalize_fio_key(needle) in key:
-            position = override
-            break
-    return department or "", position or ""
+    return apply_profile_overrides(fio, department, position)
 
 
 def _apply_position_override(fio: str, position: str) -> str:
-    _, next_position = _apply_overrides(fio, "", position)
+    _, next_position = apply_profile_overrides(fio, "", position)
     return next_position
 
 

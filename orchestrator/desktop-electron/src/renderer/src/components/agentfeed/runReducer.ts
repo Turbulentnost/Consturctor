@@ -437,6 +437,30 @@ export function applyRunnerEvent(state: RunState, payload: AgentRunnerEvent): Ru
       return handleTask(state, payload)
     case 'tool_result':
       return handleToolResult(state, payload)
+    case 'question': {
+      const parsed = parseQuestionArgs({
+        question: payload.question,
+        options: payload.options,
+        ...(payload.arguments || {})
+      })
+      const question = parsed.question || state.pendingQuestion?.question || text
+      const options = parsed.options.length ? parsed.options : state.pendingQuestion?.options || []
+      if (!question && options.length === 0) return state
+      return {
+        ...state,
+        pendingQuestion: {
+          requestId: String(payload.requestId || state.pendingQuestion?.requestId || ''),
+          question,
+          options,
+          needsFile: parsed.needsFile || state.pendingQuestion?.needsFile,
+          accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept,
+          autoContinueSeconds:
+            parsed.autoContinueSeconds || state.pendingQuestion?.autoContinueSeconds,
+          autoContinueAnswer: parsed.autoContinueAnswer || state.pendingQuestion?.autoContinueAnswer
+        },
+        status: 'Нужен ваш ответ'
+      }
+    }
     case 'decision':
     case 'progress':
       if (isTriggerCheckNoise(text)) return state

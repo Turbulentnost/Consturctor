@@ -63,15 +63,22 @@ function KpiEmployeeTile({ metric, gradId }: { metric: WorkplaceKpiEmployeeMetri
 }
 
 export function KpiEmployeePanel({
+  title = 'KPI сотрудника',
   metrics,
   loading,
-  onDetails
+  needsBuild = false,
+  onDetails,
+  onUploadMethodology
 }: {
+  title?: string
   metrics: WorkplaceKpiEmployeeMetric[]
   loading?: boolean
+  needsBuild?: boolean
   onDetails?: () => void
+  onUploadMethodology?: () => void
 }): React.JSX.Element {
   const gradPrefix = useId().replace(/:/g, '')
+  const showUpload = needsBuild || (!loading && metrics.length === 0)
   return (
     <section className="kpi-employee-panel">
       <header className="kpi-employee-panel-head">
@@ -86,13 +93,25 @@ export function KpiEmployeePanel({
             />
           </svg>
         </span>
-        <h3 className="kpi-employee-panel-title">KPI сотрудника</h3>
-        <button type="button" className="kpi-employee-panel-more" onClick={() => onDetails?.()} title="Подробнее">
-          Подробнее →
-        </button>
+        <h3 className="kpi-employee-panel-title">{title}</h3>
+        {showUpload ? null : (
+          <button type="button" className="kpi-employee-panel-more" onClick={() => onDetails?.()} title="Подробнее">
+            Подробнее →
+          </button>
+        )}
       </header>
-      {loading && !metrics.length ? (
+      {loading && !metrics.length && !showUpload ? (
         <p className="spec-v04-muted kpi-employee-loading">Загружаем…</p>
+      ) : showUpload ? (
+        <div className="kpi-employee-empty">
+          <p className="kpi-employee-empty-text">
+            Для этой должности ещё нет рабочей методики расчёта KPI. Загрузите положение о мотивации
+            — соберём показатели и подключим калькуляторы.
+          </p>
+          <button type="button" className="kpi-employee-upload-btn" onClick={() => onUploadMethodology?.()}>
+            Загрузить методику расчёта
+          </button>
+        </div>
       ) : (
         <div className="kpi-employee-grid">
           {metrics.map((m) => (

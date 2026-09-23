@@ -33,6 +33,8 @@ from app.sdk_agent.prompt import (
 from app.sdk_agent.tool_adapter import (
     is_ask_question,
     sdk_design_tool_specs,
+    sdk_kpi_tool_specs,
+    sdk_kpi_write_tool_specs,
     sdk_tool_specs,
     tool_timeout_seconds,
 )
@@ -399,14 +401,24 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert 'interview ? "agent"' in text
     assert 'writeDocument ? "agent" : "plan"' not in text
     assert "tools: []" in text
-    assert "interview ? {}" in text
+    assert "interview" in text and "? {}" in text
+    assert 'command.mode === "kpi"' in text
+    assert "function promptImages" in text
+    assert "text: command.prompt, images" in text
     assert "Agent.resume" in text
     assert "force: true" in text
     assert "settleRun" in text
     assert "playbookDraftReady" in text
     assert "interviewDraftReady" in text
     assert "modelParamsFor" in text
-    assert 'value: "xhigh"' in text
+    assert "KPI_MODEL_PARAMS" in text
+    assert "function kpiListReady" in text
+    assert "stopOnKpiList" in text
+    ready = text.split("function kpiListReady", 1)[1].split("async function settleRun", 1)[0]
+    assert "СПИСОК_ГОТОВ" in ready
+    assert "count >= 2" not in ready
+    assert "kpiAllowRead" in text
+    assert "buildCustomTools(command.tools || [], stopState, cwd, !kpi)" in text
     assert 'value: "low"' in text
     assert "INTERVIEW_QUESTION_MODEL_PARAMS" in text
     assert "testsPassReady" in text
@@ -494,6 +506,28 @@ def test_sdk_tool_specs_include_desktop_schema() -> None:
     assert isinstance(web.get("inputSchema"), dict)
     wait = next(item for item in tools if item.get("name") == "agent.wait")
     assert int(wait.get("timeoutSeconds") or 0) >= 3600
+
+
+def test_kpi_tools_are_only_read_and_code() -> None:
+    names = {str(item.get("name") or "") for item in sdk_kpi_tool_specs()}
+    assert names == {"office.read_file", "code.write_python", "code.run_python"}
+    attached = {str(item.get("name") or "") for item in sdk_kpi_tool_specs(read_file=False)}
+    assert attached == {"code.write_python", "code.run_python"}
+    assert sdk_kpi_tool_specs(read_file=False, write=True, run=False)[0]["name"] == "code.write_python"
+    assert {str(item.get("name") or "") for item in sdk_kpi_tool_specs(read_file=False, write=False, run=False)} == set()
+    assert "askQuestion" not in names
+
+
+def test_kpi_write_tools_are_full_constructor_set() -> None:
+    names = {str(item.get("name") or "") for item in sdk_kpi_write_tool_specs()}
+    all_names = {str(item.get("name") or "") for item in sdk_tool_specs(ask_question=False)}
+    assert names == all_names
+    assert "onec.odata_catalog" in names
+    assert "onec.odata_get" in names
+    assert "outlook.read_calendar" in names
+    assert "excel.read_workbook" in names
+    assert "code.write_python" in names
+    assert "askQuestion" not in names
 
 
 def test_tool_timeout_seconds_for_wait_matches_requested_pause() -> None:

@@ -65,6 +65,22 @@ export function summarizeToolResult(result: Record<string, unknown> | null): str
     const value = result[key]
     if (Array.isArray(value) && value.length) return `Получено записей: ${value.length}`
   }
+  const visionPages = arrayLength(result.vision_pages)
+  const delivered = Number(result.delivered_pages) || visionPages
+  if (result.cached && (result.vision === true || delivered > 0)) {
+    return delivered > 0
+      ? `Повтор: те же ${delivered} стр. уже были`
+      : 'Повтор: страницы уже были'
+  }
+  if (result.vision === true || visionPages > 0) {
+    const total = Number(result.page_count) || visionPages
+    const start = Number(result.start_page) || 1
+    if (visionPages <= 0) return 'Страницы положения получены.'
+    if (start > 1) return `Прочитано ${visionPages} стр. положения (без обложки)`
+    return total > visionPages
+      ? `Прочитано ${visionPages} из ${total} стр. положения`
+      : `Прочитано ${visionPages} стр. положения`
+  }
   if (typeof result.text === 'string' && result.text.trim()) return result.text.trim().slice(0, 200)
   if (typeof result.value === 'string' && result.value.trim()) return result.value.trim().slice(0, 200)
   return 'Данные получены.'

@@ -9,6 +9,8 @@ from app.api.v1 import (
     llm,
     notifications,
     orchestrator,
+    position_kpi,
+    position_kpi_builds,
     regulation_creation,
     regulations,
     tools,
@@ -32,5 +34,7 @@ api_router.include_router(notifications.router, prefix="/api/v1")
 api_router.include_router(calendar.router, prefix="/api/v1")
 api_router.include_router(triggers.router, prefix="/api/v1")
 api_router.include_router(orchestrator.router, prefix="/api/v1")
+api_router.include_router(position_kpi.router, prefix="/api/v1")
+api_router.include_router(position_kpi_builds.router, prefix="/api/v1")
 api_router.include_router(workplace.router, prefix="/api/v1")
 api_router.include_router(chat_router, prefix="/api/v1")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.config import settings
 
@@ -30,6 +31,10 @@ celery_app.conf.update(
         "enqueue-due-orchestrator-kpi": {
             "task": "app.tasks.scheduled.enqueue_due_orchestrator_kpi",
             "schedule": 30.0,
+        },
+        "refresh-position-kpi-daily": {
+            "task": "app.tasks.scheduled.refresh_position_kpi_daily",
+            "schedule": crontab(hour=3, minute=0),
         },
     },
 )

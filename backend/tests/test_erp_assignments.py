@@ -49,6 +49,51 @@ def test_pick_user_row_prefers_exact_fio() -> None:
     assert chosen["Ref_Key"] == "amural"
 
 
+def test_include_all_skips_open_and_today_window(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_odata_get(args: dict) -> dict:
+        seen.update(args)
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    monkeypatch.setattr(
+        "app.services.erp_assignments.resolve_user",
+        lambda name: {"ref_key": "4c6b539d-5606-11e0-b816-008048428575", "fio": name},
+    )
+    result = handle_assignments(
+        {
+            "action": "list",
+            "customer": "Амураль Игорь Борисович",
+            "include_all": True,
+            "only_open": False,
+        }
+    )
+    filt = str(seen.get("filter") or "")
+    assert "startswith(Number,'АСТ')" in filt
+    assert "Создано" not in filt
+    assert "Date ge" not in filt
+    assert result["count"] == 0
+
+
+def test_protocols_psd_mark_skips_default_period(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_odata_get(args: dict) -> dict:
+        seen.update(args)
+        return {
+            "value": [{"Number": "ПСД_001_О_226", "Статус": "Закрыт", "Date": "2026-08-28T00:00:00"}],
+            "source": "odata",
+        }
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    result = handle_assignments({"action": "protocols", "psd_mark": True})
+    filt = str(seen.get("filter") or "")
+    assert "startswith(Number,'ПСД')" in filt
+    assert "Date ge" not in filt
+    assert result["count"] == 1
+
+
 def test_filter_uses_cyrillic_prefix_and_leader() -> None:
     filt = build_assignment_filter(
         customer_key="4c6b539d-5606-11e0-b816-008048428575",
@@ -60,6 +105,67 @@ def test_filter_uses_cyrillic_prefix_and_leader() -> None:
     assert "Создано" in filt
     assert "ВРаботе" in filt
     assert "2026-09-10T00:00:00" in filt
+
+
+def test_only_open_false_skips_open_and_today_window(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_odata_get(args: dict) -> dict:
+        seen.update(args)
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    monkeypatch.setattr(
+        "app.services.erp_assignments.resolve_user",
+        lambda name: {"ref_key": "4c6b539d-5606-11e0-b816-008048428575", "fio": name},
+    )
+    handle_assignments(
+        {
+            "action": "list",
+            "customer": "Амураль Игорь Борисович",
+            "only_open": False,
+        }
+    )
+    filt = str(seen.get("filter") or "")
+    assert "Создано" not in filt
+    assert "Date ge" not in filt
+
+
+def test_include_all_pages_past_first_hundred(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_odata_get(args: dict) -> dict:
+        calls.append(args)
+        if int(args.get("skip") or 0) == 0:
+            return {
+                "value": [
+                    {"Number": f"АСТ00-{index}", "Статус": "Принято", "Ref_Key": "not-a-guid"}
+                    for index in range(100)
+                ],
+                "source": "odata",
+            }
+        return {
+            "value": [{"Number": "АСТ00-tail", "Статус": "Принято", "Ref_Key": "not-a-guid"}],
+            "source": "odata",
+        }
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    monkeypatch.setattr(
+        "app.services.erp_assignments.resolve_user",
+        lambda name: {"ref_key": "4c6b539d-5606-11e0-b816-008048428575", "fio": name},
+    )
+    result = handle_assignments(
+        {
+            "action": "list",
+            "customer": "Амураль Игорь Борисович",
+            "include_all": True,
+            "limit": 100,
+        }
+    )
+    assert len(calls) == 2
+    assert int(calls[1].get("skip") or 0) == 100
+    assert result["count"] == 101
+    assert result["truncated"] is False
 
 
 def test_create_body_builds_lines() -> None:

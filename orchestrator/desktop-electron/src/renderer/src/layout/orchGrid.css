@@ -412,6 +412,10 @@
   width: 100%;
 }
 
+.orch-grid.orch-grid-subpage .orch-agent-subpage-root:has(.kpi-build-page) {
+  overflow: hidden;
+}
+
 .orch-slot-main.orch-heavy-embed-slot > .orch-heavy-embed,
 .orch-heavy-embed.orch-agent-subpage {
   flex: 1 1 0;

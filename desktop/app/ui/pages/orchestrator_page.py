@@ -67,6 +67,7 @@ class OrchestratorPage(QWidget):
         super().__init__(parent)
         self._user_id = "local"
         self._user_fio = ""
+        self._user_position = ""
         self._bound_agents: list[BoardAgent] = []
         title = QLabel("Оркестратор")
         title.setFont(app_font(28, QFont.Weight.DemiBold))
@@ -144,9 +145,10 @@ class OrchestratorPage(QWidget):
         root.addWidget(scroll, 1)
         self.refresh()
 
-    def set_user(self, user_id: str, fio: str = "") -> None:
+    def set_user(self, user_id: str, fio: str = "", position: str = "") -> None:
         self._user_id = user_id or "local"
         self._user_fio = fio or ""
+        self._user_position = position or ""
         self.refresh()
 
     def set_bound_agents(self, agents: list[BoardAgent] | None) -> None:
@@ -154,7 +156,7 @@ class OrchestratorPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        instances = load_instances(self._user_id)
+        instances = load_instances(self._user_id, self._user_position)
         waiting, active, errors = self._today_counts(instances)
         self._set_chip(self._chip_waiting, str(waiting))
         self._set_chip(self._chip_active, str(active))
@@ -178,7 +180,7 @@ class OrchestratorPage(QWidget):
         return counts(instances)
 
     def _render_kpi(self, instances: list[ProcessInstance]) -> None:
-        show = has_position_kpi(self._user_id, self._user_fio)
+        show = has_position_kpi(self._user_position)
         self._kpi_title.setVisible(show)
         self._kpi_score.setVisible(show)
         while self._kpi_box.count():
