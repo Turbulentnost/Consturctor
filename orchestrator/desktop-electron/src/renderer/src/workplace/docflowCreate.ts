@@ -261,3 +261,81 @@ export function formatRuDateTime(value: Date): string {
 export function documentLabel(doc: DocflowBasisDocument): string {
   return doc.name || doc.title || doc.reg_number || 'Документ'
 }
+
+export interface DocflowApprovalItem {
+  name: string
+  position: string
+  date: string
+  result: string
+  comment: string
+}
+
+export interface DocflowApprovalSheet {
+  found: boolean
+  documentName: string
+  regNumber: string
+  items: DocflowApprovalItem[]
+  message: string
+}
+
+const approvalCache = new Map<string, DocflowApprovalSheet>()
+const approvalLoads = new Map<string, Promise<DocflowApprovalSheet>>()
+let approvalBlocked = ''
+
+function emptySheet(message: string): DocflowApprovalSheet {
+  return { found: false, documentName: '', regNumber: '', items: [], message }
+}
+
+/** Лист согласования документа ДО. Один запрос на документ за сеанс. */
+export function loadDocflowApprovalSheet(
+  user: UserProfile,
+  params: { id: string; kind: 'order' | 'directive'; regNumber: string; title: string }
+): Promise<DocflowApprovalSheet> {
+  if (approvalBlocked) return Promise.resolve(emptySheet(approvalBlocked))
+  const cached = approvalCache.get(params.id)
+  if (cached) return Promise.resolve(cached)
+  const pending = approvalLoads.get(params.id)
+  if (pending) return pending
+  const load = call<{
+    found?: boolean
+    document_name?: string
+    reg_number?: string
+    items?: DocflowApprovalItem[]
+  }>(
+    user,
+    {
+      action: 'approval_sheet',
+      kind: params.kind,
+      reg_number: params.regNumber,
+      title: params.title
+    },
+    120_000
+  )
+    .then((res) => {
+      approvalLoads.delete(params.id)
+      if (!res.ok) {
+        if (/парол|учётн|учетн|401|403/i.test(res.error)) approvalBlocked = res.error
+        const sheet = emptySheet(res.error)
+        approvalCache.set(params.id, sheet)
+        return sheet
+      }
+      const value = res.value
+      const sheet: DocflowApprovalSheet = {
+        found: value.found === true,
+        documentName: value.document_name || '',
+        regNumber: value.reg_number || '',
+        items: Array.isArray(value.items) ? value.items : [],
+        message: value.found === true ? '' : 'В документообороте нет листа согласования по этому номеру'
+      }
+      approvalCache.set(params.id, sheet)
+      return sheet
+    })
+    .catch((err: unknown) => {
+      approvalLoads.delete(params.id)
+      const sheet = emptySheet(err instanceof Error ? err.message : 'Лист согласования не загрузился')
+      approvalCache.set(params.id, sheet)
+      return sheet
+    })
+  approvalLoads.set(params.id, load)
+  return load
+}

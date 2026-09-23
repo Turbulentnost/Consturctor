@@ -49,11 +49,22 @@ const FIELD_LABELS: Record<string, string> = {
   ДатаВходящая: 'Дата входящая',
   Статус: 'Статус',
   ТемаСлужебнойЗаписки: 'Тема',
-  Ответственный: 'Ответственный',
-  ТекстHTML: 'Текст'
+  ТемаСовещания: 'Тема совещания',
+  Ответственный: 'Кому назначена',
+  МенеджерКому: 'Менеджер (кому)',
+  МенеджерОтКого: 'От кого',
+  ИсполнительУД: 'Исполнитель УД',
+  Подразделение: 'Подразделение',
+  Приоритет: 'Приоритет',
+  СрокИсполнения: 'Срок исполнения',
+  ТекстСлужебнойЗаписки: 'Текст',
+  БизнесПроцессСтартован: 'Процесс запущен',
+  УтвержденоНачальникомУД: 'Утверждено начальником УД',
+  ТекстHTML: 'Текст',
+  ГрифДоступа: 'Гриф доступа'
 }
 
-const SKIP_FIELD = /(_Key|_Type|@|DataVersion|DeletionMark|Ref_Key|odata)/i
+const SKIP_FIELD = /(_Key|_Type|@|DataVersion|DeletionMark|Ref_Key|odata|Base64|Расписание)/i
 
 type SessionCache = {
   rows: CorrespondenceRow[]
@@ -63,7 +74,7 @@ type SessionCache = {
 const sessionCache = new Map<string, SessionCache>()
 const sessionLoads = new Map<string, Promise<SessionCache>>()
 
-function cacheKey(user: UserProfile | null, kind: CorrespondenceKind): string {
+function cacheKey(user: UserProfile | null, kind: string): string {
   return `${kind}:${user?.id || user?.fio || 'session'}`
 }
 
@@ -95,20 +106,38 @@ function field(row: Record<string, unknown>, key: string): string {
 }
 
 function displayValue(key: string, value: string): string {
-  if (key === 'Date' || key.startsWith('Дата')) return formatCorrespondenceDate(value)
+  if (key === 'Date' || key.startsWith('Дата') || key.startsWith('Срок') || key.startsWith('Время')) {
+    return formatCorrespondenceDate(value)
+  }
   if (value === 'true') return 'Да'
   if (value === 'false') return 'Нет'
+  if (key === 'ТекстСлужебнойЗаписки' || key === 'ТекстHTML') return stripHtml(value)
   return value
 }
 
-function detailFields(row: Record<string, unknown>): CorrespondenceField[] {
+function stripHtml(value: string): string {
+  return value
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function detailFields(
+  row: Record<string, unknown>,
+  labels: Record<string, string> = FIELD_LABELS
+): CorrespondenceField[] {
   const seen = new Set<string>()
   const fields: CorrespondenceField[] = []
   for (const key of Object.keys(row)) {
     if (SKIP_FIELD.test(key) || key.endsWith('_Name')) continue
     const value = field(row, key)
     if (!value) continue
-    const label = FIELD_LABELS[key] || key
+    const label = labels[key] || FIELD_LABELS[key] || key
     if (seen.has(label)) continue
     seen.add(label)
     fields.push({ label, value: displayValue(key, value) })
@@ -205,16 +234,166 @@ export function loadDocflowCorrespondenceSession(
   return load
 }
 
-export function correspondenceInPeriod(
-  rows: CorrespondenceRow[],
-  from: string,
-  to: string
-): CorrespondenceRow[] {
+export function correspondenceInPeriod<T extends { date: string }>(rows: T[], from: string, to: string): T[] {
   return rows.filter((row) => {
     const day = row.date.slice(0, 10)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false
     return day >= from && day <= to
   })
+}
+
+function odataServerFailed(error: string): boolean {
+  return /HTTP 5\d\d|502|503|timeout|timed out|expand/i.test(error)
+}
+
+export type OrderKind = 'order' | 'directive'
+
+export type OrderRow = {
+  id: string
+  kind: OrderKind
+  kindLabel: string
+  date: string
+  number: string
+  subject: string
+  status: string
+  organization: string
+  responsible: string
+  access: string
+  content: string
+  posted: boolean
+  fields: CorrespondenceField[]
+}
+
+const ORDER_ENTITIES: { kind: OrderKind; label: string; entity: string }[] = [
+  { kind: 'order', label: 'Приказ', entity: 'Document_ТД_Приказ' },
+  { kind: 'directive', label: 'Распоряжение', entity: 'Document_ТД_Распоряжение' }
+]
+
+const ORDER_LABELS: Record<string, string> = {
+  Number: 'Номер',
+  Date: 'Дата',
+  Posted: 'Проведён',
+  Статус: 'Статус',
+  ТемаСлужебнойЗаписки: 'Тема',
+  Содержание: 'Содержание',
+  Комментарий: 'Комментарий',
+  Организация: 'Организация',
+  Ответственный: 'Ответственный',
+  ГрифДоступа: 'Гриф доступа',
+  ДокументОснование: 'Документ-основание'
+}
+
+function mapOrder(row: Record<string, unknown>, kind: OrderKind, kindLabel: string): OrderRow {
+  const subject = field(row, 'ТемаСлужебнойЗаписки') || field(row, 'Subject') || field(row, 'Description')
+  return {
+    id: String(row.Ref_Key || `${kind}-${row.Number || ''}-${row.Date || ''}`),
+    kind,
+    kindLabel,
+    date: String(row.Date || ''),
+    number: field(row, 'Number'),
+    subject: subject.replace(/\s+/g, ' ').trim(),
+    status: field(row, 'Статус'),
+    organization: field(row, 'Организация'),
+    responsible: field(row, 'Ответственный'),
+    access: field(row, 'ГрифДоступа'),
+    content: stripHtml(field(row, 'Содержание')),
+    posted: row.Posted === true || String(row.Posted || '').toLowerCase() === 'true',
+    fields: detailFields(row, ORDER_LABELS)
+  }
+}
+
+const ORDER_PAGE = 200
+const ORDER_MAX_ROWS = 5000
+
+async function loadOrderPage(
+  user: UserProfile | null,
+  spec: (typeof ORDER_ENTITIES)[number],
+  skip: number
+): Promise<{ rows: Record<string, unknown>[]; error: string }> {
+  const attempts: Record<string, unknown>[] = [
+    {
+      entity: spec.entity,
+      top: ORDER_PAGE,
+      skip,
+      filter: 'DeletionMark eq false',
+      expand: 'Организация,Ответственный,ГрифДоступа'
+    },
+    {
+      entity: spec.entity,
+      top: ORDER_PAGE,
+      skip,
+      filter: 'DeletionMark eq false'
+    }
+  ]
+  let lastError = ''
+  for (const extra of attempts) {
+    const res = await api.invokeServerTool('onec.odata_get', onecGatewayInvokeArgs(user, extra), 180_000)
+    if (res.ok) return { rows: rowsFromResult(res.result), error: '' }
+    lastError = res.error || ''
+    if (!odataServerFailed(lastError) && !/expand/i.test(lastError)) break
+  }
+  return { rows: [], error: lastError }
+}
+
+async function loadOrderEntity(
+  user: UserProfile | null,
+  spec: (typeof ORDER_ENTITIES)[number]
+): Promise<{ rows: OrderRow[]; error: string }> {
+  const collected: OrderRow[] = []
+  const seen = new Set<string>()
+  let lastError = ''
+  for (let skip = 0; skip < ORDER_MAX_ROWS; skip += ORDER_PAGE) {
+    const page = await loadOrderPage(user, spec, skip)
+    if (page.error && !page.rows.length) {
+      lastError = page.error
+      break
+    }
+    const mapped = page.rows
+      .map((row) => mapOrder(row, spec.kind, spec.label))
+      .filter((row) => row.date || row.number || row.subject)
+    for (const row of mapped) {
+      if (!seen.has(row.id)) {
+        seen.add(row.id)
+        collected.push(row)
+      }
+    }
+    if (page.rows.length < ORDER_PAGE) break
+  }
+  if (!collected.length && lastError) {
+    return { rows: [], error: `${spec.label}: ${lastError}` }
+  }
+  return { rows: collected, error: '' }
+}
+
+const orderCache = new Map<string, { rows: OrderRow[]; error: string }>()
+const orderLoads = new Map<string, Promise<{ rows: OrderRow[]; error: string }>>()
+
+/** Приказы и распоряжения из документов 1С. Один запрос каждого вида за сессию. */
+export function loadDocflowOrdersSession(user: UserProfile | null): Promise<{ rows: OrderRow[]; error: string }> {
+  const key = cacheKey(user, 'orders')
+  const cached = orderCache.get(key)
+  if (cached) return Promise.resolve(cached)
+  const pending = orderLoads.get(key)
+  if (pending) return pending
+  const load = Promise.all(ORDER_ENTITIES.map((spec) => loadOrderEntity(user, spec)))
+    .then((parts) => {
+      orderLoads.delete(key)
+      const rows = parts.flatMap((part) => part.rows)
+      rows.sort((left, right) => right.date.localeCompare(left.date))
+      const errors = parts.map((part) => part.error).filter(Boolean)
+      const result = {
+        rows,
+        error: rows.length ? '' : errors.join(' ') || 'Не удалось прочитать приказы и распоряжения из 1С'
+      }
+      if (!result.error) orderCache.set(key, result)
+      return result
+    })
+    .catch((err: unknown) => {
+      orderLoads.delete(key)
+      throw err
+    })
+  orderLoads.set(key, load)
+  return load
 }
 
 export function formatCorrespondenceDate(raw: string): string {

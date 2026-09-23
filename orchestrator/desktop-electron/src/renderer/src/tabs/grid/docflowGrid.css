@@ -24,28 +24,48 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 12px 10px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(13, 59, 115, 0.08);
+  box-shadow: 0 1px 3px rgba(16, 32, 51, 0.05);
 }
 
 .docflow-nav-kicker {
-  margin: 0 0 4px;
+  margin: 0 4px 6px;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--content-muted);
 }
 
 .docflow-nav-item {
+  position: relative;
   text-align: left;
-  border: 1px solid rgba(13, 59, 115, 0.1);
-  background: #fff;
-  border-radius: 12px;
-  padding: 10px 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 10px;
+  padding: 9px 10px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: inherit;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.docflow-nav-item:hover {
+  background: #f4f7fb;
+}
+
+.docflow-nav-text {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-family: inherit;
+  min-width: 0;
 }
 
 .docflow-nav-item strong {
@@ -53,15 +73,60 @@
   color: #102033;
 }
 
-.docflow-nav-item span {
-  font-size: 12px;
+.docflow-nav-text > span {
+  font-size: 11.5px;
   line-height: 1.3;
   color: var(--content-muted);
 }
 
 .docflow-nav-item.is-active {
-  border-color: rgba(21, 101, 192, 0.45);
+  border-color: rgba(21, 101, 192, 0.25);
   background: rgba(21, 101, 192, 0.08);
+}
+
+.docflow-nav-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #1565c0;
+}
+
+.docflow-nav-icon {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-grid;
+  place-items: center;
+}
+
+.docflow-nav-icon.tone-blue {
+  background: rgba(21, 101, 192, 0.12);
+  color: #1565c0;
+}
+
+.docflow-nav-icon.tone-green {
+  background: rgba(46, 154, 111, 0.14);
+  color: #1b7a4e;
+}
+
+.docflow-nav-icon.tone-purple {
+  background: rgba(111, 66, 193, 0.12);
+  color: #6f42c1;
+}
+
+.docflow-nav-icon.tone-orange {
+  background: rgba(230, 126, 34, 0.14);
+  color: #b35c00;
+}
+
+.docflow-nav-icon.tone-teal {
+  background: rgba(0, 150, 136, 0.13);
+  color: #00796b;
 }
 
 .docflow-main {
@@ -74,9 +139,22 @@
 
 .docflow-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.docflow-head-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.docflow-head-title .docflow-nav-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
 }
 
 .docflow-head h2 {
@@ -85,7 +163,7 @@
 }
 
 .docflow-head p {
-  margin: 4px 0 0;
+  margin: 3px 0 0;
   font-size: 13px;
   color: var(--content-muted);
 }
@@ -104,14 +182,23 @@
   padding: 10px 12px;
   cursor: pointer;
   font-family: inherit;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #5b6b80;
+}
+
+.docflow-kind-btn:hover {
+  border-color: rgba(21, 101, 192, 0.35);
 }
 
 .docflow-kind-btn strong {
   display: block;
   font-size: 14px;
+  color: #102033;
 }
 
-.docflow-kind-btn span {
+.docflow-kind-btn span span {
   display: block;
   margin-top: 2px;
   font-size: 12px;
@@ -121,6 +208,7 @@
 .docflow-kind-btn.is-active {
   border-color: #1565c0;
   background: rgba(21, 101, 192, 0.08);
+  color: #1565c0;
 }
 
 .docflow-table-card {
@@ -131,6 +219,17 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  border-radius: 14px;
+}
+
+.docflow-table-card .docflow-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f7f9fc;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5b6b80;
 }
 
 .docflow-table-scroll {
@@ -144,17 +243,369 @@
 }
 
 .docflow-row:hover,
-.docflow-row:focus-visible {
+.docflow-row:focus-visible,
+.docflow-row.is-selected {
   background: rgba(21, 101, 192, 0.08);
   outline: none;
 }
 
-.docflow-detail {
-  width: min(640px, 92vw);
-  max-height: min(80vh, 720px);
+.docflow-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 12px;
+}
+
+.docflow-split-orders {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+}
+
+.docflow-split-orders .docflow-side {
+  overflow: auto;
+}
+
+.docflow-order-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.08);
+  font-size: 13px;
+}
+
+.docflow-order-filters label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--content-muted);
+}
+
+.docflow-order-filters select {
+  min-width: 140px;
+  max-width: 220px;
+  height: 32px;
+  border: 1px solid rgba(13, 59, 115, 0.25);
+  border-radius: 8px;
+  padding: 0 8px;
+  font: inherit;
+  color: #102033;
+  background: #fff;
+}
+
+.docflow-order-filters > span {
+  margin-left: auto;
+  color: var(--content-muted);
+}
+
+.docflow-dates {
+  gap: 6px;
+}
+
+.docflow-dates input[type='date'] {
+  height: 32px;
+  border: 1px solid rgba(13, 59, 115, 0.25);
+  border-radius: 8px;
+  padding: 0 8px;
+  font: inherit;
+  color: #102033;
+  background: #fff;
+}
+
+.docflow-side {
+  min-height: 0;
+  margin: 0;
+  padding: 16px 16px 10px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  border-radius: 14px;
+}
+
+.docflow-side-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.docflow-card-block {
+  padding: 12px;
+  border-radius: 12px;
+  background: #f7f9fc;
+  border: 1px solid rgba(13, 59, 115, 0.06);
+}
+
+.docflow-card-block h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #102033;
+}
+
+.docflow-card-block h4 span {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--content-muted);
+}
+
+.docflow-card-block .docflow-detail-list {
+  margin: 0;
+  overflow: visible;
+}
+
+.docflow-card-block .docflow-detail-list div {
+  grid-template-columns: 130px minmax(0, 1fr);
+}
+
+.docflow-card-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.docflow-muted {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--content-muted);
+}
+
+.docflow-route {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.docflow-route li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #b35c00;
+}
+
+.docflow-route li.is-done {
+  color: #1b7a4e;
+}
+
+.docflow-route li > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.docflow-route li div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.docflow-route strong {
+  font-size: 13px;
+  color: #102033;
+}
+
+.docflow-route span,
+.docflow-route em {
+  font-size: 12px;
+  font-style: normal;
+  color: var(--content-muted);
+  overflow-wrap: anywhere;
+}
+
+.docflow-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.docflow-pill.is-ok {
+  background: rgba(46, 154, 111, 0.14);
+  color: #1b7a4e;
+}
+
+.docflow-pill.is-wait {
+  background: rgba(230, 126, 34, 0.14);
+  color: #b35c00;
+}
+
+.docflow-pill.is-bad {
+  background: rgba(198, 40, 40, 0.12);
+  color: #9b1c1c;
+}
+
+.docflow-pill.is-muted {
+  background: rgba(91, 107, 128, 0.12);
+  color: #5b6b80;
+}
+
+.docflow-order-filters label svg {
+  color: #5b6b80;
+}
+
+.docflow-search {
+  flex: 1 1 220px;
+  min-width: 200px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgba(13, 59, 115, 0.25);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.docflow-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  color: #102033;
+}
+
+.docflow-check {
+  cursor: pointer;
+  user-select: none;
+}
+
+.docflow-check input {
+  margin: 0;
+  accent-color: #1565c0;
+}
+
+.docflow-cell-overdue {
+  color: #9b1c1c;
+  font-weight: 600;
+}
+
+.docflow-lines {
+  margin: 0;
+  padding: 0 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.docflow-lines li::marker {
+  color: #5b6b80;
+  font-weight: 600;
+}
+
+.docflow-lines li p {
+  margin: 0 0 4px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.docflow-lines li div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: 12px;
+  color: var(--content-muted);
+}
+
+.docflow-lines li div > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.docflow-lines li div > span.is-overdue {
+  color: #9b1c1c;
+  font-weight: 600;
+}
+
+.docflow-lines li.is-overdue {
+  padding-left: 6px;
+  border-left: 3px solid rgba(198, 40, 40, 0.5);
+}
+
+.docflow-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.docflow-files li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.docflow-files li strong {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.docflow-files li span {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--content-muted);
+}
+
+.docflow-secret-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 10px;
+  font-style: normal;
+  color: #9b1c1c;
+}
+
+.docflow-end {
+  padding: 14px 16px;
+  font-size: 12px;
+}
+
+.docflow-placeholder-icon {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 12px;
+  border-radius: 16px;
+}
+
+.docflow-side-subject {
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.docflow-done {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: rgba(198, 40, 40, 0.1);
+  color: #9b1c1c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.docflow-done.is-done {
+  background: rgba(46, 154, 111, 0.16);
+  color: #1b7a4e;
 }
 
 .docflow-detail-head {
@@ -173,15 +624,6 @@
   margin: 4px 0 0;
   color: var(--content-muted);
   font-size: 13px;
-}
-
-.docflow-detail-close {
-  border: none;
-  background: transparent;
-  font-size: 24px;
-  line-height: 1;
-  cursor: pointer;
-  color: var(--content-muted);
 }
 
 .docflow-detail-list {
@@ -231,6 +673,17 @@
 
 .docflow-status-error {
   color: #9b1c1c;
+}
+
+.docflow-retry {
+  margin-left: 8px;
+  border: none;
+  background: transparent;
+  color: #1565c0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 .docflow-placeholder p {

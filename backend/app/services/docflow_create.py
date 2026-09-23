@@ -11,6 +11,7 @@ from app.services.docflow_task_action import _session_credentials
 from app.services.docflow_tasks import DocflowError
 from app.tools.onec.dok_create import (
     fill_process,
+    fetch_approval_sheet,
     launch_business_process,
     list_internal_document_types,
     list_users,
@@ -233,6 +234,105 @@ def _search(config, args: dict[str, Any], actor: str) -> dict[str, Any]:
     return {"summary": f"Найдено документов: {len(rows)}", "documents": rows, "count": len(rows)}
 
 
+def _collapse(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").casefold().strip(" «»\"'")
+
+
+def _pick_document(rows: list[dict[str, str]], number: str, title: str) -> dict[str, str] | None:
+    number_cf = number.casefold()
+    title_cf = _collapse(title)
+    title_slice = title_cf[:80]
+    for row in rows:
+        if number_cf and str(row.get("reg_number") or "").casefold() == number_cf:
+            return row
+    for row in rows:
+        blob = _collapse(f"{row.get('name') or ''} {row.get('title') or ''} {row.get('reg_number') or ''}")
+        if number_cf and number_cf in blob:
+            return row
+    if len(title_slice) >= 16:
+        for row in rows:
+            blob = _collapse(f"{row.get('name') or ''} {row.get('title') or ''} {row.get('summary') or ''}")
+            if title_slice in blob:
+                return row
+    return None
+
+
+def _search_until_picked(config, kind_id: str, query: str, number: str, title: str) -> dict[str, str] | None:
+    """Ищет документ по видам и останавливается на первом совпадении номера или темы."""
+    kind = _kind(kind_id)
+    types = _types_for(kind, list_internal_document_types(config, timeout=_LOOKUP_TIMEOUT))
+    collected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in types[:4]:
+        found = search_documents(
+            config,
+            kind["dm_type"],
+            document_type_id=item["id"],
+            query=query,
+            limit=20,
+            timeout=_SEARCH_TIMEOUT,
+        )
+        for row in found:
+            if row["id"] not in seen:
+                seen.add(row["id"])
+                collected.append(row)
+        picked = _pick_document(collected, number, title)
+        if picked:
+            return picked
+    return None
+
+
+def _approval_sheet(config, args: dict[str, Any]) -> dict[str, Any]:
+    kind_id = str(args.get("kind") or "order").strip()
+    if kind_id not in {"order", "directive"}:
+        raise DocflowError("Лист согласования запрашивается для приказа или распоряжения")
+    number = str(args.get("reg_number") or "").strip()
+    title = str(args.get("title") or "").strip()
+    if not number and not title:
+        raise DocflowError("Нужен номер или тема документа")
+    sibling = "directive" if kind_id == "order" else "order"
+    title_query = _collapse(title)[:80]
+    attempts: list[tuple[str, str]] = []
+    if number:
+        attempts.append((kind_id, number))
+        attempts.append((sibling, number))
+    if title_query:
+        attempts.append((kind_id, title_query))
+    picked: dict[str, str] | None = None
+    try:
+        for kind, query in attempts:
+            picked = _search_until_picked(config, kind, query, number, title)
+            if picked:
+                break
+    except RuntimeError as exc:
+        raise DocflowError(f"Поиск документа в ДО не выполнен: {exc}") from exc
+    if not picked:
+        return {
+            "summary": "Документ в документообороте не найден",
+            "found": False,
+            "document_name": "",
+            "reg_number": "",
+            "items": [],
+        }
+    try:
+        items = fetch_approval_sheet(
+            config,
+            picked["id"],
+            picked.get("type") or "DMInternalDocument",
+            name=picked.get("name") or "",
+            timeout=_LOOKUP_TIMEOUT,
+        )
+    except RuntimeError as exc:
+        raise DocflowError(f"Лист согласования не получен: {exc}") from exc
+    return {
+        "summary": f"Лист согласования: {len(items)}",
+        "found": True,
+        "document_name": picked.get("name") or "",
+        "reg_number": picked.get("reg_number") or "",
+        "items": items,
+    }
+
+
 def _target(args: dict[str, Any]) -> dict[str, str]:
     doc = args.get("document") if isinstance(args.get("document"), dict) else {}
     target = {"id": str(doc.get("id") or "").strip(), "type": str(doc.get("type") or "").strip()}
@@ -353,11 +453,15 @@ def handle_docflow_create(
         return {"summary": f"Пользователей ДО: {len(names)}", "users": names, "count": len(names)}
     if action == "search_documents":
         return _search(config, args, actor)
+    if action == "approval_sheet":
+        return _approval_sheet(config, args)
     if action == "prepare":
         return _prepare(config, args)
     if action == "launch":
         return _launch(config, args, actor)
-    raise DocflowError("Укажите action: catalog | users | search_documents | prepare | launch")
+    raise DocflowError(
+        "Укажите action: catalog | users | search_documents | approval_sheet | prepare | launch"
+    )
 
 
 def stub_docflow_create(args: dict[str, Any], **_: Any) -> dict[str, Any]:

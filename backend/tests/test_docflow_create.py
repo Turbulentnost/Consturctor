@@ -7,7 +7,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from app.services.docflow_create import handle_docflow_create
+from app.services.docflow_create import _pick_document, handle_docflow_create
 from app.services.docflow_tasks import DocflowError
 from app.tools.onec import dok_create
 from app.tools.onec.dok_soap import DokConfig, envelope
@@ -273,3 +273,49 @@ def test_search_period_uses_date_from_name_when_not_registered(monkeypatch) -> N
     assert [row["id"] for row in rows] == ["new"]
     assert rows[0]["reg_date"] == "2026-08-04"
     assert "<dm:property>regDate</dm:property>" in sent[0] and "&gt;=" in sent[0]
+
+
+def test_parse_approval_sheet_skips_empty_rows() -> None:
+    root = ET.fromstring(
+        f'<r xmlns:m="{DM}">'
+        "<m:items><m:position>Начальник отдела</m:position><m:name>Лапина Арина Антоновна</m:name>"
+        "<m:date>2026-09-20</m:date><m:result>Согласовано</m:result><m:comment>без замечаний</m:comment></m:items>"
+        "<m:items><m:position></m:position><m:name></m:name><m:date>0001-01-01</m:date></m:items>"
+        "</r>"
+    )
+    items = dok_create.parse_approval_sheet(root)
+    assert items == [
+        {
+            "name": "Лапина Арина Антоновна",
+            "position": "Начальник отдела",
+            "date": "2026-09-20",
+            "result": "Согласовано",
+            "comment": "без замечаний",
+        }
+    ]
+
+
+def test_fetch_approval_sheet_puts_name_before_object_id(monkeypatch) -> None:
+    sent: list[str] = []
+
+    def fake_execute(_config, request_xml: str, *, timeout: float) -> ET.Element:
+        sent.append(request_xml)
+        return ET.fromstring(f'<r xmlns:m="{DM}"/>')
+
+    monkeypatch.setattr(dok_create, "execute_dm", fake_execute)
+    config = DokConfig(server="h", port=81, user="u", password="p", timeout=30.0, base_path="/doc")
+    assert dok_create.fetch_approval_sheet(config, "doc-1", "DMInternalDocument", name="Приказ 1", timeout=5.0) == []
+    request = sent[0]
+    assert request.index("<dm:name>") < request.index("<dm:objectID>")
+    assert "<dm:id>doc-1</dm:id>" in request
+    assert "DMGetApprovalSheetRequest" in request
+
+
+def test_pick_document_prefers_registration_number() -> None:
+    rows = [
+        {"id": "a", "name": "Приказ про другое", "title": "", "reg_number": "НП00-000001", "summary": ""},
+        {"id": "b", "name": "Приказ НП00-000336", "title": "О назначении", "reg_number": "", "summary": ""},
+    ]
+    picked = _pick_document(rows, "НП00-000336", "О назначении лица")
+    assert picked is not None
+    assert picked["id"] == "b"

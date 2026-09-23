@@ -395,6 +395,74 @@ def _store_cache(key: str, payload: dict[str, Any]) -> dict[str, Any]:
     return _with_cache_meta(stored, cached=False, fetched_at=fetched_at)
 
 
+_MEMO_NUMBER_RE = re.compile(r"Служебная записка\s+0*(\d{3,})", re.IGNORECASE)
+_memo_index: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
+
+
+def _memo_number_key(number: str) -> str:
+    return str(number or "").strip().lstrip("0")
+
+
+def memo_tasks_index() -> dict[str, list[dict[str, Any]]]:
+    """Открытые задачи ДО из последней полной выгрузки, по номеру служебной записки."""
+    global _memo_index
+    try:
+        files = sorted(_cache_dir().glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return {}
+    if not files:
+        return {}
+    newest = files[0]
+    mtime = newest.stat().st_mtime
+    if _memo_index and _memo_index[0] == mtime:
+        return _memo_index[1]
+    try:
+        data = json.loads(newest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _memo_index[1] if _memo_index else {}
+    payload = data.get("payload") if isinstance(data, dict) else None
+    index: dict[str, list[dict[str, Any]]] = {}
+    for row in _dump_rows(payload if isinstance(payload, dict) else {}):
+        text = f"{row.get('target') or ''} {row.get('name') or ''}"
+        match = _MEMO_NUMBER_RE.search(text)
+        if match:
+            index.setdefault(_memo_number_key(match.group(1)), []).append(row)
+    _memo_index = (mtime, index)
+    return index
+
+
+def memo_open_tasks(number: str) -> list[dict[str, Any]]:
+    return memo_tasks_index().get(_memo_number_key(number), [])
+
+
+def tasks_for_target(
+    config: DokConfig,
+    target_id: str,
+    target_type: str,
+    *,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    """Все задачи документа ДО (и исполненные): история маршрута служебной записки."""
+    target_id = str(target_id or "").strip()
+    if not target_id:
+        return []
+    filters = [condition("withExecuted", bool_value(True))]
+    if target_type:
+        filters.append(condition("target", object_id_value(target_id, target_type)))
+    root = execute_dm(
+        config,
+        '<dm:request xsi:type="dm:DMGetObjectListRequest">'
+        "<dm:type>DMBusinessProcessTask</dm:type>"
+        "<dm:query>"
+        f"{''.join(filters)}"
+        "<dm:limit>300</dm:limit>"
+        "</dm:query>"
+        "</dm:request>",
+        timeout=timeout,
+    )
+    return [row for row in parse_tasks(root) if row["target_id"].casefold() == target_id.casefold()]
+
+
 def invalidate_inbox_cache() -> None:
     """Сброс кеша входящих задач: после закрытия список должен читаться из ДО."""
     with _cache_guard:

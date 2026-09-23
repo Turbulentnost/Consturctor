@@ -279,6 +279,54 @@ def document_day(obj: ET.Element) -> str:
     return ""
 
 
+def parse_approval_sheet(root: ET.Element) -> list[dict[str, str]]:
+    """Строки листа согласования из DMGetApprovalSheetResponse."""
+    items: list[dict[str, str]] = []
+    for node in root.findall(".//m:items", NS):
+        name = xml_text(node, "m:name")
+        position = xml_text(node, "m:position")
+        if not name and not position:
+            continue
+        raw_date = xml_text(node, "m:date")
+        if raw_date.startswith("0001"):
+            raw_date = ""
+        items.append(
+            {
+                "name": name,
+                "position": position,
+                "date": raw_date[:10],
+                "result": xml_text(node, "m:result"),
+                "comment": xml_text(node, "m:comment"),
+            }
+        )
+    return items
+
+
+def fetch_approval_sheet(
+    config: DokConfig,
+    object_id: str,
+    object_type: str,
+    *,
+    name: str = "",
+    timeout: float,
+) -> list[dict[str, str]]:
+    """Лист согласования документа ДО: кто согласовывал, должность, дата и результат."""
+    root = execute_dm(
+        config,
+        '<dm:request xsi:type="dm:DMGetApprovalSheetRequest">'
+        "<dm:object>"
+        f"<dm:name>{xml_escape(name)}</dm:name>"
+        "<dm:objectID>"
+        f"<dm:id>{xml_escape(object_id)}</dm:id>"
+        f"<dm:type>{xml_escape(object_type or 'DMInternalDocument')}</dm:type>"
+        "</dm:objectID>"
+        "</dm:object>"
+        "</dm:request>",
+        timeout=timeout,
+    )
+    return parse_approval_sheet(root)
+
+
 def document_row(obj: ET.Element) -> dict[str, str]:
     return {
         "id": xml_text(obj, "m:objectID/m:id"),
