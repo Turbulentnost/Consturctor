@@ -406,8 +406,7 @@ def publish_github_release(*, constructor_only: bool = False) -> None:
             f"Constructor {version} and Orchestrator {version}. "
             "Constructor-Setup.exe installs both programs. "
             "An update from either app installs both Constructor and Orchestrator. "
-            "Regulation creation now shows the process checklist after document parse. "
-            "Main process no longer crashes on a destroyed sidecar/update stream."
+            "Orchestrator workplace: Today grid, KPI, assignments registry, 1C tasks, admin UI."
         )
     if view.returncode == 0:
         run([gh, "release", "upload", tag, *paths, "--repo", repo, "--clobber"], cwd=REPO_ROOT, env=env)

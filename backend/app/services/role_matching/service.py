@@ -4,6 +4,7 @@ import logging
 import re
 from uuid import uuid4
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.regulation import RoleMatchRun
@@ -211,7 +212,7 @@ def get_role_match_run(
     regulation_id: str,
     run_id: str,
 ) -> RoleMatchResult:
-    run = _get_run(db, user_id=user_id, regulation_id=regulation_id, run_id=run_id)
+    run = get_run_row(db, user_id=user_id, regulation_id=regulation_id, run_id=run_id)
     return RoleMatchResult.model_validate(run.result_json)
 
 
@@ -226,7 +227,7 @@ def update_match_status(
 ) -> RoleMatchResult:
     if status not in {"accepted", "rejected"}:
         raise RoleMatchError("Статус должен быть accepted или rejected")
-    run = _get_run(db, user_id=user_id, regulation_id=regulation_id, run_id=run_id)
+    run = get_run_row(db, user_id=user_id, regulation_id=regulation_id, run_id=run_id)
     current = RoleMatchResult.model_validate(run.result_json)
     target_ids = set(sibling_match_ids(current.matches, match_id))
     if match_id not in target_ids:
@@ -258,22 +259,52 @@ def update_match_status(
     return RoleMatchResult.model_validate(run.result_json)
 
 
-def _get_run(
+def get_run_row(
     db: Session,
     *,
     user_id: str,
     regulation_id: str,
     run_id: str,
 ) -> RoleMatchRun:
-    run = (
-        db.query(RoleMatchRun)
-        .filter(
-            RoleMatchRun.id == run_id,
-            RoleMatchRun.user_id == user_id,
-            RoleMatchRun.regulation_id == regulation_id,
+    user_key = (user_id or "").strip()
+    run_key = (run_id or "").strip()
+    regulation_key = (regulation_id or "").strip()
+    user_filter = func.lower(RoleMatchRun.user_id) == user_key.lower()
+
+    run = None
+    if run_key:
+        run = (
+            db.query(RoleMatchRun)
+            .filter(RoleMatchRun.id == run_key, user_filter)
+            .first()
         )
-        .first()
-    )
+        if run is not None and regulation_key and run.regulation_id != regulation_key:
+            logger.warning(
+                "Role match run %s found for user but regulation mismatch path=%s stored=%s",
+                run_key,
+                regulation_key,
+                run.regulation_id,
+            )
+    if run is None and regulation_key:
+        run = (
+            db.query(RoleMatchRun)
+            .filter(user_filter, RoleMatchRun.regulation_id == regulation_key)
+            .order_by(RoleMatchRun.created_at.desc())
+            .first()
+        )
+        if run is not None:
+            logger.warning(
+                "Role match run fallback by regulation %s -> %s (requested %s)",
+                regulation_key,
+                run.id,
+                run_key,
+            )
     if run is None:
+        logger.warning(
+            "Role match run not found run_id=%s user_id=%s regulation_id=%s",
+            run_key,
+            user_key,
+            regulation_key,
+        )
         raise RoleMatchError("Запуск поиска не найден", status_code=404)
     return run

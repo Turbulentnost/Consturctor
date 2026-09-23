@@ -217,6 +217,8 @@ export class AgentSidecar {
       ...cursorEnv,
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
+      NO_PROXY: '127.0.0.1,localhost,192.168.1.157',
+      no_proxy: '127.0.0.1,localhost,192.168.1.157',
       PYTHONPATH: pythonPathParts.join(delimiter),
       CONSTRUCTOR_SIDECAR: sidecar,
       CONSTRUCTOR_DESKTOP_ROOT: desktopRoot,
