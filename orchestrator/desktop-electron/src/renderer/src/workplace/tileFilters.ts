@@ -371,8 +371,8 @@ export function mailMatchesTile(row: SpecMailRow, id: string): boolean {
   if (id === 'all' || id === 'new') return true
   if (id === 'proc') return /обработ|непрочитан/i.test(row.status)
   if (id === 'hi') return /высок/i.test(row.priority) || row.unread === true
+  if (id === 'proj') return row.appFolderId === 'proj'
   const blob = `${row.subject} ${row.category} ${row.link}`
-  if (id === 'proj') return /проект|turbo|crm/i.test(blob)
   if (id === 'reg') return /регламент|договор|акт|согласован/i.test(blob)
   return true
 }

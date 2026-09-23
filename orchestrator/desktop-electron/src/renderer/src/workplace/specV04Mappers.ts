@@ -481,7 +481,8 @@ export function outlookMessageToMailRow(msg: Record<string, unknown>, index: num
     assignee: '—',
     unread,
     bodyPreview: bodyPreview || undefined,
-    attachmentNames: attachmentNames.length ? attachmentNames : undefined
+    attachmentNames: attachmentNames.length ? attachmentNames : undefined,
+    direction: direction === 'sent' ? 'sent' : 'inbox'
   }
 }
 
@@ -508,7 +509,8 @@ export function imapMessageToMailRow(msg: Record<string, unknown>, index: number
     status: unread ? 'Непрочитано' : 'К обработке',
     stTone: unread ? 'orange' : 'blue',
     assignee: '—',
-    unread
+    unread,
+    direction: 'inbox'
   }
 }
 

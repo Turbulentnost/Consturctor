@@ -261,6 +261,16 @@ export interface SpecMailRow {
   receivedLabel?: string
   unread?: boolean
   attachments?: SpecMailAttachment[]
+  /** Outlook inbox/sent; IMAP always inbox. */
+  direction?: 'inbox' | 'sent'
+  /** In-app folder id (localStorage), not Outlook. */
+  appFolderId?: string
+  entryId?: string
+  channel?: 'outlook' | 'imap' | string
+  bodyPreview?: string
+  attachmentNames?: string[]
+  imapUid?: number
+  messageId?: string
 }
 
 export const DEMO_MAIL_ROWS: SpecMailRow[] = [
@@ -276,7 +286,8 @@ export const DEMO_MAIL_ROWS: SpecMailRow[] = [
     priTone: 'red',
     status: 'К обработке',
     stTone: 'orange',
-    assignee: 'Иванов И.И.'
+    assignee: 'Иванов И.И.',
+    direction: 'inbox'
   },
   {
     id: 'm2',
@@ -290,7 +301,8 @@ export const DEMO_MAIL_ROWS: SpecMailRow[] = [
     priTone: 'orange',
     status: 'В работе',
     stTone: 'blue',
-    assignee: 'Иванов И.И.'
+    assignee: 'Иванов И.И.',
+    direction: 'inbox'
   }
 ]
 
