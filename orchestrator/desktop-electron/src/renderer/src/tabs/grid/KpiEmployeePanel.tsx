@@ -65,10 +65,15 @@ function KpiEmployeeTile({ metric, gradId }: { metric: WorkplaceKpiEmployeeMetri
 export function KpiEmployeePanel({
   metrics,
   loading,
+  needsMethodology,
+  onCalculate,
   onDetails
 }: {
   metrics: WorkplaceKpiEmployeeMetric[]
   loading?: boolean
+  /** Нет готового модуля расчёта KPI должности — не показываем заглушку. */
+  needsMethodology?: boolean
+  onCalculate?: () => void
   onDetails?: () => void
 }): React.JSX.Element {
   const gradPrefix = useId().replace(/:/g, '')
@@ -93,6 +98,13 @@ export function KpiEmployeePanel({
       </header>
       {loading && !metrics.length ? (
         <p className="spec-v04-muted kpi-employee-loading">Загружаем…</p>
+      ) : needsMethodology ? (
+        <div className="kpi-employee-empty">
+          <p>Для этой должности ещё нет модуля расчёта KPI.</p>
+          <button type="button" className="spec-btn-launch" onClick={() => onCalculate?.()}>
+            Рассчитать методику
+          </button>
+        </div>
       ) : (
         <div className="kpi-employee-grid">
           {metrics.map((m) => (

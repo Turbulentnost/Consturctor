@@ -20,7 +20,12 @@ from app.schemas.workflow import (
     WorkflowFilesResponse,
 )
 from app.services.triggers.service import workflow_is_deleted
-from app.services.workflows.document import DocumentError, compose_document, load_attachment_bytes
+from app.services.workflows.document import (
+    DocumentError,
+    compose_document,
+    extract_xlsx_preview,
+    load_attachment_bytes,
+)
 
 SUMMARY_CHARS = 700
 PREVIEW_CHARS = 500
@@ -226,8 +231,40 @@ def register_agent_files(
         run_id=run_id,
         origin=origin,
     )
+    for item in rows:
+        _drop_older_same_name_outputs(
+            db,
+            workflow_id=row.id,
+            filename=item.filename,
+            keep_id=item.id,
+        )
     db.flush()
     return rows
+
+
+def _drop_older_same_name_outputs(
+    db: Session,
+    *,
+    workflow_id: str,
+    filename: str,
+    keep_id: str,
+) -> None:
+    name = (filename or "").strip()
+    if not name or not keep_id:
+        return
+    stale = (
+        db.query(WorkflowFile)
+        .filter(
+            WorkflowFile.workflow_id == workflow_id,
+            WorkflowFile.source == SOURCE_AGENT,
+            WorkflowFile.scope == SCOPE_RUN_OUTPUT,
+            WorkflowFile.filename == name,
+            WorkflowFile.id != keep_id,
+        )
+        .all()
+    )
+    for item in stale:
+        db.delete(item)
 
 
 def list_user_platform_files(db: Session, *, user_id: str) -> PlatformFilesResponse:
@@ -333,6 +370,35 @@ def get_workflow_file(
     if item is None:
         raise WorkflowFileError("Файл не найден", status_code=404)
     return item
+
+
+def resolved_file_text(item: WorkflowFile) -> str:
+    text = (item.extracted_text or "").strip()
+    if text and not text.startswith("[файл "):
+        return text
+    raw = item.content or b""
+    name = item.filename or "file"
+    if not raw:
+        return text
+    try:
+        loaded = load_attachment_bytes(name, raw, ocr=False)
+    except DocumentError:
+        return text
+    extracted = str(loaded.get("text") or "").strip()
+    return extracted or text
+
+
+def workflow_file_preview(item: WorkflowFile) -> dict[str, Any]:
+    text = resolved_file_text(item)
+    name = (item.filename or "").lower()
+    workbook = None
+    if (item.content or b"") and name.endswith((".xlsx", ".xlsm")):
+        workbook = extract_xlsx_preview(item.content or b"")
+    return {
+        "text": text,
+        "summary": item.summary or "",
+        "workbook": workbook,
+    }
 
 
 def delete_workflow_file(db: Session, *, row: Workflow, file_id: str) -> None:

@@ -18,6 +18,9 @@ import { useKpiWorkflowBoard } from '../../workplace/useKpiWorkflowBoard'
 import { useWorkplaceKpiDashboard } from '../../workplace/useWorkplaceKpiDashboard'
 import { agentMatchesKpiTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import type { WorkplaceKpiCard } from '../../workplace/workplaceKpiTypes'
+import { OrchSlotMain } from '../../layout/GridSlots'
+import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
+import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel } from './KpiEmployeePanel'
 import { KpiPeriodDynamicsChart } from './KpiPeriodDynamicsChart'
 import { KpiProblemZonesTable } from './KpiProblemZonesTable'
@@ -53,6 +56,8 @@ export function KpiGridTab(_props: {
   const [agentQuery, setAgentQuery] = useState('')
   const [tileFilter, setTileFilter] = useState('all')
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
+  const positionKpi = usePositionKpi(_props.user?.position || '')
+  const [buildingMethod, setBuildingMethod] = useState(false)
   const periodSources = useKpiPeriodSources()
   const { board: workflowBoard } = useKpiWorkflowBoard(from, to)
   const dailySyncKeyRef = useRef('')
@@ -100,6 +105,23 @@ export function KpiGridTab(_props: {
       })
   }, [from, to, loading, periodSources, reload])
 
+  if (buildingMethod) {
+    return (
+      <OrchSlotMain spanAll heavyEmbed>
+        <div className="kpi-method-slot">
+          <PositionKpiBuildPage
+            position={_props.user?.position || ''}
+            onBack={() => setBuildingMethod(false)}
+            onReady={() => {
+              setBuildingMethod(false)
+              positionKpi.reload()
+            }}
+          />
+        </div>
+      </OrchSlotMain>
+    )
+  }
+
   return (
     <StandardTabChrome
       tabId="kpi"
@@ -127,8 +149,10 @@ export function KpiGridTab(_props: {
         ),
         side: (
           <KpiEmployeePanel
-            metrics={dashboard?.employeeKpi ?? []}
-            loading={loading}
+            metrics={positionKpi.metrics}
+            loading={positionKpi.loading}
+            needsMethodology={!positionKpi.loading && (positionKpi.needsBuild || !positionKpi.metrics.length)}
+            onCalculate={() => setBuildingMethod(true)}
             onDetails={() => _props.onOpenProcesses?.()}
           />
         ),

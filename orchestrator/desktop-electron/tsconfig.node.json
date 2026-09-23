@@ -9,7 +9,10 @@
     "strict": true,
     "skipLibCheck": true,
     "types": ["node"],
-    "lib": ["ES2022"]
+    "lib": ["ES2022"],
+    "paths": {
+      "@shared/*": ["./src/shared/*"]
+    }
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "electron.vite.config.ts"]
+  "include": ["src/main/**/*", "src/shared/**/*", "src/preload/**/*", "electron.vite.config.ts"]
 }

@@ -6,6 +6,16 @@ from app.models.orchestrator import UserOrchestrator
 from app.models.regulation import RegulationDocument, RoleMatchRun
 from app.models.trigger import AgentTrigger
 from app.models.kpi_daily_metric import WorkplaceKpiDailyMetric
+from app.models.position_kpi import (
+    PositionCompRule,
+    PositionKpiBuild,
+    PositionKpiBuildMessage,
+    PositionKpiDailyFact,
+    PositionKpiMetric,
+    PositionKpiModule,
+    PositionKpiProfile,
+    PositionKpiSource,
+)
 from app.models.workflow import Workflow, WorkflowFile
 
 __all__ = [
@@ -20,4 +30,12 @@ __all__ = [
     "Workflow",
     "WorkflowFile",
     "WorkplaceKpiDailyMetric",
+    "PositionKpiProfile",
+    "PositionCompRule",
+    "PositionKpiMetric",
+    "PositionKpiModule",
+    "PositionKpiSource",
+    "PositionKpiDailyFact",
+    "PositionKpiBuild",
+    "PositionKpiBuildMessage",
 ]

@@ -113,6 +113,19 @@ def test_draft_after_demo_from_playbook() -> None:
     assert trigger_chip_label(draft.triggers[0]) == "каждые 15 мин"
 
 
+def test_draft_after_demo_keeps_existing_title() -> None:
+    draft = draft_after_demo(
+        title="Подготовка заседаний Ревизионной комиссии",
+        notes="# Паспорт ИИ-агента: Подготовка заседаний Ревизионной комиссии\n",
+        playbook={
+            "name": "Еженедельный отчёт по поручениям",
+            "triggers": [],
+        },
+        work={"schedule": []},
+    )
+    assert draft.name == "Подготовка заседаний Ревизионной комиссии"
+
+
 def test_draft_after_demo_drops_invented_event_trigger() -> None:
     from app.services.workflows.schedule_draft import explicit_when_to_run
 

@@ -705,6 +705,53 @@ export interface SupportTicketItem {
   queuedAt: string
 }
 
+export interface PositionKpiTile {
+  code: string
+  name: string
+  weight: number
+  unit: string
+  plan: number | null
+  fact: number | null
+  score: number | null
+  contrib: number | null
+  evidence: string
+}
+
+export interface PositionKpiDaily {
+  position: string
+  profileId: string
+  periodFrom: string
+  periodTo: string
+  asOf: string
+  computedAt: string
+  cached: boolean
+  stale: boolean
+  tiles: PositionKpiTile[]
+}
+
+export interface PositionKpiBuildMessage {
+  messageId: string
+  role: string
+  content: string
+  structured: Record<string, unknown>
+  createdAt: string
+}
+
+export interface PositionKpiBuildSession {
+  buildId: string
+  position: string
+  status: string
+  cursorAgentId: string
+  extracted: Record<string, unknown>
+  catalogDraft: Record<string, unknown>
+  modules: Record<string, unknown>[]
+  profileId: string
+  sdkPrompt: string
+  messages: PositionKpiBuildMessage[]
+  createdAt: string
+  updatedAt: string
+}
+
 export class ApiError extends Error {
   status: number
   constructor(message: string, status = 0) {

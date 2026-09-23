@@ -179,7 +179,8 @@ const START_TYPES = new Set([
   'run',
   'check_trigger',
   'form_orchestrator',
-  'calc_orchestrator'
+  'calc_orchestrator',
+  'kpi_module'
 ])
 
 function isStartCommand(command: AgentSidecarMessage): boolean {

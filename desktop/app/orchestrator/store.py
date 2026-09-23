@@ -47,21 +47,21 @@ def _dump(instance: ProcessInstance) -> dict:
     }
 
 
-def load_instances(user_id: str) -> list[ProcessInstance]:
+def load_instances(user_id: str, position: str = "") -> list[ProcessInstance]:
     path = store_path(user_id)
     if not path.is_file():
-        seeded = _seed_for(user_id)
+        seeded = _seed_for(position)
         save_instances(user_id, seeded)
         return seeded
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return _seed_for(user_id)
+        return _seed_for(position)
     rows = payload.get("instances") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
-        return _seed_for(user_id)
+        return _seed_for(position)
     instances = [parsed for item in rows if isinstance(item, dict) and (parsed := _parse(item))]
-    return instances or _seed_for(user_id)
+    return instances or _seed_for(position)
 
 
 def save_instances(user_id: str, instances: list[ProcessInstance]) -> None:
@@ -85,10 +85,10 @@ def latest_by_definition(instances: list[ProcessInstance]) -> dict[str, ProcessI
     return latest
 
 
-def _seed_for(user_id: str) -> list[ProcessInstance]:
+def _seed_for(position: str = "") -> list[ProcessInstance]:
     from app.orchestrator.kpi import has_position_kpi, seed_ilchenko_instances
 
-    if has_position_kpi(user_id):
+    if has_position_kpi(position):
         return seed_ilchenko_instances()
     return _seed()
 

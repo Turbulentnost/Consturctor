@@ -1,4 +1,4 @@
-"""Download of 1C attached files (OData / volume / DTW / UNC)."""
+"""Download of 1C attached files over HTTP (hs/dtw/files)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 
 from app.api.v1.tools import _artifact_invoke_view, _dispatch_server_tool
 from app.services.onec_artifacts import (
-    ASSIGNMENT_FILES_ENTITY,
     ArtifactError,
     artifact_object_name,
     cached_artifact_download,
@@ -24,6 +23,10 @@ from app.services.local_mcp import list_tools
 from app.services.tool_names import resolve_tool_name
 
 
+def _http_ok(body: bytes, disposition: str = "") -> tuple[int, bytes, str]:
+    return 200, body, disposition
+
+
 def test_resolve_download_artifact_aliases() -> None:
     assert resolve_tool_name("onec.download_artifact", ONEC_TOOLS) == "onec.download_artifact"
     assert resolve_tool_name("onecdownload_artifact", ONEC_TOOLS) == "onec.download_artifact"
@@ -35,9 +38,11 @@ def test_tool_is_registered() -> None:
     assert "onec.download_artifact" in ONEC_TOOLS
     names = {item["name"] for item in list_tools()}
     assert "onec.download_artifact" in names
+    assert "office.read_file" in names
     tool = next(item for item in list_tools() if item["name"] == "onec.download_artifact")
     assert tool.get("execution") == "server"
     assert tool.get("entity") == "file"
+    assert "без odata" in str(tool.get("description") or "").casefold()
 
 
 def test_stub_download_writes_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,36 +68,7 @@ def test_invoke_without_file_id() -> None:
     assert result.get("source") == "stub"
 
 
-def test_download_uses_odata_base64(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    file_id = "c1ec90a0-80de-11f1-9843-6cb31113810c"
-    payload = b"%PDF-1.4\nfrom-odata"
-    row = {
-        "Ref_Key": file_id,
-        "Description": "report",
-        "Расширение": "pdf",
-        "ПутьКФайлу": "",
-        "ФайлХранилище_Base64Data": base64.b64encode(payload).decode("ascii"),
-    }
-    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        "app.services.onec_artifacts.odata_json",
-        lambda path, timeout=None: (200, row) if ASSIGNMENT_FILES_ENTITY in path else (404, None),
-    )
-    monkeypatch.setattr(
-        "app.services.onec_artifacts.http_bytes",
-        lambda url, timeout=None: (_ for _ in ()).throw(AssertionError("dtw must not be called")),
-    )
-
-    artifact = download_artifact_file(file_id)
-
-    assert artifact.content == payload
-    assert artifact.filename == "report.pdf"
-    assert artifact.method == "odata_base64"
-    assert artifact.source_entity == ASSIGNMENT_FILES_ENTITY
-    assert Path(artifact.saved_path).read_bytes() == payload
-
-
-def test_download_uses_dtw_and_unwraps_envelope(
+def test_download_uses_http_and_unwraps_envelope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     file_id = "c49963b3-7a91-11f1-983b-6cb31113810e"
@@ -103,29 +79,96 @@ def test_download_uses_dtw_and_unwraps_envelope(
             "contentBase64": base64.b64encode(pdf).decode("ascii"),
         }
     ).encode("utf-8")
-    row = {
-        "Ref_Key": file_id,
-        "Description": "1597_260708090522_001",
-        "Расширение": "pdf",
-        "ПутьКФайлу": "20260708\\1597_260708090522_001.pdf",
-        "ФайлХранилище_Base64Data": "",
-    }
+    called: list[str] = []
+
     monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        "app.services.onec_artifacts.odata_json",
-        lambda path, timeout=None: (200, row) if "guid'" in path and "Тома" not in path else (404, None),
-    )
+    monkeypatch.setattr("app.services.onec_artifacts._dtw_base_url", lambda: "http://1c.local")
     monkeypatch.setattr(
         "app.services.onec_artifacts.http_bytes",
-        lambda url, timeout=None: (200, envelope) if "/hs/dtw/files/" in url else (404, b""),
+        lambda url, timeout=None: called.append(url) or _http_ok(envelope),
     )
 
     artifact = download_artifact_file(file_id)
 
     assert artifact.content == pdf
     assert artifact.filename == "1597_260708090522_001.pdf"
-    assert artifact.method == "dtw"
+    assert artifact.method == "http"
     assert artifact.content_type == "application/pdf"
+    assert called == [f"http://1c.local/hs/dtw/files/{file_id}"]
+
+
+def test_download_uses_raw_http_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file_id = "c1ec90a0-80de-11f1-9843-6cb31113810c"
+    payload = b"%PDF-1.4\nfrom-http"
+    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.services.onec_artifacts._dtw_base_url", lambda: "http://1c.local")
+    monkeypatch.setattr(
+        "app.services.onec_artifacts.http_bytes",
+        lambda url, timeout=None: _http_ok(
+            payload, 'attachment; filename="report.pdf"'
+        ),
+    )
+
+    artifact = download_artifact_file(file_id)
+
+    assert artifact.content == payload
+    assert artifact.filename == "report.pdf"
+    assert artifact.method == "http"
+    assert Path(artifact.saved_path).read_bytes() == payload
+
+
+def test_download_does_not_call_odata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.services.onec_artifacts._dtw_base_url", lambda: "http://1c.local")
+    monkeypatch.setattr(
+        "app.services.onec_artifacts.http_bytes",
+        lambda url, timeout=None: _http_ok(b"plain-bytes"),
+    )
+
+    artifact = download_artifact_file(file_id, entity="Catalog_ТД_ПорученияПрисоединенныеФайлы")
+
+    assert artifact.method == "http"
+    assert artifact.content == b"plain-bytes"
+
+
+def test_handle_download_uses_cache_without_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file_id = "939f6175-8a8b-11f1-9850-6cb31113810e"
+    dest = tmp_path / file_id
+    dest.mkdir()
+    (dest / "note.pdf").write_bytes(b"already-there")
+    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "app.services.onec_artifacts.http_bytes",
+        lambda url, timeout=None: (_ for _ in ()).throw(AssertionError("http must not be called")),
+    )
+
+    result = handle_download_artifact({"file_id": file_id})
+
+    assert result["method"] == "cache"
+    assert result["filename"] == "note.pdf"
+    assert Path(result["saved_path"]).read_bytes() == b"already-there"
+
+
+def test_download_http_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    file_id = "c49963b3-7a91-11f1-983b-6cb31113810e"
+    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.services.onec_artifacts._dtw_base_url", lambda: "http://1c.local")
+    monkeypatch.setattr(
+        "app.services.onec_artifacts.http_bytes",
+        lambda url, timeout=None: (_ for _ in ()).throw(
+            ArtifactError("1C HTTP: нет ответа за 90 с")
+        ),
+    )
+
+    with pytest.raises(ArtifactError, match="HTTP"):
+        download_artifact_file(file_id)
 
 
 def test_download_prefers_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -135,109 +178,50 @@ def test_download_prefers_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     dest = tmp_path / file_id
     dest.mkdir()
     (dest / filename).write_bytes(cached)
-    row = {
-        "Ref_Key": file_id,
-        "Description": "ДИ",
-        "Расширение": "pdf",
-        "ПутьКФайлу": f"20260716\\{filename}",
-        "ФайлХранилище_Base64Data": "",
-    }
-    called_dtw = []
+    called_http: list[str] = []
     monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "app.services.onec_artifacts.odata_json",
-        lambda path, timeout=None: (200, row),
-    )
-    monkeypatch.setattr(
         "app.services.onec_artifacts.http_bytes",
-        lambda url, timeout=None: called_dtw.append(url) or (200, b"unused"),
+        lambda url, timeout=None: called_http.append(url) or _http_ok(b"unused"),
     )
 
     artifact = download_artifact_file(file_id)
 
     assert artifact.content == cached
     assert artifact.method == "cache"
-    assert called_dtw == []
+    assert called_http == []
 
 
-def test_download_reads_volume_share(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    file_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-    tom_key = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-    volume = tmp_path / "volume"
-    rel = "2026\\note.txt"
-    (volume / "2026").mkdir(parents=True)
-    (volume / rel.replace("\\", "/")).write_bytes(b"from-volume")
-    row = {
-        "Ref_Key": file_id,
-        "Description": "note",
-        "Расширение": "txt",
-        "ПутьКФайлу": rel,
-        "ТипХраненияФайла": "ВТомахНаДиске",
-        "Том_Key": tom_key,
-        "ФайлХранилище_Base64Data": "",
-    }
-
-    def fake_json(path: str, timeout=None):
-        if "Catalog_ТомаХраненияФайлов" in path:
-            return 200, {"ПолныйПутьWindows": str(volume)}
-        if ASSIGNMENT_FILES_ENTITY in path:
-            return 200, row
-        return 404, None
-
-    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path / "cache")
-    monkeypatch.setattr("app.services.onec_artifacts.odata_json", fake_json)
-    monkeypatch.setattr(
-        "app.services.onec_artifacts.http_bytes",
-        lambda url, timeout=None: (_ for _ in ()).throw(AssertionError("dtw must not be called")),
-    )
-
-    artifact = download_artifact_file(file_id)
-    assert artifact.content == b"from-volume"
-    assert artifact.method == "volume"
-
-
-def test_download_deleted_file_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_download_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     file_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
-    row = {
-        "Ref_Key": file_id,
-        "Description": "gone",
-        "Расширение": "pdf",
-        "ПутьКФайлу": "",
-        "DeletionMark": True,
-        "ФайлХранилище_Base64Data": "",
-    }
     monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        "app.services.onec_artifacts.odata_json",
-        lambda path, timeout=None: (200, row),
-    )
+    monkeypatch.setattr("app.services.onec_artifacts._dtw_base_url", lambda: "http://1c.local")
     monkeypatch.setattr(
         "app.services.onec_artifacts.http_bytes",
-        lambda url, timeout=None: (404, b""),
+        lambda url, timeout=None: (404, b"", ""),
     )
 
-    with pytest.raises(ArtifactError, match="deleted"):
+    with pytest.raises(ArtifactError, match="not found"):
         download_artifact_file(file_id)
 
 
 def test_handle_download_returns_base64(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     file_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
     payload = b"hello-file"
-    row = {
-        "Ref_Key": file_id,
-        "Description": "hello",
-        "Расширение": "txt",
-        "ФайлХранилище_Base64Data": base64.b64encode(payload).decode("ascii"),
-    }
     monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.services.onec_artifacts._dtw_base_url", lambda: "http://1c.local")
     monkeypatch.setattr(
-        "app.services.onec_artifacts.odata_json",
-        lambda path, timeout=None: (200, row),
+        "app.services.onec_artifacts.http_bytes",
+        lambda url, timeout=None: _http_ok(
+            payload, 'attachment; filename="hello.txt"'
+        ),
     )
 
     result = handle_download_artifact({"file_id": file_id})
     assert result["filename"] == "hello.txt"
     assert result["size"] == len(payload)
+    assert result["source"] == "http"
+    assert result["method"] == "http"
     assert base64.b64decode(result["content_base64"]) == payload
     assert artifact_object_name(file_id, "hello.txt") == f"{file_id}/hello.txt"
     cached = cached_artifact_download(file_id)

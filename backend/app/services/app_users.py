@@ -10,6 +10,7 @@ from app.config import settings
 from app.db.session import SessionLocal
 from app.models.user import AppUser
 from app.schemas.auth import UserOut
+from app.services.profile_overrides import apply_profile_overrides, lookup_profile_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -29,18 +30,28 @@ def is_admin_user(fio: str) -> bool:
     return _fio_key(fio) in ADMIN_FIO_KEYS
 
 
+def _avatar_version(user: AppUser) -> str:
+    stamp = getattr(user, "updated_at", None)
+    if stamp is None:
+        return ""
+    try:
+        return f"?v={int(stamp.timestamp())}"
+    except (OSError, ValueError, OverflowError, TypeError):
+        return ""
+
+
 def avatar_url_for(user: AppUser | None) -> str | None:
     if user is None or not user.avatar_path:
         return None
-    path = Path(user.avatar_path)
-    if not path.is_absolute():
-        path = settings.avatar_storage_dir / path
-    if not path.is_file():
+    try:
+        path = Path(user.avatar_path)
+        if not path.is_absolute():
+            path = settings.avatar_storage_dir / path
+        if not path.is_file():
+            return None
+    except OSError:
         return None
-    version = ""
-    if getattr(user, "updated_at", None) is not None:
-        version = f"?v={int(user.updated_at.timestamp())}"
-    return f"/api/v1/auth/users/{user.id}/avatar{version}"
+    return f"/api/v1/auth/users/{user.id}/avatar{_avatar_version(user)}"
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -65,11 +76,14 @@ def department_change_state(user: AppUser) -> tuple[bool, datetime | None]:
 def to_user_out(user: AppUser) -> UserOut:
     can_change, available_at = department_change_state(user)
     is_admin = is_admin_user(user.fio)
+    department, position = apply_profile_overrides(
+        user.fio, user.department or "", user.position or ""
+    )
     return UserOut(
         id=user.id,
         fio=user.fio,
-        department=user.department or "",
-        position=user.position or "",
+        department=department,
+        position=position,
         role="admin" if is_admin else "user",
         is_admin=is_admin,
         avatar_url=avatar_url_for(user),
@@ -87,6 +101,9 @@ def upsert_app_user(
     department: str,
     position: str = "",
 ) -> AppUser:
+    forced_department, forced_position = lookup_profile_overrides(fio)
+    department = forced_department or department
+    position = forced_position or position
     with SessionLocal() as db:
         user = db.get(AppUser, user_id)
         if user is None:
@@ -101,13 +118,19 @@ def upsert_app_user(
         else:
             changed = (user.fio or "") != fio
             user.fio = fio
-            # Keep app department and position as source of truth after first login.
-            if not (user.department or "").strip() and department:
-                user.department = department
-                changed = True
-            if not (user.position or "").strip() and position:
-                user.position = position
-                changed = True
+            forced_department, forced_position = lookup_profile_overrides(fio)
+            # Keep app department and position as source of truth after first login,
+            # unless a local FIO override must win.
+            next_department = forced_department or department
+            next_position = forced_position or position
+            if forced_department or not (user.department or "").strip():
+                if next_department and (user.department or "") != next_department:
+                    user.department = next_department
+                    changed = True
+            if forced_position or not (user.position or "").strip():
+                if next_position and (user.position or "") != next_position:
+                    user.position = next_position
+                    changed = True
             if not changed:
                 # /auth/me runs on every app open; skip the write when nothing moved.
                 db.expunge(user)

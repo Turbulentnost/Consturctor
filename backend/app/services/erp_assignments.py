@@ -43,6 +43,10 @@ CLOSED_STATUSES = {
 }
 
 _GUID_EMPTY = "00000000-0000-0000-0000-000000000000"
+_FILE_LIST_SELECT = (
+    "Ref_Key,Description,Расширение,Размер,ПутьКФайлу,"
+    "ДатаСоздания,ВладелецФайла_Key"
+)
 
 
 class AssignmentError(RuntimeError):
@@ -80,6 +84,26 @@ def _empty_guid(value: Any) -> bool:
 
 def _odata_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def normalize_assignment_number(number: str) -> str:
+    """Journal series is Cyrillic АСТ00. Models often send Latin ACT."""
+    text = str(number or "").strip()
+    if len(text) < 3:
+        return text
+    mapped: list[str] = []
+    for char in text[:3]:
+        if char in "Aa":
+            mapped.append("А")
+        elif char in "CcСс":
+            mapped.append("С")
+        elif char in "TtТт":
+            mapped.append("Т")
+        else:
+            mapped.append(char)
+    if "".join(mapped) == "АСТ" and text[:3] != "АСТ":
+        return "АСТ" + text[3:]
+    return text
 
 
 def _parse_day(raw: str, *, end: bool = False) -> datetime | None:
@@ -515,6 +539,7 @@ def _fetch_files(ref_key: str) -> list[dict[str, Any]]:
     result = _odata_get(
         {
             "entity": ASSIGNMENT_FILES_ENTITY,
+            "path": f"{ASSIGNMENT_FILES_ENTITY}?$select={_FILE_LIST_SELECT}",
             "top": 50,
             "filter": f"ВладелецФайла_Key eq guid'{ref_key}'",
         }
@@ -549,6 +574,76 @@ def _batch_assignment_lines(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fetch_files_map(ref_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """One OData call per 15 owners — list+include_files must not N+1 to 1C."""
+    keys = [key for key in dict.fromkeys(ref_keys) if _looks_like_guid(key)]
+    out: dict[str, list[dict[str, Any]]] = {}
+    for index in range(0, len(keys), 15):
+        chunk = keys[index : index + 15]
+        filt = " or ".join(f"ВладелецФайла_Key eq guid'{key}'" for key in chunk)
+        try:
+            result = _odata_get(
+                {
+                    "entity": ASSIGNMENT_FILES_ENTITY,
+                    "path": f"{ASSIGNMENT_FILES_ENTITY}?$select={_FILE_LIST_SELECT}",
+                    "top": 200,
+                    "filter": filt,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            for key in chunk:
+                out.setdefault(key, []).extend(_fetch_files(key))
+            continue
+        for row in result.get("value") or []:
+            if not isinstance(row, dict):
+                continue
+            owner = str(row.get("ВладелецФайла_Key") or "")
+            if owner:
+                out.setdefault(owner, []).append(_normalize_file(row))
+    return out
+
+
+def _arg_flag(value: Any, default: bool | None = None) -> bool | None:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "да", "истина"}:
+        return True
+    if text in {"0", "false", "no", "нет", "ложь", ""}:
+        return False
+    return default
+
+
+_ASSIGNMENT_PAGE = 100
+
+
+def _odata_assignment_pages(
+    filt: str,
+    *,
+    top: int,
+    full_journal: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    if not full_journal:
+        result = _odata_get({"entity": ASSIGNMENT_ENTITY, "top": top, "filter": filt})
+        rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+        return rows, False
+    rows: list[dict[str, Any]] = []
+    skip = 0
+    while len(rows) < top:
+        take = min(_ASSIGNMENT_PAGE, top - len(rows))
+        result = _odata_get(
+            {"entity": ASSIGNMENT_ENTITY, "top": take, "skip": skip, "filter": filt}
+        )
+        batch = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+        rows.extend(batch)
+        if len(batch) < take:
+            return rows, False
+        skip += len(batch)
+    return rows, True
+
+
 def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
     import time
 
@@ -563,24 +658,32 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         resolved = resolve_user(customer)
         customer_key = resolved["ref_key"]
         customer = resolved["fio"]
-    number = str(args.get("number") or "").strip()
+    number = normalize_assignment_number(str(args.get("number") or "").strip())
     query = str(args.get("query") or args.get("topic") or "").strip()
     date_from = _parse_day(str(args.get("date_from") or ""))
     date_to = _parse_day(str(args.get("date_to") or ""), end=True)
-    only_open = args.get("only_open")
-    include_day = args.get("include_last_day")
+    only_open_flag = _arg_flag(args.get("only_open"))
+    include_day = _arg_flag(args.get("include_last_day"))
+    include_all = _arg_flag(args.get("include_all")) is True
+    full_journal = include_all or only_open_flag is False
     changed_since = None
     open_only = False
-    if date_from is None and date_to is None:
-        if only_open is True and include_day is False:
+    if full_journal:
+        open_only = False
+        changed_since = None
+    elif date_from is None and date_to is None:
+        if only_open_flag is True and include_day is False:
             open_only = True
-        elif only_open is True and include_day is not True:
+        elif only_open_flag is True and include_day is not True:
             open_only = True
         else:
             changed_since = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    elif only_open is True:
+    elif only_open_flag is True:
         open_only = True
-    top = max(1, min(int(args.get("limit") or args.get("top") or 40), 100))
+    if full_journal:
+        top = 2000
+    else:
+        top = max(1, min(int(args.get("limit") or args.get("top") or 40), 100))
     skip = max(0, int(args.get("skip") or 0))
     include_files = bool(args.get("include_files"))
     include_lines = _flag_on(args.get("include_lines"), default=True)
@@ -593,20 +696,30 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         only_open=open_only,
         changed_since=changed_since,
     )
-    result = _odata_list_assignments(
-        top=top, filt=filt, include_lines=include_lines, skip=skip
-    )
+    if full_journal:
+        raw_rows, truncated = _odata_assignment_pages(filt, top=top, full_journal=True)
+        result = {"source": "odata"}
+    else:
+        result = _odata_list_assignments(
+            top=top, filt=filt, include_lines=include_lines, skip=skip
+        )
+        raw_rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+        truncated = False
     if profile:
         marks["odata_list_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-    raw_rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
     if include_lines:
         t_lines = time.perf_counter()
         _attach_missing_lines(raw_rows)
         if profile:
             marks["lines_ms"] = round((time.perf_counter() - t_lines) * 1000, 1)
+    file_map = (
+        _fetch_files_map([str(row.get("Ref_Key") or "") for row in raw_rows])
+        if include_files
+        else {}
+    )
     items = []
     for row in raw_rows:
-        files = _fetch_files(str(row.get("Ref_Key") or "")) if include_files else []
+        files = file_map.get(str(row.get("Ref_Key") or ""), []) if include_files else []
         items.append(_normalize_assignment(row, files=files))
     t_names = time.perf_counter()
     _enrich_assignment_names(
@@ -633,18 +746,25 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         "count": len(items),
         "assignments": items,
         "include_lines": include_lines,
+        "truncated": truncated,
         "source": result.get("source") or "odata",
     }
     if profile:
         payload["timing_ms"] = marks
+    if not items:
+        payload["hint"] = (
+            "Zhurnal AST00 pust. Esli filtrovali po zakazchiku — povtori action=list "
+            "bez customer. Potom excel.create_workbook s tekstom «porucheniy net». "
+            "Ne ischi zadachi ispolnitelya, protokoly i ne delai OCR."
+        )
     return payload
 
 
 def _get_assignment(args: dict[str, Any]) -> dict[str, Any]:
-    number = str(args.get("number") or "").strip()
+    number = normalize_assignment_number(str(args.get("number") or "").strip())
     ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
     if not number and not ref_key:
-        raise AssignmentError("Nuzhen number (AST00-...) ili ref_key")
+        raise AssignmentError("Nuzhen number (АСТ00-...) ili ref_key")
     call: dict[str, Any] = {"entity": ASSIGNMENT_ENTITY, "top": 5}
     if ref_key:
         call["ref_key"] = ref_key
@@ -736,7 +856,7 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
     if only_open is None:
         only_open = True
     top = max(1, min(int(args.get("limit") or 20), 100))
-    parts = ["DeletionMark eq false"]
+    parts: list[str] = []
     if query:
         safe = query.replace("'", "''")
         parts.append(f"(substringof('{safe}', Description) or substringof('{safe}', ПредметСтрокой))")
@@ -748,7 +868,10 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
         performer = user["fio"]
     filt = " and ".join(parts)
     try:
-        result = _odata_get({"entity": TASK_ENTITY, "top": top, "filter": filt})
+        call: dict[str, Any] = {"entity": TASK_ENTITY, "top": top}
+        if filt:
+            call["filter"] = filt
+        result = _odata_get(call)
         rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
         source = result.get("source") or "odata"
     except Exception as exc:  # noqa: BLE001
@@ -758,9 +881,9 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
             "count": 0,
             "tasks": [],
             "hint": (
-                "Zhurnal porucheniy - action=list (Document_TD_Porucheniya, AST00). "
-                "V 1C net zadachi 'Proverit poruchenie': agent sam chitaet zhurnal. "
-                "Ne ischi ee cherez onec.erp_tasks_current."
+                "Eto ne zhurnal porucheniy. Vozvratis k action=list "
+                "(Document_TD_Porucheniya, seriya AST00 kirillicey). "
+                "Ne ischi zadachu 'Proverit poruchenie', ne delai OCR."
             ),
             "source": "error",
         }
@@ -794,25 +917,46 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _list_protocols(args: dict[str, Any]) -> dict[str, Any]:
-    date_from = _parse_day(str(args.get("date_from") or "")) or (
-        datetime.now() - timedelta(days=14)
-    )
+    psd_mark = _arg_flag(args.get("psd_mark") if "psd_mark" in args else args.get("psd_only")) is True
+    raw_from = str(args.get("date_from") or "").strip()
+    date_from = _parse_day(raw_from)
+    if date_from is None and not psd_mark:
+        date_from = datetime.now() - timedelta(days=14)
     date_to = _parse_day(str(args.get("date_to") or ""), end=True)
     number = str(args.get("number") or "").strip()
-    top = max(1, min(int(args.get("limit") or 10), 50))
-    parts = [
-        "DeletionMark eq false",
-        f"Date ge datetime'{_odata_datetime(date_from)}'",
-    ]
+    filt_parts = ["DeletionMark eq false"]
+    if date_from is not None:
+        filt_parts.append(f"Date ge datetime'{_odata_datetime(date_from)}'")
     if date_to is not None:
-        parts.append(f"Date le datetime'{_odata_datetime(date_to)}'")
+        filt_parts.append(f"Date le datetime'{_odata_datetime(date_to)}'")
     if number:
-        parts.append(f"Number eq '{number.replace(chr(39), chr(39)+chr(39))}'")
-    result = _odata_get({"entity": PROTOCOL_ENTITY, "top": top, "filter": " and ".join(parts)})
+        filt_parts.append(f"Number eq '{number.replace(chr(39), chr(39)+chr(39))}'")
+    elif psd_mark:
+        filt_parts.append("startswith(Number,'ПСД')")
+    filt = " and ".join(filt_parts)
+    truncated = False
+    raw_rows: list[dict[str, Any]] = []
+    if psd_mark and not number:
+        skip = 0
+        cap = 2000
+        while len(raw_rows) < cap:
+            take = min(100, cap - len(raw_rows))
+            result = _odata_get(
+                {"entity": PROTOCOL_ENTITY, "top": take, "skip": skip, "filter": filt}
+            )
+            batch = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+            raw_rows.extend(batch)
+            if len(batch) < take:
+                break
+            skip += len(batch)
+        else:
+            truncated = True
+    else:
+        top = max(1, min(int(args.get("limit") or 10), 100))
+        result = _odata_get({"entity": PROTOCOL_ENTITY, "top": top, "filter": filt})
+        raw_rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
     items = []
-    for row in result.get("value") or []:
-        if not isinstance(row, dict):
-            continue
+    for row in raw_rows:
         decisions = row.get("Решения")
         if not isinstance(decisions, list):
             parts_map = row.get("tabular_parts")
@@ -834,6 +978,8 @@ def _list_protocols(args: dict[str, Any]) -> dict[str, Any]:
         "entity": PROTOCOL_ENTITY,
         "count": len(items),
         "protocols": items,
+        "psd_mark": psd_mark,
+        "truncated": truncated,
         "source": result.get("source") or "odata",
     }
 

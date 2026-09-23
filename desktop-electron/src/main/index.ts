@@ -60,21 +60,31 @@ function parseEnvFile(path: string): Record<string, string> {
   return out
 }
 
-/** Profile .env often keeps stale 127.0.0.1; in dev prefer cwd `.env` and process env. */
+const LAN_BACKEND = 'http://192.168.1.157:7812'
+
+function isLoopbackUrl(url: string): boolean {
+  return /127\.0\.0\.1|localhost|\[::1\]|^::1/i.test(url)
+}
+
+function normalizeBackendUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '')
+}
+
+/** Profile .env often keeps stale 127.0.0.1; packaged builds stay on the LAN gateway. */
 function resolveBackendUrl(env: Record<string, string>): string {
-  const fromProcess = (process.env.BACKEND_URL || '').trim()
-  if (fromProcess) return fromProcess.replace(/\/+$/, '')
+  const fromProcess = normalizeBackendUrl(process.env.BACKEND_URL || '')
+  if (fromProcess && !(app.isPackaged && isLoopbackUrl(fromProcess))) return fromProcess
 
   const cwdEnvPath = join(process.cwd(), '.env')
   if (!app.isPackaged && existsSync(cwdEnvPath)) {
-    const fromCwd = (parseEnvFile(cwdEnvPath).BACKEND_URL || '').trim()
-    if (fromCwd) return fromCwd.replace(/\/+$/, '')
+    const fromCwd = normalizeBackendUrl(parseEnvFile(cwdEnvPath).BACKEND_URL || '')
+    if (fromCwd) return fromCwd
   }
 
-  const fromProfile = (env.BACKEND_URL || '').trim()
-  if (fromProfile) return fromProfile.replace(/\/+$/, '')
+  const fromProfile = normalizeBackendUrl(env.BACKEND_URL || '')
+  if (fromProfile && !(app.isPackaged && isLoopbackUrl(fromProfile))) return fromProfile
 
-  return 'http://192.168.1.157:7812'
+  return LAN_BACKEND
 }
 
 function loadConfig(): {

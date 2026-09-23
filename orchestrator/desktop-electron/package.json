@@ -25,7 +25,7 @@
     "files": [
       "out/**/*"
     ],
-    "afterSign": "scripts/afterSign.cjs",
+    "afterPack": "scripts/afterSign.cjs",
     "win": {
       "icon": "build/icon.ico",
       "target": [
@@ -35,8 +35,8 @@
     },
     "extraResources": [
       {
-        "from": "build/icon.ico",
-        "to": "icon.ico"
+        "from": "../../desktop/.env",
+        "to": "desktop/.env"
       }
     ],
     "nsis": {
@@ -55,7 +55,7 @@
     "@types/react-dom": "^19.2.5",
     "@types/react-grid-layout": "^1.3.6",
     "@vitejs/plugin-react": "^5.2.0",
-    "electron": "^44.0.0",
+    "electron": "^44.4.1",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "^7.0.2",
@@ -63,8 +63,10 @@
   },
   "dependencies": {
     "lucide-react": "^1.47.0",
+    "mammoth": "^1.11.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-grid-layout": "^2.2.4"
+    "react-grid-layout": "^2.2.4",
+    "xlsx": "^0.18.5"
   }
 }

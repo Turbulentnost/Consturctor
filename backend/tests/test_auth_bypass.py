@@ -69,6 +69,17 @@ def test_bypass_login_skips_erp_sql(monkeypatch):
     assert validate_token(orch.access_token).client == "orchestrator"
 
 
+def test_avatar_version_ignores_windows_invalid_timestamp():
+    from datetime import datetime
+
+    from app.services import app_users
+
+    user = SimpleNamespace(id="U1", updated_at=datetime(1, 1, 1))
+    assert app_users._avatar_version(user) == ""
+    user.avatar_path = "not-a-real-file.png"
+    assert app_users.avatar_url_for(user) is None
+
+
 def test_bypass_login_rejects_other_user(monkeypatch):
     monkeypatch.setattr(auth_service.settings, "auth_skip_erp_sql", True)
     monkeypatch.setattr(auth_service.settings, "erp_login", "Ильченко Екатерина Александровна")

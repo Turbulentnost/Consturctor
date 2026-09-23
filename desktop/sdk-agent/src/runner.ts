@@ -32,12 +32,15 @@ type RunCommand = {
   model?: string;
   modelParams?: ModelParam[];
   cwd?: string;
-  mode?: "design" | "run" | "interview";
+  mode?: "design" | "run" | "interview" | "kpi";
   writeDocument?: boolean;
   useTools?: boolean;
   tools?: ToolSpec[];
   resumeAgentId?: string;
   restrictBuiltins?: boolean;
+  stopOnKpiList?: boolean;
+  kpiAllowRead?: boolean;
+  images?: Array<{ path?: string; data?: string; mimeType?: string; page?: number }>;
 };
 
 type ToolResultCommand = {
@@ -78,13 +81,24 @@ const INTERVIEW_MODEL_PARAMS: ModelParam[] = [
   { id: "effort", value: "low" },
   { id: "fast", value: "true" },
 ];
+const KPI_MODEL_PARAMS: ModelParam[] = [
+  { id: "effort", value: "low" },
+  { id: "fast", value: "true" },
+];
 
 function modelParamsFor(command: RunCommand): ModelParam[] {
   const incoming = Array.isArray(command.modelParams) ? command.modelParams : null;
   const interviewDefault = command.writeDocument
     ? INTERVIEW_MODEL_PARAMS
     : INTERVIEW_QUESTION_MODEL_PARAMS;
-  const raw = incoming !== null ? incoming : command.mode === "interview" ? interviewDefault : [];
+  const raw =
+    incoming !== null
+      ? incoming
+      : command.mode === "interview"
+        ? interviewDefault
+        : command.mode === "kpi"
+          ? KPI_MODEL_PARAMS
+          : [];
   return raw
     .map((item) => ({
       id: typeof item?.id === "string" ? item.id.trim() : "",
@@ -292,6 +306,7 @@ function buildCustomTools(
   specs: ToolSpec[],
   stopState?: { done: boolean },
   cwd?: string,
+  injectAskQuestion = true,
 ): Record<string, unknown> {
   const tools: Record<string, unknown> = {};
   for (const spec of specs) {
@@ -367,7 +382,7 @@ function buildCustomTools(
       },
     };
   }
-  if (!tools.askQuestion) {
+  if (!tools.askQuestion && injectAskQuestion) {
     tools.askQuestion = {
       description: "Ask the desktop user a question and wait for the answer.",
       inputSchema: ASK_QUESTION_SCHEMA,
@@ -549,6 +564,22 @@ function interviewDraftReady(text: string): boolean {
   return Boolean(firstReadyInterviewJson(text));
 }
 
+function kpiListReady(text: string): boolean {
+  const blob = text || "";
+  if (/generated\/|score_\w+_kpi|def score_/.test(blob)) return false;
+  const lines = blob.split(/\r?\n/);
+  const doneAt = lines.findIndex((line) => /^\s*СПИСОК_ГОТОВ\s*$/.test(line));
+  if (doneAt < 0) return false;
+  const weighted = /^\s*(?:\d+[\).]|[-*•])\s*.+\d{1,3}\s*%/;
+  const numbered = /^\s*(?:\d+[\).]|[-*•])\s*\S/;
+  let count = 0;
+  for (const line of lines.slice(0, doneAt)) {
+    if (numbered.test(line) && !weighted.test(line)) return false;
+    if (weighted.test(line)) count += 1;
+  }
+  return count >= 1;
+}
+
 async function settleRun(run: {
   supports: (op: "cancel") => boolean;
   status: string;
@@ -662,6 +693,7 @@ function collectVisionImages(
   const pages = rec.vision_pages;
   if (Array.isArray(pages)) {
     for (const page of pages) {
+      if (images.length >= 1) break;
       if (!page || typeof page !== "object" || Array.isArray(page)) continue;
       const item = page as Record<string, JsonValue>;
       const loaded = loadVisionFile(String(item.path || ""), cwd, String(item.mimeType || ""));
@@ -699,6 +731,34 @@ function loadVisionFile(
   } catch {
     return null;
   }
+}
+
+function promptImages(
+  command: RunCommand,
+  cwd: string,
+): Array<{ data: string; mimeType: string }> {
+  const raw = Array.isArray(command.images) ? command.images : [];
+  const images: Array<{ data: string; mimeType: string }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const inline = typeof rec.data === "string" ? rec.data.trim() : "";
+    if (inline.length > 80) {
+      images.push({
+        data: inline.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, ""),
+        mimeType:
+          typeof rec.mimeType === "string" && rec.mimeType.startsWith("image/")
+            ? rec.mimeType
+            : "image/jpeg",
+      });
+      continue;
+    }
+    const loaded = loadVisionFile(String(rec.path || ""), cwd, String(rec.mimeType || ""));
+    if (loaded?.data) {
+      images.push({ data: loaded.data, mimeType: loaded.mimeType || "image/jpeg" });
+    }
+  }
+  return images;
 }
 
 function resolveUnderCwd(cwd: string | undefined, raw: string): string | null {
@@ -836,6 +896,7 @@ async function runAgent(command: RunCommand): Promise<void> {
   });
   const design = command.mode === "design";
   const interview = command.mode === "interview";
+  const kpi = command.mode === "kpi";
   const writeDocument = Boolean(command.writeDocument);
   const useTools = Boolean(command.useTools) || writeDocument;
   // Interview questions are text-only agent turns (tools: []). Plan mode waits
@@ -847,7 +908,9 @@ async function runAgent(command: RunCommand): Promise<void> {
   // Do not inject askQuestion into interview: it blocks up to 15 minutes and
   // the regulation chat cannot answer that tool call.
   const stopState = { done: false };
-  const customTools = interview ? {} : buildCustomTools(command.tools || [], stopState, cwd);
+  const customTools = interview
+    ? {}
+    : buildCustomTools(command.tools || [], stopState, cwd, !kpi);
   const customNames = Object.keys(customTools);
   emit({
     type: "status",
@@ -857,9 +920,13 @@ async function runAgent(command: RunCommand): Promise<void> {
         ? writeDocument
           ? "Agent: пишу итоговый регламент."
           : "Agent: читаю приложенный документ."
-        : customNames.length
-          ? `Инструменты Constructor: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
-          : "Инструменты Constructor пустые. Не ищи проектные MCP-серверы.",
+        : kpi
+          ? command.kpiAllowRead
+            ? "Пишу модуль KPI и прогоняю тесты…"
+            : "Читаю методику KPI…"
+          : customNames.length
+            ? `Инструменты Constructor: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
+            : "Инструменты Constructor пустые. Не ищи проектные MCP-серверы.",
   });
   let agent: Awaited<ReturnType<typeof Agent.create>> | undefined;
   try {
@@ -878,7 +945,22 @@ async function runAgent(command: RunCommand): Promise<void> {
         ? { tools: [] as string[] }
         : interview
           ? { tools: interviewReadTools }
-          : command.restrictBuiltins
+          : kpi
+            ? {
+                disallowedTools: command.kpiAllowRead
+                  ? ["shell", "delete", "applyAgentDiff", "glob", "ls", "edit", "task"]
+                  : [
+                      "shell",
+                      "delete",
+                      "applyAgentDiff",
+                      "glob",
+                      "ls",
+                      "grep",
+                      "read",
+                      "task",
+                    ],
+              }
+            : command.restrictBuiltins
             ? {
                 disallowedTools: [
                   "shell",
@@ -937,8 +1019,20 @@ async function runAgent(command: RunCommand): Promise<void> {
         emitNestedTask(parentId, update.taskUpdate);
       },
     };
+    const images = promptImages(command, cwd);
+    if (images.length) {
+      emit({
+        type: "status",
+        text: kpi
+          ? `Положение в чате: ${images.length} стр.`
+          : `В чат вложено ${images.length} изображ.`,
+      });
+    }
     const sendOnce = () =>
-      (agent as NonNullable<typeof agent>).send(command.prompt, sendOptions as never);
+      (agent as NonNullable<typeof agent>).send(
+        images.length ? { text: command.prompt, images } : command.prompt,
+        sendOptions as never,
+      );
     let run;
     try {
       run = await withDbLockRetry(sendOnce, "send");
@@ -954,11 +1048,13 @@ async function runAgent(command: RunCommand): Promise<void> {
       const designReady = design && playbookDraftReady(draft);
       const interviewJson = interview ? firstReadyInterviewJson(draft) : null;
       const interviewReady = Boolean(interviewJson);
+      const kpiReady =
+        kpi && command.stopOnKpiList !== false && kpiListReady(draft);
       // Finish when the structured result is in: "## WORK_RESULT" + PASS, or
       // FILES/ACTIONS + PASS (models often omit the header). A lone
       // "TESTS: PASS" in reasoning must not stop the run.
-      const demoReady = !design && !interview && isFinishedWorkResult(draft);
-      if (!designReady && !interviewReady && !demoReady) return false;
+      const demoReady = !design && !interview && !kpi && isFinishedWorkResult(draft);
+      if (!designReady && !interviewReady && !demoReady && !kpiReady) return false;
       stopState.done = true;
       const readyAnswer = interviewReady
         ? JSON.stringify(interviewJson || {})
@@ -971,7 +1067,9 @@ async function runAgent(command: RunCommand): Promise<void> {
           ? "Вопрос интервью готов. Останавливаю этот ход."
           : designReady
             ? "Черновик готов. Останавливаю этот ход и перехожу к пробному запуску."
-            : "Пробный запуск завершен (TESTS: PASS). Останавливаю этот ход.",
+            : kpiReady
+              ? "Список KPI полный. Уточняю, откуда брать данные."
+              : "Пробный запуск завершен (TESTS: PASS). Останавливаю этот ход.",
       });
       emit({ type: "final", id, status: "ok", answer: readyAnswer });
       emit({ type: "done", id, status: "ok", answer: readyAnswer });
@@ -999,10 +1097,11 @@ async function runAgent(command: RunCommand): Promise<void> {
       } else if (event.type === "tool_call") {
         // WORK_RESULT + TESTS: PASS already means the run is over. Do not keep
         // the stream open for more write tools (HITL) after the final block.
-        const runReady = !design && !interview && (await finishIfReady(answer));
+        const runReady = !design && !interview && !kpi && (await finishIfReady(answer));
         const designReady = design && ((await finishIfReady(thought)) || (await finishIfReady(answer)));
         const interviewReady = interview && ((await finishIfReady(thought)) || (await finishIfReady(answer)));
-        if (stopState.done || runReady || designReady || interviewReady) {
+        const kpiReady = kpi && (await finishIfReady(answer));
+        if (stopState.done || runReady || designReady || interviewReady || kpiReady) {
           return;
         }
         lastAssistant = "";
@@ -1019,9 +1118,13 @@ async function runAgent(command: RunCommand): Promise<void> {
         const listed = Array.isArray(event.tools) ? event.tools.filter(Boolean) : [];
         emit({
           type: "status",
-          text: listed.length
-            ? `Cursor SDK tools: ${listed.join(", ")}`
-            : "Агент обновил состояние запуска.",
+          text: kpi
+            ? listed.some((name) => String(name).includes("office.read_file") || String(name) === "Read")
+              ? "Читаю страницы методики…"
+              : "Разбираю KPI должности…"
+            : listed.length
+              ? `Cursor SDK tools: ${listed.join(", ")}`
+              : "Агент обновил состояние запуска.",
         });
       }
     }
@@ -1033,7 +1136,7 @@ async function runAgent(command: RunCommand): Promise<void> {
     // (it may sit after reasoning narration). Otherwise fall back to the last
     // assistant segment (reset on every tool call) so intermediate narration
     // between tools never leaks into the result.
-    const finalAnswer = hasWorkResult(answer)
+    const finalAnswer = !kpi && hasWorkResult(answer)
       ? stripToWorkResult(answer)
       : lastAssistant.trim() || answer || String(result.result || "");
     emit({ type: "final", id, status: okStatus, answer: finalAnswer });

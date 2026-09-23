@@ -4,6 +4,7 @@ import base64
 import io
 import logging
 import mimetypes
+import re
 import tempfile
 from pathlib import Path
 
@@ -84,7 +85,7 @@ def load_attachment_bytes(name: str, raw: bytes, *, ocr: bool = True) -> dict:
         )
     if suffix == ".pdf":
         try:
-            text = _read_pdf_bytes(raw)
+            text = _read_pdf_bytes(raw, ocr=ocr)
         except DocumentError:
             text = ""
         if not text.strip() and ocr:
@@ -246,7 +247,7 @@ def _read_text_bytes(raw: bytes) -> str:
     raise DocumentError("Не удалось прочитать текстовый файл (кодировка).")
 
 
-def _read_pdf_bytes(raw: bytes) -> str:
+def _read_pdf_bytes(raw: bytes, *, ocr: bool = True) -> str:
     try:
         import fitz  # pymupdf
     except ImportError as exc:
@@ -258,7 +259,7 @@ def _read_pdf_bytes(raw: bytes) -> str:
     except Exception as exc:  # noqa: BLE001
         raise DocumentError(f"Не удалось разобрать PDF: {exc}") from exc
     text = "\n\n".join(parts).strip()
-    if len(text) >= 80:
+    if len(text) >= 80 or not ocr:
         return text
     ocr_text = _read_pdf_bytes_ocr(raw)
     if ocr_text.strip():
@@ -343,3 +344,149 @@ def _read_xlsx_bytes(raw: bytes) -> str:
     except Exception as exc:  # noqa: BLE001
         raise DocumentError(f"Не удалось разобрать XLSX: {exc}") from exc
     return "\n".join(parts)
+
+
+_HEADER_HINT = re.compile(
+    r"^(id|код|источник|дата|поручен|заказчик|владелец|срок|приоритет|статус|"
+    r"комментар|риск|ссылка|исполнитель|тема|название|результат|артефакт|"
+    r"документ|ответств|описание|номер)",
+    re.I,
+)
+_KPI_HINT = re.compile(r"карточек|строк|срок|всего|открыт|просроч|сегодня|закрыт|выполн|итог|kpi", re.I)
+_NUMERIC_RE = re.compile(r"^[+-]?(?:\d{1,3}(?:[\s\u00a0]\d{3})*|\d+)(?:[.,]\d+)?%?$")
+_MAX_PREVIEW_ROWS = 400
+
+
+def _cell_text(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("\xa0", " ").strip()
+
+
+def _filled(cells: list[str]) -> list[str]:
+    return [cell for cell in cells if cell]
+
+
+def _looks_like_header(cells: list[str]) -> bool:
+    filled = _filled(cells)
+    if len(filled) < 2:
+        return False
+    hits = sum(1 for cell in filled if _HEADER_HINT.search(cell))
+    if hits >= 2:
+        return True
+    return len(filled) >= 4 and all(
+        len(cell) <= 48 and not _NUMERIC_RE.match(cell) and not cell.upper().startswith("ACT")
+        for cell in filled
+    )
+
+
+def _looks_like_kpi_labels(cells: list[str]) -> bool:
+    filled = _filled(cells)
+    if len(filled) < 2 or len(filled) > 8:
+        return False
+    if any(len(cell) > 42 or cell.upper().startswith("ACT") for cell in filled):
+        return False
+    return any(_KPI_HINT.search(cell) for cell in filled)
+
+
+def _looks_like_kpi_values(cells: list[str]) -> bool:
+    filled = _filled(cells)
+    if not filled:
+        return False
+    numeric = sum(1 for cell in filled if _NUMERIC_RE.match(cell))
+    return numeric >= max(1, -(-len(filled) * 3 // 5))
+
+
+def _looks_like_banner(cells: list[str]) -> bool:
+    filled = _filled(cells)
+    if not filled or len(filled) > 4:
+        return False
+    if _looks_like_header(cells) or _looks_like_kpi_labels(cells) or _looks_like_kpi_values(cells):
+        return False
+    text = " ".join(filled)
+    return len(text) >= 6 and not _NUMERIC_RE.match(text)
+
+
+def _structure_sheet(name: str, rows: list[list[str]]) -> dict[str, object]:
+    index = 0
+    title = ""
+    subtitle = ""
+    kpis: list[dict[str, str]] = []
+    notes: list[str] = []
+    if index < len(rows) and _looks_like_banner(rows[index]):
+        title = " ".join(_filled(rows[index]))
+        index += 1
+    if index < len(rows) and _looks_like_banner(rows[index]):
+        subtitle = " ".join(_filled(rows[index]))
+        index += 1
+    if (
+        index + 1 < len(rows)
+        and _looks_like_kpi_labels(rows[index])
+        and _looks_like_kpi_values(rows[index + 1])
+    ):
+        labels = _filled(rows[index])
+        values = _filled(rows[index + 1])
+        for label, value in zip(labels, values):
+            kpis.append({"label": label, "value": value})
+        index += 2
+    header_index = next((i for i in range(index, len(rows)) if _looks_like_header(rows[i])), -1)
+    headers: list[str] = []
+    data: list[list[str]] = []
+    if header_index >= 0:
+        for row in rows[index:header_index]:
+            note = " — ".join(_filled(row))
+            if note:
+                notes.append(note)
+        headers = rows[header_index]
+        data = [row for row in rows[header_index + 1 :] if _filled(row)][:_MAX_PREVIEW_ROWS]
+        width = max([len(headers), *(len(row) for row in data)], default=0)
+        headers = (headers + [""] * width)[:width]
+        headers = [cell or f"Колонка {i + 1}" for i, cell in enumerate(headers)]
+        data = [(row + [""] * width)[:width] for row in data]
+    else:
+        for row in rows[index:]:
+            note = " — ".join(_filled(row))
+            if note:
+                notes.append(note)
+    return {
+        "name": name,
+        "title": title,
+        "subtitle": subtitle,
+        "kpis": kpis,
+        "notes": notes,
+        "headers": headers,
+        "rows": data,
+    }
+
+
+def extract_xlsx_preview(raw: bytes) -> dict[str, object] | None:
+    if not raw:
+        return None
+    try:
+        import openpyxl
+    except ImportError:
+        return None
+    try:
+        workbook = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+    except Exception:
+        return None
+    try:
+        sheets: list[dict[str, object]] = []
+        for sheet in workbook.worksheets:
+            rows: list[list[str]] = []
+            for row in sheet.iter_rows(values_only=True):
+                values = [_cell_text(cell) for cell in row]
+                while values and not values[-1]:
+                    values.pop()
+                if values:
+                    rows.append(values)
+            if not rows:
+                continue
+            structured = _structure_sheet(str(sheet.title or "Лист"), rows)
+            if structured["headers"] or structured["kpis"] or structured["title"]:
+                sheets.append(structured)
+        if not sheets:
+            return None
+        return {"kind": "workbook", "sheets": sheets}
+    finally:
+        workbook.close()

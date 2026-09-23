@@ -85,6 +85,32 @@ def _number_prefix_filter(kind: str) -> str:
     return "(" + " or ".join(parts) + ")"
 
 
+def _arg_flag(value: Any, default: bool | None = None) -> bool | None:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "да", "истина"}:
+        return True
+    if text in {"0", "false", "no", "нет", "ложь", ""}:
+        return False
+    return default
+
+
+def psd_mark_requested(args: dict[str, Any]) -> bool:
+    for key in ("psd_mark", "psd_only", "only_psd"):
+        if key in args and _arg_flag(args.get(key)) is True:
+            return True
+    return False
+
+
+def _number_scope_filter(args: dict[str, Any], *, kind: str) -> str:
+    if psd_mark_requested(args):
+        return "startswith(Number,'ПСД')"
+    return _number_prefix_filter(kind)
+
+
 def protocol_navigation_path(ref_key: str, section: str) -> str:
     key = (ref_key or "").strip()
     if not key:
@@ -95,19 +121,22 @@ def protocol_navigation_path(ref_key: str, section: str) -> str:
 def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     filters: list[str] = ["DeletionMark eq false"]
     number = str(args.get("number") or args.get("Number") or "").strip()
+    psd_only = psd_mark_requested(args)
     if number:
         filters.append(f"Number eq '{_escape_odata_string(number)}'")
     else:
-        filters.append(_number_prefix_filter(kind))
+        filters.append(_number_scope_filter(args, kind=kind))
 
     review_only = args.get("review_only")
     if review_only is None:
-        review_only = True
-    if review_only:
+        review_only = not psd_only
+    if _arg_flag(review_only, default=not psd_only):
         filters.append("(Posted eq false or Статус eq 'Подготовлен')")
     else:
-        include_closed = bool(args.get("include_closed"))
-        if not include_closed:
+        include_closed = args.get("include_closed")
+        if include_closed is None:
+            include_closed = psd_only
+        if not _arg_flag(include_closed, default=False):
             filters.append("Статус ne 'Закрыт'")
 
     start, end = _period(args)
@@ -118,11 +147,16 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     return " and ".join(filters)
 
 
-def build_protocol_list_path(*, odata_filter: str, limit: int) -> str:
+_PAGE_SIZE = 100
+_FULL_SERIES_CAP = 2000
+
+
+def build_protocol_list_path(*, odata_filter: str, limit: int, skip: int = 0) -> str:
     filt = quote(odata_filter, safe="=,'")
+    skip_q = f"&$skip={int(skip)}" if skip else ""
     return (
         f"{PROTOCOL_ENTITY}?$format=json&$top={limit}"
-        f"&$filter={filt}&$orderby=Date%20desc&$expand=ТемаСовещания"
+        f"{skip_q}&$filter={filt}&$orderby=Date%20desc&$expand=ТемаСовещания"
     )
 
 
@@ -133,7 +167,7 @@ def _relaxed_protocol_filters(args: dict[str, Any], *, kind: str) -> list[str]:
     if number:
         parts.append(f"Number eq '{_escape_odata_string(number)}'")
     else:
-        parts.append(_number_prefix_filter(kind))
+        parts.append(_number_scope_filter(args, kind=kind))
     start, end = _period(args)
     if start:
         parts.append(f"Date ge {_odata_datetime(start)}")
@@ -178,20 +212,48 @@ def normalize_protocol_row(row: dict[str, Any], *, kind: str) -> dict[str, Any]:
     }
 
 
-def _fetch_protocol_rows(args: dict[str, Any], *, kind: str, limit: int) -> tuple[dict[str, Any], str, str]:
+def _fetch_protocol_page(
+    *,
+    odata_filter: str,
+    limit: int,
+    skip: int = 0,
+) -> dict[str, Any]:
     from app.tools.onec_odata_invoke import fetch_odata_list
 
+    path = build_protocol_list_path(odata_filter=odata_filter, limit=limit, skip=skip)
+    return fetch_odata_list(entity=PROTOCOL_ENTITY, path=path, top=limit)
+
+
+def _page_protocol_rows(
+    *,
+    odata_filter: str,
+    page_size: int,
+    cap: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    rows: list[dict[str, Any]] = []
+    raw: dict[str, Any] = {}
+    skip = 0
+    while len(rows) < cap:
+        take = min(page_size, cap - len(rows))
+        raw = _fetch_protocol_page(odata_filter=odata_filter, limit=take, skip=skip)
+        batch = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
+        rows.extend(batch)
+        if len(batch) < take:
+            return rows, raw, False
+        skip += len(batch)
+    return rows, raw, True
+
+
+def _fetch_protocol_rows(args: dict[str, Any], *, kind: str, limit: int) -> tuple[dict[str, Any], str, str]:
     odata_filter = build_protocol_filter(args, kind=kind)
-    path = build_protocol_list_path(odata_filter=odata_filter, limit=limit)
-    raw = fetch_odata_list(entity=PROTOCOL_ENTITY, path=path, top=limit)
+    raw = _fetch_protocol_page(odata_filter=odata_filter, limit=limit)
     rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
     if rows:
         return raw, odata_filter, ""
 
     for fallback_filter in _relaxed_protocol_filters(args, kind=kind):
-        fallback_path = build_protocol_list_path(odata_filter=fallback_filter, limit=limit)
         try:
-            raw = fetch_odata_list(entity=PROTOCOL_ENTITY, path=fallback_path, top=limit)
+            raw = _fetch_protocol_page(odata_filter=fallback_filter, limit=limit)
         except RuntimeError:
             continue
         rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
@@ -227,15 +289,29 @@ def _attach_protocol_sections(protocol: dict[str, Any]) -> None:
 
 def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
     kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or ""))
-    limit = max(1, min(100, int(args.get("max_results") or args.get("limit") or 30)))
+    psd_only = psd_mark_requested(args)
     include_sections = bool(args.get("include_sections") or args.get("with_sections"))
     start, end = _period(args)
     review_only = args.get("review_only")
     if review_only is None:
-        review_only = True
+        review_only = not psd_only
+    truncated = False
+    odata_filter = build_protocol_filter(args, kind=kind)
 
     try:
-        raw, odata_filter, filter_note = _fetch_protocol_rows(args, kind=kind, limit=limit)
+        if psd_only and not str(args.get("number") or args.get("Number") or "").strip():
+            rows, raw, truncated = _page_protocol_rows(
+                odata_filter=odata_filter,
+                page_size=_PAGE_SIZE,
+                cap=_FULL_SERIES_CAP,
+            )
+            filter_note = ""
+            raw = {**raw, "value": rows}
+        else:
+            limit = max(1, min(100, int(args.get("max_results") or args.get("limit") or 30)))
+            raw, odata_filter, filter_note = _fetch_protocol_rows(args, kind=kind, limit=limit)
+            rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
+            rows = rows[:limit]
     except RuntimeError as exc:
         return {
             "protocols": [],
@@ -255,8 +331,7 @@ def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
-    rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
-    protocols = [normalize_protocol_row(row, kind=kind) for row in rows[:limit]]
+    protocols = [normalize_protocol_row(row, kind=kind) for row in rows]
     if include_sections:
         for protocol in protocols:
             _attach_protocol_sections(protocol)
@@ -271,7 +346,9 @@ def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
         "entity": PROTOCOL_ENTITY,
         "path": raw.get("path"),
         "filter": odata_filter,
-        "review_only": bool(review_only),
+        "review_only": bool(_arg_flag(review_only, default=False)),
+        "psd_mark": psd_only,
+        "truncated": truncated,
         "date_from": start.isoformat() if start else "",
         "date_to": end.isoformat() if end else "",
         "method": "odata_meeting_protocols",

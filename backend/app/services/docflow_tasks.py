@@ -79,7 +79,6 @@ def docflow_auth(args: dict[str, Any] | None = None) -> tuple[str, str] | None:
 
 
 def docflow_soap_ready() -> bool:
-    """SOAP host plus a service credential pair (including ODATA_*)."""
     from app.tools.onec.dok_soap import soap_configured
 
     return soap_configured()
@@ -90,7 +89,6 @@ def docflow_configured() -> bool:
 
 
 def docflow_url_ready() -> bool:
-    """SOAP is ready when host + service creds exist, or OData /doc URL is set."""
     return docflow_soap_ready() or bool(docflow_base_url())
 
 
@@ -252,7 +250,7 @@ def _list_docflow_via_soap(
     if only_open:
         tasks = [row for row in tasks if not row.get("done")]
     if limit > 0:
-        tasks = tasks[: max(1, min(int(limit), 200))]
+        tasks = tasks[: int(limit)]
     return tasks, warning
 
 
@@ -306,7 +304,7 @@ def list_docflow_tasks(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     only_open: bool = False,
-    limit: int = 200,
+    limit: int = 0,
     today_and_overdue: bool = False,
     force_refresh: bool = False,
     auth_args: dict[str, Any] | None = None,

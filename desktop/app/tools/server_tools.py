@@ -187,6 +187,9 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             "Журнал поручений 1С ERP (Document_ТД_Поручения, серия АСТ00). "
             "Проверка поручений = action=list, задачи «Проверить поручение» в 1С нет. "
             "Заказчик = реквизит Руководитель. action=list/get/files/download/tasks/protocols. "
+            "include_all=true или only_open=false — весь журнал заказчика, любые статусы, "
+            "не только открытые и не только за сегодня. "
+            "action=protocols + psd_mark=true — все протоколы с номером ПСД*, включая закрытые. "
             "Содержимое файла: onec.download_artifact с file_id из action=files. "
             "Номер кириллический АСТ, не латиница ACT. Сервер."
         ),
@@ -199,8 +202,16 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "query": _prop("string", "Подстрока в ОЧем или задаче"),
                 "date_from": _prop("string", "YYYY-MM-DD"),
                 "date_to": _prop("string", "YYYY-MM-DD"),
-                "only_open": _prop("boolean", "Только Создано/ВРаботе"),
+                "only_open": _prop("boolean", "Только Создано/ВРаботе. false — весь журнал"),
+                "include_all": _prop(
+                    "boolean",
+                    "Все поручения заказчика, любые статусы, без окна «открытые/сегодня»",
+                ),
                 "include_last_day": _prop("boolean", "Открытые плюс все за сегодня", default=True),
+                "psd_mark": _prop(
+                    "boolean",
+                    "Для action=protocols: все номера ПСД*, включая закрытые",
+                ),
                 "include_files": _prop("boolean", "Сразу вернуть файлы", default=False),
                 "file_id": _prop("string", "GUID вложения для action=download"),
                 "limit": _prop("integer", "Максимум записей", default=40),
@@ -213,7 +224,7 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "Скачать приложенный файл 1С по GUID вкладки «Файлы». "
             "file_id из onec.erp_assignments action=files. "
-            "OData Base64, том на диске, hs/dtw/files или UNC. Сервер, только чтение. "
+            "Только HTTP hs/dtw/files, без OData. Сервер, только чтение. "
             "Дальше: Word/PDF/картинки — office.read_file, Excel — excel.read_workbook. "
             "Встроенный Read по saved_path не вызывай."
         ),
@@ -283,7 +294,9 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "Протоколы Document_ТД_Протокол через OData (desktop, фильтр локально). "
             "meeting_kind rk - РК (номер «РК*»), sd - СД («ПСД*», также «СПГ*»/«СД*»). "
-            "По умолчанию черновики на проверку. date или date_from/date_to."
+            "По умолчанию черновики на проверку. "
+            "psd_mark=true — только номер с «ПСД», все статусы включая закрытые, "
+            "выборка листается целиком, max_results её не обрезает."
         ),
         _schema(
             {
@@ -293,7 +306,15 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
                 "number": _prop("string", "Точный номер протокола"),
                 "review_only": _prop("boolean", "Только на проверку", default=True),
-                "max_results": _prop("integer", "Максимум протоколов"),
+                "psd_mark": _prop(
+                    "boolean",
+                    "Только протоколы с пометкой ПСД (номер начинается с ПСД), все статусы",
+                ),
+                "include_closed": _prop(
+                    "boolean",
+                    "Включать закрытые. Для psd_mark по умолчанию true",
+                ),
+                "max_results": _prop("integer", "Максимум протоколов. Для psd_mark не обрезает серию"),
             },
             ["meeting_kind"],
         ),
@@ -367,6 +388,8 @@ SERVER_TOOL_NAMES: frozenset[str] = frozenset(
 )
 SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
+    # Journal list + files: 1C OData, not a quick catalog ping.
+    "onec.erp_assignments": 180,
 }
 
 

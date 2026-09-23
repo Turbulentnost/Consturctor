@@ -226,8 +226,11 @@ class OutlookReadCalendarComTool(ComBackedTool):
                 description=(
                     "Встречи Outlook за период. Без дат — год вперёд, так не делай на планёрке. "
                     "Утро: date=сегодня. Вечер: date=завтра. "
-                    "people[] — календари этих сотрудников (ФИО как в Outlook), если есть доступ. "
-                    "Без people — свой календарь. В ответе events, calendars и free_slots."
+                    "people[] — ФИО участников: сначала общий ящик «Совещания», "
+                    "затем фильтр по этим ФИО. "
+                    "Контроль календаря ПСД: folder=Совещания, "
+                    "people=[Амураль Игорь Борисович]. Без people — свой. "
+                    "В ответе events, calendars и free_slots."
                 ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
@@ -263,10 +266,14 @@ class OutlookReadCalendarComTool(ComBackedTool):
                         "people": {
                             "type": "array",
                             "description": (
-                                "ФИО или почта сотрудников, чьи календари прочитать "
-                                "(общий доступ Outlook). Пусто — только свой"
+                                "ФИО участников. Сначала читается ящик «Совещания», "
+                                "потом фильтр по этим ФИО. Пусто — свой календарь"
                             ),
                             "items": {"type": "string"},
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Имя календаря, для ПСД — Совещания",
                         },
                     },
                 },

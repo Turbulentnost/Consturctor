@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     dok_http_port: int = 81
     dok_http_user: str = ""
     dok_http_password: str = ""
-    dok_http_timeout: float = 210.0
+    dok_http_timeout: float = 45.0
     dok_http_cache_ttl_sec: float = 1800.0
     dok_inbox_cache_dir: Path = BACKEND_ROOT / "storage" / "docflow_inbox"
     dok_http_base_path: str = "/doc"
