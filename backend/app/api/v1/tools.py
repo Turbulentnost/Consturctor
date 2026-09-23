@@ -53,7 +53,8 @@ _USERS_TOOLS = frozenset(
         "notify.send",
     }
 )
-_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS | _USERS_TOOLS
+_AUDIO_TOOLS = frozenset({"audio.transcribe"})
+_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS | _USERS_TOOLS | _AUDIO_TOOLS
 
 
 class ToolInvokeBody(BaseModel):
@@ -103,6 +104,8 @@ def _dispatch_server_tool(
             result = invoke_turboproject(tool_name, arguments)
         elif tool_name in _USERS_TOOLS:
             result = _invoke_users_tool(tool_name, arguments, auth)
+        elif tool_name in _AUDIO_TOOLS:
+            result = _invoke_audio_tool(tool_name, arguments, auth)
         else:
             result = invoke_onec(
                 tool_name,
@@ -263,6 +266,26 @@ async def invoke_tool(
     return await _invoke_with_gateway_fallback(
         tool_name, body.arguments, auth, _bearer_token(request)
     )
+
+
+def _invoke_audio_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+) -> dict[str, Any]:
+    """audio.transcribe для desktop SDK-прокси: user_id из JWT-сессии."""
+    from app.services.workflows.cursor_tools import (
+        _invoke_audio_transcribe,
+        clear_tool_context,
+        set_tool_context,
+    )
+
+    _ = tool_name
+    set_tool_context(run_id="", user_id=auth.user_id)
+    try:
+        return _invoke_audio_transcribe(arguments)
+    finally:
+        clear_tool_context()
 
 
 def _invoke_users_tool(

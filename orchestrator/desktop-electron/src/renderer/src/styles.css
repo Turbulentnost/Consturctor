@@ -3323,6 +3323,23 @@ input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.cal-event.has-protocol .cal-event-title {
+  padding-right: 16px;
+}
+.cal-event-doc {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #1565c0;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 3px;
+  pointer-events: none;
+}
 .cal-slot-menu {
   position: fixed;
   z-index: 80;
@@ -12379,9 +12396,150 @@ button.spec-v04-tile {
 .spec-detail-actions .spec-btn-outline-block,
 .spec-detail-actions .spec-btn-launch-block,
 .spec-detail-actions .btn-primary,
-.spec-detail-actions .btn-ghost {
+.spec-detail-actions .btn-ghost,
+.spec-detail-actions .btn-light {
   width: 100%;
   flex: 0 0 auto;
+}
+.meeting-protocol-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(16, 20, 26, 0.03);
+  border: 1px solid rgba(16, 20, 26, 0.08);
+  font-size: 12px;
+}
+.meeting-protocol-progress-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.meeting-protocol-label {
+  flex: 0 0 64px;
+  color: var(--content-muted);
+  font-weight: 600;
+}
+.meeting-protocol-steps {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--content-muted);
+}
+.meeting-protocol-steps li.is-done {
+  color: #2e9a6f;
+}
+.meeting-protocol-steps li.is-error {
+  color: #c62828;
+}
+.meeting-protocol-error {
+  margin: 0;
+  color: #c62828;
+  font-size: 12px;
+}
+.meeting-protocol-hint {
+  margin: 4px 0 0;
+  color: #1565c0;
+  font-size: 12px;
+}
+.meeting-protocol-themes {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.meeting-protocol-themes button {
+  width: 100%;
+  text-align: left;
+  background: #f4f7fb;
+  border: 1px solid #d5e2f0;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #10141a;
+}
+.meeting-protocol-hitl {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(16, 20, 26, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.meeting-protocol-hitl p {
+  margin: 0;
+}
+.meeting-protocol-hitl-intent {
+  color: var(--content-muted);
+  font-size: 11px;
+}
+.meeting-protocol-hitl-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.meeting-protocol-hitl-actions .btn-primary,
+.meeting-protocol-hitl-actions .btn-ghost {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.meeting-report-overlay .meeting-report-dialog {
+  width: min(920px, 94vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+.meeting-report-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.meeting-report-toolbar .modal-title {
+  margin: 0;
+}
+.meeting-report-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.meeting-report-body {
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 200px;
+  max-height: calc(90vh - 120px);
+  padding: 12px 14px;
+  border: 1px solid rgba(16, 20, 26, 0.1);
+  border-radius: 10px;
+  background: #fff;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.meeting-report-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 12px;
+}
+.meeting-report-body th,
+.meeting-report-body td {
+  border: 1px solid #c8d0dc;
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.meeting-report-body th {
+  background: #e8edf4;
+}
+.meeting-report-error {
+  margin: 0;
+  color: #c62828;
+  font-size: 13px;
 }
 .spec-detail-card > .spec-btn-launch,
 .spec-detail-card > .spec-btn-launch-block {

@@ -16,6 +16,8 @@ class AgentLibraryCardOut(BaseModel):
     tools: list[str] = Field(default_factory=list)
     owner_id: str = Field(default="", serialization_alias="ownerId")
     owner_fio: str = Field(default="", serialization_alias="ownerFio")
+    author: str | None = Field(default=None, description="ФИО владельца workflow; null если не найден")
+    created_at: str | None = Field(default=None, serialization_alias="createdAt")
     purpose: str = Field(
         default="functional",
         description="functional | positional (долностной)",

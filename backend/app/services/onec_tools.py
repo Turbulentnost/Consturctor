@@ -73,6 +73,11 @@ from app.services.odata_local_catalog import (
     snapshot_available,
     snapshot_meta,
 )
+from app.services.meeting_protocol_write import (
+    ProtocolWriteError,
+    handle_protocol_write as _meeting_protocol_write,
+    stub_protocol_write as _stub_meeting_protocol_write,
+)
 from app.services.meeting_protocols import (
     PROTOCOL_ENTITY,
     list_meeting_protocols as _list_meeting_protocols,
@@ -172,6 +177,7 @@ ONEC_TOOLS = frozenset(
         "onec.docflow_tasks",
         "onec.docflow_task_action",
         "onec.meeting_protocols",
+        "onec.meeting_protocol_write",
     }
 )
 ONEC_ODATA_WRITE_TOOLS = frozenset(
@@ -186,6 +192,7 @@ ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset(
         "onec.erp_assignments_write",
         "onec.incoming_correspondence_write",
         "onec.docflow_task_action",
+        "onec.meeting_protocol_write",
     }
 )
 _ERP_TASK_TOOLS = frozenset(
@@ -200,6 +207,7 @@ _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
     "onec.docflow_tasks",
     "onec.docflow_task_action",
     "onec.erp_write_probe",
+    "onec.meeting_protocol_write",
 }
 _ACCESS_TOOLS = frozenset(
     {
@@ -349,7 +357,13 @@ def invoke_onec(
         return result
     except OnecToolError:
         raise
-    except (ErpTaskError, AssignmentError, IncomingCorrespondenceError, ArtifactError) as exc:
+    except (
+        ErpTaskError,
+        AssignmentError,
+        IncomingCorrespondenceError,
+        ArtifactError,
+        ProtocolWriteError,
+    ) as exc:
         raise OnecToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise OnecToolError(str(exc)) from exc
@@ -1534,6 +1548,7 @@ STUB_HANDLERS = {
     "onec.docflow_tasks": _stub_docflow_tasks,
     "onec.docflow_task_action": _stub_docflow_task_action,
     "onec.meeting_protocols": _stub_meeting_protocols,
+    "onec.meeting_protocol_write": _stub_meeting_protocol_write,
 }
 
 REAL_HANDLERS = {
@@ -1557,4 +1572,5 @@ REAL_HANDLERS = {
     "onec.docflow_tasks": _docflow_tasks,
     "onec.docflow_task_action": _docflow_task_action,
     "onec.meeting_protocols": _list_meeting_protocols,
+    "onec.meeting_protocol_write": _meeting_protocol_write,
 }

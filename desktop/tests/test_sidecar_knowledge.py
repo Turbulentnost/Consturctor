@@ -62,9 +62,19 @@ class _Api:
 
     def register_run_attachments(
         self, workflow_id: str, run_id: str, paths: list[str]
-    ) -> None:
+    ) -> WorkflowFiles:
         self.run_attachments.append(
             (workflow_id, run_id, [str(item) for item in paths])
+        )
+        return WorkflowFiles(
+            run_attachments=[
+                WorkflowFileItem(
+                    id=f"file-{index}",
+                    filename=Path(path).name,
+                    scope="run_attachment",
+                )
+                for index, path in enumerate(paths, start=1)
+            ]
         )
 
     def register_workflow_run_files(
@@ -347,9 +357,38 @@ def test_persist_run_attachment_is_temporary(tmp_path: Path) -> None:
     copied = _persist_run_attachment(api, "wf-meet", str(cwd), [str(source)], run_id="run-1")
 
     assert copied
-    assert copied[0].startswith("materials/attachments/")
+    assert copied[0]["path"].startswith("materials/attachments/")
+    assert copied[0]["file_id"] == "file-1"
+    assert copied[0]["filename"] == "meetings-2026.xlsx"
     assert api.uploaded == []
     assert api.run_attachments == [("wf-meet", "run-1", [str(source)])]
+
+
+def test_attachments_note_names_file_id_for_audio() -> None:
+    from agent_sidecar import _attachments_note
+
+    note = _attachments_note(
+        [
+            {
+                "path": "materials/attachments/001_meeting.aac",
+                "file_id": "abc-123",
+                "filename": "meeting.aac",
+            }
+        ]
+    )
+
+    assert "file_id=abc-123" in note
+    assert "materials/attachments/001_meeting.aac" in note
+    assert "audio.transcribe" in note
+
+
+def test_attachments_note_keeps_plain_paths() -> None:
+    from agent_sidecar import _attachments_note
+
+    note = _attachments_note(["materials/attachments/001_notes.txt"])
+
+    assert "materials/attachments/001_notes.txt" in note
+    assert "audio.transcribe" not in note
 
 
 def test_keep_knowledge_upload_uses_keep_origin(tmp_path: Path) -> None:

@@ -832,6 +832,39 @@ async function handleFetchDataUrl(
   }
 }
 
+const FETCH_BINARY_MAX_BYTES = 50 * 1024 * 1024
+
+/** Fetch arbitrary bytes from backend (docx/pdf/etc.) without MIME sniffing — for in-app viewers. */
+async function handleFetchBinary(
+  _evt: unknown,
+  opts: { url: string; token?: string | null; maxBytes?: number }
+): Promise<{ ok: boolean; base64?: string; contentType?: string; size?: number; error?: string }> {
+  const raw = String(opts?.url || '').trim()
+  if (!raw) return { ok: false, error: 'Нет ссылки на файл' }
+  const url = absoluteBackendUrl(raw)
+  const headers: Record<string, string> = {}
+  if (opts.token) headers.Authorization = `Bearer ${opts.token}`
+  const limit =
+    typeof opts.maxBytes === 'number' && opts.maxBytes > 0
+      ? Math.min(opts.maxBytes, FETCH_BINARY_MAX_BYTES)
+      : FETCH_BINARY_MAX_BYTES
+  try {
+    const response = await fetch(url, { headers })
+    if (!response.ok) return { ok: false, error: `Ошибка загрузки (${response.status})` }
+    const buffer = Buffer.from(await response.arrayBuffer())
+    if (buffer.length > limit) {
+      return { ok: false, error: 'Файл слишком большой для просмотра' }
+    }
+    const contentType = (response.headers.get('content-type') || 'application/octet-stream')
+      .split(';')[0]
+      .trim()
+      .toLowerCase()
+    return { ok: true, base64: buffer.toString('base64'), contentType, size: buffer.length }
+  } catch {
+    return { ok: false, error: 'Не удалось загрузить файл' }
+  }
+}
+
 async function handleDownload(
   _evt: unknown,
   opts: { url: string; defaultName?: string; token?: string | null }
@@ -1225,6 +1258,7 @@ function registerMainIpcHandlers(): void {
   ipcHandle('api:request', handleRequest)
   ipcHandle('api:upload', handleUpload)
   ipcHandle('api:fetchDataUrl', handleFetchDataUrl)
+  ipcHandle('api:fetchBinary', handleFetchBinary)
   ipcHandle('api:download', handleDownload)
   ipcHandle('api:saveLocalFile', handleSaveLocalFile)
   ipcHandle('api:exportPdf', handleExportPdf)

@@ -49,6 +49,13 @@ function AgentSharePreview({ entry }: { entry: AgentLibraryEntry }): React.JSX.E
   )
 }
 
+function formatCreatedAt(iso?: string): string {
+  if (!iso) return ''
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString('ru-RU')
+}
+
 function cardBodyLines(entry: AgentLibraryEntry): string[] {
   const lines: string[] = []
   const desc = entry.description.trim()
@@ -76,6 +83,8 @@ function AgentLibraryTile({
   onRemove?: () => void
 }): React.JSX.Element {
   const lines = cardBodyLines(entry)
+  const author = (entry.author || '').trim()
+  const createdAt = formatCreatedAt(entry.createdAt)
   return (
     <article
       className={`agent-library-tile agent-library-tile--clickable${variant === 'adopted' ? ' agent-library-tile--adopted' : ''}`}
@@ -123,6 +132,12 @@ function AgentLibraryTile({
           <p key={`${entry.workflowId}-${index}`}>{line}</p>
         ))}
       </div>
+      {author || createdAt ? (
+        <div className="agent-library-tile-meta">
+          {author ? <span className="agent-library-tile-meta-author">{author}</span> : null}
+          {createdAt ? <span className="agent-library-tile-meta-date">{createdAt}</span> : null}
+        </div>
+      ) : null}
     </article>
   )
 }

@@ -34,6 +34,12 @@ _KIND_ALIASES = {
     "совет": "sd",
     "сд": "sd",
     "board": "sd",
+    # Calendar / manual form: every Document_ТД_Протокол in the period, no number prefix.
+    "any": "any",
+    "all": "any",
+    "все": "any",
+    "календарь": "any",
+    "calendar": "any",
 }
 
 _NUMBER_PREFIXES: dict[str, tuple[str, ...]] = {
@@ -50,7 +56,7 @@ def _normalize_kind(raw: str) -> str:
     kind = _KIND_ALIASES.get(key)
     if not kind:
         raise ValueError(
-            "meeting_kind обязателен: rk (Ревизионная комиссия) или sd (Совет директоров)"
+            "meeting_kind: rk (Ревизионная комиссия), sd (Совет директоров) или any (все протоколы за период)"
         )
     return kind
 
@@ -106,16 +112,16 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     number = str(args.get("number") or args.get("Number") or "").strip()
     if number:
         filters.append(f"Number eq '{_escape_odata_string(number)}'")
-    else:
+    elif kind in _NUMBER_PREFIXES:
         filters.append(_number_prefix_filter(kind))
 
     review_only = args.get("review_only")
     if review_only is None:
-        review_only = True
+        review_only = kind != "any"
     if review_only:
         filters.append("(Posted eq false or Статус eq 'Подготовлен')")
     else:
-        include_closed = bool(args.get("include_closed"))
+        include_closed = bool(args.get("include_closed")) or kind == "any"
         if not include_closed:
             filters.append("Статус ne 'Закрыт'")
 
@@ -143,7 +149,7 @@ def _relaxed_protocol_filters(args: dict[str, Any], *, kind: str) -> list[str]:
     number = str(args.get("number") or args.get("Number") or "").strip()
     if number:
         parts.append(f"Number eq '{_escape_odata_string(number)}'")
-    else:
+    elif kind in _NUMBER_PREFIXES:
         parts.append(_number_prefix_filter(kind))
     start, end = _period(args)
     if start:
@@ -227,6 +233,21 @@ def _attach_protocol_sections(
         protocol["sections_path_prefix"] = f"{PROTOCOL_ENTITY}(guid'{ref_key}')/"
 
 
+def _kind_label(kind: str) -> str:
+    if kind == "rk":
+        return "Ревизионная комиссия"
+    if kind == "sd":
+        return "Совет директоров"
+    return "Все протоколы"
+
+
+def _clock(value: Any) -> str:
+    text = str(value or "").strip()
+    if "T" in text:
+        text = text.split("T", 1)[1]
+    return text[:5] if len(text) >= 5 and text[2:3] == ":" else ""
+
+
 def _topic_from_row(row: dict[str, Any]) -> str:
     theme = row.get("ТемаСовещания")
     if isinstance(theme, dict):
@@ -251,8 +272,11 @@ def normalize_protocol_row(row: dict[str, Any], *, kind: str) -> dict[str, Any]:
         "needs_review": needs_review,
         "meeting_topic": _topic_from_row(row),
         "meeting_kind": kind,
-        "meeting_kind_label": "Ревизионная комиссия" if kind == "rk" else "Совет директоров",
+        "meeting_kind_label": _kind_label(kind),
         "meeting_type": str(row.get("ВидСовещания") or "").strip(),
+        "time_start": _clock(row.get("ВремяНачалаСовещания")),
+        "time_end": _clock(row.get("ВремяОкончанияСовещания")),
+        "brief": str(row.get("КраткийСоставДокумента") or "").strip(),
         "responsible_key": str(row.get("Ответственный_Key") or "").strip(),
         "department_key": str(row.get("Подразделение_Key") or "").strip(),
         "comment": str(row.get("Комментарий") or "").strip(),
@@ -268,7 +292,21 @@ def list_meeting_protocols(
     from app.services.onec_tools import OnecToolError, _fetch_odata_list
 
     kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or ""))
-    limit = max(1, min(100, int(args.get("max_results") or args.get("limit") or 30)))
+    start, end = _period(args)
+    number = str(args.get("number") or args.get("Number") or "").strip()
+    if kind == "any" and not number and not start and not end:
+        return {
+            "protocols": [],
+            "count": 0,
+            "source": "odata",
+            "readonly": True,
+            "meeting_kind": kind,
+            "entity": PROTOCOL_ENTITY,
+            "method": "odata_meeting_protocols",
+            "error": "Для meeting_kind=any укажите date или date_from/date_to",
+        }
+    cap = 200 if kind == "any" else 100
+    limit = max(1, min(cap, int(args.get("max_results") or args.get("limit") or (80 if kind == "any" else 30))))
     include_sections = bool(args.get("include_sections") or args.get("with_sections"))
     odata_filter = build_protocol_filter(args, kind=kind)
     try:
@@ -308,14 +346,14 @@ def list_meeting_protocols(
     start, end = _period(args)
     review_only = args.get("review_only")
     if review_only is None:
-        review_only = True
+        review_only = kind != "any"
     result = {
         "protocols": protocols,
         "count": len(protocols),
         "source": "odata",
         "readonly": True,
         "meeting_kind": kind,
-        "meeting_kind_label": "Ревизионная комиссия" if kind == "rk" else "Совет директоров",
+        "meeting_kind_label": _kind_label(kind),
         "entity": PROTOCOL_ENTITY,
         "path": raw.get("path"),
         "filter": odata_filter,

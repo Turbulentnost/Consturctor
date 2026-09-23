@@ -6,6 +6,10 @@ export type AgentLibraryPurpose = 'functional' | 'positional'
 export type AgentLibraryEntry = AgentSharePayload & {
   ownerId?: string
   ownerFio?: string
+  /** ФИО владельца workflow; null если пользователь не найден. */
+  author?: string | null
+  /** ISO-дата создания workflow. */
+  createdAt?: string
   purpose?: AgentLibraryPurpose
   alreadyAdded?: boolean
   adoptedWorkflowId?: string
@@ -48,6 +52,8 @@ function parseEntry(raw: Record<string, unknown>): AgentLibraryEntry {
     tools: Array.isArray(raw.tools) ? raw.tools.map((x) => String(x)) : [],
     ownerId: String(raw.owner_id ?? raw.ownerId ?? ''),
     ownerFio: String(raw.owner_fio ?? raw.ownerFio ?? ''),
+    author: raw.author == null ? null : String(raw.author),
+    createdAt: String(raw.created_at ?? raw.createdAt ?? ''),
     purpose: parsePurpose(raw.purpose),
     alreadyAdded: Boolean(raw.already_added ?? raw.alreadyAdded),
     adoptedWorkflowId: String(raw.adopted_workflow_id ?? raw.adoptedWorkflowId ?? '')

@@ -42,6 +42,12 @@ const api = {
     token?: string | null
   }): Promise<{ ok: boolean; dataUrl?: string; error?: string }> =>
     ipcRenderer.invoke('api:fetchDataUrl', opts),
+  fetchBinary: (opts: {
+    url: string
+    token?: string | null
+    maxBytes?: number
+  }): Promise<{ ok: boolean; base64?: string; contentType?: string; size?: number; error?: string }> =>
+    ipcRenderer.invoke('api:fetchBinary', opts),
   fetchFilePreview: (opts: {
     url: string
     fileName?: string

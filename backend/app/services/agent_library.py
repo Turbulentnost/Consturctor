@@ -44,6 +44,11 @@ def _is_catalog_workflow(row: Workflow) -> bool:
     if (row.phase or "").strip().casefold() == "deleted":
         return False
     local = row.local_run if isinstance(row.local_run, dict) else {}
+    # Personal copies from «Библиотека» must not re-enter the shared catalog —
+    # otherwise adopt republishes under the adopter and the source author sees
+    # a look-alike card (and the adopter gets a duplicate in «Мои агенты»).
+    if str(local.get("library_source_id") or "").strip():
+        return False
     if local.get("unformed"):
         return False
     if local.get("kind") == "draft":
@@ -84,7 +89,9 @@ def _purpose_from_row(row: Workflow) -> str:
     return "functional"
 
 
-def _card_from_row(row: Workflow, *, owner_id: str = "", owner_fio: str = "") -> dict:
+def _card_from_row(
+    row: Workflow, *, owner_id: str = "", owner_fio: str = "", author: str | None = None
+) -> dict:
     local = row.local_run if isinstance(row.local_run, dict) else {}
     return {
         "type": "agent_card",
@@ -99,6 +106,8 @@ def _card_from_row(row: Workflow, *, owner_id: str = "", owner_fio: str = "") ->
         "tools": _tools_from_row(row),
         "owner_id": owner_id,
         "owner_fio": owner_fio,
+        "author": author,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
         "purpose": _purpose_from_row(row),
     }
 
@@ -148,7 +157,7 @@ def list_agent_library(db: Session, *, user_id: str) -> dict:
         already_added = adopted is not None or row.user_id == user_id
         if already_added:
             continue
-        card = _card_from_row(row, owner_id=row.user_id, owner_fio=owner_fio)
+        card = _card_from_row(row, owner_id=row.user_id, owner_fio=owner_fio, author=owner_fio or None)
         catalog.append(
             {
                 **card,
@@ -158,22 +167,26 @@ def list_agent_library(db: Session, *, user_id: str) -> dict:
         )
 
     adopted: list[dict] = []
+    shown_ids: set[str] = set()
     for source_id, row in adopted_by_source.items():
         src = db.get(Workflow, source_id)
         owner = owners.get(src.user_id) if src else None
         owner_fio = (owner.fio if owner else "").strip()
-        card = _card_from_row(row, owner_id=user_id, owner_fio=owner_fio)
+        card = _card_from_row(row, owner_id=user_id, owner_fio=owner_fio, author=owner_fio or None)
         if src:
             card["description"] = card["description"] or _agent_description(src)
             card["goal"] = card["goal"] or _goal_from_row(src)
         adopted.append({**card, "already_added": True, "adopted_workflow_id": row.id})
+        shown_ids.add(row.id)
 
     own_published = [row for row in catalog_rows if row.user_id == user_id]
     for row in own_published:
-        if row.id in adopted_by_source:
+        if row.id in shown_ids or row.id in adopted_by_source:
             continue
-        card = _card_from_row(row, owner_id=user_id, owner_fio=(owners.get(user_id).fio if owners.get(user_id) else ""))
+        own_fio = ((owners.get(user_id).fio if owners.get(user_id) else "") or "").strip()
+        card = _card_from_row(row, owner_id=user_id, owner_fio=own_fio, author=own_fio or None)
         adopted.append({**card, "already_added": True, "adopted_workflow_id": row.id})
+        shown_ids.add(row.id)
 
     return {"catalog": catalog, "adopted": adopted}
 
@@ -223,7 +236,7 @@ def adopt_library_agent(db: Session, *, user_id: str, source_workflow_id: str) -
     if src.user_id == user_id:
         owners = _owner_map(db, [user_id])
         owner_fio = (owners.get(user_id).fio if owners.get(user_id) else "").strip()
-        card = _card_from_row(src, owner_id=user_id, owner_fio=owner_fio)
+        card = _card_from_row(src, owner_id=user_id, owner_fio=owner_fio, author=owner_fio or None)
         return {"ok": True, "workflow_id": src.id, "title": card["title"], "card": card}
 
     adopted = _adopted_index(db, user_id=user_id)

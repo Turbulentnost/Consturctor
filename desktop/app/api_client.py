@@ -444,6 +444,7 @@ class WorkflowFileItem:
 class WorkflowFiles:
     user_files: list[WorkflowFileItem] = field(default_factory=list)
     agent_files: list[WorkflowFileItem] = field(default_factory=list)
+    run_attachments: list[WorkflowFileItem] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -912,9 +913,13 @@ def _parse_workflow_file_item(raw: object) -> WorkflowFileItem:
 def _parse_workflow_files(data: dict) -> WorkflowFiles:
     user_raw = data.get("user_files") if isinstance(data.get("user_files"), list) else []
     agent_raw = data.get("agent_files") if isinstance(data.get("agent_files"), list) else []
+    run_raw = (
+        data.get("run_attachments") if isinstance(data.get("run_attachments"), list) else []
+    )
     return WorkflowFiles(
         user_files=[_parse_workflow_file_item(item) for item in user_raw],
         agent_files=[_parse_workflow_file_item(item) for item in agent_raw],
+        run_attachments=[_parse_workflow_file_item(item) for item in run_raw],
     )
 
 

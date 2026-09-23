@@ -1822,9 +1822,22 @@ export class ApiClient {
     const userFiles = (data.user_files as Record<string, unknown>[]) ?? []
     const agentFiles = (data.agent_files as Record<string, unknown>[]) ?? []
     const runAttachments = (data.run_attachments as Record<string, unknown>[]) ?? []
-    return [...userFiles, ...agentFiles, ...runAttachments].map((item) =>
-      parsePlatformFile({ ...item, workflow_id: workflowId })
-    )
+    // Tag bucket when API omits source so callers can filter agent_files vs user uploads.
+    return [
+      ...userFiles.map((item) =>
+        parsePlatformFile({ ...item, workflow_id: workflowId, source: item.source ?? 'user' })
+      ),
+      ...agentFiles.map((item) =>
+        parsePlatformFile({ ...item, workflow_id: workflowId, source: item.source ?? 'agent' })
+      ),
+      ...runAttachments.map((item) =>
+        parsePlatformFile({
+          ...item,
+          workflow_id: workflowId,
+          source: item.source ?? 'attachment'
+        })
+      )
+    ]
   }
 
   async uploadWorkflowFiles(workflowId: string, filePaths: string[]): Promise<WorkflowFileItem[]> {

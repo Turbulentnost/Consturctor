@@ -251,8 +251,8 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "theme": _prop("string", "ТемаСлужебнойЗаписки"),
                 "partner": _prop("string", "Партнер"),
                 "organization": _prop("string", "Код организации НП/АЛ/…"),
-                "email_sender": _prop("string"),
-                "email_recipient": _prop("string"),
+                "email_sender": _prop("string", "Email отправителя письма"),
+                "email_recipient": _prop("string", "Email получателя письма"),
                 "content": _prop("string", "Содержание"),
                 "msg_base64": _prop("string", "Файл .msg Base64"),
                 "staged_path": _prop("string", "Путь к .msg на сервере"),
@@ -319,7 +319,7 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
         _schema(
             {
-                "meeting_kind": _prop("string", "rk или sd"),
+                "meeting_kind": _prop("string", "rk, sd или any (все протоколы за период, для календаря)"),
                 "date": _prop("string", "Один день YYYY-MM-DD"),
                 "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
                 "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
@@ -328,6 +328,42 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "max_results": _prop("integer", "Максимум протоколов"),
             },
             ["meeting_kind"],
+        ),
+    ),
+    (
+        "onec.meeting_protocol_write",
+        (
+            "Создать протокол совещания Document_ТД_Протокол в 1С (черновик «Подготовлен», "
+            "не проведён). Заполняет шапку (тема, руководитель, проверяющий, подготовил, "
+            "подразделение, проект, кабинет, вид совещания, время), «Присутствующие», "
+            "«Повестка совещания», «Решения» и «Поставленные задачи» (задача, исполнитель, срок). "
+            "ФИО передавай как в 1С — сервер сам найдёт ссылки. Требует подтверждения человека. Сервер."
+        ),
+        _schema(
+            {
+                "action": _prop("string", "create | probe", default="create"),
+                "topic": _prop("string", "Тема совещания как в справочнике «Темы совещаний» 1С"),
+                "date": _prop("string", "Дата совещания YYYY-MM-DD"),
+                "time_start": _prop("string", "Время начала HH:MM"),
+                "time_end": _prop("string", "Время окончания HH:MM"),
+                "leader": _prop("string", "ФИО руководителя совещания (пользователь 1С). Пусто — из темы или сессии"),
+                "responsible": _prop("string", "ФИО проверяющего. Пусто — из темы или руководитель"),
+                "prepared_by": _prop("string", "ФИО подготовившего. Пусто — текущий пользователь"),
+                "department": _prop("string", "Подразделение. Пусто — из темы или руководителя"),
+                "project": _prop("string", "Проект. Пусто — из темы"),
+                "room": _prop("string", "Кабинет / место проведения"),
+                "meeting_type": _prop("string", "Вид совещания, по умолчанию «Отчетное»"),
+                "next_meeting_date": _prop("string", "Дата следующего совещания YYYY-MM-DD"),
+                "participants": _prop("array", "ФИО присутствующих"),
+                "agenda": _prop("array", "Вопросы повестки: строка или {question, responsible}"),
+                "decisions": _prop("array", "Решения: строка или {text, due}"),
+                "tasks": _prop(
+                    "array",
+                    "Поставленные задачи: {text, executor (ФИО), due YYYY-MM-DD, priority, note}",
+                ),
+                "comment": _prop("string", "Комментарий к протоколу"),
+            },
+            ["date"],
         ),
     ),
     (
@@ -365,6 +401,26 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
+        "audio.transcribe",
+        (
+            "Расшифровка аудио-вложения запуска (faster-whisper): сегменты с таймкодами "
+            "start/end/text, полный текст и длительность. file_id бери из блока "
+            "«Вложения запуска» промпта. names — ФИО участников из Outlook: они подсказываются "
+            "распознаванию, чтобы фамилии не искажались. Меток говорящих в сегментах нет. "
+            "Только чтение, подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "file_id": _prop("string", "id аудио-вложения запуска из блока «Вложения запуска»"),
+                "names": _prop(
+                    "array",
+                    "ФИО участников из Outlook, по одному. Пусто — распознавание без подсказки имён",
+                ),
+            },
+            ["file_id"],
+        ),
+    ),
+    (
         "notify.send",
         (
             "Отправить уведомление получателю (Windows-тост + inbox). user_id бери из users.list - "
@@ -399,6 +455,8 @@ SERVER_TOOL_NAMES: frozenset[str] = frozenset(
 )
 SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
+    # faster-whisper small на CPU: ~8 минут на 25 минут аудио, берём запас.
+    "audio.transcribe": 3600,
 }
 
 

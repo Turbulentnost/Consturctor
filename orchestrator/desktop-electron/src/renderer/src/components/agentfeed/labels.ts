@@ -38,6 +38,7 @@ export const TOOL_LABELS: Record<string, string> = {
   'onec.download_artifact': 'Скачать файл 1С',
   'onec.erp_write_probe': 'Проба записи 1С',
   'onec.meeting_protocols': 'Протоколы совещаний (OData)',
+  'onec.meeting_protocol_write': 'Протокол совещания в 1С',
   'onec.odata_get': 'Чтение 1С',
   'onec.odata_post': 'Создание записи 1С',
   'onec.odata_patch': 'Изменение записи 1С',
