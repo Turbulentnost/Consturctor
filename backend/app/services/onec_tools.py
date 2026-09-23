@@ -30,6 +30,10 @@ from app.services.docflow_assignments import (
     handle_docflow_assignment_card as _docflow_assignment_card,
     handle_docflow_assignments as _docflow_assignments,
 )
+from app.services.docflow_protocols import (
+    handle_docflow_protocol_card as _docflow_protocol_card,
+    handle_docflow_protocols as _docflow_protocols,
+)
 from app.services.docflow_memos import (
     handle_docflow_memo_card as _docflow_memo_card,
     handle_docflow_memos as _docflow_memos,
@@ -175,6 +179,8 @@ ONEC_TOOLS = frozenset(
         "onec.docflow_memo_card",
         "onec.docflow_assignments",
         "onec.docflow_assignment_card",
+        "onec.docflow_protocols",
+        "onec.docflow_protocol_card",
         "onec.meeting_protocols",
     }
 )
@@ -1536,6 +1542,8 @@ STUB_HANDLERS = {
     "onec.docflow_memo_card": _docflow_memo_card,
     "onec.docflow_assignments": _docflow_assignments,
     "onec.docflow_assignment_card": _docflow_assignment_card,
+    "onec.docflow_protocols": _docflow_protocols,
+    "onec.docflow_protocol_card": _docflow_protocol_card,
     "onec.meeting_protocols": _stub_meeting_protocols,
 }
 
@@ -1561,5 +1569,7 @@ REAL_HANDLERS = {
     "onec.docflow_memo_card": _docflow_memo_card,
     "onec.docflow_assignments": _docflow_assignments,
     "onec.docflow_assignment_card": _docflow_assignment_card,
+    "onec.docflow_protocols": _docflow_protocols,
+    "onec.docflow_protocol_card": _docflow_protocol_card,
     "onec.meeting_protocols": _list_meeting_protocols,
 }

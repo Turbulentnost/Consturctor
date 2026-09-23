@@ -23,6 +23,7 @@ import {
 import { DocflowAssignmentsPanel } from './DocflowAssignmentsPanel'
 import { DocflowMemosPanel } from './DocflowMemosPanel'
 import { DocflowOrdersPanel } from './DocflowOrdersPanel'
+import { DocflowProtocolsPanel } from './DocflowProtocolsPanel'
 import './docflowGrid.css'
 
 const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; tone: string }[] = [
@@ -30,12 +31,12 @@ const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; ton
   { id: 'memos', title: 'Служебные записки', hint: 'Кому, от кого, срок и маршрут', icon: FileText, tone: 'green' },
   { id: 'orders', title: 'Приказы и распоряжения', hint: 'Статус, гриф и согласующие', icon: ScrollText, tone: 'purple' },
   { id: 'assignments', title: 'Поручения', hint: 'Мероприятия, исполнители и сроки', icon: ClipboardList, tone: 'orange' },
-  { id: 'protocols', title: 'Протоколы', hint: 'Протоколы совещаний', icon: NotebookPen, tone: 'teal' }
+  { id: 'protocols', title: 'Протоколы', hint: 'Совещания, решения и участники', icon: NotebookPen, tone: 'teal' }
 ]
 
 type JournalId = 'correspondence' | 'memos' | 'orders' | 'assignments' | 'protocols'
 
-const PERIOD_JOURNALS = new Set<JournalId>(['correspondence', 'memos', 'assignments'])
+const PERIOD_JOURNALS = new Set<JournalId>(['correspondence', 'memos', 'assignments', 'protocols'])
 
 const MAIL_VIEWS: { id: CorrespondenceKind; title: string; hint: string; icon: LucideIcon }[] = [
   { id: 'incoming', title: 'Входящая', hint: 'письма, поступившие в компанию', icon: Inbox },
@@ -47,7 +48,8 @@ const SUBTITLES: Record<JournalId, string> = {
   memos: 'Журнал 1С без конфиденциальных записок. Прокрутите вниз — подгрузятся следующие.',
   orders: 'Документы «Приказ» и «Распоряжение» из 1С: период, статус, гриф, ответственный и лист согласования',
   assignments: 'Поручения (ТД) из 1С: мероприятия, исполнители, сроки и отчёты. Прокрутите вниз — подгрузятся следующие.',
-  protocols: 'Протоколы совещаний'
+  protocols:
+    'Протоколы совещаний 1С без конфиденциальных: повестка, решения, задачи и участники. Прокрутите вниз — подгрузятся следующие.'
 }
 
 function cell(value: string): string {
@@ -303,6 +305,8 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
             <DocflowOrdersPanel user={user} />
           ) : journal === 'assignments' ? (
             <DocflowAssignmentsPanel user={user} from={from} to={to} />
+          ) : journal === 'protocols' ? (
+            <DocflowProtocolsPanel user={user} from={from} to={to} />
           ) : (
             <div className="docflow-table-card wp-card docflow-placeholder">
               <span className={`docflow-nav-icon docflow-placeholder-icon tone-${activeJournal.tone}`} aria-hidden>

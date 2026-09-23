@@ -539,6 +539,37 @@
   border-left: 3px solid rgba(198, 40, 40, 0.5);
 }
 
+.docflow-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.docflow-chips span {
+  padding: 3px 9px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid rgba(13, 59, 115, 0.14);
+  font-size: 12px;
+  color: #102033;
+}
+
+.docflow-route li.is-cancelled {
+  color: #5b6b80;
+}
+
+.docflow-route li.is-cancelled .docflow-route-text {
+  text-decoration: line-through;
+  color: #5b6b80;
+}
+
+.docflow-route .docflow-route-text {
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .docflow-files {
   margin: 0;
   padding: 0;

@@ -13,6 +13,7 @@ from app.tools.onec.docflow_task_kinds import (
     web_client_task_url,
 )
 from app.tools.onec.dok_soap import (
+    is_object_locked_error,
     known_delegates,
     load_config,
     mark_task_executed,
@@ -148,6 +149,12 @@ def _complete_docflow_task(args: dict[str, Any], *, actor_fio: str, action: str)
             "closed_task_ids": closed,
         }
     detail = perform_error or "1С не сообщила причину."
+    if is_object_locked_error(perform_error):
+        raise DocflowError(
+            "Задача сейчас заблокирована в 1С (обычно — вашей же прошлой веб-сессией, "
+            "которая ещё не закрылась). Подождите 1–2 минуты и нажмите «Принять» снова: "
+            "блокировка снимется автоматически."
+        )
     if "абстрактного типа" in perform_error:
         from app.tools.onec.dok_soap import dm_request_type_names
 

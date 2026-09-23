@@ -926,6 +926,76 @@ def accept_task(config: DokConfig, task: ET.Element, *, timeout: float) -> None:
     )
 
 
+def is_object_locked_error(text: str) -> bool:
+    """Пессимистическая блокировка объекта в 1С (часто своей же прошлой веб-сессией)."""
+    return bool(
+        re.search(
+            r"уже\s+заблокирован|ЗаблокироватьДанныеДляРедактирования|Ошибка\s+блокировки",
+            text or "",
+            re.I,
+        )
+    )
+
+
+def _apply_execution_fields(
+    node: ET.Element, *, mark: str, comment: str, accept: bool
+) -> None:
+    """Готовит карточку задачи к завершению: приём (при необходимости), executed и пометка."""
+    if accept:
+        accepted = node.find("m:accepted", NS)
+        if accepted is not None:
+            accepted.text = "true"
+    executed = node.find("m:executed", NS)
+    if executed is None:
+        raise RuntimeError("В карточке задачи нет признака исполнения")
+    executed.text = "true"
+    # Без пометки исполнения ДО принимает объект, но задачу не завершает.
+    mark_node = node.find("m:executionMark", NS)
+    if mark_node is None:
+        mark_node = ET.Element(f"{{{DM_NS}}}executionMark")
+        node.insert(list(node).index(executed) + 1, mark_node)
+    mark_node.text = mark
+    if comment:
+        note = node.find("m:executionComment", NS)
+        if note is None:
+            note = ET.SubElement(node, f"{{{DM_NS}}}executionComment")
+        note.text = comment
+
+
+def _update_task_with_retry(
+    config: DokConfig,
+    node: ET.Element,
+    *,
+    timeout: float,
+    attempts: int = 4,
+    delay: float = 3.0,
+) -> ET.Element:
+    """DMUpdateRequest с повтором, если объект временно заблокирован веб-сессией 1С."""
+    last: RuntimeError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return execute_dm(
+                config,
+                f'<dm:request xsi:type="dm:DMUpdateRequest">{_object_xml(node)}</dm:request>',
+                timeout=timeout,
+            )
+        except RuntimeError as exc:
+            last = exc
+            if is_object_locked_error(str(exc)) and attempt < attempts:
+                logger.warning(
+                    "Задача заблокирована веб-сессией 1С, повтор %s/%s через %.0f c: %s",
+                    attempt,
+                    attempts,
+                    delay,
+                    str(exc)[:200],
+                )
+                time.sleep(delay)
+                continue
+            raise
+    assert last is not None
+    raise last
+
+
 def mark_task_executed(
     config: DokConfig,
     task_id: str,
@@ -947,36 +1017,30 @@ def mark_task_executed(
         xml_text(node, "m:accepted") or "—",
         xml_text(node, "m:businessProcessStep") or "—",
     )
-    if xml_text(node, "m:accepted") != "true":
-        try:
-            accept_task(config, node, timeout=timeout)
-        except RuntimeError as exc:
-            # Часть маршрутов не требует приёма: пробуем отметить исполнение как есть.
-            logger.warning("Задача %s не принята к исполнению: %s", task_id, str(exc)[:300])
-        else:
+    already_accepted = xml_text(node, "m:accepted") == "true"
+
+    # Приём и исполнение — одним DMUpdateRequest в одной веб-сессии 1С.
+    # Раздельные запросы открывают две WS-сессии: первая (приём) держит
+    # блокировку объекта, вторая (исполнение) падает «Объект уже заблокирован».
+    _apply_execution_fields(node, mark=mark, comment=comment, accept=not already_accepted)
+    update = _update_task_with_retry(config, node, timeout=timeout)
+
+    if (
+        not already_accepted
+        and xml_text(update.find(".//m:objects", NS), "m:executed") != "true"
+    ):
+        # Маршрут потребовал формального приёма задачи отдельным запросом.
+        logger.info("Задача %s не завершилась совмещённым приёмом, принимаю отдельно", task_id)
+        node = _retrieve_task_node(config, task_id, timeout=timeout)
+        if xml_text(node, "m:executed") != "true":
+            try:
+                accept_task(config, node, timeout=timeout)
+            except RuntimeError as exc:
+                logger.warning("Задача %s не принята к исполнению: %s", task_id, str(exc)[:300])
             node = _retrieve_task_node(config, task_id, timeout=timeout)
+            _apply_execution_fields(node, mark=mark, comment=comment, accept=False)
+            update = _update_task_with_retry(config, node, timeout=timeout)
 
-    executed = node.find("m:executed", NS)
-    if executed is None:
-        raise RuntimeError("В карточке задачи нет признака исполнения")
-    executed.text = "true"
-    # Без пометки исполнения ДО принимает объект, но задачу не завершает.
-    mark_node = node.find("m:executionMark", NS)
-    if mark_node is None:
-        mark_node = ET.Element(f"{{{DM_NS}}}executionMark")
-        node.insert(list(node).index(executed) + 1, mark_node)
-    mark_node.text = mark
-    if comment:
-        note = node.find("m:executionComment", NS)
-        if note is None:
-            note = ET.SubElement(node, f"{{{DM_NS}}}executionComment")
-        note.text = comment
-
-    update = execute_dm(
-        config,
-        f'<dm:request xsi:type="dm:DMUpdateRequest">{_object_xml(node)}</dm:request>',
-        timeout=timeout,
-    )
     updated = update.find(".//m:objects", NS)
     logger.info(
         "Задача %s после DMUpdateRequest: executed=%s, executionMark=%s",
