@@ -162,15 +162,16 @@ export function MailGridTab({
   )
 
   const tiles: SpecSummaryTile[] = useMemo(() => {
-    const counts = countMailTiles(directionRows)
+    const counts = countMailTiles(mailRows)
+    const inView = countMailTiles(directionRows)
     const dash = (n: number): string => (n ? String(n) : '—')
     return [
-      { id: 'new', label: 'Новые', value: dash(counts.new), tone: 'orange' },
-      { id: 'proc', label: 'К обработке', value: dash(counts.proc), tone: 'blue' },
-      { id: 'hi', label: 'Высокий приоритет', value: dash(counts.hi), tone: 'red' },
-      { id: 'proj', label: 'Проектные', value: dash(counts.proj), tone: 'purple' }
+      { id: 'inbox', label: 'Входящие', value: dash(counts.inbox), tone: 'orange' },
+      { id: 'sent', label: 'Исходящие', value: dash(counts.sent), tone: 'blue' },
+      { id: 'hi', label: 'Высокий приоритет', value: dash(inView.hi), tone: 'red' },
+      { id: 'proj', label: 'Проектные', value: dash(inView.proj), tone: 'purple' }
     ]
-  }, [directionRows])
+  }, [mailRows, directionRows])
 
   const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Письма»')
   const partyHeader = directionTab === 'sent' ? 'Кому' : 'Отправитель'
@@ -260,8 +261,16 @@ export function MailGridTab({
       tabId="mail"
       userId={userId}
       defaults={DEFAULT_STANDARD_LAYOUT}
-      chromeTiles={summaryTilesAsChrome(tiles, tileFilter === 'all' ? 'new' : tileFilter, (id) =>
-        setTileFilter((current) => (id === 'new' ? 'all' : toggleSimpleTile(current, id)))
+      chromeTiles={summaryTilesAsChrome(
+        tiles,
+        tileFilter === 'all' ? directionTab : [directionTab, tileFilter],
+        (id) => {
+          if (id === 'inbox' || id === 'sent') {
+            setDirectionTab(id)
+            return
+          }
+          setTileFilter((current) => toggleSimpleTile(current, id))
+        }
       )}
       widgets={{
         filters: (
@@ -404,13 +413,6 @@ export function MailGridTab({
               </div>
             ) : null}
 
-            {data.mailComError || data.mailImapError || (!data.mailImapPrimary && data.mailImapStatus) ? (
-              <p className="spec-v04-muted">
-                {[data.mailComError, data.mailImapError, data.mailImapPrimary ? '' : data.mailImapStatus]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </p>
-            ) : null}
             <table className="spec-v04-table">
               <thead>
                 <tr>

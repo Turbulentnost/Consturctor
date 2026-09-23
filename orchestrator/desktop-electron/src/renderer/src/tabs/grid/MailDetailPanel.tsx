@@ -341,7 +341,7 @@ export function MailDetailPanel({
             title="Заполнить маршрут и создать входящую в 1С через OData (как agent-pochta)"
             onClick={openCreateIncoming}
           >
-            <Plus size={14} aria-hidden /> Создать входящую
+            <Plus size={14} aria-hidden /> Зарегистрировать входящую
           </button>
         </footer>
       </div>

@@ -368,7 +368,7 @@ export function todayRowsForTile<T>(filter: string, widgetId: string, rows: T[])
 }
 
 export function mailMatchesTile(row: SpecMailRow, id: string): boolean {
-  if (id === 'all' || id === 'new') return true
+  if (id === 'all' || id === 'inbox' || id === 'sent' || id === 'new') return true
   if (id === 'proc') return /обработ|непрочитан/i.test(row.status)
   if (id === 'hi') return /высок/i.test(row.priority) || row.unread === true
   if (id === 'proj') return row.appFolderId === 'proj'
@@ -379,8 +379,8 @@ export function mailMatchesTile(row: SpecMailRow, id: string): boolean {
 
 export function countMailTiles(rows: SpecMailRow[]): Record<string, number> {
   return {
-    new: rows.filter((row) => row.unread).length || rows.length,
-    proc: rows.filter((row) => mailMatchesTile(row, 'proc')).length,
+    inbox: rows.filter((row) => row.direction !== 'sent').length,
+    sent: rows.filter((row) => row.direction === 'sent').length,
     hi: rows.filter((row) => mailMatchesTile(row, 'hi')).length,
     proj: rows.filter((row) => mailMatchesTile(row, 'proj')).length,
     reg: rows.filter((row) => mailMatchesTile(row, 'reg')).length
