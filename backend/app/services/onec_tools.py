@@ -39,6 +39,9 @@ from app.services.erp_incoming import (
     stub_incoming_correspondence as _stub_erp_incoming_correspondence,
     stub_incoming_correspondence_write as _stub_erp_incoming_correspondence_write,
 )
+from app.services.incoming_suggest import (
+    handle_incoming_suggest as _erp_incoming_suggest,
+)
 from app.services.onec_artifacts import (
     ArtifactError,
     handle_download_artifact as _download_artifact,
@@ -163,6 +166,7 @@ ONEC_TOOLS = frozenset(
         "onec.erp_assignments_write",
         "onec.incoming_correspondence",
         "onec.incoming_correspondence_write",
+        "onec.incoming_suggest",
         "onec.download_artifact",
         "onec.erp_write_probe",
         "onec.docflow_tasks",
@@ -1523,6 +1527,8 @@ STUB_HANDLERS = {
     "onec.erp_assignments_write": _stub_erp_assignments_write,
     "onec.incoming_correspondence": _stub_erp_incoming_correspondence,
     "onec.incoming_correspondence_write": _stub_erp_incoming_correspondence_write,
+    # Подсказка считается по локальным данным data/pochta — не требует OData.
+    "onec.incoming_suggest": _erp_incoming_suggest,
     "onec.download_artifact": _stub_download_artifact,
     "onec.erp_write_probe": _stub_erp_write_probe,
     "onec.docflow_tasks": _stub_docflow_tasks,
@@ -1545,6 +1551,7 @@ REAL_HANDLERS = {
     "onec.erp_assignments_write": _erp_assignments_write,
     "onec.incoming_correspondence": _erp_incoming_correspondence,
     "onec.incoming_correspondence_write": _erp_incoming_correspondence_write,
+    "onec.incoming_suggest": _erp_incoming_suggest,
     "onec.download_artifact": _download_artifact,
     "onec.erp_write_probe": _erp_write_probe,
     "onec.docflow_tasks": _docflow_tasks,

@@ -227,6 +227,26 @@ def _resolve_odata_direction(department_id: str) -> str:
     return _DEPARTMENT_ODATA_DIRECTION.get((department_id or "").strip(), "")
 
 
+def _load_payer_display() -> dict[str, str]:
+    """enum ПлательщикНаправление → отображаемое имя (для UI и валидации override)."""
+    return _load_json_map("odata_payer_direction_display.json")
+
+
+def _resolve_payer_override(raw: Any) -> str:
+    """Плательщик из формы: enum-код или отображаемое имя; иначе пусто (вычислим)."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    display = _load_payer_display()
+    if text in display:
+        return text
+    folded = text.casefold()
+    for code, name in display.items():
+        if name.casefold() == folded:
+            return code
+    return ""
+
+
 def _put_composite_string(body: dict[str, Any], key: str, value: Any) -> None:
     text = str(value or "").strip()
     if not text:
@@ -298,10 +318,16 @@ def build_create_body(args: dict[str, Any]) -> dict[str, Any]:
         "EmailОтправителяПисьма": email_sender,
         "EmailПолучателяПисьма": email_recipient,
     }
+    # Плательщик: значение из формы (подсказка onec.incoming_suggest, редактируемое),
+    # иначе как раньше — по организации.
+    payer = _resolve_payer_override(
+        args.get("payer_direction") or args.get("payer") or ""
+    ) or _resolve_payer_direction(org_code, str(args.get("direction_code") or ""))
+
     _put_composite_string(body, "ТемаСлужебнойЗаписки", theme)
     _put_composite_string(body, "Подразделение", department_name)
     _put_composite_string(body, "Автор", DEFAULT_AUTHOR)
-    _put_composite_string(body, "ПлательщикНаправление", _resolve_payer_direction(org_code))
+    _put_composite_string(body, "ПлательщикНаправление", payer)
     _put_composite_string(body, "Партнер", partner)
     if org_key:
         body["Организация_Key"] = org_key
@@ -488,10 +514,14 @@ def handle_incoming_correspondence(args: dict[str, Any], **_: Any) -> dict[str, 
             for code in ORG_ORDER
             if code in ORG_FULL_NAMES
         ]
+        payers = [
+            {"code": code, "name": name} for code, name in _load_payer_display().items()
+        ]
         return {
             "summary": f"Подразделения для маршрутизации: {len(items)}",
             "departments": items,
             "organizations": organizations,
+            "payers": payers,
             "count": len(items),
             "source": "pochta_data",
         }

@@ -89,6 +89,7 @@ export function MailDetailPanel({
           entryId: '',
           subject: res.subject || mail.subject,
           sender: res.from || mail.sender,
+          senderEmail: (String(res.from || '').match(/[\w.+-]+@[\w.-]+\.\w+/) || [''])[0],
           body: res.body,
           bodyPreview: res.body.slice(0, 400),
           unread: Boolean(mail.unread),

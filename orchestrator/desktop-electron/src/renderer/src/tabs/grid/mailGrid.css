@@ -216,3 +216,17 @@
 .incoming-review-note {
   margin: 12px 0 0;
 }
+
+/* Подсказка RAG: предзаполненные отдел/плательщик по контексту письма. */
+.incoming-suggest-note {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 13px;
+}
+
+.incoming-payer-select {
+  width: 100%;
+}

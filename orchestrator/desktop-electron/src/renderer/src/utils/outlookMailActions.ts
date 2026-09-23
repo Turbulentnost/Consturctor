@@ -14,6 +14,8 @@ export interface OutlookMailDetail {
   entryId: string
   subject: string
   sender: string
+  /** SMTP-адрес отправителя из Outlook (PR_SENDER_SMTP_ADDRESS); может быть пуст. */
+  senderEmail: string
   body: string
   bodyPreview: string
   unread: boolean
@@ -68,6 +70,7 @@ export async function fetchOutlookMailDetail(
       entryId,
       subject: String(raw.subject || ''),
       sender: String(raw.sender || ''),
+      senderEmail: String(raw.sender_email || '').trim(),
       body: String(raw.body || raw.body_preview || ''),
       bodyPreview: String(raw.body_preview || raw.body || ''),
       unread: Boolean(raw.unread),

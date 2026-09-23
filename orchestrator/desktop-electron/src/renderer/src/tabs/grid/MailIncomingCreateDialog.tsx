@@ -12,10 +12,13 @@ import {
   INCOMING_AI_MAILBOX,
   INCOMING_DEPARTMENTS,
   INCOMING_ORGANIZATIONS,
+  INCOMING_PAYERS,
   organizationLabel,
+  suggestIncomingRoute,
   type IncomingCreateDraft,
   type IncomingDepartmentOption,
-  type IncomingOrganizationOption
+  type IncomingOrganizationOption,
+  type IncomingPayerOption
 } from '../../workplace/mailIncomingCreate'
 import './extensionsGrid.css'
 import './mailGrid.css'
@@ -201,11 +204,14 @@ export function MailIncomingCreateDialog({
     emptyIncomingCreateDraft(mail, {
       subject: detail?.subject,
       sender: detail?.sender,
+      senderEmail: detail?.senderEmail,
       bodyPreview: detail?.bodyPreview
     })
   )
   const [departments, setDepartments] = useState<IncomingDepartmentOption[]>(INCOMING_DEPARTMENTS)
   const [organizations, setOrganizations] = useState<IncomingOrganizationOption[]>(INCOMING_ORGANIZATIONS)
+  const [payers, setPayers] = useState<IncomingPayerOption[]>(INCOMING_PAYERS)
+  const [suggestNote, setSuggestNote] = useState('')
   const [step, setStep] = useState<'choice' | 'form' | 'confirm'>('choice')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -216,11 +222,13 @@ export function MailIncomingCreateDialog({
       emptyIncomingCreateDraft(mail, {
         subject: detail?.subject || mail.subject,
         sender: detail?.sender || mail.sender,
+        senderEmail: detail?.senderEmail,
         bodyPreview: detail?.bodyPreview
       })
     )
     setStep('choice')
     setError('')
+    setSuggestNote('')
     setBusy(false)
     // Reset only when the dialog opens for another letter. Letter preview
     // updates must not wipe a filled form or abort the 1C submit.
@@ -234,11 +242,70 @@ export function MailIncomingCreateDialog({
       if (cancelled) return
       setDepartments(catalog.departments)
       if (catalog.organizations.length) setOrganizations(catalog.organizations)
+      if (catalog.payers.length) setPayers(catalog.payers)
     })
     return () => {
       cancelled = true
     }
   }, [open])
+
+  // detail (и SMTP-адрес отправителя) может загрузиться позже открытия диалога —
+  // дозаполняем пустое поле «Почта отправителя», не трогая ручной ввод.
+  useEffect(() => {
+    if (!open) return
+    const senderEmail =
+      detail?.senderEmail ||
+      (String(detail?.sender || '').match(/[\w.+-]+@[\w.-]+\.\w+/) || [''])[0]
+    if (!senderEmail) return
+    setDraft((current) =>
+      current.emailSender.trim() ? current : { ...current, emailSender: senderEmail }
+    )
+  }, [open, detail?.senderEmail, detail?.sender])
+
+  // Автоподсказка отдела и плательщика по контексту письма (RAG agent-pochta на
+  // backend). Только предзаполняет пустые поля — ручной ввод не блокируется.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const senderEmail =
+      detail?.senderEmail ||
+      (String(detail?.sender || mail.sender || '').match(/[\w.+-]+@[\w.-]+\.\w+/) || [''])[0]
+    void suggestIncomingRoute({
+      subject: detail?.subject || mail.subject,
+      body: detail?.body || detail?.bodyPreview || mail.preview || '',
+      sender: detail?.sender || mail.sender,
+      senderEmail
+    }).then((suggestion) => {
+      if (cancelled || !suggestion) return
+      setDraft((current) => {
+        const next = { ...current }
+        let applied = false
+        if (suggestion.department && !current.departmentId && !current.departmentName.trim()) {
+          next.departmentId = suggestion.department.code
+          next.departmentName = suggestion.department.name
+          applied = true
+        }
+        if (suggestion.payer && !current.payerDirection) {
+          next.payerDirection = suggestion.payer.code
+          applied = true
+        }
+        if (suggestion.organization && current.organization === 'НП') {
+          next.organization = suggestion.organization.code
+        }
+        if (applied && suggestion.department) {
+          setSuggestNote(
+            `Подсказка по письму: ${suggestion.department.name}` +
+              (suggestion.payer ? ` / ${suggestion.payer.name}` : '')
+          )
+        }
+        return applied || next.organization !== current.organization ? next : current
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rerun when letter/detail identity changes
+  }, [open, mail.id, detail?.entryId, detail?.bodyPreview])
 
   useEffect(() => {
     if (!open) return
@@ -397,6 +464,9 @@ export function MailIncomingCreateDialog({
           </div>
         ) : step === 'form' ? (
           <div className="registry-create-body">
+            {suggestNote ? (
+              <p className="modal-note incoming-suggest-note">{suggestNote} — проверьте и при необходимости поменяйте.</p>
+            ) : null}
             <section className="registry-create-section">
               <SemanticCombo
                 id="incoming-dept"
@@ -457,10 +527,29 @@ export function MailIncomingCreateDialog({
                 }}
                 onPick={(code) => setDraft((current) => ({ ...current, organization: code }))}
               />
+              <label className="registry-create-field">
+                <span className="modal-label">Направление / плательщик</span>
+                <select
+                  className="onec-reconnect-input incoming-payer-select"
+                  value={draft.payerDirection}
+                  onChange={(event) =>
+                    setDraft((c) => ({ ...c, payerDirection: event.target.value }))
+                  }
+                >
+                  <option value="">Авто (по организации)</option>
+                  {payers.map((item) => (
+                    <option key={item.code} value={item.code}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="registry-create-field registry-create-field--wide">
-                <span className="modal-label">Отправитель (e-mail)</span>
+                <span className="modal-label">Почта отправителя</span>
                 <input
                   className="onec-reconnect-input"
+                  type="email"
+                  placeholder="mail@example.ru"
                   value={draft.emailSender}
                   onChange={(event) => setDraft((c) => ({ ...c, emailSender: event.target.value }))}
                 />
@@ -490,9 +579,16 @@ export function MailIncomingCreateDialog({
             <dl className="incoming-review">
               <ReviewRow label="Организация" value={orgFullName} />
               <ReviewRow label="Кому на исполнение" value={draft.departmentName} />
+              <ReviewRow
+                label="Направление / плательщик"
+                value={
+                  payers.find((item) => item.code === draft.payerDirection)?.name ||
+                  (draft.payerDirection ? draft.payerDirection : 'Авто (по организации)')
+                }
+              />
               <ReviewRow label="Тема" value={draft.theme} />
               <ReviewRow label="Партнёр" value={draft.partner} />
-              <ReviewRow label="Отправитель" value={draft.emailSender || mail.sender || ''} />
+              <ReviewRow label="Почта отправителя" value={draft.emailSender} />
               {draft.content.trim() ? (
                 <ReviewRow label="Содержание" value={draft.content} />
               ) : null}

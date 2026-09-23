@@ -90,11 +90,28 @@ PR_SENDER_NAME_W = PROPTAG_BASE + "0x0C1A001F"
 PR_SENT_REPRESENTING_NAME_W = PROPTAG_BASE + "0x0042001F"
 PR_DISPLAY_TO_W = PROPTAG_BASE + "0x0E04001F"
 PR_DISPLAY_CC_W = PROPTAG_BASE + "0x0E03001F"
+# SMTP-адрес отправителя (не X.500 DN Exchange) — для «Почта отправителя» в 1С.
+PR_SENDER_SMTP_ADDRESS_W = PROPTAG_BASE + "0x5D01001F"
+PR_SENT_REPRESENTING_SMTP_ADDRESS_W = PROPTAG_BASE + "0x5D02001F"
+PR_SENDER_EMAIL_ADDRESS_W = PROPTAG_BASE + "0x0C1F001F"
 
 
 def _log_progress(message: str) -> None:
     """Записать COM progress-сообщение в stderr, не загрязняя stdout JSON."""
     print(f"[COM_DIAG] {message}", file=sys.stderr, flush=True)
+
+
+def _read_sender_smtp(item: Any) -> str:
+    """SMTP-адрес отправителя письма; пусто, если только X.500 DN Exchange."""
+    for schema in (
+        PR_SENDER_SMTP_ADDRESS_W,
+        PR_SENT_REPRESENTING_SMTP_ADDRESS_W,
+        PR_SENDER_EMAIL_ADDRESS_W,
+    ):
+        value = _read_guarded_property(item, schema).strip()
+        if "@" in value:
+            return value
+    return ""
 
 
 def _read_guarded_property(item: Any, schema: str) -> str:
@@ -1560,6 +1577,7 @@ def _collect_mail_messages(
             "entry_id": _safe_str(getattr(message, "EntryID", "")),
             "subject": subject,
             "sender": sender or sent_representing,
+            "sender_email": _read_sender_smtp(message),
             "to": recipients,
             "received_at": timestamp if direction == "inbox" else "",
             "sent_at": timestamp if direction == "sent" else "",
@@ -1644,6 +1662,7 @@ def _mail_detail_payload(message: Any, *, include_body: bool = True) -> dict[str
         "entry_id": _safe_str(getattr(message, "EntryID", "")),
         "subject": _safe_str(getattr(message, "Subject", "")),
         "sender": sender or sent_by,
+        "sender_email": _read_sender_smtp(message),
         "body": body if include_body else "",
         "body_preview": body[:BODY_PREVIEW_LIMIT],
         "unread": unread,

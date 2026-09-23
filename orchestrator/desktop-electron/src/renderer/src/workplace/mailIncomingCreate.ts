@@ -15,6 +15,24 @@ export type IncomingOrganizationOption = {
   name: string
 }
 
+export type IncomingPayerOption = {
+  code: string
+  name: string
+}
+
+/** enum 1С «ТД_ПлательщикНаправление» → отображаемое имя (data/pochta display map). */
+export const INCOMING_PAYERS: IncomingPayerOption[] = [
+  { code: 'ТурбулентностьДОНКС', name: 'ООО НПО «Турбулентность-ДОН» КС' },
+  { code: 'ТурбулентностьДОНПроизводство1', name: 'ООО НПО «Турбулентность-ДОН» пр-во1' },
+  { code: 'ТурбулентностьДОНСС', name: 'ООО НПО «Турбулентность-ДОН» СС' },
+  { code: 'ТурбулентностьДОНМС', name: 'ООО НПО «Турбулентность-ДОН» МС' },
+  { code: 'ТурбулентностьДОНРУ', name: 'ООО НПО «Турбулентность-ДОН» РУ' },
+  { code: 'АЛМАЗ', name: 'ООО «Алмаз»' },
+  { code: 'Метрогазсервис', name: 'ООО «Метрогазсервис»' },
+  { code: 'АмурскаяЛегенда', name: 'ООО «Амурская легенда»' },
+  { code: 'БМИ', name: 'БМИ (блочно-модульные изделия)' }
+]
+
 /** Подразделения из «Код.docx». В форме только названия. */
 export const INCOMING_DEPARTMENTS: IncomingDepartmentOption[] = [
   { code: '00-000001', name: 'Председатель Совета Директоров' },
@@ -173,6 +191,8 @@ export type IncomingCreateDraft = {
   theme: string
   partner: string
   organization: string
+  /** enum-код «ТД_ПлательщикНаправление»; пусто = backend вычислит по организации. */
+  payerDirection: string
   emailSender: string
   emailRecipient: string
   content: string
@@ -225,17 +245,35 @@ export async function forwardIncomingMailToAi(
   return { ok: true }
 }
 
+/** Первый e-mail из строки вида «Иванов Иван <ivanov@example.ru>» или пусто. */
+export function extractEmailAddress(text: string | undefined): string {
+  const match = String(text || '').match(/[\w.+-]+@[\w.-]+\.[\wа-яё-]+/i)
+  return match ? match[0] : ''
+}
+
 export function emptyIncomingCreateDraft(
   mail?: SpecMailRow,
-  detail?: { subject?: string; sender?: string; bodyPreview?: string; recipient?: string }
+  detail?: {
+    subject?: string
+    sender?: string
+    senderEmail?: string
+    bodyPreview?: string
+    recipient?: string
+  }
 ): IncomingCreateDraft {
+  // «Почта отправителя» — именно e-mail (Outlook sender — display name, не адрес).
+  const senderEmail =
+    (detail?.senderEmail || '').trim() ||
+    extractEmailAddress(detail?.sender) ||
+    extractEmailAddress(mail?.sender)
   return {
     departmentId: '',
     departmentName: '',
     theme: (detail?.subject || mail?.subject || '').trim(),
     partner: '',
     organization: 'НП',
-    emailSender: (detail?.sender || mail?.sender || '').trim(),
+    payerDirection: '',
+    emailSender: senderEmail,
     emailRecipient: (detail?.recipient || '').trim(),
     content: (detail?.bodyPreview || '').trim()
   }
@@ -258,6 +296,7 @@ function parseNamedOptions(rows: unknown): IncomingDepartmentOption[] {
 export async function fetchIncomingCatalog(): Promise<{
   departments: IncomingDepartmentOption[]
   organizations: IncomingOrganizationOption[]
+  payers: IncomingPayerOption[]
 }> {
   const response = await api.invokeServerTool(
     'onec.incoming_correspondence',
@@ -265,15 +304,75 @@ export async function fetchIncomingCatalog(): Promise<{
     60_000
   )
   if (!response.ok) {
-    return { departments: INCOMING_DEPARTMENTS, organizations: INCOMING_ORGANIZATIONS }
+    return {
+      departments: INCOMING_DEPARTMENTS,
+      organizations: INCOMING_ORGANIZATIONS,
+      payers: INCOMING_PAYERS
+    }
   }
   const result = response.result as Record<string, unknown> | undefined
   const organizations = parseNamedOptions(result?.organizations)
   const departments = parseNamedOptions(result?.departments)
+  const payers = parseNamedOptions(result?.payers)
   return {
     departments:
       departments.length >= INCOMING_DEPARTMENTS.length ? departments : INCOMING_DEPARTMENTS,
-    organizations: organizations.length ? organizations : INCOMING_ORGANIZATIONS
+    organizations: organizations.length ? organizations : INCOMING_ORGANIZATIONS,
+    payers: payers.length ? payers : INCOMING_PAYERS
+  }
+}
+
+export type IncomingRouteSuggestion = {
+  department?: IncomingDepartmentOption
+  organization?: IncomingOrganizationOption
+  payer?: IncomingPayerOption
+  direction?: string
+  confidence?: number
+  source?: string
+  reasoning?: string
+}
+
+function parseCodeName(raw: unknown): IncomingDepartmentOption | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const item = raw as Record<string, unknown>
+  const code = String(item.code || '').trim()
+  const name = String(item.name || '').trim()
+  if (!code) return undefined
+  return { code, name: name || code }
+}
+
+/**
+ * Подсказка отдела и плательщика по контексту письма (backend onec.incoming_suggest,
+ * перенос RAG-каскада agent-pochta). Возвращает null при любой ошибке — форма
+ * остаётся полностью ручной.
+ */
+export async function suggestIncomingRoute(input: {
+  subject?: string
+  body?: string
+  sender?: string
+  senderEmail?: string
+}): Promise<IncomingRouteSuggestion | null> {
+  const response = await api.invokeServerTool(
+    'onec.incoming_suggest',
+    {
+      subject: (input.subject || '').slice(0, 500),
+      body: (input.body || '').slice(0, 8000),
+      sender: input.sender || '',
+      sender_email: input.senderEmail || ''
+    },
+    30_000
+  )
+  if (!response.ok) return null
+  const result = response.result as Record<string, unknown> | undefined
+  if (!result) return null
+  return {
+    department: parseCodeName(result.department),
+    organization: parseCodeName(result.organization),
+    payer: parseCodeName(result.payer),
+    direction: String(result.direction || '').trim() || undefined,
+    confidence: typeof result.confidence === 'number' ? result.confidence : undefined,
+    source: String(result.source || '').trim() || undefined,
+    reasoning: String(result.reasoning || '').trim() || undefined
   }
 }
 
@@ -362,6 +461,7 @@ export async function createIncomingFromMail(
     theme,
     partner: draft.partner.trim(),
     organization: draft.organization.trim() || 'НП',
+    payer_direction: draft.payerDirection.trim(),
     email_sender: draft.emailSender.trim(),
     email_recipient: draft.emailRecipient.trim(),
     content: draft.content.trim() || theme,

@@ -31,6 +31,7 @@ export const TOOL_LABELS: Record<string, string> = {
   'onec.save_incoming_mail_msg': 'Сохранить .msg',
   'onec.incoming_correspondence': 'Справочник входящей',
   'onec.incoming_correspondence_write': 'Создание входящей 1С',
+  'onec.incoming_suggest': 'Подсказка маршрута входящей',
   'onec.meeting_service_notes': 'Служебные записки на совещания',
   'onec.erp_assignments': 'Поручения 1С (АСТ00)',
   'onec.erp_assignments_write': 'Запись поручения 1С',
@@ -66,6 +67,7 @@ export const TOOL_LABELS: Record<string, string> = {
   'users.list': 'Список пользователей',
   'users.subordinates': 'Подчинённые из erp_pm',
   'notify.send': 'Уведомление',
+  'audio.transcribe': 'Расшифровка аудио',
   'agent.schedule': 'Расписание агента',
   'agent.schedule.cancel': 'Отмена расписания'
 }
