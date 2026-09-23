@@ -7,6 +7,7 @@ import { SpecV04SourcesContext } from './SpecV04SourcesProvider'
 import {
   buildTaskCatalog,
   filterTaskRows,
+  isDocflowToMe,
   isTurboTaskAsManager,
   isTurboTaskToMe
 } from './tileFilters'
@@ -72,6 +73,11 @@ export interface SpecV04SourcesState {
   oneCAuthFailure: boolean
   /** Ключи onecTaskKey задач 1С, которых не было при предыдущем входе сегодня (на всю сессию). */
   newOneCTaskKeys: ReadonlySet<string>
+  /** Задачи платформы, где пользователь постановщик или исполнитель. */
+  platformTasks: SpecTaskRow[]
+  platformTaskCount: number
+  platformLoading: boolean
+  platformError: string
 }
 
 function pct(done: number, total: number): number {
@@ -189,7 +195,10 @@ function taskTileValue(loading: boolean, count: number, dead?: boolean): string 
 
 export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
   const allPending = (data.erpLoading || data.turboLoading || data.tableLoading) && !data.allTaskCount
-  const catalog = buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows)
+  const catalog = buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows, data.platformTasks)
+  const platformOpen = data.platformTasks.filter((row) => row.platform?.status === 'open')
+  const platformMine = platformOpen.filter((row) => row.platform?.role !== 'author').length
+  const platformFromMe = platformOpen.filter((row) => row.platform?.role !== 'assignee').length
   const overdue = filterTaskRows(
     catalog.rows,
     { source: 'all', overdueOnly: true },
@@ -205,13 +214,14 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
   const regTotal = data.processRows.length
   const onecDead = Boolean(data.erpError) && !data.erpTaskCount && !data.erpLoading
   const turboDead = Boolean(data.turboError) && !data.turboTaskCount && !data.turboLoading
-  const onecDone = data.erpTasks.filter((t) => t.status === 'Выполнена').length
+  const onecToMe = data.erpTasks.filter((t) => isDocflowToMe(t))
+  const onecDone = onecToMe.filter((t) => t.status === 'Выполнена').length
   const allHint = allPending ? 'загрузка…' : ''
   const onecHint = data.erpLoading
     ? 'загрузка…'
     : onecDead
       ? ''
-      : data.erpTaskCount
+      : onecToMe.length
         ? `${onecDone} выполнено`
         : ''
   const fromMeHint = data.erpLoading ? 'загрузка…' : onecDead ? '' : fromMe ? `${fromMe} от меня` : ''
@@ -233,8 +243,9 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
     {
       id: 'onec',
       label: 'Задачи из 1С',
-      value: taskTileValue(data.erpLoading, data.erpTaskCount, onecDead),
+      value: taskTileValue(data.erpLoading, onecToMe.length, onecDead),
       hint: onecHint,
+      tooltip: 'Задачи документооборота, где вы исполнитель',
       tone: 'blue'
     },
     {
@@ -243,6 +254,14 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
       value: taskTileValue(data.erpLoading, fromMe, onecDead),
       hint: fromMeHint,
       tone: 'lilac'
+    },
+    {
+      id: 'platform',
+      label: 'Платформа',
+      value: taskTileValue(data.platformLoading && !data.platformTaskCount, platformOpen.length),
+      hint: platformOpen.length ? `${platformMine} мне · ${platformFromMe} от меня` : '',
+      tooltip: 'Задачи Оркестратора: поставленные вам и вами',
+      tone: 'yellow'
     },
     {
       id: 'proj-mine',

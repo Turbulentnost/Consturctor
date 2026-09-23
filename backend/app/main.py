@@ -138,7 +138,10 @@ async def lifespan(_app: FastAPI):
                     logger.exception("KPI scheduler tick failed")
                 await asyncio.sleep(60)
 
+        from app.api.v1.platform_tasks import platform_task_scheduler
+
         scheduler_tasks = [
+            asyncio.create_task(platform_task_scheduler()),
             asyncio.create_task(notification_scheduler()),
             asyncio.create_task(board_live_subscriber()),
             asyncio.create_task(trigger_scheduler()),

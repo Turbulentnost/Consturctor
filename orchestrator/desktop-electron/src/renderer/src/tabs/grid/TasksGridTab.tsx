@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
@@ -8,7 +9,7 @@ import { WorkplaceProgressSection } from '../../workplace/WorkplaceProgressSecti
 import { displayTaskProgress } from '../../workplace/TaskProgressEditor'
 import { taskActionContextFromTaskRow } from '../../workplace/taskSourceKind'
 import { runDocflowAction } from '../../workplace/taskSourceActions'
-import { isDocflowToMe } from '../../workplace/tileFilters'
+import { formatSurnameInitials, isDocflowToMe } from '../../workplace/tileFilters'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
 import {
   comPasswordSessionHint,
@@ -47,6 +48,8 @@ import {
   docflowTaskKind,
   type DocflowTaskKind
 } from '../../workplace/docflowTaskKind'
+import { isPlatformTaskMine } from '../../workplace/platformTasks'
+import { completePlatformTask, PlatformTaskDetail } from './PlatformTaskDetail'
 
 export function TasksGridTab({
   user,
@@ -70,8 +73,8 @@ export function TasksGridTab({
     if (navTaskFilter) setTileFilter(navTaskFilter)
   }, [navTaskFilter])
   const catalog = useMemo(
-    () => buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows),
-    [data.erpTasks, data.turboTasks, data.processRows]
+    () => buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows, data.platformTasks),
+    [data.erpTasks, data.turboTasks, data.processRows, data.platformTasks]
   )
   const effectiveTile: TaskTileFilter = {
     source: (barSource as TaskSourceFilter) || tileFilter.source,
@@ -151,7 +154,23 @@ export function TasksGridTab({
       ? 'От кого'
       : effectiveTile.source === 'onec-from-me'
         ? 'Кому'
-        : 'Процесс'
+        : effectiveTile.source === 'platform'
+          ? 'От кого / кому'
+          : 'Процесс'
+  const platformAction = (row: (typeof taskRows)[number]): boolean =>
+    Boolean(row.platform && isPlatformTaskMine(row.platform) && row.platform.status === 'open')
+  const runPlatformDone = (row: (typeof taskRows)[number]): void => {
+    if (!row.platform || closingId) return
+    setClosingId(row.id)
+    setCloseNote('')
+    void completePlatformTask(row.platform)
+      .then((message) => {
+        setCloseNote(message)
+        softRefresh()
+      })
+      .catch((err: unknown) => setCloseNote(err instanceof Error ? err.message : 'Не удалось отметить задачу'))
+      .finally(() => setClosingId(''))
+  }
   const partyOf = (row: (typeof taskRows)[number]): string => {
     if (effectiveTile.source === 'onec') return row.author || '—'
     if (effectiveTile.source === 'onec-from-me') return row.performer || row.executor || '—'
@@ -184,9 +203,128 @@ export function TasksGridTab({
       })
       .finally(() => setClosingId(''))
   }
+  const isAcquaintRow = (row: (typeof taskRows)[number]): boolean => {
+    const kind = kindOf(row)
+    return kind === 'acquaint' || kind === 'acquaint_result'
+  }
+  const mainRows = taskRows.filter((row) => !isAcquaintRow(row))
+  const acquaintRows = taskRows.filter(isAcquaintRow)
+  const acquaintTargets = acquaintRows.filter((row) => rowAction(row)?.id === 'acquaint')
+  const [acquaintOpen, setAcquaintOpen] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState('')
+  const acquaintAll = async (): Promise<void> => {
+    const targets = [...acquaintTargets]
+    if (!targets.length || bulkProgress || closingId) return
+    if (!window.confirm(`Отметить в 1С:Документооборот ознакомление по ${targets.length} задачам?`)) return
+    setCloseNote('')
+    let done = 0
+    const failed: string[] = []
+    for (const [index, row] of targets.entries()) {
+      setBulkProgress(`${index + 1} из ${targets.length}`)
+      try {
+        const result = await runDocflowAction(user, taskActionContextFromTaskRow(row), 'acquaint')
+        if (result.ok) {
+          done += 1
+          setExecutedIds((current) => new Set(current).add(row.id))
+        } else {
+          failed.push(`«${row.title}»: ${result.message}`)
+        }
+      } catch (err) {
+        failed.push(`«${row.title}»: ${err instanceof Error ? err.message : 'ошибка'}`)
+      }
+    }
+    setBulkProgress('')
+    setCloseNote(
+      failed.length
+        ? `Ознакомление отмечено: ${done} из ${targets.length}. Не прошло — ${failed.join('; ')}`
+        : `Ознакомление отмечено по всем задачам: ${done}.`
+    )
+    if (done) {
+      setSelectedId('')
+      softRefresh()
+    }
+  }
   const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
-  const effectiveId = selectedId || taskRows[0]?.id || ''
+  const visibleRows = acquaintOpen ? [...mainRows, ...acquaintRows] : mainRows
+  const effectiveId = selectedId || visibleRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
+  const renderRow = (row: (typeof taskRows)[number]): React.JSX.Element => {
+    const isNew = catalog.erpIds.has(row.id) && isNewOneCTask(data.newOneCTaskKeys, row)
+    const kind = kindOf(row)
+    const action = rowAction(row)
+    return (
+      <tr
+        key={row.id}
+        className={[
+          effectiveId === row.id ? 'selected' : '',
+          isNew ? 'is-new-onec' : '',
+          row.platform ? 'ptask-row' : '',
+          row.platform?.status === 'open' ? `prio-${row.platform.priority}` : ''
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        onClick={() => setSelectedId(row.id)}
+      >
+        <td>
+          <input type="checkbox" onClick={(e) => e.stopPropagation()} />
+        </td>
+        <td>
+          <strong>{row.title}</strong>
+          {isNew ? <NewOneCTaskMark /> : null}
+          {row.role === 'delegate' ? (
+            <span className="spec-row-delegate">за {formatSurnameInitials(row.performer || row.executor)}</span>
+          ) : null}
+        </td>
+        <td>
+          {kind ? (
+            <SpecPill tone={DOCFLOW_KIND_TONE[kind]}>{DOCFLOW_KIND_LABEL[kind]}</SpecPill>
+          ) : row.platform ? (
+            <SpecPill tone={row.priorityTone}>{row.priority}</SpecPill>
+          ) : (
+            '—'
+          )}
+        </td>
+        <td>{row.source}</td>
+        <td>{partyOf(row)}</td>
+        <td className={row.urgent ? 'spec-deadline-urgent' : undefined}>{row.deadline}</td>
+        <td>
+          <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
+        </td>
+        <td>
+          <SpecProgress value={displayTaskProgress(row.id, row.progress)} />
+        </td>
+        <td>
+          {action ? (
+            <button
+              type="button"
+              className="spec-row-action"
+              title={`${action.label} в 1С:Документооборот`}
+              disabled={Boolean(closingId) || Boolean(bulkProgress)}
+              onClick={(event) => {
+                event.stopPropagation()
+                runRowAction(row)
+              }}
+            >
+              {closingId === row.id ? 'Отправляем…' : action.shortLabel}
+            </button>
+          ) : platformAction(row) ? (
+            <button
+              type="button"
+              className="spec-row-action"
+              title="Отметить задачу исполненной"
+              disabled={Boolean(closingId)}
+              onClick={(event) => {
+                event.stopPropagation()
+                runPlatformDone(row)
+              }}
+            >
+              {closingId === row.id ? 'Отправляем…' : 'Исполнено'}
+            </button>
+          ) : null}
+        </td>
+      </tr>
+    )
+  }
 
   useEffect(() => {
     const onCreate = (event: Event): void => {
@@ -218,6 +356,7 @@ export function TasksGridTab({
               onChange: setBarSource,
               options: [
                 { value: 'onec', label: '1С' },
+                { value: 'platform', label: 'Платформа' },
                 { value: 'proj', label: 'TurboProject' },
                 { value: 'reg', label: 'Регламент' }
               ]
@@ -311,60 +450,36 @@ export function TasksGridTab({
                   </td>
                 </tr>
               ) : null}
-              {taskRows.map((row) => {
-                const isNew = catalog.erpIds.has(row.id) && isNewOneCTask(data.newOneCTaskKeys, row)
-                const kind = kindOf(row)
-                const action = rowAction(row)
-                return (
-                <tr
-                  key={row.id}
-                  className={[effectiveId === row.id ? 'selected' : '', isNew ? 'is-new-onec' : '']
-                    .filter(Boolean)
-                    .join(' ')}
-                  onClick={() => setSelectedId(row.id)}
-                >
-                  <td>
-                    <input type="checkbox" onClick={(e) => e.stopPropagation()} />
-                  </td>
-                  <td>
-                    <strong>{row.title}</strong>
-                    {isNew ? <NewOneCTaskMark /> : null}
-                  </td>
-                  <td>
-                    {kind ? (
-                      <SpecPill tone={DOCFLOW_KIND_TONE[kind]}>{DOCFLOW_KIND_LABEL[kind]}</SpecPill>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td>{row.source}</td>
-                  <td>{partyOf(row)}</td>
-                  <td className={row.urgent ? 'spec-deadline-urgent' : undefined}>{row.deadline}</td>
-                  <td>
-                    <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
-                  </td>
-                  <td>
-                    <SpecProgress value={displayTaskProgress(row.id, row.progress)} />
-                  </td>
-                  <td>
-                    {action ? (
-                      <button
-                        type="button"
-                        className="spec-row-action"
-                        title={`${action.label} в 1С:Документооборот`}
-                        disabled={Boolean(closingId)}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          runRowAction(row)
-                        }}
-                      >
-                        {closingId === row.id ? 'Отправляем…' : action.shortLabel}
+              {mainRows.map(renderRow)}
+              {acquaintRows.length ? (
+                <tr className="spec-group-row" onClick={() => setAcquaintOpen((open) => !open)}>
+                  <td colSpan={9}>
+                    <div className="spec-group-head">
+                      <button type="button" className="spec-group-toggle" aria-expanded={acquaintOpen}>
+                        {acquaintOpen ? <ChevronDown size={16} aria-hidden /> : <ChevronRight size={16} aria-hidden />}
+                        Ознакомление
+                        <em>{acquaintRows.length}</em>
                       </button>
-                    ) : null}
+                      {acquaintTargets.length ? (
+                        <button
+                          type="button"
+                          className="spec-row-action"
+                          disabled={Boolean(bulkProgress) || Boolean(closingId)}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void acquaintAll()
+                          }}
+                        >
+                          {bulkProgress
+                            ? `Ознакомление ${bulkProgress}…`
+                            : `Ознакомиться со всеми (${acquaintTargets.length})`}
+                        </button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
-                )
-              })}
+              ) : null}
+              {acquaintOpen ? acquaintRows.map(renderRow) : null}
             </tbody>
           </table>
         </div>
@@ -383,6 +498,14 @@ export function TasksGridTab({
               Закрыть
             </button>
           </div>
+        ) : selected?.platform ? (
+          <PlatformTaskDetail
+            row={selected}
+            onChanged={(message) => {
+              setCloseNote(message)
+              softRefresh()
+            }}
+          />
         ) : selected ? (
           <div className="spec-detail-card wp-card">
             <h2>{selected.title}</h2>

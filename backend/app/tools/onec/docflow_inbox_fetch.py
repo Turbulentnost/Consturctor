@@ -97,6 +97,7 @@ def fetch_inbox_tasks_soap(
                 force_refresh=force_refresh,
                 username=username,
                 password=password,
+                delegate_fios=(auth_args or {}).get("delegate_fios"),
             )
         except (RuntimeError, ValueError, OSError) as exc:
             last_warning = str(exc)

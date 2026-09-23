@@ -25,7 +25,9 @@ def init_db() -> None:
     from app.models import agent_run as _agent_run  # noqa: F401
     from app.models import calendar_overlay as _calendar_overlay  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
+    from app.models import org as _org  # noqa: F401
     from app.models import orchestrator as _orchestrator  # noqa: F401
+    from app.models import platform_task as _platform_task  # noqa: F401
     from app.models import regulation as _regulation  # noqa: F401
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401

@@ -12102,6 +12102,65 @@ button.spec-v04-tile {
 .spec-v04-table tbody tr.selected {
   background: rgba(21, 101, 192, 0.06);
 }
+.set-delegates {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(16, 20, 26, 0.08);
+}
+.set-delegates h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.set-delegates textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(13, 59, 115, 0.3);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.spec-row-delegate {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #6b5bb5;
+}
+.spec-v04-table tbody tr.spec-group-row td {
+  padding: 8px 10px;
+  background: #f4f7fb;
+  border-top: 1px solid rgba(13, 59, 115, 0.12);
+}
+.spec-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.spec-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: none;
+  background: transparent;
+  color: #0d3b73;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.spec-group-toggle em {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: rgba(13, 59, 115, 0.12);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 18px;
+  text-align: center;
+}
 .spec-v04-table tbody tr.is-new-onec td:first-child {
   box-shadow: inset 3px 0 0 #e53935;
 }

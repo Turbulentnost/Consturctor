@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import {
   CREATE_TASK_CHANNEL_LABEL,
   openWorkplaceTab,
-  requestCreateTask,
   type CreateTaskChannel
 } from '../workplace/workplaceNav'
 
@@ -54,11 +53,7 @@ export function CreateTaskHeaderButton(): React.JSX.Element {
 
   const pick = (channel: CreateTaskChannel): void => {
     setOpen(false)
-    if (channel === 'onec') {
-      openWorkplaceTab('task_create')
-      return
-    }
-    requestCreateTask(channel)
+    openWorkplaceTab(channel === 'onec' ? 'task_create' : 'platform_task_create')
   }
 
   return (

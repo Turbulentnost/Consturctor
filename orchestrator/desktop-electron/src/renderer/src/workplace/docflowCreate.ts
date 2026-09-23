@@ -184,7 +184,14 @@ export async function loadDocflowUsers(user: UserProfile): Promise<Result<{ user
 
 export async function searchDocflowDocuments(
   user: UserProfile,
-  params: { kind: string; documentTypeId: string; query: string; onlyMine: boolean }
+  params: {
+    kind: string
+    documentTypeId: string
+    query: string
+    onlyMine: boolean
+    dateFrom: string
+    dateTo: string
+  }
 ): Promise<Result<{ documents: DocflowBasisDocument[] }>> {
   return call(
     user,
@@ -193,7 +200,9 @@ export async function searchDocflowDocuments(
       kind: params.kind,
       document_type_id: params.documentTypeId,
       query: params.query,
-      only_mine: params.onlyMine
+      only_mine: params.onlyMine,
+      date_from: params.dateFrom,
+      date_to: params.dateTo
     },
     180_000
   )
@@ -219,6 +228,7 @@ export async function launchDocflowProcess(
   user: UserProfile,
   draft: DocflowLaunchDraft
 ): Promise<Result<{ summary: string; performers: string[] }>> {
+  const due = `${draft.row.dueDate}T${draft.row.dueTime || '18:00'}`
   return call(
     user,
     {
@@ -228,16 +238,24 @@ export async function launchDocflowProcess(
       process: draft.process,
       document: { id: draft.document.id, type: draft.document.type },
       title: draft.title.trim(),
-      description: draft.description.trim(),
-      due: draft.due,
+      description: draft.row.description.trim(),
+      due,
+      priority: draft.row.priority,
       verifier: draft.verifier.trim(),
       sample_task_ids: draft.sampleTaskIds,
-      performers: draft.performers
-        .filter((item) => item.fio.trim())
-        .map((item) => ({ fio: item.fio.trim(), due: item.due, note: item.note.trim() }))
+      performers: [{ fio: draft.row.fio.trim(), due, note: '' }]
     },
     180_000
   )
+}
+
+export function formatRuDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value || '')
+  return match ? `${match[3]}.${match[2]}.${match[1]}` : value || '—'
+}
+
+export function formatRuDateTime(value: Date): string {
+  return `${formatRuDate(isoDay(value))} ${clockTime(value)}`
 }
 
 export function documentLabel(doc: DocflowBasisDocument): string {

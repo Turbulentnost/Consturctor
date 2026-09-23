@@ -939,6 +939,8 @@ def dm_request_type_names(config: DokConfig, *, timeout: float) -> list[str]:
 ROLE_EXECUTOR = "executor"
 ROLE_AUTHOR = "author"
 ROLE_BOTH = "both"
+# Задача другого сотрудника, которую пользователь ведёт за него (замещение / помощник).
+ROLE_DELEGATE = "delegate"
 
 SOURCE_INBOX = "документооборот"
 SOURCE_FROM_ME = "документооборот (от меня)"
@@ -1027,6 +1029,102 @@ def source_for_role(role: str) -> str:
     return SOURCE_INBOX
 
 
+def parse_delegate_fios(value: Any) -> list[str]:
+    """ФИО тех, за кого пользователь работает (замещение / помощник): список или строка через , ; перевод строки."""
+    items = value if isinstance(value, (list, tuple)) else re.split(r"[,;\n]+", str(value or ""))
+    out: list[str] = []
+    for item in items:
+        name = " ".join(str(item or "").split())
+        if name and name.casefold() not in {existing.casefold() for existing in out}:
+            out.append(name)
+    return out
+
+
+_PROBE_OK_TTL_SEC = 12 * 3600.0
+_PROBE_FAIL_TTL_SEC = 1800.0
+_PROBE_TIMEOUT_SEC = 30.0
+# Больше стольких строк или чужих исполнителей — сервер фильтр byUser не применил.
+_PROBE_MAX_ROWS = 480
+_PROBE_MAX_DELEGATES = 5
+
+
+def _probe_path(user_fio: str) -> Path:
+    digest = hashlib.sha256(normalize_person(user_fio).encode("utf-8")).hexdigest()[:32]
+    folder = _cache_dir() / "delegates"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{digest}.json"
+
+
+def read_delegate_probe(user_fio: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(_probe_path(user_fio).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def probe_by_user_delegates(config: DokConfig, user_fio: str) -> dict[str, Any]:
+    """Спрашивает ДО «задачи пользователя» (byUser). Если сервер фильтр выполнил,
+    чужие исполнители в ответе — те, за кого пользователь работает (замещение / помощник)."""
+    cached = read_delegate_probe(user_fio)
+    if cached:
+        ttl = _PROBE_OK_TTL_SEC if cached.get("status") in {"ok", "ignored"} else _PROBE_FAIL_TTL_SEC
+        if time.time() - float(cached.get("checked_at") or 0) < ttl:
+            return cached
+    started = time.perf_counter()
+    result: dict[str, Any]
+    try:
+        user = find_user(config, user_fio)
+        rows = list_open_tasks(
+            config,
+            None,
+            timeout=_PROBE_TIMEOUT_SEC,
+            user=user,
+            limit=_PROBE_MAX_ROWS,
+            filter_mode="byUser",
+        )
+    except (RuntimeError, ValueError) as exc:
+        text = str(exc)
+        status = "ignored" if _is_timeout_reason(text) else "error"
+        result = {"status": status, "delegates": [], "detail": text[:300]}
+    else:
+        others: dict[str, int] = {}
+        for row in rows:
+            performer = " ".join(str(row.get("performer") or "").split())
+            if not performer or person_names_match(user_fio, performer):
+                continue
+            if person_names_match(user_fio, str(row.get("author") or "")):
+                continue
+            others[performer] = others.get(performer, 0) + 1
+        ignored = len(rows) >= _PROBE_MAX_ROWS or len(others) > _PROBE_MAX_DELEGATES
+        result = {
+            "status": "ignored" if ignored else "ok",
+            "delegates": [] if ignored else sorted(others),
+            "raw": len(rows),
+        }
+    result["checked_at"] = time.time()
+    logger.info(
+        "dok_soap byUser probe fio=%s status=%s delegates=%s raw=%s in %.1fs",
+        user_fio,
+        result["status"],
+        result.get("delegates"),
+        result.get("raw"),
+        time.perf_counter() - started,
+    )
+    try:
+        _probe_path(user_fio).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("dok_soap probe cache write failed: %s", exc)
+    return result
+
+
+def known_delegates(user_fio: str, extra: Any = None) -> list[str]:
+    """Проба byUser из кеша + ФИО из настроек пользователя."""
+    probe = read_delegate_probe(user_fio) or {}
+    names = [*parse_delegate_fios(extra), *parse_delegate_fios(probe.get("delegates") or [])]
+    return [name for name in parse_delegate_fios(names) if not person_names_match(user_fio, name)]
+
+
 def _filter_ignored(rows: list[dict[str, Any]], user_name: str) -> bool:
     mine = normalize_person(user_name)
     others = {
@@ -1088,12 +1186,20 @@ def slice_dump_for_user(
     user_fio: str,
     *,
     today_and_overdue: bool = False,
+    delegate_fios: list[str] | None = None,
 ) -> dict[str, Any]:
     today = date.today()
     seen: set[str] = set()
     rows: list[dict[str, Any]] = []
+    delegates = delegate_fios or []
     for row in _dump_rows(dump):
         role = task_role_for_user(row, user_fio)
+        on_behalf_of = ""
+        if role is None and delegates:
+            performer = str(row.get("performer") or "")
+            if any(person_names_match(name, performer) for name in delegates):
+                role = ROLE_DELEGATE
+                on_behalf_of = performer
         if role is None:
             continue
         key = task_dedup_key(row)
@@ -1103,6 +1209,8 @@ def slice_dump_for_user(
             seen.add(key)
         tagged = dict(row)
         tagged["role"] = role
+        if on_behalf_of:
+            tagged["on_behalf_of"] = on_behalf_of
         rows.append(tagged)
     if today_and_overdue:
         rows = [row for row in rows if is_today_or_overdue(row, today=today)]
@@ -1230,10 +1338,13 @@ def fetch_user_inbox_tasks(
     retrieve: bool = False,
     today_and_overdue: bool = False,
     force_refresh: bool = False,
+    delegate_fios: Any = None,
 ) -> dict[str, Any]:
     """Public API for inbox SOAP (used by dump script and onec.docflow_tasks).
 
     1C returns the full open-task dump; we cache that once and slice per user.
+    Задачи тех, за кого пользователь работает, добавляются с ролью delegate:
+    из пробы byUser под сессией пользователя и из списка в его настройках.
     """
     try:
         endpoint = load_config(env_file=env_file, username=username, password=password).soap_url()
@@ -1264,11 +1375,22 @@ def fetch_user_inbox_tasks(
         logger.info("dok_soap executed check dropped=%s", len(payload["rows"]) - len(rows))
         return {**payload, "rows": rows, "count": len(rows)}
 
+    def _delegates() -> list[str]:
+        if username and password:
+            try:
+                probe_by_user_delegates(
+                    load_config(env_file=env_file, username=username, password=password), user_fio
+                )
+            except Exception as exc:  # noqa: BLE001 — без пробы показываем свои задачи
+                logger.warning("dok_soap byUser probe failed: %s", str(exc)[:200])
+        return known_delegates(user_fio, delegate_fios)
+
     def _serve(dump: dict[str, Any], *, cached: bool, fetched_at: float) -> dict[str, Any]:
         payload = slice_dump_for_user(
             dump,
             user_fio,
             today_and_overdue=today_and_overdue,
+            delegate_fios=_delegates(),
         )
         if retrieve and payload["rows"]:
             try:

@@ -9,6 +9,7 @@ from app.api.v1 import (
     llm,
     notifications,
     orchestrator,
+    platform_tasks,
     regulation_creation,
     regulations,
     tools,
@@ -33,4 +34,5 @@ api_router.include_router(calendar.router, prefix="/api/v1")
 api_router.include_router(triggers.router, prefix="/api/v1")
 api_router.include_router(orchestrator.router, prefix="/api/v1")
 api_router.include_router(workplace.router, prefix="/api/v1")
+api_router.include_router(platform_tasks.router, prefix="/api/v1")
 api_router.include_router(chat_router, prefix="/api/v1")

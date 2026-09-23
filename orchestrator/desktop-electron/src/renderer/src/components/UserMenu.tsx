@@ -46,6 +46,8 @@ export function UserMenu({
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({})
   const ref = useRef<HTMLDivElement>(null)
   const bellRef = useRef<HTMLButtonElement>(null)
+  const profileBtnRef = useRef<HTMLButtonElement>(null)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({})
   const inboxOpenRef = useRef(false)
   const isAdminContext = variant === 'admin'
 
@@ -169,10 +171,33 @@ export function UserMenu({
     }
   }
 
+  function placeProfileMenu(): void {
+    const rect = profileBtnRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setMenuStyle({
+      position: 'fixed',
+      top: Math.round(rect.bottom + 8),
+      right: Math.round(Math.max(8, window.innerWidth - rect.right)),
+      left: 'auto',
+      zIndex: 80
+    })
+  }
+
   function toggleProfileMenu(): void {
-    setMenuOpen((value) => !value)
+    setMenuOpen((value) => {
+      if (!value) placeProfileMenu()
+      return !value
+    })
     setInboxOpen(false)
   }
+
+  useEffect(() => {
+    if (!menuOpen) return
+    placeProfileMenu()
+    const onResize = (): void => placeProfileMenu()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [menuOpen])
 
   function openSettings(): void {
     setMenuOpen(false)
@@ -226,7 +251,7 @@ export function UserMenu({
       </div>
 
       <div className="user-menu__profile-wrap">
-        <button type="button" className="user-menu__profile-btn" onClick={toggleProfileMenu}>
+        <button ref={profileBtnRef} type="button" className="user-menu__profile-btn" onClick={toggleProfileMenu}>
           <span className="avatar">
             <img className="avatar-img" src={avatarUrl || logoUrl} alt={user.fio} />
             <span className={`avatar-status ${user.activityStatus || 'online'}`} />
@@ -246,7 +271,7 @@ export function UserMenu({
           </svg>
         </button>
         {menuOpen ? (
-          <div className="user-dropdown user-dropdown--admin">
+          <div className="user-dropdown user-dropdown--admin" style={menuStyle}>
             {!isAdminContext && user.department ? (
               <div className="user-dropdown-dept">{user.department}</div>
             ) : null}

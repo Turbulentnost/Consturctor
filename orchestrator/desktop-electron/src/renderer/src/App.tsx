@@ -37,6 +37,7 @@ import { ProjectsGridTab } from './tabs/grid/ProjectsGridTab'
 import { MailGridTab } from './tabs/grid/MailGridTab'
 import { DocflowGridTab } from './tabs/grid/DocflowGridTab'
 import { CreateOneCTaskPage } from './tabs/grid/CreateOneCTaskPage'
+import { CreatePlatformTaskPage } from './tabs/grid/CreatePlatformTaskPage'
 import { MeetingsGridTab } from './tabs/grid/MeetingsGridTab'
 import { KnowledgeGridTab } from './tabs/grid/KnowledgeGridTab'
 import { TodayGridTab } from './tabs/grid/TodayGridTab'
@@ -95,6 +96,7 @@ const WORKPLACE_TAB_KEYS: WorkplaceTabKey[] = [
   'knowledge',
   'extensions',
   'task_create',
+  'platform_task_create',
   ...EXTENSION_MODULES.map((item) => item.pageKey as WorkplaceTabKey)
 ]
 
@@ -892,6 +894,8 @@ function AppShell(): React.JSX.Element {
         return <DocflowGridTab user={activeUser} />
       case 'task_create':
         return <CreateOneCTaskPage user={activeUser} />
+      case 'platform_task_create':
+        return <CreatePlatformTaskPage user={activeUser} />
       case 'meetings':
         return <MeetingsGridTab user={activeUser} />
       case 'decisions':
@@ -1032,7 +1036,9 @@ function AppShell(): React.JSX.Element {
                             ? 'orch-grid-agent-library'
                             : workplaceShellKey === 'processes'
                               ? 'orch-grid-processes'
-                              : workplaceShellKey === 'docflow' || workplaceShellKey === 'task_create'
+                              : workplaceShellKey === 'docflow' ||
+                                  workplaceShellKey === 'task_create' ||
+                                  workplaceShellKey === 'platform_task_create'
                                 ? 'orch-grid-docflow'
                                 : ''
               }

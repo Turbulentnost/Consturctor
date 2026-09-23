@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from app.services.docflow_task_action import _session_credentials
@@ -181,8 +182,23 @@ def _catalog(config) -> dict[str, Any]:
     return {"summary": "Каталог оснований ДО", "kinds": kinds, "processes": processes}
 
 
+def _period_bound(raw: Any, *, end: bool) -> datetime | None:
+    text = str(raw or "").strip()[:10]
+    if not text:
+        return None
+    try:
+        day = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError as exc:
+        raise DocflowError(f"Дата периода в формате ГГГГ-ММ-ДД, получено: {text}") from exc
+    return day.replace(hour=23, minute=59, second=59) if end else day
+
+
 def _search(config, args: dict[str, Any], actor: str) -> dict[str, Any]:
     kind = _kind(str(args.get("kind") or ""))
+    date_from = _period_bound(args.get("date_from"), end=False)
+    date_to = _period_bound(args.get("date_to"), end=True)
+    if date_from and date_to and date_from > date_to:
+        raise DocflowError("Начало периода позже конца")
     only_mine = args.get("only_mine") is not False
     author = _resolve_user(config, actor) if only_mine else None
     type_ids = [str(args.get("document_type_id") or "").strip()]
@@ -202,7 +218,9 @@ def _search(config, args: dict[str, Any], actor: str) -> dict[str, Any]:
                 author=author,
                 author_field=kind.get("author_field", "author"),
                 query=str(args.get("query") or ""),
-                limit=int(args.get("limit") or 50),
+                date_from=date_from,
+                date_to=date_to,
+                limit=int(args.get("limit") or 200),
                 timeout=_SEARCH_TIMEOUT,
             )
         except RuntimeError as exc:

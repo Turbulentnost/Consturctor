@@ -244,3 +244,32 @@ def test_search_filters_by_author_and_query_locally(monkeypatch) -> None:
     )
     assert [row["id"] for row in rows] == ["d1"]
     assert rows[0]["reg_date"] == "2026-09-21"
+
+
+def test_search_period_uses_date_from_name_when_not_registered(monkeypatch) -> None:
+    sent: list[str] = []
+
+    def fake_execute(_config, request_xml: str, *, timeout: float) -> ET.Element:
+        sent.append(request_xml)
+        return ET.fromstring(
+            f'<r xmlns:m="{DM}">'
+            "<m:items><m:object><m:name>Протокол ____143_О_006 от 04.08.2026 8:21:18</m:name>"
+            "<m:objectID><m:id>new</m:id><m:type>DMInternalDocument</m:type></m:objectID>"
+            "<m:regDate>0001-01-01T00:00:00</m:regDate></m:object></m:items>"
+            "<m:items><m:object><m:name>Протокол ОД1_001 от 12.03.2019 10:00:00</m:name>"
+            "<m:objectID><m:id>old</m:id><m:type>DMInternalDocument</m:type></m:objectID></m:object></m:items>"
+            "</r>"
+        )
+
+    monkeypatch.setattr(dok_create, "execute_dm", fake_execute)
+    config = DokConfig(server="h", port=81, user="u", password="p", timeout=30.0, base_path="/doc")
+    rows = dok_create.search_documents(
+        config,
+        "DMInternalDocument",
+        date_from=datetime(2026, 7, 1),
+        date_to=datetime(2026, 9, 30, 23, 59, 59),
+        timeout=5.0,
+    )
+    assert [row["id"] for row in rows] == ["new"]
+    assert rows[0]["reg_date"] == "2026-08-04"
+    assert "<dm:property>regDate</dm:property>" in sent[0] and "&gt;=" in sent[0]

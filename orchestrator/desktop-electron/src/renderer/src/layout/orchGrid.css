@@ -253,7 +253,7 @@
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .orch-grid-util .user-menu--admin .user-menu__profile-btn {

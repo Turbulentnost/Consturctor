@@ -13,9 +13,10 @@ function toneForStatus(text: string): SpecPillTone {
   return 'gray'
 }
 
-function whoFromDocflowRole(role: string): string {
+function whoFromDocflowRole(role: string, onBehalfOf = ''): string {
   if (role === 'author') return 'от меня'
   if (role === 'both') return 'Я / от меня'
+  if (role === 'delegate') return onBehalfOf ? `за ${onBehalfOf}` : 'за руководителя'
   return 'Я'
 }
 
@@ -96,7 +97,7 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
     status: done ? 'Выполнена' : 'В работе',
     statusTone: done ? 'green' : 'blue',
     executor: performer || actorFio,
-    who: isDocflow ? whoFromDocflowRole(role) : 'Я',
+    who: isDocflow ? whoFromDocflowRole(role, String(task.on_behalf_of || '').trim()) : 'Я',
     progress: done ? 100 : 40,
     author: author || undefined,
     performer: performer || undefined,

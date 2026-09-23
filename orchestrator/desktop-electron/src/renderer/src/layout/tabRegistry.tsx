@@ -25,6 +25,7 @@ export type WorkplaceTabKey =
   | 'assignments_registry'
   | 'agent_library'
   | 'task_create'
+  | 'platform_task_create'
 
 export interface TabRegistryEntry {
   title: string
@@ -104,7 +105,11 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   },
   task_create: {
     title: PAGE_LABELS.task_create,
-    subtitle: 'Документ-основание, процесс и исполнители — задача запускается в 1С:Документооборот'
+    subtitle: 'Запуск задачи в 1С:Документооборот'
+  },
+  platform_task_create: {
+    title: PAGE_LABELS.platform_task_create,
+    subtitle: 'Постановка задачи сотруднику внутри Оркестратора'
   },
   agent_library: {
     title: 'Библиотека агентов',

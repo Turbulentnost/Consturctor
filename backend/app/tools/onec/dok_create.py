@@ -26,6 +26,7 @@ from app.tools.onec.dok_soap import (
     _cache_dir,
     _object_xml,
     condition,
+    datetime_value,
     execute_dm,
     object_id_value,
     string_value,
@@ -102,7 +103,6 @@ _PARTICIPANT_ORDER = [
     "dueDateHours",
     "dueDateMinutes",
 ]
-_DOC_COLUMNS = ("name", "title", "regNumber", "regDate", "author", "responsible", "documentType", "summary")
 _XSI_NIL = "{http://www.w3.org/2001/XMLSchema-instance}nil"
 _TYPES_TTL_SEC = 3600.0
 _types_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
@@ -264,6 +264,21 @@ def list_users(config: DokConfig, *, timeout: float) -> list[str]:
     return names
 
 
+_NAME_DATE = re.compile(r"\bот\s+(\d{2})\.(\d{2})\.(\d{4})")
+
+
+def document_day(obj: ET.Element) -> str:
+    """Дата документа: регистрации, а у незарегистрированных — «от ДД.ММ.ГГГГ» из названия."""
+    reg = xml_text(obj, "m:regDate")[:10]
+    if reg and not reg.startswith("0001"):
+        return reg
+    for text in (xml_text(obj, "m:name"), xml_text(obj, "m:title")):
+        match = _NAME_DATE.search(text)
+        if match:
+            return f"{match.group(3)}-{match.group(2)}-{match.group(1)}"
+    return ""
+
+
 def document_row(obj: ET.Element) -> dict[str, str]:
     return {
         "id": xml_text(obj, "m:objectID/m:id"),
@@ -271,7 +286,7 @@ def document_row(obj: ET.Element) -> dict[str, str]:
         "name": xml_text(obj, "m:name"),
         "title": xml_text(obj, "m:title"),
         "reg_number": xml_text(obj, "m:regNumber"),
-        "reg_date": xml_text(obj, "m:regDate")[:10],
+        "reg_date": document_day(obj),
         "author": xml_text(obj, "m:author/m:name") or xml_text(obj, "m:responsible/m:name"),
         "document_type": xml_text(obj, "m:documentType/m:name"),
         "summary": xml_text(obj, "m:summary"),
@@ -286,68 +301,73 @@ def search_documents(
     author: dict[str, str] | None = None,
     author_field: str = "author",
     query: str = "",
-    limit: int = 50,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = 200,
     timeout: float,
 ) -> list[dict[str, str]]:
-    """Документы-основания. Условия, которые база не примет, отбрасываем и фильтруем сами."""
-    text = query.strip()
-    strict: list[str] = []
-    if document_type_id:
-        strict.append(condition("documentType", object_id_value(document_type_id, "DMInternalDocumentType")))
-    if author and author.get("id"):
-        strict.append(condition(author_field, object_id_value(author["id"], author.get("type") or "DMUser")))
-    if text:
-        strict.append(condition("title", string_value(f"%{text}%"), "LIKE"))
+    """Документы-основания. Условия, которые база не примет, отбрасываем и фильтруем сами.
 
-    def run(filters: list[str], *, with_columns: bool) -> list[dict[str, str]]:
-        columns = (
-            "".join(f"<dm:columnSet>{name}</dm:columnSet>" for name in _DOC_COLUMNS) if with_columns else ""
-        )
+    columnSet не передаём: для документов ДО отвечает «Поле объекта не обнаружено (name)».
+    """
+    text = query.strip()
+    kind_filter = (
+        [condition("documentType", object_id_value(document_type_id, "DMInternalDocumentType"))]
+        if document_type_id
+        else []
+    )
+    period: list[str] = []
+    if date_from:
+        period.append(condition("regDate", datetime_value(date_from), ">="))
+    if date_to:
+        period.append(condition("regDate", datetime_value(date_to), "<="))
+    others: list[str] = []
+    if author and author.get("id"):
+        others.append(condition(author_field, object_id_value(author["id"], author.get("type") or "DMUser")))
+    if text:
+        others.append(condition("title", string_value(f"%{text}%"), "LIKE"))
+
+    def run(filters: list[str]) -> list[dict[str, str]]:
         root = execute_dm(
             config,
             '<dm:request xsi:type="dm:DMGetObjectListRequest">'
             f"<dm:type>{xml_escape(dm_type)}</dm:type>"
             "<dm:query>"
             f"{''.join(filters)}"
-            f"<dm:limit>{max(1, min(int(limit), 200))}</dm:limit>"
-            f"{columns}"
+            f"<dm:limit>{max(1, min(int(limit), 500))}</dm:limit>"
             "</dm:query>"
             "</dm:request>",
             timeout=timeout,
         )
         return [row for row in map(document_row, root.findall(".//m:items/m:object", NS)) if row["id"]]
 
-    # ДО отвечает ошибкой на незнакомые ему поля columnSet и условия — пробуем от строгого к простому.
-    attempts = [
-        (strict, True),
-        (strict, False),
-        (strict[:1] if document_type_id else [], False),
-    ]
+    # От строгого к простому: период отбрасываем последним, без него ДО отдаёт самые старые документы.
+    attempts = [kind_filter + period + others, kind_filter + period, kind_filter]
     started = time.perf_counter()
     rows: list[dict[str, str]] = []
     last_error: RuntimeError | None = None
-    for filters, with_columns in attempts:
+    for filters in dict.fromkeys(tuple(item) for item in attempts):
         try:
-            rows = run(filters, with_columns=with_columns)
+            rows = run(list(filters))
             break
         except RuntimeError as exc:
             last_error = exc
             logger.warning(
-                "dok_create: поиск %s (условий=%s, columnSet=%s) не принят: %s",
-                dm_type,
-                len(filters),
-                with_columns,
-                str(exc)[:200],
+                "dok_create: поиск %s (условий=%s) не принят: %s", dm_type, len(filters), str(exc)[:200]
             )
     else:
         raise last_error or RuntimeError("Документооборот не вернул документы")
     needle = text.casefold()
     author_name = (author or {}).get("name", "").casefold()
+    day_from = date_from.strftime("%Y-%m-%d") if date_from else ""
+    day_to = date_to.strftime("%Y-%m-%d") if date_to else ""
     filtered = [
         row
         for row in rows
         if (not needle or needle in f"{row['title']} {row['name']} {row['reg_number']}".casefold())
         and (not author_name or not row["author"] or row["author"].casefold() == author_name)
+        and (not day_from or (row["reg_date"] and row["reg_date"] >= day_from))
+        and (not day_to or (row["reg_date"] and row["reg_date"] <= day_to))
     ]
     filtered.sort(key=lambda row: row["reg_date"] or "", reverse=True)
     logger.info(

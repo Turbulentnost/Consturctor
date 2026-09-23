@@ -692,6 +692,99 @@ def _append_missing_heads(
     return people + extra
 
 
+@dataclass(frozen=True, slots=True)
+class ErpStaffAssignment:
+    fio: str
+    position: str
+    hr_department: str
+    staff_folder: str
+    staff_unit: str
+
+
+def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
+    """Вся управленческая структура: подразделения (_Reference513) и текущие назначения.
+
+    Помеченные на удаление подразделения не берём. Ликвидированные («(ликв.) …»)
+    отсекает вызывающий код: признак хранится только в наименовании.
+    """
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        cur.execute(
+            """
+            SELECT
+                CONVERT(varchar(64), d._IDRRef, 2) AS DeptId,
+                CAST(d._Description AS nvarchar(256)) AS Dept,
+                CONVERT(varchar(64), d._ParentIDRRef, 2) AS ParentId,
+                CAST(hp._Description AS nvarchar(256)) AS HeadFio
+            FROM dbo._Reference513 d WITH (NOLOCK)
+            LEFT JOIN dbo._Reference596 hp WITH (NOLOCK)
+                ON d._Fld14523RRef = hp._IDRRef
+            WHERE d._Marked = 0x00
+              AND LTRIM(RTRIM(d._Description)) <> N''
+            """
+        )
+        departments = [
+            ErpOrgDept(
+                id=(row.DeptId or "").strip().upper(),
+                name=(row.Dept or "").strip(),
+                parent_id=(row.ParentId or "").strip().upper(),
+                head_fio=(row.HeadFio or "").strip(),
+            )
+            for row in cur.fetchall()
+        ]
+        cur.execute(
+            """
+            ;WITH latest AS (
+                SELECT
+                    CAST(p._Description AS nvarchar(256)) AS Person,
+                    CAST(pos._Description AS nvarchar(256)) AS Position,
+                    CAST(hr._Description AS nvarchar(256)) AS HrDept,
+                    CAST(folder._Description AS nvarchar(256)) AS StaffFolder,
+                    CAST(s._Description AS nvarchar(256)) AS StaffUnit,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY p._IDRRef
+                        ORDER BY t._Fld43774 DESC
+                    ) AS rn
+                FROM dbo._InfoRg43757 t WITH (NOLOCK)
+                INNER JOIN dbo._Reference596 p WITH (NOLOCK)
+                    ON t._Fld43761RRef = p._IDRRef
+                INNER JOIN dbo._Reference613X1 s WITH (NOLOCK)
+                    ON t._Fld43767RRef = s._IDRRef
+                LEFT JOIN dbo._Reference613X1 folder WITH (NOLOCK)
+                    ON s._ParentIDRRef = folder._IDRRef
+                LEFT JOIN dbo._Reference164 pos WITH (NOLOCK)
+                    ON t._Fld43766RRef = pos._IDRRef
+                LEFT JOIN dbo._Reference358 hr WITH (NOLOCK)
+                    ON t._Fld43765RRef = hr._IDRRef
+                WHERE t._Fld43775 >= '5999-01-01'
+                  AND t._Fld43774 > '2002-01-01'
+                  AND LTRIM(RTRIM(ISNULL(s._Description, N''))) <> N''
+            )
+            SELECT Person, Position, HrDept, StaffFolder, StaffUnit
+            FROM latest
+            WHERE rn = 1
+              AND LTRIM(RTRIM(ISNULL(Person, N''))) <> N''
+            """
+        )
+        staff = [
+            ErpStaffAssignment(
+                fio=(row.Person or "").strip(),
+                position=(row.Position or "").strip(),
+                hr_department=(row.HrDept or "").strip(),
+                staff_folder=(row.StaffFolder or "").strip(),
+                staff_unit=(row.StaffUnit or "").strip(),
+            )
+            for row in cur.fetchall()
+        ]
+        return departments, staff
+    except pyodbc.Error as exc:
+        raise ErpSqlError(f"Failed to load org structure: {exc}") from exc
+    finally:
+        conn.close()
+
+
 def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], list[ErpSubordinate]]:
     """Active people under departments headed by FIO (erp_pm org + staffing).
 

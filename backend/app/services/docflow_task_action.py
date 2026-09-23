@@ -13,6 +13,7 @@ from app.tools.onec.docflow_task_kinds import (
     web_client_task_url,
 )
 from app.tools.onec.dok_soap import (
+    known_delegates,
     load_config,
     mark_task_executed,
     open_tasks_for_target,
@@ -64,7 +65,14 @@ def _complete_docflow_task(args: dict[str, Any], *, actor_fio: str, action: str)
     except RuntimeError as exc:
         raise DocflowError(f"Карточка задачи не прочитана: {exc}") from exc
     performer = str(card.get("performer") or "")
-    if performer and not person_names_match(user, performer):
+    session_fio = str(args.get("fio") or actor_fio or user)
+    delegates = known_delegates(session_fio, args.get("delegate_fios"))
+    if (
+        performer
+        and not person_names_match(user, performer)
+        and not person_names_match(session_fio, performer)
+        and not any(person_names_match(name, performer) for name in delegates)
+    ):
         raise DocflowError(f"Задача назначена не вам (исполнитель: {performer}). Отметку не ставлю.")
 
     step = str(card.get("step") or args.get("step") or "")
@@ -102,7 +110,7 @@ def _complete_docflow_task(args: dict[str, Any], *, actor_fio: str, action: str)
         targets = [
             str(row["id"])
             for row in live
-            if person_names_match(user, str(row.get("performer") or ""))
+            if performer
             and str(row.get("performer") or "") == performer
             and str(row.get("description") or "") == str(card.get("description") or "")
             and str(row.get("step") or "") == str(card.get("step") or "")

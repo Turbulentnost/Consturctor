@@ -38,6 +38,8 @@ import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
 import { TodayFullPlanModal } from './TodayFullPlanModal'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
+import { isPlatformTaskForDay, isPlatformTaskFromMe, isPlatformTaskMine } from '../../workplace/platformTasks'
+import './platformTasks.css'
 
 function TodayCellText({ text }: { text: string }): React.JSX.Element {
   return (
@@ -47,12 +49,21 @@ function TodayCellText({ text }: { text: string }): React.JSX.Element {
   )
 }
 
-function TodayTaskTitle({ text, isNew }: { text: string; isNew: boolean }): React.JSX.Element {
-  if (!isNew) return <TodayCellText text={text} />
+function TodayTaskTitle({
+  text,
+  isNew,
+  platform = false
+}: {
+  text: string
+  isNew: boolean
+  platform?: boolean
+}): React.JSX.Element {
+  if (!isNew && !platform) return <TodayCellText text={text} />
   return (
     <span className="today-cell-with-mark">
+      {platform ? <span className="today-ptask-badge">Платформа</span> : null}
       <TodayCellText text={text} />
-      <NewOneCTaskMark />
+      {isNew ? <NewOneCTaskMark /> : null}
     </span>
   )
 }
@@ -219,13 +230,19 @@ export function TodayGridTab({
     )
   }, [projectAsManager, projectTasks.rows])
   const taskRows = useMemo(() => {
-    return data.erpTasks.filter((row) => {
+    const platformRows = data.platformTasks.filter((row) => {
+      const task = row.platform
+      if (!task || !isPlatformTaskForDay(task, periodDay)) return false
+      return onecFromMe ? isPlatformTaskFromMe(task) : isPlatformTaskMine(task)
+    })
+    const onecRows = data.erpTasks.filter((row) => {
       if (onecFromMe) {
         return isDocflowFromMe(row, erpFio) && isTaskDueOnDay(row, periodDay)
       }
       return isDocflowToMe(row)
     })
-  }, [data.erpTasks, onecFromMe, erpFio, periodDay])
+    return [...platformRows, ...onecRows]
+  }, [data.erpTasks, data.platformTasks, onecFromMe, erpFio, periodDay])
   const meetingRows = useMemo(() => {
     return data.meetings
       .filter((meeting) => {
@@ -333,7 +350,7 @@ export function TodayGridTab({
       onec: (
         <TodayWindow>
         <MiniTableCard
-          title="Задачи из 1С"
+          title="Задачи на сегодня"
           tableClassName={
             onecFromMe ? 'today-mini-table-tasks today-mini-table-from-me' : 'today-mini-table-to-me'
           }
@@ -385,7 +402,11 @@ export function TodayGridTab({
           columns={onecFromMe ? ['Задача', 'Исполнитель', 'Статус'] : ['Задача', 'Статус']}
           rowTones={taskRows.map((row) => todayRowTone(row.status, row.deadline, row.urgent))}
           rowClassNames={taskRows.map((row) =>
-            isNewOneCTask(data.newOneCTaskKeys, row) ? 'today-tr-new-onec' : undefined
+            row.platform
+              ? `today-tr-ptask prio-${row.platform.priority}`
+              : isNewOneCTask(data.newOneCTaskKeys, row)
+                ? 'today-tr-new-onec'
+                : undefined
           )}
           rows={taskRows.map((row) =>
             onecFromMe
@@ -393,7 +414,8 @@ export function TodayGridTab({
                   <TodayTaskTitle
                     key={`${row.id}-t`}
                     text={row.title}
-                    isNew={isNewOneCTask(data.newOneCTaskKeys, row)}
+                    isNew={!row.platform && isNewOneCTask(data.newOneCTaskKeys, row)}
+                    platform={Boolean(row.platform)}
                   />,
                   <TodayCellText
                     key={`${row.id}-p`}
@@ -407,7 +429,8 @@ export function TodayGridTab({
                   <TodayTaskTitle
                     key={`${row.id}-t`}
                     text={row.title}
-                    isNew={isNewOneCTask(data.newOneCTaskKeys, row)}
+                    isNew={!row.platform && isNewOneCTask(data.newOneCTaskKeys, row)}
+                    platform={Boolean(row.platform)}
                   />,
                   <SpecPill key={`${row.id}-st`} tone={row.statusTone}>
                     {row.status}

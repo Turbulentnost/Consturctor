@@ -94,7 +94,7 @@ export const TODAY_WIDGET_LABELS: Record<TodayWidgetId, string> = {
   plan: 'План на день',
   results: 'Результаты агентов',
   outlook: 'Письма Outlook',
-  onec: 'Задачи 1С',
+  onec: 'Задачи на сегодня (1С и платформа)',
   projects: 'Проектные задачи',
   events: 'События',
   decisions: 'Решения'

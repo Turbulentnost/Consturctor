@@ -117,7 +117,9 @@ export interface SpecTaskRow {
   role?: string
   /** Turbo: мне / чужие в проектах, где я руководитель / и то и другое. */
   turboScope?: 'mine' | 'managed' | 'both'
-  sourceKind?: 'docflow' | 'turbo' | 'erp' | 'other'
+  sourceKind?: 'docflow' | 'turbo' | 'erp' | 'platform' | 'other'
+  /** Задача платформы: исходная запись (приоритет, роль, файлы, статус). */
+  platform?: import('./platformTasks').PlatformTask
   refKey?: string
   taskNumber?: string
   step?: string

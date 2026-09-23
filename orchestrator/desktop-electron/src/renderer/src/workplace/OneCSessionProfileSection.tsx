@@ -9,6 +9,8 @@ import {
   type OneCSessionProfile
 } from '../store/onecSessionProfile'
 import { comCredentials, hasComPassword } from '../store/session'
+import { loadDocflowDelegates, parseDelegateText, saveDocflowDelegates } from '../store/docflowDelegates'
+import { useGridDataRefreshContext } from './GridDataRefreshContext'
 
 function formatWhen(iso: string): string {
   if (!iso) return '—'
@@ -114,6 +116,45 @@ export function OneCSessionProfileSection({ user }: { user: UserProfile }): Reac
           Отправить в sidecar
         </button>
       </div>
+      <DocflowDelegatesField userId={user.id || ''} />
     </section>
+  )
+}
+
+function DocflowDelegatesField({ userId }: { userId: string }): React.JSX.Element {
+  const { softRefresh } = useGridDataRefreshContext()
+  const [saved, setSaved] = useState(() => loadDocflowDelegates(userId))
+  const [text, setText] = useState(() => saved.join('\n'))
+  const [note, setNote] = useState('')
+  const dirty = parseDelegateText(text).join('\n') !== saved.join('\n')
+
+  const save = (): void => {
+    const next = saveDocflowDelegates(userId, parseDelegateText(text))
+    setSaved(next)
+    setText(next.join('\n'))
+    setNote(next.length ? `Сохранено: ${next.length}. Задачи обновятся на вкладке «Задачи».` : 'Список очищен.')
+    softRefresh()
+  }
+
+  return (
+    <div className="set-delegates">
+      <h3>Работаю также за</h3>
+      <p className="set-muted">
+        ФИО сотрудников, чьи задачи 1С:Документооборот вы ведёте (замещение, помощник). Их задачи появятся во вкладке
+        «Задачи» с пометкой «за …», и по ним можно ставить отметки. Каждое ФИО с новой строки, как в 1С.
+      </p>
+      <textarea
+        rows={3}
+        value={text}
+        placeholder="Ясыров Богдан Джумазаевич"
+        onChange={(event) => setText(event.target.value)}
+      />
+      {note ? <p className="set-muted">{note}</p> : null}
+      <div className="wp-actions">
+        <button className="btn-primary" type="button" disabled={!dirty} onClick={save}>
+          Сохранить
+        </button>
+      </div>
+    </div>
   )
 }

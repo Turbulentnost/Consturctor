@@ -30,6 +30,7 @@ export type UserPageKey =
   | 'assignments_registry'
   | 'agent_library'
   | 'task_create'
+  | 'platform_task_create'
 
 export type SharedPageKey = 'kpi' | 'history' | 'settings'
 export type PageKey = AdminPageKey | UserPageKey | SharedPageKey
@@ -54,7 +55,8 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   extensions: 'Расширения',
   assignments_registry: 'Реестр поручений',
   agent_library: 'Библиотека агентов',
-  task_create: 'Новая задача в 1С',
+  task_create: 'Создание задачи',
+  platform_task_create: 'Задача в платформе',
   kpi: 'KPI',
   history: 'История',
   settings: 'Настройки'

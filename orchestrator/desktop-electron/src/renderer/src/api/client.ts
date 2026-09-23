@@ -1931,6 +1931,77 @@ export class ApiClient {
     }
   }
 
+  // ---------- Задачи платформы ----------
+  async listPlatformTasks(): Promise<import('../workplace/platformTasks').PlatformTask[]> {
+    const data = await this.request<{ items?: unknown[] }>('GET', '/api/v1/platform-tasks')
+    const { parsePlatformTask } = await import('../workplace/platformTasks')
+    return (data.items ?? []).map(parsePlatformTask)
+  }
+
+  async listPlatformAssignees(
+    search = ''
+  ): Promise<{ fio: string; user_id: string; position: string; department: string }[]> {
+    const data = await this.request<{ items?: Record<string, unknown>[] }>('GET', '/api/v1/platform-tasks/assignees', {
+      params: search.trim() ? { search } : undefined,
+      timeoutMs: 60_000
+    })
+    return (data.items ?? []).map((item) => ({
+      fio: String(item.fio ?? ''),
+      user_id: String(item.user_id ?? ''),
+      position: String(item.position ?? ''),
+      department: String(item.department ?? '')
+    }))
+  }
+
+  async syncPlatformOrg(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('POST', '/api/v1/platform-tasks/org/sync', { timeoutMs: 300_000 })
+  }
+
+  async createPlatformTask(body: {
+    assignee_fio: string
+    description: string
+    priority: string
+    due_at: string
+  }): Promise<import('../workplace/platformTasks').PlatformTask> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/platform-tasks', { body })
+    const { parsePlatformTask } = await import('../workplace/platformTasks')
+    return parsePlatformTask(data)
+  }
+
+  async setPlatformTaskStatus(
+    taskId: string,
+    action: 'done' | 'reject',
+    comment = ''
+  ): Promise<import('../workplace/platformTasks').PlatformTask> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/platform-tasks/${encodeURIComponent(taskId)}/${action}`,
+      { body: { comment } }
+    )
+    const { parsePlatformTask } = await import('../workplace/platformTasks')
+    return parsePlatformTask(data)
+  }
+
+  async uploadPlatformTaskFile(taskId: string, filePath: string): Promise<void> {
+    const res = await window.api.upload<Record<string, unknown>>({
+      endpoint: `/api/v1/platform-tasks/${encodeURIComponent(taskId)}/files`,
+      filePath,
+      fieldName: 'file',
+      token: this.resolveToken(),
+      timeoutMs: 120_000
+    })
+    if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить файл', res.status)
+  }
+
+  async downloadPlatformTaskFile(taskId: string, fileId: string, filename: string): Promise<boolean> {
+    const res = await window.api.download({
+      url: `/api/v1/platform-tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(fileId)}`,
+      defaultName: filename,
+      token: this.resolveToken()
+    })
+    return Boolean(res.ok)
+  }
+
   async markChatRead(threadId: string): Promise<void> {
     try {
       await this.chatCommand({ type: 'mark_read', thread_id: threadId })

@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
+    platform_task_storage_dir: Path = BACKEND_ROOT / "storage" / "platform_tasks"
 
     # IMAP (server-side tools only; desktop never executes imap.*)
     imap_host: str = ""
@@ -128,5 +129,6 @@ settings.chat_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.platform_task_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.onec_artifact_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.dok_inbox_cache_dir.mkdir(parents=True, exist_ok=True)
