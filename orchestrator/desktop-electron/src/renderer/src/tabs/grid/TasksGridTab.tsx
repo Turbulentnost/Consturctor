@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { Archive, ChevronDown, ChevronRight } from 'lucide-react'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
@@ -50,6 +50,7 @@ import {
 } from '../../workplace/docflowTaskKind'
 import { isPlatformTaskMine, needsPlatformReview } from '../../workplace/platformTasks'
 import { acceptPlatformTask, completePlatformTask, PlatformTaskDetail } from './PlatformTaskDetail'
+import { ClosedOneCTasksModal } from './ClosedOneCTasksModal'
 import { onecRowImportance } from '../../workplace/onecTaskImportance'
 import { usePageSearch } from '../../layout/pageSearchContext'
 
@@ -139,6 +140,7 @@ export function TasksGridTab({
   const reconnectHint = showOneCReconnect
     ? soapBanner || 'Не удалось загрузить задачи 1С.'
     : ''
+  const [closedOpen, setClosedOpen] = useState(false)
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   useEffect(() => {
     if (data.comPasswordInSession) {
@@ -441,6 +443,16 @@ export function TasksGridTab({
             </p>
           ) : null}
           {closeNote ? <p className="spec-v04-muted orch-process-close-note">{closeNote}</p> : null}
+          <div className="tasks-table-toolbar">
+            <button
+              type="button"
+              className="spec-btn-outline tasks-closed-btn"
+              title="Исполненные задачи 1С за выбранный период"
+              onClick={() => setClosedOpen(true)}
+            >
+              <Archive size={14} aria-hidden /> Закрытые задачи
+            </button>
+          </div>
           <table className="spec-v04-table">
             <thead>
               <tr>
@@ -573,6 +585,14 @@ export function TasksGridTab({
         </>
           )
         }}
+      />
+      <ClosedOneCTasksModal
+        open={closedOpen}
+        user={user}
+        erpFio={data.erpFio}
+        from={periodFrom}
+        to={periodTo}
+        onClose={() => setClosedOpen(false)}
       />
       <OneCReconnectDialog
         open={onecDialogOpen}

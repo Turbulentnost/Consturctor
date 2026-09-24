@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from datetime import datetime
+
 from app.tools.onec.docflow_inbox_map import map_inbox_payload
-from app.tools.onec.dok_soap import fetch_user_inbox_tasks
+from app.tools.onec.dok_soap import fetch_user_closed_tasks, fetch_user_inbox_tasks
 
 _HTTP_AUTH = re.compile(r"\bHTTP\s*40[123]\b", re.I)
 
@@ -69,6 +71,42 @@ def _soap_login_attempts(auth_args: dict[str, Any] | None) -> list[tuple[str, st
 
 def _is_soap_http_auth_error(text: str) -> bool:
     return bool(_HTTP_AUTH.search(text or ""))
+
+
+def fetch_closed_tasks_soap(
+    fio: str,
+    *,
+    date_from: datetime,
+    date_to: datetime | None = None,
+    auth_args: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """Исполненные задачи за период: запрос с границами, без полной выгрузки."""
+    attempts = _soap_login_attempts(auth_args)
+    if not attempts:
+        return [], "Нет пароля с экрана входа. Войдите с паролем 1С."
+    last_warning = ""
+    tried_users: list[str] = []
+    for username, password in attempts:
+        tried_users.append(username)
+        try:
+            payload = fetch_user_closed_tasks(
+                fio.strip(),
+                date_from=date_from,
+                date_to=date_to,
+                username=username,
+                password=password,
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            last_warning = str(exc)
+            if _is_soap_http_auth_error(last_warning):
+                continue
+            return [], last_warning
+        user_fio = str(payload.get("user_fio") or fio).strip() or fio
+        return map_inbox_payload(payload, fio=user_fio), ""
+    if _is_soap_http_auth_error(last_warning):
+        names = ", ".join(tried_users)
+        return [], f"{_SOAP_AUTH_REJECTED} Пробовали логин: {names}."
+    return [], last_warning or _SOAP_AUTH_REJECTED
 
 
 def fetch_inbox_tasks_soap(

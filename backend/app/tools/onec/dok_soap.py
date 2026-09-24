@@ -761,20 +761,8 @@ def list_open_tasks(
     elif user and user.get("id") and filter_mode == "performer":
         filters.append(condition("performer", performer_value(user)))
 
-    def request(columns: list[str]) -> ET.Element:
-        return execute_dm(
-            config,
-            '<dm:request xsi:type="dm:DMGetObjectListRequest">'
-            "<dm:type>DMBusinessProcessTask</dm:type>"
-            "<dm:query>"
-            f"{''.join(filters)}"
-            f"<dm:limit>{max(1, min(int(limit), 500))}</dm:limit>"
-            + "".join(f"<dm:columnSet>{name}</dm:columnSet>" for name in columns)
-            + "</dm:query>"
-            "</dm:request>",
-            timeout=timeout,
-        )
-
+    # columnSet строго из полей, которые эта база отдаёт быстро: лишнее имя
+    # (например importance) заставляет ДО молчать до таймаута.
     columns = [
         "name",
         "performer",
@@ -785,12 +773,18 @@ def list_open_tasks(
         "description",
         "target",
     ]
-    try:
-        # Важность нужна для подсветки строк; часть баз ДО этот columnSet не принимает.
-        root = request([*columns, "importance"])
-    except RuntimeError as exc:
-        logger.warning("Документооборот не принял columnSet importance: %s", str(exc)[:200])
-        root = request(columns)
+    root = execute_dm(
+        config,
+        '<dm:request xsi:type="dm:DMGetObjectListRequest">'
+        "<dm:type>DMBusinessProcessTask</dm:type>"
+        "<dm:query>"
+        f"{''.join(filters)}"
+        f"<dm:limit>{max(1, min(int(limit), 500))}</dm:limit>"
+        + "".join(f"<dm:columnSet>{name}</dm:columnSet>" for name in columns)
+        + "</dm:query>"
+        "</dm:request>",
+        timeout=timeout,
+    )
     rows = parse_tasks(root)
     if only_open:
         return [row for row in rows if not row["executed"]]
@@ -1317,6 +1311,56 @@ def fetch_open_dump(config: DokConfig, *, only_open: bool = True) -> dict[str, A
         "only_open": only_open,
         "count": len(rows),
         "rows": rows,
+    }
+
+
+def fetch_user_closed_tasks(
+    user_fio: str,
+    *,
+    date_from: datetime,
+    date_to: datetime | None = None,
+    env_file: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Исполненные задачи пользователя за период.
+
+    Полная выгрузка с withExecuted идёт минутами, поэтому список запрашивается
+    с границами по beginDate и dueDate и без кеша дампа.
+    """
+    config = load_config(env_file=env_file, username=username, password=password)
+    user: dict[str, str] | None = None
+    try:
+        user = find_user(config, user_fio)
+    except (RuntimeError, ValueError, OSError) as exc:
+        logger.warning("dok_soap closed: user lookup failed: %s", str(exc)[:200])
+    started = time.perf_counter()
+    rows = list_open_tasks(
+        config,
+        date_from,
+        timeout=max(float(config.timeout), 120.0),
+        only_open=False,
+        user=user,
+        limit=limit,
+        filter_mode="byUser" if user else None,
+        due_to=date_to,
+    )
+    logger.info(
+        "dok_soap closed list=%.1fs raw=%s fio=%s",
+        time.perf_counter() - started,
+        len(rows),
+        user_fio,
+    )
+    sliced = slice_dump_for_user({"endpoint": config.soap_url(), "rows": rows}, user_fio)
+    executed = [row for row in sliced["rows"] if row.get("executed")]
+    return {
+        "endpoint": config.soap_url(),
+        "user_fio": user_fio,
+        "since": date_from.date().isoformat(),
+        "count": len(executed),
+        "rows": executed,
+        "dump_count": len(rows),
     }
 
 

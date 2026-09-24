@@ -161,6 +161,82 @@
   padding: 6px 8px;
 }
 
+/* Полоса над таблицей задач: кнопка архива справа. */
+.tasks-table-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 8px;
+  flex: 0 0 auto;
+}
+
+.tasks-table-toolbar .tasks-closed-btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  gap: 6px;
+  font-size: 12px;
+}
+
+/* Закрытые задачи 1С — список за период. */
+.closed-tasks-dialog {
+  width: min(1080px, calc(100vw - 48px));
+  max-width: min(1080px, calc(100vw - 48px));
+  max-height: min(88vh, 820px);
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.closed-tasks-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid #e8ecf1;
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+}
+
+.closed-tasks-head .modal-title {
+  margin: 0 0 4px;
+}
+
+.closed-tasks-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.closed-tasks-toolbar .docflow-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.closed-tasks-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 18px 8px;
+}
+
+.closed-tasks-body .spec-v04-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f7f9fc;
+}
+
+.closed-tasks-dialog .modal-actions {
+  padding: 12px 18px 16px;
+  border-top: 1px solid #e8ecf1;
+  margin: 0;
+}
+
 .tab-chrome-shell[data-widget-id='side'] .spec-v04-panel {
   padding: 10px 12px;
 }
