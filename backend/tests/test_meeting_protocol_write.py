@@ -197,6 +197,147 @@ def test_time_parsing_variants():
         mpw._time_value("25:00")
 
 
+PROTOCOL_KEY = "96396617-b5b0-11f1-9889-6cb31113810c"
+
+
+def _card(**overrides) -> dict:
+    card = {
+        "Ref_Key": PROTOCOL_KEY,
+        "Number": "ДР__062_О_426",
+        "Date": "2026-09-21T00:00:00",
+        "Posted": False,
+        "Статус": "Подготовлен",
+        "ВидСовещания": "Отчетное",
+        "ТемаСовещания_Key": THEME["Ref_Key"],
+        "Руководитель_Key": USERS["Соломичева Светлана Викторовна"]["ref_key"],
+        "Ответственный_Key": USERS["Соломичева Светлана Викторовна"]["ref_key"],
+        "Подготовил_Key": USERS["Жалыбин Максим Дмитриевич"]["ref_key"],
+        "Кабинет_Key": "35ccfb35-ad89-11f0-9720-6cb31113810e",
+        "ВремяНачалаСовещания": "0001-01-01T10:30:00",
+        "ВремяОкончанияСовещания": "0001-01-01T11:00:00",
+        "ДатаСледующегоСовещания": "0001-01-01T00:00:00",
+        "Комментарий": "Сформировано агентом\noutlook:AAMkAGI2",
+        "ПрисутствующиеНаСовещании": [
+            {"LineNumber": "2", "Участник_Key": PERSONS["Жалыбин Максим Дмитриевич"]},
+            {"LineNumber": "1", "Участник_Key": PERSONS["Соломичева Светлана Викторовна"]},
+        ],
+        "ПовесткаСовещания": [
+            {"LineNumber": "1", "Вопрос": "Статус ИИ-агентов", "Ответственный_Key": PERSONS["Жалыбин Максим Дмитриевич"]},
+        ],
+        "Решения": [
+            {"LineNumber": "1", "ТекстРешения": "Расчёт KPI", "ДатаОкончания": "2026-09-24T23:59:59"},
+        ],
+        "ПеременныеЗадачиПротокола": [
+            {
+                "LineNumber": "1",
+                "Задача": "Сделать расчёт КПИ",
+                "Ответственный_Key": PERSONS["Мегрелишвили Михаил Эмзарович"],
+                "ДатаФактическогоИсполнения": "2026-09-22T23:59:59",
+                "Приоритет": "Высокий",
+                "Примечание": "",
+                "НомерПунктаПротокола": "1",
+            }
+        ],
+    }
+    card.update(overrides)
+    return card
+
+
+def _fake_get(card: dict):
+    persons = {key: fio for fio, key in PERSONS.items()}
+    users = {c["ref_key"]: fio for fio, c in USERS.items()}
+
+    def fake_get(args):
+        entity, key = args.get("entity"), args.get("ref_key")
+        if entity == mpw.PROTOCOL_ENTITY:
+            return {"value": [card]} if key == card["Ref_Key"] else {"value": []}
+        if entity == mpw.PERSON_ENTITY and key in persons:
+            return {"value": [{"Ref_Key": key, "Description": persons[key]}]}
+        if entity == mpw.USER_ENTITY and key in users:
+            return {"value": [{"Ref_Key": key, "Description": users[key]}]}
+        if entity == mpw.THEME_ENTITY and key == THEME["Ref_Key"]:
+            return {"value": [dict(THEME)]}
+        if entity == mpw.ROOM_ENTITY:
+            return {"value": [{"Ref_Key": key, "Description": "Малый конференц-зал"}]}
+        return {"value": []}
+
+    return fake_get
+
+
+def test_read_protocol_form_maps_guids_to_names(monkeypatch):
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get(_card()))
+    result = mpw.read_protocol_form(PROTOCOL_KEY)
+    assert result["number"] == "ДР__062_О_426"
+    assert result["editable"] is True
+    form = result["form"]
+    assert form["topic"] == THEME["Description"]
+    assert form["theme_key"] == THEME["Ref_Key"]
+    assert form["date"] == "2026-09-21"
+    assert form["time_start"] == "10:30" and form["time_end"] == "11:00"
+    assert form["next_meeting_date"] == ""
+    assert form["room"] == "Малый конференц-зал"
+    assert form["leader"] == "Соломичева Светлана Викторовна"
+    assert form["prepared_by"] == "Жалыбин Максим Дмитриевич"
+    # tabular parts sorted by LineNumber, GUIDs resolved
+    assert form["participants"] == ["Соломичева Светлана Викторовна", "Жалыбин Максим Дмитриевич"]
+    assert form["agenda"] == [{"question": "Статус ИИ-агентов", "responsible": "Жалыбин Максим Дмитриевич"}]
+    assert form["decisions"] == [{"text": "Расчёт KPI", "due": "2026-09-24"}]
+    assert form["tasks"][0]["executor"] == "Мегрелишвили Михаил Эмзарович"
+    assert form["tasks"][0]["due"] == "2026-09-22"
+    assert form["tasks"][0]["priority"] == "Высокий"
+    assert "outlook:AAMkAGI2" in form["comment"]
+
+
+def test_read_protocol_form_posted_is_not_editable(monkeypatch):
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get(_card(Posted=True, Статус="Проведён")))
+    result = mpw.read_protocol_form(PROTOCOL_KEY)
+    assert result["editable"] is False and result["posted"] is True
+
+
+def test_update_patches_draft_and_keeps_outlook_marker(monkeypatch):
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get(_card()))
+    patched: dict = {}
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.update(args) or {"updated": True})
+    monkeypatch.setattr(mpw, "_odata_post", lambda *_: pytest.fail("POST must not happen on update"))
+    args = {**_args(), "action": "update", "ref_key": PROTOCOL_KEY, "comment": "Правки вручную"}
+    result = mpw.handle_protocol_write(args, actor_fio="Жалыбин Максим Дмитриевич")
+    assert patched["entity"] == mpw.PROTOCOL_ENTITY and patched["ref_key"] == PROTOCOL_KEY
+    body = patched["body"]
+    for field in ("ДатаСоздания", "Posted", "DeletionMark", "Статус", "Подготовил_Key"):
+        assert field not in body
+    assert body["ПовесткаСовещания"][0]["Вопрос"] == "Статус ИИ-агентов"
+    assert len(body["Решения"]) == 2 and len(body["ПеременныеЗадачиПротокола"]) == 2
+    assert body["Комментарий"].startswith("Правки вручную")
+    assert "outlook:AAMkAGI2" in body["Комментарий"]
+    assert result["updated"] is True and result["number"] == "ДР__062_О_426"
+    assert result["ref_key"] == PROTOCOL_KEY
+
+
+def test_update_refuses_posted_protocol(monkeypatch):
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get(_card(Posted=True, Статус="Проведён")))
+    monkeypatch.setattr(mpw, "_odata_patch", lambda *_: pytest.fail("PATCH must not happen"))
+    with pytest.raises(mpw.ProtocolWriteError, match="проведён"):
+        mpw.handle_protocol_write(
+            {**_args(), "action": "update", "ref_key": PROTOCOL_KEY},
+            actor_fio="Жалыбин Максим Дмитриевич",
+        )
+
+
+def test_update_requires_ref_key():
+    with pytest.raises(mpw.ProtocolWriteError, match="ref_key"):
+        mpw.handle_protocol_write({**_args(), "action": "update"}, actor_fio="Жалыбин Максим Дмитриевич")
+
+
+def test_meeting_protocols_ref_key_returns_card(monkeypatch):
+    from app.services import meeting_protocols
+
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get(_card()))
+    result = meeting_protocols.list_meeting_protocols({"meeting_kind": "any", "ref_key": PROTOCOL_KEY})
+    assert result["readonly"] is True
+    assert result["protocol"]["number"] == "ДР__062_О_426"
+    assert result["protocol"]["form"]["leader"] == "Соломичева Светлана Викторовна"
+
+
 def test_tool_registered_as_write_tool():
     from app.services import onec_tools
 

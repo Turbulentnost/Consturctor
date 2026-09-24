@@ -89,6 +89,67 @@ def _names_prompt(names: list[str] | None, hint: str) -> str:
     return " ".join(parts)[:400]
 
 
+def _clock(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _transcript_dir() -> Path:
+    folder = Path(tempfile.gettempdir()) / "constructor-transcripts"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _write_transcript(filename: str, segments: list[dict[str, Any]], duration_sec: float, digest: str) -> Path:
+    stem = Path(filename).stem
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in stem)[:40] or "audio"
+    path = _transcript_dir() / f"{digest[:12]}-{safe}.txt"
+    lines = [
+        f"Файл: {filename}",
+        f"Длительность: {_clock(duration_sec)}",
+        f"Сегментов: {len(segments)}",
+        "",
+    ]
+    lines.extend(
+        f"[{_clock(float(row['start']))}–{_clock(float(row['end']))}] {row['text']}"
+        for row in segments
+    )
+    path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return path
+
+
+def _short_result(
+    *,
+    filename: str,
+    duration_sec: float,
+    segments: list[dict[str, Any]],
+    path: Path,
+    cached: bool,
+    prompt: str,
+) -> dict[str, Any]:
+    preview = "\n".join(str(row["text"]) for row in segments[:8]).strip()
+    return {
+        "ok": True,
+        "cached": cached,
+        "filename": filename,
+        "duration_sec": duration_sec,
+        "segment_count": len(segments),
+        "transcript_path": str(path),
+        "preview": preview[:800],
+        "diarization": "none",
+        "names_hint": prompt,
+        "note": (
+            "Полная расшифровка с таймкодами записана в transcript_path. "
+            "Прочитай этот файл один раз и больше не вызывай audio.transcribe для того же вложения. "
+            "Меток говорящих нет: реплику подписывай ФИО только при обращении или самопредставлении, иначе «Участник N»."
+        ),
+    }
+
+
 def transcribe_run_attachment(
     file_id: str,
     user_id: str,
@@ -135,11 +196,12 @@ def transcribe_run_attachment(
         raise RuntimeError("Файл больше 500 МБ")
 
     prompt = _names_prompt(names, hint)
-    cache_key = f"{hashlib.sha256(raw).hexdigest()}:{_wanted_model()}:{prompt}"
+    digest = hashlib.sha256(raw).hexdigest()
+    cache_key = f"{digest}:{_wanted_model()}:{prompt}"
     with _inflight_lock:
         cached = _cache.get(cache_key)
-        if cached is not None:
-            return cached
+        if cached is not None and Path(str(cached.get("transcript_path") or "")).is_file():
+            return {**cached, "cached": True}
         waiter = _inflight.get(cache_key)
         if waiter is None:
             waiter = threading.Event()
@@ -158,7 +220,16 @@ def transcribe_run_attachment(
         raise RuntimeError("Расшифровка этого файла уже шла и не завершилась. Повторите вызов.")
 
     try:
-        result = _transcribe_bytes(raw, suffix=suffix, filename=filename, prompt=prompt)
+        segments, duration_sec = _transcribe_bytes(raw, suffix=suffix, filename=filename, prompt=prompt)
+        path = _write_transcript(filename, segments, duration_sec, digest)
+        result = _short_result(
+            filename=filename,
+            duration_sec=duration_sec,
+            segments=segments,
+            path=path,
+            cached=False,
+            prompt=prompt,
+        )
         with _inflight_lock:
             _cache[cache_key] = result
         return result
@@ -168,7 +239,9 @@ def transcribe_run_attachment(
             _inflight.pop(cache_key, None)
 
 
-def _transcribe_bytes(raw: bytes, *, suffix: str, filename: str, prompt: str) -> dict[str, Any]:
+def _transcribe_bytes(
+    raw: bytes, *, suffix: str, filename: str, prompt: str
+) -> tuple[list[dict[str, Any]], float]:
     model = _get_model()
     tmp_path: Path | None = None
     try:
@@ -192,16 +265,4 @@ def _transcribe_bytes(raw: bytes, *, suffix: str, filename: str, prompt: str) ->
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
 
-    return {
-        "diarization": "none",
-        "note": (
-            "В сегментах нет меток говорящих. Не приписывай реплику человеку, "
-            "если в её тексте нет обращения или самопредставления — подписывай «Участник N». "
-            "Слово, похожее на фамилию из names, замени на точное ФИО из этого списка."
-        ),
-        "names_hint": prompt,
-        "segments": segments,
-        "text": "\n".join(str(segment["text"]) for segment in segments).strip(),
-        "duration_sec": round(float(getattr(info, "duration", 0.0) or 0.0), 2),
-        "filename": filename,
-    }
+    return segments, round(float(getattr(info, "duration", 0.0) or 0.0), 2)

@@ -242,13 +242,20 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
       message
     })
   } else if (kind === 'run_agent') {
+    const filePaths = Array.isArray(command.file_paths)
+      ? command.file_paths.map((item) => String(item)).filter((item) => item.trim())
+      : []
+    const resumeAgentId = String(command.resume_agent_id || '').trim()
+    const source = String(command.source || 'trigger').trim() || 'trigger'
     agentSidecar.send({
       type: 'run',
       id: `run-${Date.now()}`,
       workflowId,
       message,
-      source: 'trigger',
-      triggerId
+      source,
+      triggerId,
+      resumeAgentId,
+      filePaths
     })
   } else if (kind === 'form_orchestrator') {
     agentSidecar.send({

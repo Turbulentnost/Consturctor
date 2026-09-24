@@ -117,10 +117,162 @@ function lines(value: string): string[] {
     .filter(Boolean)
 }
 
-export async function createProtocolInOneC(
-  draft: ProtocolCreateDraft,
-  meetingId: string
-): Promise<ProtocolCreateResult> {
+/** Protocol card as returned by onec.meeting_protocols {ref_key} (backend read_protocol_form). */
+export type OnecProtocolForm = {
+  refKey: string
+  number: string
+  status: string
+  posted: boolean
+  editable: boolean
+  form: {
+    topic: string
+    theme_key: string
+    date: string
+    time_start: string
+    time_end: string
+    room: string
+    next_meeting_date: string
+    leader: string
+    responsible: string
+    prepared_by: string
+    meeting_type: string
+    report_period_from: string
+    report_period_to: string
+    access: string
+    department: string
+    project: string
+    participants: string[]
+    agenda: { question: string; responsible: string }[]
+    decisions: { text: string; due: string }[]
+    tasks: { text: string; executor: string; due: string; priority: string; note: string; item?: string }[]
+    comment: string
+  }
+}
+
+function str(value: unknown): string {
+  return value === null || value === undefined ? '' : String(value).trim()
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+}
+
+function list(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map((item) => record(item)) : []
+}
+
+export function parseOnecProtocolForm(payload: unknown): OnecProtocolForm | null {
+  const root = record(payload)
+  const card = record(root.protocol && typeof root.protocol === 'object' ? root.protocol : root)
+  const form = record(card.form)
+  const refKey = str(card.ref_key)
+  if (!refKey) return null
+  return {
+    refKey,
+    number: str(card.number),
+    status: str(card.status),
+    posted: Boolean(card.posted),
+    editable: card.editable === undefined ? !card.posted : Boolean(card.editable),
+    form: {
+      topic: str(form.topic),
+      theme_key: str(form.theme_key),
+      date: str(form.date),
+      time_start: str(form.time_start),
+      time_end: str(form.time_end),
+      room: str(form.room),
+      next_meeting_date: str(form.next_meeting_date),
+      leader: str(form.leader),
+      responsible: str(form.responsible),
+      prepared_by: str(form.prepared_by),
+      meeting_type: str(form.meeting_type),
+      report_period_from: str(form.report_period_from),
+      report_period_to: str(form.report_period_to),
+      access: str(form.access),
+      department: str(form.department),
+      project: str(form.project),
+      participants: Array.isArray(form.participants) ? form.participants.map((item) => str(item)).filter(Boolean) : [],
+      agenda: list(form.agenda).map((row) => ({ question: str(row.question), responsible: str(row.responsible) })),
+      decisions: list(form.decisions).map((row) => ({ text: str(row.text), due: str(row.due) })),
+      tasks: list(form.tasks).map((row) => ({
+        text: str(row.text),
+        executor: str(row.executor),
+        due: str(row.due),
+        priority: str(row.priority),
+        note: str(row.note),
+        item: str(row.item) || undefined
+      })),
+      comment: str(form.comment)
+    }
+  }
+}
+
+export async function fetchProtocolForm(refKey: string): Promise<{ ok: true; card: OnecProtocolForm } | { ok: false; error: string }> {
+  const key = refKey.trim()
+  if (!key) return { ok: false, error: 'Нет ссылки на протокол в 1С' }
+  const response = await api.invokeServerTool('onec.meeting_protocols', { meeting_kind: 'any', ref_key: key }, 60_000)
+  if (!response.ok) return { ok: false, error: response.error || 'Не удалось прочитать протокол из 1С' }
+  const card = parseOnecProtocolForm(response.result)
+  if (!card) return { ok: false, error: 'Протокол не найден в 1С' }
+  return { ok: true, card }
+}
+
+/** Strip the Outlook link marker so it is not shown / duplicated in the editable comment. */
+export function stripOutlookMarker(comment: string): string {
+  return comment
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*outlook:\S+\s*$/.test(line))
+    .join('\n')
+    .replace(/\s*outlook:\S+/g, '')
+    .trim()
+}
+
+export function draftFromOnecForm(card: OnecProtocolForm): ProtocolCreateDraft {
+  const form = card.form
+  const agenda = form.agenda
+    .filter((row) => row.question)
+    .map((row) => ({ key: newProtocolRowKey(), question: row.question, responsible: row.responsible }))
+  const decisions = form.decisions
+    .filter((row) => row.text)
+    .map((row) => ({ key: newProtocolRowKey(), text: row.text, due: row.due }))
+  const tasks = form.tasks
+    .filter((row) => row.text)
+    .map((row) => ({
+      key: newProtocolRowKey(),
+      text: row.text,
+      executor: row.executor,
+      due: row.due,
+      priority: row.priority,
+      note: row.note
+    }))
+  return {
+    topic: form.topic,
+    themeKey: form.theme_key,
+    date: form.date,
+    timeStart: form.time_start,
+    timeEnd: form.time_end,
+    room: form.room,
+    nextMeetingDate: form.next_meeting_date,
+    leader: form.leader,
+    responsible: form.responsible,
+    meetingType: form.meeting_type || 'Отчетное',
+    reportFrom: form.report_period_from,
+    reportTo: form.report_period_to,
+    access: form.access,
+    department: form.department,
+    project: form.project,
+    participants: form.participants.join('\n'),
+    comment: stripOutlookMarker(form.comment),
+    agenda: agenda.length ? agenda : [{ key: newProtocolRowKey(), question: '', responsible: '' }],
+    decisions: decisions.length ? decisions : [{ key: newProtocolRowKey(), text: '', due: '' }],
+    tasks: tasks.length
+      ? tasks
+      : [{ key: newProtocolRowKey(), text: '', executor: '', due: '', priority: '', note: '' }]
+  }
+}
+
+type WriteArgs = { ok: true; args: Record<string, unknown> } | { ok: false; error: string }
+
+function buildWriteArgs(draft: ProtocolCreateDraft, meetingId: string): WriteArgs {
   const topic = draft.topic.trim()
   const date = draft.date.trim()
   if (!topic) return { ok: false, error: 'Укажите тему совещания' }
@@ -147,10 +299,9 @@ export async function createProtocolInOneC(
   }
 
   const marker = meetingId.trim() ? `outlook:${meetingId.trim()}` : ''
-  const comment = [draft.comment.trim(), marker].filter(Boolean).join('\n')
+  const comment = [stripOutlookMarker(draft.comment), marker].filter(Boolean).join('\n')
 
   const args: Record<string, unknown> = {
-    action: 'create',
     topic,
     date,
     meeting_type: draft.meetingType.trim() || 'Отчетное',
@@ -172,23 +323,44 @@ export async function createProtocolInOneC(
   if (draft.project.trim()) args.project = draft.project.trim()
   if (draft.reportFrom.trim()) args.report_period_from = draft.reportFrom.trim()
   if (draft.reportTo.trim()) args.report_period_to = draft.reportTo.trim()
+  return { ok: true, args }
+}
 
+async function invokeProtocolWrite(args: Record<string, unknown>, failMessage: string): Promise<ProtocolCreateResult> {
   const response = await api.invokeServerTool('onec.meeting_protocol_write', args, 180_000)
   if (!response.ok) {
-    return { ok: false, error: response.error || 'Не удалось создать протокол в 1С' }
+    return { ok: false, error: response.error || failMessage }
   }
-  const payload =
-    response.result && typeof response.result === 'object'
-      ? (response.result as Record<string, unknown>)
-      : {}
+  const payload = record(response.result)
   const unresolved = Array.isArray(payload.unresolved) ? payload.unresolved.map((item) => String(item)) : []
   return {
     ok: true,
-    number: String(payload.number || '').trim() || undefined,
-    refKey: String(payload.ref_key || payload.erp_document_id || '').trim() || undefined,
-    summary: String(payload.summary || '').trim() || undefined,
+    number: str(payload.number) || undefined,
+    refKey: str(payload.ref_key || payload.erp_document_id) || undefined,
+    summary: str(payload.summary) || undefined,
     unresolved
   }
+}
+
+export async function createProtocolInOneC(
+  draft: ProtocolCreateDraft,
+  meetingId: string
+): Promise<ProtocolCreateResult> {
+  const built = buildWriteArgs(draft, meetingId)
+  if (!built.ok) return { ok: false, error: built.error }
+  return invokeProtocolWrite({ action: 'create', ...built.args }, 'Не удалось создать протокол в 1С')
+}
+
+export async function updateProtocolInOneC(
+  draft: ProtocolCreateDraft,
+  refKey: string,
+  meetingId: string
+): Promise<ProtocolCreateResult> {
+  const key = refKey.trim()
+  if (!key) return { ok: false, error: 'Нет ссылки на протокол в 1С' }
+  const built = buildWriteArgs(draft, meetingId)
+  if (!built.ok) return { ok: false, error: built.error }
+  return invokeProtocolWrite({ action: 'update', ref_key: key, ...built.args }, 'Не удалось сохранить протокол в 1С')
 }
 
 export type ThemeHint = { key: string; title: string }

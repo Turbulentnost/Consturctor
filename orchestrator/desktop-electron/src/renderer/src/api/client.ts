@@ -1240,7 +1240,7 @@ export class ApiClient {
   }): Promise<WorkflowBoard> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/workflows/board', {
       params,
-      timeoutMs: 15_000
+      timeoutMs: 45_000
     })
     return parseBoard(data)
   }
@@ -1817,7 +1817,7 @@ export class ApiClient {
     const data = await this.request<Record<string, unknown>>(
       'GET',
       `/api/v1/workflows/${workflowId}/files`,
-      { timeoutMs: 20_000, params: runId ? { run_id: runId } : undefined }
+      { timeoutMs: 45_000, params: runId ? { run_id: runId } : undefined }
     )
     const userFiles = (data.user_files as Record<string, unknown>[]) ?? []
     const agentFiles = (data.agent_files as Record<string, unknown>[]) ?? []

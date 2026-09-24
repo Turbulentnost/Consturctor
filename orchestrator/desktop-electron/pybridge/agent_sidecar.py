@@ -2996,6 +2996,7 @@ class Sidecar:
         reset_run_scratch(
             run_cwd,
             clear_attachments=autonomous or not resume_agent_id or _has_new_files,
+            clear_tool_results=not bool(resume_agent_id),
         )
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=workflow)
         if _is_meeting_workflow(workflow):

@@ -6,8 +6,12 @@ import type { MeetingEvent } from '../../utils/outlookMeetings'
 import {
   createProtocolInOneC,
   draftFromMeeting,
+  draftFromOnecForm,
+  fetchProtocolForm,
   newProtocolRowKey,
   searchMeetingThemes,
+  updateProtocolInOneC,
+  type OnecProtocolForm,
   type ProtocolCreateDraft,
   type ProtocolCreateResult,
   type ThemeHint
@@ -18,13 +22,15 @@ function FioField({
   value,
   onChange,
   listId,
-  placeholder
+  placeholder,
+  disabled
 }: {
   label: string
   value: string
   onChange: (value: string) => void
   listId: string
   placeholder?: string
+  disabled?: boolean
 }): React.JSX.Element {
   return (
     <label className="registry-create-field">
@@ -35,6 +41,7 @@ function FioField({
         list={listId}
         value={value}
         placeholder={placeholder || 'ФИО из 1С'}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
@@ -45,23 +52,33 @@ export function MeetingProtocolForm({
   open,
   meeting,
   actorFio,
+  mode = 'create',
+  refKey = '',
   onClose,
   onCreated
 }: {
   open: boolean
   meeting: MeetingEvent
   actorFio: string
+  /** create — новый черновик из данных встречи; edit — загрузить протокол refKey из 1С и сохранить (PATCH). */
+  mode?: 'create' | 'edit'
+  refKey?: string
   onClose: () => void
   onCreated: (result: ProtocolCreateResult) => void
 }): React.JSX.Element | null {
   const titleId = useId()
   const fioListId = useId()
+  const isEdit = mode === 'edit'
   const [draft, setDraft] = useState<ProtocolCreateDraft>(() => draftFromMeeting(meeting, actorFio))
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [card, setCard] = useState<OnecProtocolForm | null>(null)
   const [error, setError] = useState('')
   const [done, setDone] = useState<ProtocolCreateResult | null>(null)
   const [fioHints, setFioHints] = useState<string[]>([])
   const [themes, setThemes] = useState<ThemeHint[]>([])
+  const readOnly = isEdit && card !== null && !card.editable
 
   useEffect(() => {
     if (!open) return
@@ -70,7 +87,28 @@ export function MeetingProtocolForm({
     setError('')
     setDone(null)
     setThemes([])
-  }, [open, meeting, actorFio])
+    setCard(null)
+    setLoadError('')
+    if (!isEdit) {
+      setLoading(false)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    void fetchProtocolForm(refKey).then((result) => {
+      if (cancelled) return
+      setLoading(false)
+      if (!result.ok) {
+        setLoadError(result.error)
+        return
+      }
+      setCard(result.card)
+      setDraft(draftFromOnecForm(result.card))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, meeting, actorFio, isEdit, refKey])
 
   useEffect(() => {
     if (!open) return
@@ -84,7 +122,7 @@ export function MeetingProtocolForm({
   }, [open])
 
   useEffect(() => {
-    if (!open || done) return
+    if (!open || done || readOnly) return
     const query = draft.topic.trim()
     if (query.length < 3 || draft.themeKey) {
       setThemes([])
@@ -100,7 +138,7 @@ export function MeetingProtocolForm({
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [open, done, draft.topic, draft.themeKey])
+  }, [open, done, readOnly, draft.topic, draft.themeKey])
 
   useEffect(() => {
     if (!open) return
@@ -118,21 +156,36 @@ export function MeetingProtocolForm({
   }
 
   const submit = async (): Promise<void> => {
-    if (busy) return
+    if (busy || readOnly) return
     setError('')
     setBusy(true)
     try {
-      const result = await createProtocolInOneC(draft, meeting.id)
+      const result = isEdit
+        ? await updateProtocolInOneC(draft, card?.refKey || refKey, meeting.id)
+        : await createProtocolInOneC(draft, meeting.id)
       if (!result.ok) {
-        setError(result.error || 'Не удалось создать протокол')
+        setError(result.error || (isEdit ? 'Не удалось сохранить протокол' : 'Не удалось создать протокол'))
         return
       }
-      setDone(result)
-      onCreated(result)
+      const merged: ProtocolCreateResult = isEdit
+        ? { ...result, number: result.number || card?.number, refKey: result.refKey || card?.refKey || refKey }
+        : result
+      setDone(merged)
+      onCreated(merged)
     } finally {
       setBusy(false)
     }
   }
+
+  const title = isEdit ? 'Изменить протокол' : 'Протокол в 1С'
+  const subtitle = isEdit
+    ? card
+      ? readOnly
+        ? `Протокол ${card.number} проведён (статус «${card.status || 'Проведён'}») — правки только в 1С.`
+        : `Черновик ${card.number} (статус «${card.status || 'Подготовлен'}»). Разделы будут перезаписаны целиком.`
+      : 'Загрузка протокола из 1С…'
+    : 'Черновик документа «Протокол» (статус «Подготовлен»). Номер присвоит 1С, проведёт секретарь.'
+  const lock = busy || loading || readOnly
 
   return createPortal(
     <div className="modal-overlay registry-create-overlay" onClick={() => !busy && onClose()}>
@@ -145,20 +198,31 @@ export function MeetingProtocolForm({
         <header className="registry-create-head">
           <div className="registry-create-head-text">
             <div className="modal-title" id={titleId}>
-              Протокол в 1С
+              {title}
             </div>
-            <p className="registry-create-sub">
-              Черновик документа «Протокол» (статус «Подготовлен»). Номер присвоит 1С, проведёт секретарь.
-            </p>
+            <p className="registry-create-sub">{subtitle}</p>
           </div>
           <button type="button" className="registry-create-close" disabled={busy} onClick={onClose}>
             <X size={18} aria-hidden />
           </button>
         </header>
 
-        {done ? (
+        {loading ? (
           <div className="registry-create-body">
-            <p>{done.summary || `Создан протокол ${done.number || ''}`.trim()}</p>
+            <p className="meeting-protocol-hint">Читаем протокол из 1С…</p>
+          </div>
+        ) : loadError ? (
+          <div className="registry-create-body">
+            <p className="onec-reconnect-form-error">{loadError}</p>
+            <div className="modal-actions registry-create-foot">
+              <button type="button" className="btn-primary" onClick={onClose}>
+                Закрыть
+              </button>
+            </div>
+          </div>
+        ) : done ? (
+          <div className="registry-create-body">
+            <p>{done.summary || `${isEdit ? 'Сохранён' : 'Создан'} протокол ${done.number || ''}`.trim()}</p>
             {done.number ? (
               <p>
                 Номер: <b>{done.number}</b>
@@ -183,6 +247,7 @@ export function MeetingProtocolForm({
               ))}
             </datalist>
 
+            <fieldset className="meeting-protocol-fieldset" disabled={readOnly}>
             <section className="registry-create-section">
               <label className="registry-create-field registry-create-field--wide">
                 <span className="modal-label">Тема совещания *</span>
@@ -584,16 +649,19 @@ export function MeetingProtocolForm({
                 onChange={(event) => patch({ comment: event.target.value })}
               />
             </label>
+            </fieldset>
 
             {error ? <p className="onec-reconnect-form-error">{error}</p> : null}
 
             <div className="modal-actions registry-create-foot">
               <button type="button" className="btn-light" disabled={busy} onClick={onClose}>
-                Отмена
+                {readOnly ? 'Закрыть' : 'Отмена'}
               </button>
-              <button type="button" className="btn-primary" disabled={busy} onClick={() => void submit()}>
-                {busy ? 'Создание…' : 'Создать в 1С'}
-              </button>
+              {readOnly ? null : (
+                <button type="button" className="btn-primary" disabled={lock} onClick={() => void submit()}>
+                  {busy ? (isEdit ? 'Сохранение…' : 'Создание…') : isEdit ? 'Сохранить в 1С' : 'Создать в 1С'}
+                </button>
+              )}
             </div>
           </div>
         )}

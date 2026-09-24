@@ -12442,6 +12442,61 @@ button.spec-v04-tile {
   color: #1565c0;
   font-size: 12px;
 }
+.meeting-protocol-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.meeting-protocol-fieldset:disabled {
+  opacity: 0.85;
+}
+.modal-card.meeting-protocol-chooser {
+  width: min(520px, calc(100vw - 48px));
+  gap: 10px;
+}
+.meeting-protocol-chooser-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.meeting-protocol-chooser-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid #d5dce6;
+  border-radius: 10px;
+  background: #fff;
+  color: #10141a;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.meeting-protocol-chooser-option:hover:not(:disabled) {
+  border-color: #1565c0;
+  background: #f3f7fd;
+}
+.meeting-protocol-chooser-option:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.meeting-protocol-chooser-option svg {
+  color: #1565c0;
+}
+.meeting-protocol-chooser-option-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.meeting-protocol-chooser-option-sub {
+  font-size: 12px;
+  color: #5b6470;
+  line-height: 1.35;
+}
 .meeting-protocol-themes {
   list-style: none;
   margin: 6px 0 0;

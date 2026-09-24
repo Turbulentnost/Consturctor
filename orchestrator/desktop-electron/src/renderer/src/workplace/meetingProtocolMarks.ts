@@ -144,14 +144,18 @@ export function marksForMeetings(
   const marks = new Map<string, ProtocolMark>()
   for (const meeting of meetings) {
     const local = stored[meeting.id]
-    if (local && (local.number || local.refKey)) {
+    if (local && local.refKey) {
       marks.set(meeting.id, local)
       continue
     }
     const hit = protocols.find((row) => protocolMatchesMeeting(meeting, row))
-    if (!hit) continue
+    if (!hit) {
+      // local mark without Ref_Key (older record): still shows the number, edit stays disabled
+      if (local && local.number) marks.set(meeting.id, local)
+      continue
+    }
     marks.set(meeting.id, {
-      number: String(hit.number || '').trim(),
+      number: String(hit.number || '').trim() || local?.number || '',
       refKey: String(hit.ref_key || '').trim()
     })
   }

@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { Mic, PenLine } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { toolLabel } from '../../components/agentfeed/labels'
 import { useRuns } from '../../store/runs'
@@ -28,9 +30,35 @@ import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { isoTimestampInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 import { MeetingReportModal } from './MeetingReportModal'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
-import { rememberProtocolDocument, useProtocolMarks, type ProtocolMark } from '../../workplace/meetingProtocolMarks'
+import {
+  PROTOCOL_CREATED_EVENT,
+  rememberProtocolDocument,
+  useProtocolMarks,
+  type ProtocolMark
+} from '../../workplace/meetingProtocolMarks'
 
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'wma', 'amr', 'webm', 'mp4', 'mkv']
+
+/** File browsing the agent does while drafting — not the protocol itself. */
+const NOISY_TOOLS = new Set([
+  'Read',
+  'read',
+  'Grep',
+  'grep',
+  'Glob',
+  'glob',
+  'LS',
+  'ls',
+  'Edit',
+  'edit',
+  'Write',
+  'write',
+  'Delete',
+  'Shell',
+  'shell',
+  'SemanticSearch',
+  'semSearch'
+])
 
 function meetingField(value: string | undefined): string {
   const text = (value || '').trim()
@@ -59,6 +87,8 @@ function MeetingDetailCard({
   const [actionError, setActionError] = useState('')
   const [reportOpen, setReportOpen] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
+  const [formMode, setFormMode] = useState<'create' | 'edit'>('create')
+  const [chooserOpen, setChooserOpen] = useState(false)
 
   const attendees = (meeting.attendees || '')
     .split(/[,;]/)
@@ -73,15 +103,38 @@ function MeetingDetailCard({
     Boolean(state?.pendingQuestion)
 
   const toolSteps = useMemo(() => {
+    const items = (state?.items || []).filter(
+      (item): item is Extract<typeof item, { kind: 'tool' }> => item.kind === 'tool'
+    )
+    const kept = items.filter((item) => !NOISY_TOOLS.has(item.tool) || item.error)
+    const folded: { id: string; label: string; done: boolean; error: boolean; count: number }[] = []
+    for (const item of kept) {
+      const label = toolLabel(item.tool) || item.title || item.tool
+      const last = folded[folded.length - 1]
+      if (last && last.label === label && last.error === item.error) {
+        last.count += 1
+        last.done = last.done && item.done
+        last.id = item.id
+        continue
+      }
+      folded.push({ id: item.id, label, done: item.done, error: item.error, count: 1 })
+    }
+    return folded.slice(-8)
+  }, [state?.items])
+
+  const createdProtocol = useMemo(() => {
     const items = state?.items || []
-    return items
-      .filter((item): item is Extract<typeof item, { kind: 'tool' }> => item.kind === 'tool')
-      .map((item) => ({
-        id: item.id,
-        label: toolLabel(item.tool) || item.title || item.tool,
-        done: item.done,
-        error: item.error
-      }))
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index]
+      if (item.kind !== 'tool' || item.tool !== 'onec.meeting_protocol_write' || !item.done || item.error) {
+        continue
+      }
+      const result = item.result || {}
+      const number = String(result.number || '').trim()
+      const refKey = String(result.ref_key || result.erp_document_id || '').trim()
+      if (number || refKey) return { number, refKey }
+    }
+    return null
   }, [state?.items])
 
   const attachAudio = useCallback(async () => {
@@ -124,7 +177,27 @@ function MeetingDetailCard({
     }
   }, [busy, isRunning, meeting, rememberStart, runs])
 
-  const canOpenReport = record?.status === 'done' && Boolean(record.reportFileId)
+  const hasDocx = record?.status === 'done' && Boolean(record.reportFileId)
+  const protocolRefKey = (protocol?.refKey || '').trim()
+  const hasProtocol = Boolean(protocolRefKey || protocol?.number)
+  const canOpenReport = hasDocx || Boolean(protocolRefKey)
+
+  // Agent finished or wrote the protocol: remember the document and refresh calendar marks.
+  const recordStatus = record?.status
+  useEffect(() => {
+    if (createdProtocol) {
+      rememberProtocolDocument(userId, meeting.id, createdProtocol)
+    }
+    if (recordStatus === 'done' || createdProtocol) {
+      window.dispatchEvent(new CustomEvent(PROTOCOL_CREATED_EVENT))
+    }
+  }, [recordStatus, createdProtocol, userId, meeting.id])
+
+  const openForm = (mode: 'create' | 'edit'): void => {
+    setChooserOpen(false)
+    setFormMode(mode)
+    setFormOpen(true)
+  }
 
   return (
     <div className="spec-detail-card wp-card">
@@ -180,12 +253,14 @@ function MeetingDetailCard({
           <div className="meeting-protocol-progress-row">
             <span className="meeting-protocol-label">Статус</span>
             <span>
-              {state?.status ||
-                (record.status === 'done'
-                  ? 'Готово'
-                  : record.status === 'error'
-                    ? 'Ошибка'
-                    : 'В работе…')}
+              {createdProtocol || protocol?.number
+                ? `Протокол создан${(createdProtocol?.number || protocol?.number) ? `: ${createdProtocol?.number || protocol?.number}` : ''}`
+                : state?.status ||
+                  (record.status === 'done'
+                    ? 'Готово'
+                    : record.status === 'error'
+                      ? 'Ошибка'
+                      : 'В работе…')}
             </span>
           </div>
           {toolSteps.length ? (
@@ -193,6 +268,7 @@ function MeetingDetailCard({
               {toolSteps.map((step) => (
                 <li key={step.id} className={step.error ? 'is-error' : step.done ? 'is-done' : ''}>
                   {step.label}
+                  {step.count > 1 ? ` ×${step.count}` : ''}
                 </li>
               ))}
             </ul>
@@ -238,40 +314,66 @@ function MeetingDetailCard({
 
       {actionError ? <p className="meeting-protocol-error">{actionError}</p> : null}
 
-      <footer className="spec-detail-actions">
-        <button
-          type="button"
-          className="btn-primary"
-          onClick={() => void attachAudio()}
-          disabled={busy || isRunning}
-        >
-          {busy ? 'Запуск…' : 'Прикрепить аудио'}
-        </button>
-        <button type="button" className="btn-light" onClick={() => setFormOpen(true)}>
-          Создать протокол
-        </button>
-        <button
-          type="button"
-          className="btn-primary"
-          onClick={() => setReportOpen(true)}
-          disabled={!canOpenReport}
-        >
-          Получить отчёт
-        </button>
-      </footer>
+      {isRunning ? null : (
+        <footer className="spec-detail-actions">
+          {hasProtocol ? (
+            <button
+              type="button"
+              className="btn-light"
+              onClick={() => openForm('edit')}
+              disabled={!protocolRefKey}
+              title={protocolRefKey ? 'Показать и изменить то, что заполнено в 1С' : 'Нет ссылки на документ 1С'}
+            >
+              Изменить протокол
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => setChooserOpen(true)}
+              disabled={busy}
+            >
+              {busy ? 'Запуск…' : 'Создать протокол'}
+            </button>
+          )}
+          {hasProtocol || hasDocx ? (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => setReportOpen(true)}
+              disabled={!canOpenReport}
+            >
+              Получить протокол
+            </button>
+          ) : null}
+        </footer>
+      )}
       {protocol?.number ? (
         <p className="meeting-protocol-hint">Протокол в 1С: {protocol.number}</p>
       ) : null}
+
+      <ProtocolCreateChooser
+        open={chooserOpen}
+        busy={busy}
+        onClose={() => setChooserOpen(false)}
+        onAudio={() => {
+          setChooserOpen(false)
+          void attachAudio()
+        }}
+        onManual={() => openForm('create')}
+      />
 
       <MeetingProtocolForm
         open={formOpen}
         meeting={meeting}
         actorFio={actorFio}
+        mode={formMode}
+        refKey={protocolRefKey}
         onClose={() => setFormOpen(false)}
         onCreated={(result) => {
           rememberProtocolDocument(userId, meeting.id, {
-            number: result.number || '',
-            refKey: result.refKey || ''
+            number: result.number || protocol?.number || '',
+            refKey: result.refKey || protocolRefKey
           })
         }}
       />
@@ -279,10 +381,72 @@ function MeetingDetailCard({
       <MeetingReportModal
         open={reportOpen}
         onClose={() => setReportOpen(false)}
-        reportUrl={record?.reportUrl || ''}
+        reportUrl={hasDocx ? record?.reportUrl || '' : ''}
         reportName={record?.reportName || 'protocol.docx'}
+        protocolRefKey={protocolRefKey}
       />
     </div>
+  )
+}
+
+function ProtocolCreateChooser({
+  open,
+  busy,
+  onClose,
+  onAudio,
+  onManual
+}: {
+  open: boolean
+  busy: boolean
+  onClose: () => void
+  onAudio: () => void
+  onManual: () => void
+}): React.JSX.Element | null {
+  const titleId = useId()
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+  if (!open) return null
+  return createPortal(
+    <div className="modal-overlay" onClick={onClose} role="presentation">
+      <div
+        className="modal-card meeting-protocol-chooser"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h4 className="modal-title" id={titleId}>
+          Создать протокол
+        </h4>
+        <p className="spec-v04-muted">Как заполнить протокол совещания?</p>
+        <div className="meeting-protocol-chooser-options">
+          <button type="button" className="meeting-protocol-chooser-option" onClick={onAudio} disabled={busy}>
+            <Mic size={20} aria-hidden />
+            <span className="meeting-protocol-chooser-option-title">Прикрепить аудио</span>
+            <span className="meeting-protocol-chooser-option-sub">
+              Агент расшифрует запись, составит протокол и создаст черновик в 1С
+            </span>
+          </button>
+          <button type="button" className="meeting-protocol-chooser-option" onClick={onManual} disabled={busy}>
+            <PenLine size={20} aria-hidden />
+            <span className="meeting-protocol-chooser-option-title">Вручную</span>
+            <span className="meeting-protocol-chooser-option-sub">Заполнить форму протокола 1С самостоятельно</span>
+          </button>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn-light" onClick={onClose}>
+            Отмена
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 

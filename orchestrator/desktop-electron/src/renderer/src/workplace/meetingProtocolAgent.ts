@@ -64,10 +64,17 @@ export function buildProtocolMessage(meeting: MeetingEvent, audioPath: string): 
     `Организатор: ${field(meeting.organizer)}`,
     'Участники:',
     attendeesList(meeting),
+    `Идентификатор совещания Outlook: ${meeting.id || '—'}`,
     '',
     `Абсолютный путь к аудиофайлу: ${audioPath}`,
     '',
     'Используй данные календаря для темы протокола и сопоставления говорящих.',
-    'Итоговый отчёт сохрани в формате docx через report.export_document.'
-  ].join('\n')
+    'Итоговый отчёт сохрани в формате docx через report.export_document.',
+    meeting.id
+      ? `В comment протокола 1С (onec.meeting_protocol_write) отдельной строкой добавь метку outlook:${meeting.id} — по ней совещание в календаре связывается с документом.`
+      : ''
+  ]
+    .filter((line, index, all) => line !== '' || index === 0 || all[index - 1] !== '')
+    .join('\n')
+    .trimEnd()
 }

@@ -356,7 +356,10 @@ function excelWrite(tool: string, args: Record<string, unknown>): ToolExplanatio
 }
 
 function protocolWrite(args: Record<string, unknown>): ToolExplanation {
-  const probe = asText(args.action).toLowerCase() === 'probe'
+  const action = asText(args.action).toLowerCase()
+  const probe = action === 'probe'
+  const update = action === 'update'
+  const refKey = asText(args.ref_key)
   const topic = asText(args.topic || args.theme)
   const date = asText(args.date)
   const leader = asText(args.leader)
@@ -379,7 +382,20 @@ function protocolWrite(args: Record<string, unknown>): ToolExplanation {
       'проверить создание протокола в 1С на тестовой карточке',
       'Проверяет запись протокола',
       facts,
-      'Создаст тестовый протокол CONSTRUCTOR_PROBE и сразу удалит его.'
+      'Создаст тестовый протокол CONSTRUCTOR_PROBE, обновит и сразу удалит его.'
+    )
+  }
+  if (update) {
+    if (refKey) facts.push(`Документ: ${clip(refKey, 40)}`)
+    return explanation(
+      'Изменение протокола в 1С',
+      'обновить черновик протокола совещания в 1С',
+      'Обновляет протокол совещания',
+      facts,
+      joinDetail([
+        'Перезапишет шапку и разделы черновика «Протокол» (ТД_Протокол) со статусом «Подготовлен».',
+        'Проведённый протокол не изменится — правки только в 1С.'
+      ])
     )
   }
   return explanation(

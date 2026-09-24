@@ -17,6 +17,7 @@ Field / catalog mapping discovered live from $metadata and existing protocols
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Callable
 
@@ -66,6 +67,12 @@ def _odata_post(args: dict[str, Any]) -> dict[str, Any]:
     from app.services.onec_tools import _odata_post
 
     return _odata_post(args)
+
+
+def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
+    from app.services.onec_tools import _odata_patch
+
+    return _odata_patch(args)
 
 
 def _escape(value: str) -> str:
@@ -510,7 +517,182 @@ def build_protocol_create_body(
     return body, meta
 
 
+# --------------------------------------------------------------------------- read back
+
+
+def _iso_day(value: Any) -> str:
+    text = _clean(value)
+    if not text or text.startswith("0001-01-01"):
+        return ""
+    return text[:10]
+
+
+def _iso_clock(value: Any) -> str:
+    text = _clean(value)
+    if "T" not in text:
+        return ""
+    clock = text.split("T", 1)[1][:5]
+    return clock if len(clock) == 5 and clock[2] == ":" else ""
+
+
+def _description_of(entity: str, key: Any, cache: dict[str, str]) -> str:
+    guid = _clean(key)
+    if not _looks_like_guid(guid):
+        return ""
+    cache_key = f"{entity}:{guid}"
+    if cache_key in cache:
+        return cache[cache_key]
+    name = ""
+    try:
+        rows = _rows(_odata_get({"entity": entity, "ref_key": guid, "top": 1}))
+        if rows:
+            name = _clean(rows[0].get("Description") or rows[0].get("Наименование"))
+    except Exception:  # noqa: BLE001
+        name = ""
+    cache[cache_key] = name
+    return name
+
+
+def _protocol_rows(card: dict[str, Any], section: str) -> list[dict[str, Any]]:
+    rows = card.get(section)
+    if not isinstance(rows, list):
+        parts = card.get("tabular_parts")
+        if isinstance(parts, dict):
+            rows = parts.get(f"{PROTOCOL_ENTITY}_{section}") or parts.get(section)
+    if not isinstance(rows, list):
+        return []
+    ordered = [row for row in rows if isinstance(row, dict)]
+    ordered.sort(key=lambda row: int(str(row.get("LineNumber") or "0") or 0))
+    return ordered
+
+
+def read_protocol_card(ref_key: str) -> dict[str, Any]:
+    guid = _clean(ref_key)
+    if not _looks_like_guid(guid):
+        raise ProtocolWriteError("ref_key протокола должен быть GUID")
+    rows = _rows(_odata_get({"entity": PROTOCOL_ENTITY, "ref_key": guid, "top": 1}))
+    if not rows:
+        raise ProtocolWriteError(f"Протокол {guid} не найден в 1С")
+    return rows[0]
+
+
+def read_protocol_form(ref_key: str) -> dict[str, Any]:
+    """Document_ТД_Протокол → form fields (names instead of GUIDs) for the desktop editor."""
+    card = read_protocol_card(ref_key)
+    cache: dict[str, str] = {}
+
+    def user_fio(key: Any) -> str:
+        return _description_of(USER_ENTITY, key, cache)
+
+    def person_fio(key: Any) -> str:
+        return _description_of(PERSON_ENTITY, key, cache)
+
+    theme_key = _clean(card.get("ТемаСовещания_Key"))
+    theme_name = ""
+    theme_obj = card.get("ТемаСовещания")
+    if isinstance(theme_obj, dict):
+        theme_name = _clean(theme_obj.get("Description"))
+    elif isinstance(theme_obj, str) and not _looks_like_guid(theme_obj):
+        theme_name = _clean(theme_obj)
+    if not theme_name:
+        theme_name = _description_of(THEME_ENTITY, theme_key, cache)
+
+    participants = [
+        person_fio(row.get("Участник_Key"))
+        for row in _protocol_rows(card, "ПрисутствующиеНаСовещании")
+    ]
+    agenda = [
+        {
+            "question": _clean(row.get("Вопрос")),
+            "responsible": person_fio(row.get("Ответственный_Key")),
+        }
+        for row in _protocol_rows(card, "ПовесткаСовещания")
+        if _clean(row.get("Вопрос"))
+    ]
+    decisions = [
+        {
+            "text": _clean(row.get("ТекстРешения")),
+            "due": _iso_day(row.get("ДатаОкончания")),
+        }
+        for row in _protocol_rows(card, "Решения")
+        if _clean(row.get("ТекстРешения"))
+    ]
+    tasks = [
+        {
+            "text": _clean(row.get("Задача")),
+            "executor": person_fio(row.get("Ответственный_Key")),
+            "due": _iso_day(row.get("ДатаФактическогоИсполнения")),
+            "priority": _clean(row.get("Приоритет")),
+            "note": _clean(row.get("Примечание")),
+            "item": _clean(row.get("НомерПунктаПротокола")),
+        }
+        for row in _protocol_rows(card, "ПеременныеЗадачиПротокола")
+        if _clean(row.get("Задача"))
+    ]
+
+    status = _clean(card.get("Статус"))
+    posted = bool(card.get("Posted"))
+    form = {
+        "topic": theme_name,
+        "theme_key": theme_key if _looks_like_guid(theme_key) else "",
+        "date": _iso_day(card.get("Date")),
+        "time_start": _iso_clock(card.get("ВремяНачалаСовещания")),
+        "time_end": _iso_clock(card.get("ВремяОкончанияСовещания")),
+        "room": _description_of(ROOM_ENTITY, card.get("Кабинет_Key"), cache),
+        "next_meeting_date": _iso_day(card.get("ДатаСледующегоСовещания")),
+        "leader": user_fio(card.get("Руководитель_Key")),
+        "responsible": user_fio(card.get("Ответственный_Key")),
+        "prepared_by": user_fio(card.get("Подготовил_Key")),
+        "meeting_type": _clean(card.get("ВидСовещания")),
+        "report_period_from": _iso_day(card.get("ОтчетныйПериодДатаНачала")),
+        "report_period_to": _iso_day(card.get("ОтчетныйПериодДатаОкончания")),
+        "access": _description_of(ACCESS_ENTITY, card.get("ГрифДоступа_Key"), cache),
+        "department": _description_of(DEPARTMENT_ENTITY, card.get("Подразделение_Key"), cache),
+        "project": _description_of(PROJECT_ENTITY, card.get("Проект_Key"), cache),
+        "participants": [name for name in participants if name],
+        "agenda": agenda,
+        "decisions": decisions,
+        "tasks": tasks,
+        "comment": _clean(card.get("Комментарий")),
+    }
+    return {
+        "ref_key": _clean(card.get("Ref_Key")) or _clean(ref_key),
+        "number": _clean(card.get("Number")),
+        "date": _clean(card.get("Date")),
+        "status": status,
+        "posted": posted,
+        "editable": (not posted) and status in ("", DRAFT_STATUS),
+        "entity": PROTOCOL_ENTITY,
+        "form": form,
+    }
+
+
 # --------------------------------------------------------------------------- handlers
+
+_CREATE_ONLY_FIELDS = ("ДатаСоздания", "Posted", "DeletionMark", "Статус", "Подготовил_Key")
+
+
+def build_protocol_update_body(
+    args: dict[str, Any],
+    card: dict[str, Any],
+    *,
+    actor_fio: str = "",
+    actor_onec_ref: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """PATCH body for an existing draft: same mapping as create, minus creation-only fields."""
+    body, meta = build_protocol_create_body(
+        args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
+    )
+    for field in _CREATE_ONLY_FIELDS:
+        body.pop(field, None)
+    old_comment = str(card.get("Комментарий") or "")
+    markers = re.findall(r"outlook:\S+", old_comment)
+    new_comment = str(body.get("Комментарий") or "")
+    for marker in markers:
+        if marker not in new_comment:
+            new_comment = f"{new_comment}\n{marker}".strip()
+    body["Комментарий"] = new_comment
+    return body, meta
 
 
 def _ref_from_write(result: dict[str, Any]) -> tuple[str, str]:
@@ -536,8 +718,10 @@ def handle_protocol_write(
     action = _clean(args.get("action") or "create").casefold()
     if action == "probe":
         return probe_protocol_write(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
+    if action == "update":
+        return _update_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
     if action != "create":
-        raise ProtocolWriteError("action: create | probe")
+        raise ProtocolWriteError("action: create | update | probe")
     body, meta = build_protocol_create_body(
         args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
@@ -565,6 +749,50 @@ def handle_protocol_write(
     }
 
 
+def _update_protocol(
+    args: dict[str, Any],
+    *,
+    actor_fio: str = "",
+    actor_onec_ref: str = "",
+) -> dict[str, Any]:
+    ref_key = _clean(_first(args, "ref_key", "Ref_Key", "erp_document_id"))
+    if not _looks_like_guid(ref_key):
+        raise ProtocolWriteError("Для action=update нужен ref_key протокола (GUID)")
+    card = read_protocol_card(ref_key)
+    status = _clean(card.get("Статус"))
+    if bool(card.get("Posted")) or status not in ("", DRAFT_STATUS):
+        raise ProtocolWriteError(
+            f"Протокол {card.get('Number') or ref_key} уже проведён (статус «{status or 'проведён'}») — "
+            "правки только в 1С"
+        )
+    body, meta = build_protocol_update_body(
+        args, card, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
+    )
+    if not (body["ПовесткаСовещания"] or body["Решения"] or body["ПеременныеЗадачиПротокола"]):
+        raise ProtocolWriteError(
+            "Протокол пуст: нужна хотя бы повестка, решения или задачи (agenda / decisions / tasks)"
+        )
+    _odata_patch({"entity": PROTOCOL_ENTITY, "ref_key": ref_key, "body": body})
+    number = _clean(card.get("Number"))
+    summary = f"Обновлён протокол {number or ref_key} в 1С (черновик, статус «{status or DRAFT_STATUS}»)"
+    if meta["unresolved"]:
+        summary += f"; не сопоставлено: {len(meta['unresolved'])}"
+    return {
+        "summary": summary,
+        "entity": PROTOCOL_ENTITY,
+        "number": number,
+        "ref_key": ref_key,
+        "erp_document_id": ref_key,
+        "status": status or DRAFT_STATUS,
+        "posted": False,
+        "updated": True,
+        "meta": meta,
+        "unresolved": meta["unresolved"],
+        "body": body,
+        "source": "odata",
+    }
+
+
 def stub_protocol_write(args: dict[str, Any], **_: Any) -> dict[str, Any]:
     action = _clean(args.get("action") or "create").casefold()
     if action == "probe":
@@ -577,6 +805,19 @@ def stub_protocol_write(args: dict[str, Any], **_: Any) -> dict[str, Any]:
             "test_left": False,
         }
     tasks = _as_list(_first(args, "tasks", "assignments") or [])
+    if action == "update":
+        return {
+            "summary": "stub: протокол в 1С не обновлён (OData не настроена)",
+            "entity": PROTOCOL_ENTITY,
+            "number": "ПРОТОКОЛ-STUB-001",
+            "ref_key": _clean(args.get("ref_key")) or "00000000-0000-0000-0000-000000000002",
+            "status": DRAFT_STATUS,
+            "posted": False,
+            "updated": False,
+            "meta": {"tasks_count": len(tasks), "unresolved": []},
+            "unresolved": [],
+            "source": "stub",
+        }
     return {
         "summary": "stub: протокол в 1С не создан (OData не настроена)",
         "entity": PROTOCOL_ENTITY,
@@ -609,6 +850,12 @@ def protocol_write_recipe(*, source: str = "odata") -> dict[str, Any]:
                 "Решения",
                 "ПеременныеЗадачиПротокола",
             ],
+        },
+        "update": {
+            "action": "update",
+            "via": "odata_patch",
+            "fields": ["ref_key", "header без ДатаСоздания/Posted/Статус/Подготовил_Key", "табличные части целиком"],
+            "guard": "только Posted=false и Статус «Подготовлен»",
         },
         "delete": {"via": "odata_delete"},
         "source": source,
@@ -671,6 +918,38 @@ def probe_protocol_write(
             "decisions": len(row.get("Решения") or []),
             "tasks": len(row.get("ПеременныеЗадачиПротокола") or []),
         }
+        # update: change agenda text, add a second decision, read back
+        updated_question = _clean(f"{mark}: изменённый вопрос повестки")
+        update_args = {
+            **probe_args,
+            "ref_key": created_key,
+            "agenda": [updated_question],
+            "decisions": [
+                *probe_args["decisions"],
+                {"text": f"{mark}: второе решение", "due": datetime.now().strftime("%Y-%m-%d")},
+            ],
+        }
+        _update_protocol(update_args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
+        after = read_protocol_card(created_key)
+        agenda_after = _protocol_rows(after, "ПовесткаСовещания")
+        decisions_after = _protocol_rows(after, "Решения")
+        if not agenda_after or _clean(agenda_after[0].get("Вопрос")) != updated_question:
+            raise ProtocolWriteError("Update не изменил повестку")
+        if len(decisions_after) != 2:
+            raise ProtocolWriteError(f"Update не заменил решения (строк: {len(decisions_after)})")
+        if not is_probe_topic(_clean(after.get("Комментарий"))):
+            raise ProtocolWriteError("Update потерял метку пробы в комментарии")
+        verified["update"] = {
+            "agenda_after": len(agenda_after),
+            "decisions_after": len(decisions_after),
+        }
+        form = read_protocol_form(created_key)["form"]
+        verified["read_form"] = {
+            "leader": form["leader"],
+            "agenda": len(form["agenda"]),
+            "decisions": len(form["decisions"]),
+            "tasks": len(form["tasks"]),
+        }
         delete_probe_document(PROTOCOL_ENTITY, created_key)
         recipe = protocol_write_recipe()
         return {
@@ -679,7 +958,7 @@ def probe_protocol_write(
             "source": "odata",
             "summary": (
                 f"Write probe ok: created protocol {verified['number'] or created_key}, "
-                f"sections verified, deleted"
+                f"sections verified, updated via PATCH, read back, deleted"
             ),
             "recipe": recipe,
             "verified": verified,

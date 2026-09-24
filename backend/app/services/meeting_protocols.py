@@ -291,6 +291,10 @@ def list_meeting_protocols(
     from app.services.onec_access import OnecAccessDenied, filter_odata_result
     from app.services.onec_tools import OnecToolError, _fetch_odata_list
 
+    ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
+    if ref_key:
+        return _read_protocol_card(ref_key)
+
     kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or ""))
     start, end = _period(args)
     number = str(args.get("number") or args.get("Number") or "").strip()
@@ -372,6 +376,27 @@ def list_meeting_protocols(
     if raw.get("filter_relaxed"):
         result["filter_relaxed"] = True
     return result
+
+
+def _read_protocol_card(ref_key: str) -> dict[str, Any]:
+    """One protocol as an editable form (names instead of GUIDs). Read-only."""
+    from app.services.meeting_protocol_write import ProtocolWriteError, read_protocol_form
+    from app.services.onec_tools import OnecToolError
+
+    try:
+        protocol = read_protocol_form(ref_key)
+    except ProtocolWriteError as exc:
+        raise OnecToolError(str(exc)) from exc
+    return {
+        "protocol": protocol,
+        "protocols": [protocol],
+        "count": 1,
+        "source": "odata",
+        "readonly": True,
+        "entity": PROTOCOL_ENTITY,
+        "method": "odata_meeting_protocol_card",
+        "summary": f"протокол {protocol.get('number') or ref_key}: {protocol.get('status') or '—'}",
+    }
 
 
 def stub_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
