@@ -729,6 +729,45 @@ export interface PositionKpiDaily {
   tiles: PositionKpiTile[]
 }
 
+export interface PositionKpiDataSourceInfo {
+  name: string
+  title: string
+  description: string
+  kind: string
+  params: Record<string, string>
+  perEmployee: boolean
+}
+
+/** Что считает плитку KPI: код модуля, источник и формула (кнопка «i»). */
+export interface PositionKpiMetricDetail {
+  position: string
+  sharedNote: string
+  code: string
+  name: string
+  weight: number
+  unit: string
+  plan: number | null
+  formulaKind: string
+  formulaHuman: string
+  module: {
+    name: string
+    origin: 'generated' | 'builtin' | string
+    code: string
+    tests: string
+    updatedAt: string
+  } | null
+  dataSource: {
+    source: string
+    params: Record<string, unknown>
+    legacy: Record<string, unknown>
+    registry: PositionKpiDataSourceInfo | null
+    ok: boolean
+    errors: string[]
+    warnings: string[]
+  }
+  sources: { role: string; kind: string; title: string; detail: string; updateRule: string }[]
+}
+
 export interface PositionKpiBuildMessage {
   messageId: string
   role: string

@@ -403,6 +403,147 @@
   font-weight: 600;
 }
 
+.kpi-employee-tile-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.kpi-employee-info {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid rgba(21, 101, 192, 0.45);
+  background: #fff;
+  color: #1565c0;
+  font: italic 700 11px/16px Georgia, serif;
+  padding: 0;
+  cursor: pointer;
+}
+
+.kpi-employee-info:hover,
+.kpi-employee-info:focus-visible {
+  background: #1565c0;
+  color: #fff;
+  outline: none;
+}
+
+.kpi-code-modal {
+  width: min(880px, 94vw);
+  max-height: min(86vh, 900px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.kpi-code-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kpi-code-head h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.kpi-code-head p {
+  margin: 4px 0 0;
+  color: var(--content-muted);
+  font-size: 13px;
+}
+
+.kpi-code-close {
+  border: none;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--content-muted);
+}
+
+.kpi-code-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.kpi-code-body section h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.kpi-code-body section h4 span {
+  font-weight: 400;
+  color: var(--content-muted);
+  font-size: 12px;
+}
+
+.kpi-code-body p {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.kpi-code-shared {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(21, 101, 192, 0.08);
+  color: #0d3b73;
+}
+
+.kpi-code-params,
+.kpi-code-pre {
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #0f1b2d;
+  color: #e6edf7;
+  font: 12px/1.5 Consolas, 'Courier New', monospace;
+  white-space: pre;
+  overflow: auto;
+}
+
+.kpi-code-params {
+  background: #f3f6fa;
+  color: #102033;
+  white-space: pre-wrap;
+}
+
+.kpi-code-pre {
+  max-height: 420px;
+}
+
+.kpi-code-error {
+  color: #9b1c1c;
+}
+
+.kpi-code-warn {
+  color: #8a5a00;
+}
+
+.kpi-code-toggle {
+  margin-top: 8px;
+  border: none;
+  background: none;
+  color: #1565c0;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+
 .kpi-employee-tile-values {
   display: flex;
   align-items: baseline;

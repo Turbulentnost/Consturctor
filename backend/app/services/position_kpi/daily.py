@@ -17,6 +17,7 @@ from app.models.position_kpi import (
     PositionKpiMetric,
     PositionKpiProfile,
     PositionKpiSource,
+    PositionKpiSubjectFact,
 )
 from app.services.position_kpi.registry import scorer_for
 
@@ -31,6 +32,11 @@ class PositionKpiNotFound(Exception):
 
 def normalize_position_name(value: str) -> str:
     return " ".join(str(value or "").casefold().split())
+
+
+def subject_key(fio: str) -> str:
+    """Ключ сотрудника в кэше: регистр и «ё» не различаем."""
+    return " ".join(str(fio or "").casefold().replace("ё", "е").split())
 
 
 def month_bounds(year: int, month: int) -> tuple[date, date]:
@@ -83,10 +89,16 @@ class SourceBundle:
         as_of: date,
         date_from: date,
         date_to: date,
+        subject_fio: str = "",
+        subject_position: str = "",
+        db: Session | None = None,
     ) -> None:
         self.as_of = as_of
         self.date_from = date_from
         self.date_to = date_to
+        self.subject_fio = str(subject_fio or "").strip()
+        self.subject_position = str(subject_position or "").strip()
+        self.db = db
         self._events: object = _UNSET
         self._protocols: object = _UNSET
         self._cards: object = _UNSET
@@ -156,6 +168,10 @@ class SourceBundle:
         preset = data.get("rows")
         if isinstance(preset, list):
             return [row for row in preset if isinstance(row, dict)]
+        if str(data.get("source") or "").strip():
+            from app.services.position_kpi.sources import load as load_registry_source
+
+            return load_registry_source(data, self)
         loader = str(data.get("loader") or "").strip().lower()
         if loader == "outlook":
             return self.events
@@ -362,6 +378,92 @@ def _store(
         db.commit()
 
 
+def _subject_row(
+    db: Session,
+    *,
+    profile_id: str,
+    subject: str,
+    day: date,
+    period_from: date,
+    period_to: date,
+) -> PositionKpiSubjectFact | None:
+    return db.execute(
+        select(PositionKpiSubjectFact).where(
+            PositionKpiSubjectFact.profile_id == profile_id,
+            PositionKpiSubjectFact.subject == subject,
+            PositionKpiSubjectFact.day == day,
+            PositionKpiSubjectFact.period_from == period_from,
+            PositionKpiSubjectFact.period_to == period_to,
+        )
+    ).scalar_one_or_none()
+
+
+def _latest_subject_row(
+    db: Session,
+    *,
+    profile_id: str,
+    subject: str,
+    period_from: date,
+    period_to: date,
+) -> PositionKpiSubjectFact | None:
+    return db.execute(
+        select(PositionKpiSubjectFact)
+        .where(
+            PositionKpiSubjectFact.profile_id == profile_id,
+            PositionKpiSubjectFact.subject == subject,
+            PositionKpiSubjectFact.period_from == period_from,
+            PositionKpiSubjectFact.period_to == period_to,
+        )
+        .order_by(PositionKpiSubjectFact.day.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _store_subject(
+    db: Session,
+    *,
+    profile: PositionKpiProfile,
+    subject: str,
+    subject_fio: str,
+    as_of: date,
+    date_from: date,
+    date_to: date,
+    payload: dict[str, Any],
+    computed_at: datetime,
+) -> None:
+    lookup = {
+        "profile_id": profile.id,
+        "subject": subject,
+        "day": as_of,
+        "period_from": date_from,
+        "period_to": date_to,
+    }
+    row = _subject_row(db, **lookup)
+    if row is None:
+        db.add(
+            PositionKpiSubjectFact(
+                id=str(uuid.uuid4()),
+                subject_fio=subject_fio,
+                payload=payload,
+                computed_at=computed_at,
+                **lookup,
+            )
+        )
+    else:
+        row.payload = payload
+        row.computed_at = computed_at
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        row = _subject_row(db, **lookup)
+        if row is None:
+            raise
+        row.payload = payload
+        row.computed_at = computed_at
+        db.commit()
+
+
 def _latest_cache_row(
     db: Session,
     *,
@@ -381,9 +483,60 @@ def _latest_cache_row(
     ).scalar_one_or_none()
 
 
-def _from_cache(row: PositionKpiDailyFact, *, stale: bool) -> dict[str, Any]:
+def _from_cache(row: PositionKpiDailyFact | PositionKpiSubjectFact, *, stale: bool) -> dict[str, Any]:
     payload = dict(row.payload) if isinstance(row.payload, dict) else {}
     return {**payload, "cached": True, "stale": stale}
+
+
+def _cached_snapshot(
+    db: Session,
+    *,
+    profile: PositionKpiProfile,
+    subject: str,
+    as_of: date,
+    date_from: date,
+    date_to: date,
+    allow_stale: bool,
+) -> dict[str, Any] | None:
+    if subject:
+        exact = _subject_row(
+            db,
+            profile_id=profile.id,
+            subject=subject,
+            day=as_of,
+            period_from=date_from,
+            period_to=date_to,
+        )
+    else:
+        exact = _cache_row(
+            db,
+            profile_id=profile.id,
+            day=as_of,
+            period_from=date_from,
+            period_to=date_to,
+        )
+    if exact is not None and isinstance(exact.payload, dict):
+        return _from_cache(exact, stale=False)
+    if not allow_stale:
+        return None
+    if subject:
+        latest = _latest_subject_row(
+            db,
+            profile_id=profile.id,
+            subject=subject,
+            period_from=date_from,
+            period_to=date_to,
+        )
+    else:
+        latest = _latest_cache_row(
+            db,
+            profile_id=profile.id,
+            period_from=date_from,
+            period_to=date_to,
+        )
+    if latest is not None and isinstance(latest.payload, dict):
+        return _from_cache(latest, stale=latest.day != as_of)
+    return None
 
 
 def read_position_kpi_snapshot(
@@ -393,6 +546,7 @@ def read_position_kpi_snapshot(
     as_of: date | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    subject: str = "",
 ) -> dict[str, Any] | None:
     """Только кэш, без расчёта. None — снимка ещё нет."""
     profile = resolve_profile(db, position)
@@ -401,24 +555,15 @@ def read_position_kpi_snapshot(
     as_of = as_of or date.today()
     if date_from is None or date_to is None:
         date_from, date_to = month_bounds(as_of.year, as_of.month)
-    cached = _cache_row(
+    return _cached_snapshot(
         db,
-        profile_id=profile.id,
-        day=as_of,
-        period_from=date_from,
-        period_to=date_to,
+        profile=profile,
+        subject=subject_key(subject),
+        as_of=as_of,
+        date_from=date_from,
+        date_to=date_to,
+        allow_stale=True,
     )
-    if cached is not None and isinstance(cached.payload, dict):
-        return _from_cache(cached, stale=False)
-    latest = _latest_cache_row(
-        db,
-        profile_id=profile.id,
-        period_from=date_from,
-        period_to=date_to,
-    )
-    if latest is not None and isinstance(latest.payload, dict):
-        return _from_cache(latest, stale=latest.day != as_of)
-    return None
 
 
 def get_or_compute_position_kpi(
@@ -430,34 +575,37 @@ def get_or_compute_position_kpi(
     date_to: date | None = None,
     refresh: bool = False,
     allow_stale: bool = False,
+    subject: str = "",
 ) -> dict[str, Any]:
+    """KPI должности. subject — ФИО сотрудника: модули общие, а цифры и кэш у каждого свои."""
     profile = resolve_profile(db, position)
     if profile is None:
         raise PositionKpiNotFound(str(position or "").strip())
     as_of = as_of or date.today()
     if date_from is None or date_to is None:
         date_from, date_to = month_bounds(as_of.year, as_of.month)
+    key = subject_key(subject)
     if not refresh:
-        cached = _cache_row(
+        cached = _cached_snapshot(
             db,
-            profile_id=profile.id,
-            day=as_of,
-            period_from=date_from,
-            period_to=date_to,
+            profile=profile,
+            subject=key,
+            as_of=as_of,
+            date_from=date_from,
+            date_to=date_to,
+            allow_stale=allow_stale,
         )
-        if cached is not None and isinstance(cached.payload, dict):
-            return _from_cache(cached, stale=False)
-        if allow_stale:
-            latest = _latest_cache_row(
-                db,
-                profile_id=profile.id,
-                period_from=date_from,
-                period_to=date_to,
-            )
-            if latest is not None and isinstance(latest.payload, dict):
-                return _from_cache(latest, stale=latest.day != as_of)
+        if cached is not None:
+            return cached
 
-    ctx = SourceBundle(as_of=as_of, date_from=date_from, date_to=date_to)
+    ctx = SourceBundle(
+        as_of=as_of,
+        date_from=date_from,
+        date_to=date_to,
+        subject_fio=str(subject or "").strip(),
+        subject_position=profile.position_name,
+        db=db,
+    )
     tiles = _compute_tiles(db, profile, ctx)
     computed_at = datetime.now(timezone.utc)
     payload = _payload(
@@ -468,16 +616,52 @@ def get_or_compute_position_kpi(
         tiles=tiles,
         computed_at=computed_at,
     )
-    _store(
-        db,
-        profile=profile,
-        as_of=as_of,
-        date_from=date_from,
-        date_to=date_to,
-        payload=payload,
-        computed_at=computed_at,
-    )
+    if key:
+        payload["subject"] = str(subject or "").strip()
+        _store_subject(
+            db,
+            profile=profile,
+            subject=key,
+            subject_fio=str(subject or "").strip(),
+            as_of=as_of,
+            date_from=date_from,
+            date_to=date_to,
+            payload=payload,
+            computed_at=computed_at,
+        )
+    else:
+        _store(
+            db,
+            profile=profile,
+            as_of=as_of,
+            date_from=date_from,
+            date_to=date_to,
+            payload=payload,
+            computed_at=computed_at,
+        )
     return {**payload, "cached": False, "stale": False}
+
+
+def _known_subjects(
+    db: Session,
+    *,
+    profile_id: str,
+    period_from: date,
+    period_to: date,
+) -> list[tuple[str, str]]:
+    """Сотрудники, у которых уже открывали KPI за этот период: их снимки держим свежими."""
+    rows = db.execute(
+        select(PositionKpiSubjectFact.subject, PositionKpiSubjectFact.subject_fio).where(
+            PositionKpiSubjectFact.profile_id == profile_id,
+            PositionKpiSubjectFact.period_from == period_from,
+            PositionKpiSubjectFact.period_to == period_to,
+        )
+    ).all()
+    seen: dict[str, str] = {}
+    for subject, fio in rows:
+        if subject and subject not in seen:
+            seen[subject] = fio or subject
+    return list(seen.items())
 
 
 def refresh_all_profiles(
@@ -520,6 +704,32 @@ def refresh_all_profiles(
         except Exception as exc:  # noqa: BLE001
             logger.exception("position kpi warmup failed for %s", profile.id)
             failed.append({"profile_id": profile.id, "error": str(exc)})
+    subjects = 0
+    for profile in profiles:
+        for key, fio in _known_subjects(db, profile_id=profile.id, period_from=date_from, period_to=date_to):
+            if not force and _subject_row(
+                db,
+                profile_id=profile.id,
+                subject=key,
+                day=as_of,
+                period_from=date_from,
+                period_to=date_to,
+            ):
+                continue
+            try:
+                get_or_compute_position_kpi(
+                    db,
+                    profile.position_name,
+                    as_of=as_of,
+                    date_from=date_from,
+                    date_to=date_to,
+                    refresh=True,
+                    subject=fio,
+                )
+                subjects += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("position kpi warmup failed for %s / %s", profile.id, key)
+                failed.append({"profile_id": profile.id, "subject": key, "error": str(exc)})
     return {
         "ok": not failed,
         "as_of": as_of.isoformat(),
@@ -527,6 +737,7 @@ def refresh_all_profiles(
         "period_to": date_to.isoformat(),
         "computed": computed,
         "skipped": skipped,
+        "subjects": subjects,
         "failed": failed,
     }
 
@@ -563,13 +774,14 @@ def schedule_today_fill(
     as_of: date | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    subject: str = "",
 ) -> None:
     """Досчитать сегодняшний снимок в фоне, не блокируя GET."""
 
     day = as_of or date.today()
     start = date_from
     end = date_to
-    key = f"{position}|{day.isoformat()}|{start}|{end}"
+    key = f"{position}|{subject_key(subject)}|{day.isoformat()}|{start}|{end}"
     with _FILL_LOCK:
         if key in _FILL_STARTED:
             return
@@ -587,6 +799,7 @@ def schedule_today_fill(
                 date_from=start,
                 date_to=end,
                 refresh=False,
+                subject=subject,
             )
         except Exception:
             logger.warning("background position kpi fill failed for %s", position, exc_info=True)

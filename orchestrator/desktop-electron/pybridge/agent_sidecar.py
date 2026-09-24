@@ -5151,6 +5151,11 @@ def _prepare_kpi_workspace(run_cwd: Path, session: dict[str, Any]) -> None:
         json.dumps(extracted or {}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    data_sources = session.get("data_sources") if isinstance(session.get("data_sources"), list) else []
+    (materials / "data_sources.json").write_text(
+        json.dumps(data_sources, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     (run_cwd / "AGENTS.md").write_text(
         "\n".join(
             [
@@ -5169,6 +5174,11 @@ def _prepare_kpi_workspace(run_cwd: Path, session: dict[str, Any]) -> None:
                 "Finished modules are stored in backend/kpi/generated.",
                 "Export `SOURCE`, `load_<slug>_rows(ctx)`, `score_<slug>_kpi(rows, ...)`",
                 "and `compute_<slug>_kpi(ctx)` = load then score.",
+                "SOURCE = {'source': '<name>', 'params': {...}} — name ONLY from materials/data_sources.json.",
+                "load_<slug>_rows(ctx) returns ctx.load_for(SOURCE). Never fetch 1C/Outlook/files yourself.",
+                "One module serves every employee of the position: use {employee_fio}, never a hardcoded FIO.",
+                "Params may use {employee_fio}, {period_from}, {period_to}, {period_from_dt}, {period_to_dt}.",
+                "Backend rejects a module whose SOURCE is missing or not in the registry.",
                 "Daily run calls compute only. Extractor hands rows to the calculator.",
                 "Tests: FakeCtx for compute/load, dict fixtures for score. No live 1C/Outlook.",
                 "Never ask schedule, Outlook cadence, or when to run the agent.",
@@ -5243,21 +5253,25 @@ def _run_kpi_slug_tests(run_cwd: Path, slug: str) -> tuple[bool, str]:
         [str(root), str(_backend_kpi_root().parent), env.get("PYTHONPATH") or ""]
     )
     from app.tools.ac.code_execution_tools import pytest_command_prefix
+    from app.tools.ac.process_run import run_captured
 
     try:
-        completed = subprocess.run(
+        # run_captured закрывает stdin (DEVNULL) и вычитывает пайпы в потоках —
+        # без этого pytest под сидкаром висит до таймаута на унаследованном stdin.
+        completed = run_captured(
             [*pytest_command_prefix(), "-m", "pytest", str(test.relative_to(root)), "-q"],
             cwd=str(root),
             env=env,
-            capture_output=True,
-            text=True,
             timeout=180,
         )
     except Exception as exc:  # noqa: BLE001
         log("kpi slug pytest failed to start: " + repr(exc))
         return False, repr(exc)
     output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-    if completed.returncode != 0:
+    if completed.timed_out:
+        log("kpi slug pytest timed out")
+        return False, output or "pytest timed out"
+    if completed.exit_code != 0:
         log("kpi slug pytest failed: " + _ascii(output[:800]))
         return False, output
     return True, output or "passed"
@@ -5293,20 +5307,23 @@ def _run_kpi_workspace_tests(run_cwd: Path) -> tuple[bool, str]:
     env["PYTHONPATH"] = os.pathsep.join(
         [str(run_cwd), str(_backend_kpi_root().parent), env.get("PYTHONPATH") or ""]
     )
+    from app.tools.ac.process_run import run_captured
+
     try:
-        completed = subprocess.run(
+        completed = run_captured(
             _pytest_argv(),
             cwd=str(run_cwd),
             env=env,
-            capture_output=True,
-            text=True,
             timeout=180,
         )
     except Exception as exc:  # noqa: BLE001
         log("kpi pytest failed to start: " + repr(exc))
         return False, repr(exc)
     output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-    if completed.returncode != 0:
+    if completed.timed_out:
+        log("kpi pytest timed out")
+        return False, output or "pytest timed out"
+    if completed.exit_code != 0:
         log("kpi pytest failed: " + _ascii(output[:800]))
         return False, output
     return True, output or "passed"

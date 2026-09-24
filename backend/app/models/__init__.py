@@ -15,6 +15,7 @@ from app.models.position_kpi import (
     PositionKpiModule,
     PositionKpiProfile,
     PositionKpiSource,
+    PositionKpiSubjectFact,
 )
 from app.models.workflow import Workflow, WorkflowFile
 
@@ -36,6 +37,7 @@ __all__ = [
     "PositionKpiModule",
     "PositionKpiSource",
     "PositionKpiDailyFact",
+    "PositionKpiSubjectFact",
     "PositionKpiBuild",
     "PositionKpiBuildMessage",
 ]

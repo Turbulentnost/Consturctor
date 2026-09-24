@@ -19,8 +19,10 @@ from app.models.position_kpi import (
     PositionKpiModule,
     PositionKpiProfile,
     PositionKpiSource,
+    PositionKpiSubjectFact,
 )
 from app.services.position_kpi.daily import normalize_position_name, resolve_profile
+from app.services.position_kpi.sources import SOURCES, validate_spec
 from app.services.position_kpi.extract import slug_code
 from kpi.kinds import FORMULA_KINDS, SOURCE_KINDS, SOURCE_ROLES
 
@@ -112,6 +114,7 @@ def _drop_profile(db: Session, profile_id: str) -> None:
     db.execute(delete(PositionKpiModule).where(PositionKpiModule.profile_id == profile_id))
     db.execute(delete(PositionCompRule).where(PositionCompRule.profile_id == profile_id))
     db.execute(delete(PositionKpiDailyFact).where(PositionKpiDailyFact.profile_id == profile_id))
+    db.execute(delete(PositionKpiSubjectFact).where(PositionKpiSubjectFact.profile_id == profile_id))
     row = db.get(PositionKpiProfile, profile_id)
     if row is not None:
         db.delete(row)
@@ -284,6 +287,7 @@ def invalidate_profile_cache(db: Session, profile_id: str) -> None:
     if not profile_id:
         return
     db.execute(delete(PositionKpiDailyFact).where(PositionKpiDailyFact.profile_id == profile_id))
+    db.execute(delete(PositionKpiSubjectFact).where(PositionKpiSubjectFact.profile_id == profile_id))
 
 
 def upsert_generated_catalog(
@@ -344,6 +348,7 @@ def upsert_generated_catalog(
     keep_metric_ids: set[str] = set()
     keep_metric_codes: set[str] = set()
     keep_source_ids: set[str] = set()
+    source_errors: list[str] = []
     for index, metric in enumerate(metrics, start=1):
         if not isinstance(metric, dict):
             continue
@@ -411,6 +416,19 @@ def upsert_generated_catalog(
                     if key == "module" or extra.get(key):
                         continue
                     extra[key] = value
+                spec = {key: value for key, value in extra.items() if key not in {"module", "validation"}}
+                check = validate_spec(spec)
+                if check["errors"]:
+                    title = str(metric.get("name") or code)
+                    source_errors.extend(f"«{title}»: {error}" for error in check["errors"])
+                registry = SOURCES.get(str(spec.get("source") or "").strip())
+                if registry is not None:
+                    kind = registry.kind
+                extra["validation"] = {
+                    "ok": not check["errors"],
+                    "errors": check["errors"],
+                    "warnings": check["warnings"],
+                }
             source_id = source_row_id(metric_id, role, kind, source_index)
             keep_source_ids.add(source_id)
             _upsert(
@@ -425,6 +443,10 @@ def upsert_generated_catalog(
                 update_rule=str(source.get("update_rule") or ""),
                 extra_json=extra,
             )
+    if source_errors:
+        raise ValueError(
+            "Модули не знают, откуда брать данные: " + " ".join(source_errors)
+        )
     existing_metrics = db.execute(
         select(PositionKpiMetric).where(PositionKpiMetric.profile_id == profile_id)
     ).scalars()

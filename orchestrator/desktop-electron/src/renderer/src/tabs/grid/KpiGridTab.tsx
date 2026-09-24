@@ -22,6 +22,7 @@ import { OrchSlotMain } from '../../layout/GridSlots'
 import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
 import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel } from './KpiEmployeePanel'
+import { KpiMetricCodeModal } from './KpiMetricCodeModal'
 import { KpiPeriodDynamicsChart } from './KpiPeriodDynamicsChart'
 import { KpiProblemZonesTable } from './KpiProblemZonesTable'
 import './kpiGrid.css'
@@ -58,6 +59,7 @@ export function KpiGridTab(_props: {
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
   const positionKpi = usePositionKpi(_props.user?.position || '')
   const [buildingMethod, setBuildingMethod] = useState(false)
+  const [codeFor, setCodeFor] = useState('')
   const periodSources = useKpiPeriodSources()
   const { board: workflowBoard } = useKpiWorkflowBoard(from, to)
   const dailySyncKeyRef = useRef('')
@@ -123,6 +125,14 @@ export function KpiGridTab(_props: {
   }
 
   return (
+    <>
+    {codeFor ? (
+      <KpiMetricCodeModal
+        position={_props.user?.position || ''}
+        code={codeFor}
+        onClose={() => setCodeFor('')}
+      />
+    ) : null}
     <StandardTabChrome
       tabId="kpi"
       userId={_props.user?.id || ''}
@@ -154,6 +164,7 @@ export function KpiGridTab(_props: {
             needsMethodology={!positionKpi.loading && (positionKpi.needsBuild || !positionKpi.metrics.length)}
             onCalculate={() => setBuildingMethod(true)}
             onDetails={() => _props.onOpenProcesses?.()}
+            onInfo={(code) => setCodeFor(code)}
           />
         ),
         main: (
@@ -272,5 +283,6 @@ export function KpiGridTab(_props: {
         )
       }}
     />
+    </>
   )
 }

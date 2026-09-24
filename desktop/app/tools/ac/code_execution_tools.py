@@ -236,11 +236,18 @@ def _resolve_code_file(workspace: AgentWorkspace, filename: object) -> Path:
     if kpi_file is not None:
         return kpi_file
     code_dir = _code_dir(workspace)
-    candidate = (code_dir / name).resolve()
+    # Инструмент и так пишет в подпапку code — срезаем лишний ведущий code/,
+    # иначе получается code/code/… и запись падает на несуществующей папке.
+    relative = name
+    while relative.startswith(f"{CODE_SUBDIR}/"):
+        relative = relative[len(CODE_SUBDIR) + 1 :]
+    relative = relative.lstrip("/") or DEFAULT_SCRIPT_NAME
+    candidate = (code_dir / relative).resolve()
     if code_dir != candidate and code_dir not in candidate.parents:
         raise WorkspaceError("Путь скрипта выходит за пределы папки code агента")
     if candidate.suffix.lower() != ".py":
         raise WorkspaceError("Разрешены только .py файлы в папке code агента")
+    candidate.parent.mkdir(parents=True, exist_ok=True)
     return candidate
 
 

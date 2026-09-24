@@ -49,6 +49,32 @@ def test_run_python_ignores_parent_pythonpath(
     assert "ok" in str(result.output_data.get("stdout") or "")
 
 
+def test_write_python_dedupes_code_prefix_and_makes_dirs(tmp_path: Path) -> None:
+    tool = CodeWritePythonTool(AgentWorkspaceResolver(tmp_path))
+    result = tool.execute(
+        {
+            "workflow_id": "wf-scratch",
+            "filename": "code/inspect_sz_fields.py",
+            "code": "print('ok')\n",
+        }
+    )
+    root = tmp_path / "wf-scratch"
+    assert result.ok is True, result.error_message
+    assert result.output_data.get("path") == "code/inspect_sz_fields.py"
+    assert (root / "code" / "inspect_sz_fields.py").is_file()
+    assert not (root / "code" / "code").exists()
+
+    nested = tool.execute(
+        {
+            "workflow_id": "wf-scratch",
+            "filename": "probe/deep/look.py",
+            "code": "print('deep')\n",
+        }
+    )
+    assert nested.ok is True, nested.error_message
+    assert (root / "code" / "probe" / "deep" / "look.py").is_file()
+
+
 def test_write_python_puts_kpi_module_next_to_tests(tmp_path: Path) -> None:
     tool = CodeWritePythonTool(AgentWorkspaceResolver(tmp_path))
     module = tool.execute(

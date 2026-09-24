@@ -44,6 +44,7 @@ import {
   type PositionKpiDaily,
   type PositionKpiTile,
   type PositionKpiBuildMessage,
+  type PositionKpiMetricDetail,
   type PositionOrchestrator,
   type KpiTile,
   type KpiSide,
@@ -328,6 +329,66 @@ function parsePositionKpiDaily(raw: Record<string, unknown> | null | undefined):
     cached: Boolean(data.cached),
     stale: Boolean(data.stale),
     tiles
+  }
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item ?? '')).filter(Boolean) : []
+}
+
+function parsePositionKpiMetric(raw: Record<string, unknown>): PositionKpiMetricDetail {
+  const moduleRaw = raw.module && typeof raw.module === 'object' ? asRecord(raw.module) : null
+  const ds = asRecord(raw.data_source)
+  const validation = asRecord(ds.validation)
+  const registry = ds.registry && typeof ds.registry === 'object' ? asRecord(ds.registry) : null
+  const paramsRaw = registry ? asRecord(registry.params) : {}
+  return {
+    position: String(raw.position ?? ''),
+    sharedNote: String(raw.shared_note ?? ''),
+    code: String(raw.code ?? ''),
+    name: String(raw.name ?? ''),
+    weight: asNullableNumber(raw.weight) ?? 0,
+    unit: String(raw.unit ?? '%'),
+    plan: asNullableNumber(raw.plan),
+    formulaKind: String(raw.formula_kind ?? ''),
+    formulaHuman: String(raw.formula_human ?? ''),
+    module: moduleRaw
+      ? {
+          name: String(moduleRaw.name ?? ''),
+          origin: String(moduleRaw.origin ?? ''),
+          code: String(moduleRaw.code ?? ''),
+          tests: String(moduleRaw.tests ?? ''),
+          updatedAt: String(moduleRaw.updated_at ?? '')
+        }
+      : null,
+    dataSource: {
+      source: String(ds.source ?? ''),
+      params: asRecord(ds.params),
+      legacy: asRecord(ds.legacy),
+      registry: registry
+        ? {
+            name: String(registry.name ?? ''),
+            title: String(registry.title ?? ''),
+            description: String(registry.description ?? ''),
+            kind: String(registry.kind ?? ''),
+            params: Object.fromEntries(Object.entries(paramsRaw).map(([key, value]) => [key, String(value ?? '')])),
+            perEmployee: Boolean(registry.per_employee)
+          }
+        : null,
+      ok: Boolean(validation.ok),
+      errors: stringList(validation.errors),
+      warnings: stringList(validation.warnings)
+    },
+    sources: (Array.isArray(raw.sources) ? raw.sources : []).map((item) => {
+      const row = asRecord(item)
+      return {
+        role: String(row.role ?? ''),
+        kind: String(row.kind ?? ''),
+        title: String(row.title ?? ''),
+        detail: String(row.detail ?? ''),
+        updateRule: String(row.update_rule ?? '')
+      }
+    })
   }
 }
 
@@ -2260,6 +2321,15 @@ export class ApiClient {
       timeoutMs: 60_000
     })
     return parsePositionKpiDaily(data ?? {})
+  }
+
+  async getPositionKpiMetric(position: string, code: string): Promise<PositionKpiMetricDetail> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/position-kpi/metrics/${encodeURIComponent(code)}`,
+      { params: { position: position.trim() }, timeoutMs: 30_000 }
+    )
+    return parsePositionKpiMetric(data ?? {})
   }
 
   async startPositionKpiBuild(position = ''): Promise<PositionKpiBuildSession> {

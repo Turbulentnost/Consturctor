@@ -32,6 +32,8 @@ MODULE_CODE = '''
 from datetime import date
 from typing import Any
 
+SOURCE = {"source": "platform.tasks", "params": {"role": "assignee"}}
+
 def score_orders_kpi(rows, *, as_of: date, date_from=None, date_to=None) -> dict[str, Any]:
     total = len(rows or [])
     ok = sum(1 for row in rows or [] if row.get("ok"))
