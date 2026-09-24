@@ -1817,7 +1817,7 @@ export class ApiClient {
     const data = await this.request<Record<string, unknown>>(
       'GET',
       `/api/v1/workflows/${workflowId}/files`,
-      { timeoutMs: 45_000, params: runId ? { run_id: runId } : undefined }
+      { timeoutMs: 120_000, params: runId ? { run_id: runId } : undefined }
     )
     const userFiles = (data.user_files as Record<string, unknown>[]) ?? []
     const agentFiles = (data.agent_files as Record<string, unknown>[]) ?? []

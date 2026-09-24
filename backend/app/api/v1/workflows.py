@@ -310,7 +310,7 @@ async def read_agent_tools(
 
 
 @router.get("", response_model=list[WorkflowListItem])
-async def read_workflows(
+def read_workflows(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[WorkflowListItem]:
@@ -372,7 +372,7 @@ async def read_workflow_board(
 
 
 @router.get("/files", response_model=PlatformFilesResponse)
-async def read_platform_files(
+def read_platform_files(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PlatformFilesResponse:
@@ -580,7 +580,7 @@ def read_agent_run(
 
 
 @router.get("/{workflow_id}/files", response_model=WorkflowFilesResponse)
-async def read_workflow_files(
+def read_workflow_files(
     workflow_id: str,
     run_id: str = "",
     auth: AuthContext = Depends(get_current_user),
@@ -669,7 +669,7 @@ async def upload_workflow_run_attachments(
 
 
 @router.get("/{workflow_id}/files/{file_id}/text")
-async def read_workflow_file_text(
+def read_workflow_file_text(
     workflow_id: str,
     file_id: str,
     auth: AuthContext = Depends(get_current_user),
@@ -685,7 +685,7 @@ async def read_workflow_file_text(
 
 
 @router.get("/{workflow_id}/files/{file_id}/download")
-async def download_workflow_file(
+def download_workflow_file(
     workflow_id: str,
     file_id: str,
     auth: AuthContext = Depends(get_current_user),
@@ -708,7 +708,7 @@ async def download_workflow_file(
 
 
 @router.delete("/{workflow_id}/files/{file_id}")
-async def remove_workflow_file(
+def remove_workflow_file(
     workflow_id: str,
     file_id: str,
     auth: AuthContext = Depends(get_current_user),
@@ -726,7 +726,7 @@ async def remove_workflow_file(
 
 
 @router.get("/{workflow_id}", response_model=WorkflowSchema)
-async def read_workflow(
+def read_workflow(
     workflow_id: str,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),

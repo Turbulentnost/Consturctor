@@ -50,6 +50,9 @@ class ReportExportDocumentTool(BaseTool):
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,
                 requires_human_approval=False,
+                # A full meeting protocol is a large docx; the SDK must wait
+                # past the default 90s or it reports a timeout after the file exists.
+                timeout_seconds=300,
                 input_schema={
                     "type": "object",
                     "properties": {

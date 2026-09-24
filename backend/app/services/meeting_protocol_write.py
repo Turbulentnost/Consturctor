@@ -7,8 +7,9 @@ Mirrors the form Документ.ТД_Протокол.Форма.ФормаС�
 - «Присутствующие» -> ПрисутствующиеНаСовещании (Участник_Key = Catalog_ФизическиеЛица);
 - «Повестка совещания» -> ПовесткаСовещания (Вопрос, Ответственный_Key = физлицо);
 - «Решения» -> Решения (ТекстРешения, ДатаНачала, ДатаОкончания);
-- «Поставленные задачи» -> ПеременныеЗадачиПротокола (Задача, Ответственный_Key = физлицо,
+- «Поставленные задачи» -> ПостоянныеЗадачиПротокола (Задача, Ответственный = ФИО строкой,
   Автор_Key = пользователь, ДатаПостановкиЗадачи, срок в ДатаФактическогоИсполнения).
+  ПеременныеЗадачиПротокола — нижняя таблица вкладки «Задачи для контроля», туда не пишем.
 
 Field / catalog mapping discovered live from $metadata and existing protocols
 (see scripts/_probe_td_protocol_result.json). The document is created as a draft
@@ -43,6 +44,8 @@ DEFAULT_ACCESS_LABEL = "Общий"
 DEFAULT_MEETING_TYPE = "Отчетное"
 DRAFT_STATUS = "Подготовлен"
 TOOL_NAME = "onec.meeting_protocol_write"
+TASKS_PART = "ПостоянныеЗадачиПротокола"
+CONTROL_TASKS_PART = "ПеременныеЗадачиПротокола"
 
 _EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 _UNDEFINED_TYPE = "StandardODATA.Undefined"
@@ -440,16 +443,15 @@ def build_protocol_create_body(
             "Задача": text,
             "Автор_Key": leader["ref_key"],
             "ДатаПостановкиЗадачи": day_only,
-            "Отправлена": False,
             "Примечание": _field_of(item, "note", "comment", "Примечание"),
-            "ПроцессID": "",
             "Приоритет": _field_of(item, "priority", "Приоритет"),
         }
         executor = _field_of(item, "executor", "responsible", "who", "assignee", "Ответственный")
         if executor:
             try:
-                row["Ответственный_Key"] = resolve_person(executor)["ref_key"]
+                row["Ответственный"] = resolve_person(executor)["fio"] or executor
             except ProtocolWriteError:
+                row["Ответственный"] = executor
                 unresolved.append(f"исполнитель задачи «{executor}»")
         due = _day_value(_field_of(item, "due", "deadline", "term", "Срок"), end=True)
         if due:
@@ -479,7 +481,7 @@ def build_protocol_create_body(
         "ПрисутствующиеНаСовещании": participants,
         "ПовесткаСовещания": agenda_rows,
         "Решения": decision_rows,
-        "ПеременныеЗадачиПротокола": task_rows,
+        TASKS_PART: task_rows,
     }
     if theme_key:
         body["ТемаСовещания_Key"] = theme_key
@@ -617,16 +619,17 @@ def read_protocol_form(ref_key: str) -> dict[str, Any]:
         for row in _protocol_rows(card, "Решения")
         if _clean(row.get("ТекстРешения"))
     ]
+    task_part = TASKS_PART if _protocol_rows(card, TASKS_PART) else CONTROL_TASKS_PART
     tasks = [
         {
             "text": _clean(row.get("Задача")),
-            "executor": person_fio(row.get("Ответственный_Key")),
+            "executor": _clean(row.get("Ответственный")) or person_fio(row.get("Ответственный_Key")),
             "due": _iso_day(row.get("ДатаФактическогоИсполнения")),
             "priority": _clean(row.get("Приоритет")),
             "note": _clean(row.get("Примечание")),
             "item": _clean(row.get("НомерПунктаПротокола")),
         }
-        for row in _protocol_rows(card, "ПеременныеЗадачиПротокола")
+        for row in _protocol_rows(card, task_part)
         if _clean(row.get("Задача"))
     ]
 
@@ -685,6 +688,8 @@ def build_protocol_update_body(
     )
     for field in _CREATE_ONLY_FIELDS:
         body.pop(field, None)
+    if _protocol_rows(card, CONTROL_TASKS_PART) and not _protocol_rows(card, TASKS_PART):
+        body[CONTROL_TASKS_PART] = []
     old_comment = str(card.get("Комментарий") or "")
     markers = re.findall(r"outlook:\S+", old_comment)
     new_comment = str(body.get("Комментарий") or "")
@@ -725,7 +730,7 @@ def handle_protocol_write(
     body, meta = build_protocol_create_body(
         args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
-    if not (body["ПовесткаСовещания"] or body["Решения"] or body["ПеременныеЗадачиПротокола"]):
+    if not (body["ПовесткаСовещания"] or body["Решения"] or body[TASKS_PART]):
         raise ProtocolWriteError(
             "Протокол пуст: нужна хотя бы повестка, решения или задачи (agenda / decisions / tasks)"
         )
@@ -768,7 +773,7 @@ def _update_protocol(
     body, meta = build_protocol_update_body(
         args, card, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
-    if not (body["ПовесткаСовещания"] or body["Решения"] or body["ПеременныеЗадачиПротокола"]):
+    if not (body["ПовесткаСовещания"] or body["Решения"] or body[TASKS_PART]):
         raise ProtocolWriteError(
             "Протокол пуст: нужна хотя бы повестка, решения или задачи (agenda / decisions / tasks)"
         )
@@ -848,7 +853,7 @@ def protocol_write_recipe(*, source: str = "odata") -> dict[str, Any]:
                 "ПрисутствующиеНаСовещании",
                 "ПовесткаСовещания",
                 "Решения",
-                "ПеременныеЗадачиПротокола",
+                TASKS_PART,
             ],
         },
         "update": {
@@ -916,7 +921,8 @@ def probe_protocol_write(
             "participants": len(row.get("ПрисутствующиеНаСовещании") or []),
             "agenda": len(row.get("ПовесткаСовещания") or []),
             "decisions": len(row.get("Решения") or []),
-            "tasks": len(row.get("ПеременныеЗадачиПротокола") or []),
+            "tasks": len(row.get(TASKS_PART) or []),
+            "control_tasks": len(row.get(CONTROL_TASKS_PART) or []),
         }
         # update: change agenda text, add a second decision, read back
         updated_question = _clean(f"{mark}: изменённый вопрос повестки")

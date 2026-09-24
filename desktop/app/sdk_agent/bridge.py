@@ -652,17 +652,21 @@ class CursorSdkBridge:
                     publish_result_files(result, tool=tool, workflow_id=workflow_id)
                 except Exception:
                     pass
-                try:
-                    self._after_tool_result(tool, result, workflow_id)
-                except Exception:
-                    pass
                 result = self._externalize_large_result(
                     tool=tool,
                     request_id=request_id,
                     result=result,
                     cwd=cwd,
                 )
+                # Unblock the SDK before uploading the file. A slow backend
+                # must not turn a finished export into "Tool result timeout".
                 box["result"] = result
+                done.set()
+                try:
+                    self._after_tool_result(tool, result, workflow_id)
+                except Exception:
+                    pass
+                return
             except Exception as exc:  # noqa: BLE001
                 box["error"] = exc
             finally:

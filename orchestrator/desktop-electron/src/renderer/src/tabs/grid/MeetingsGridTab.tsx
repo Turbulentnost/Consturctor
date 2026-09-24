@@ -161,7 +161,7 @@ function MeetingDetailCard({
       rememberStart({
         workflowId,
         runId: runId || '',
-        backendRunId: runs.entries[workflowId]?.backendRunId || '',
+        backendRunId: '',
         status: 'running',
         audioPath,
         audioName: basename(audioPath),
@@ -381,7 +381,7 @@ function MeetingDetailCard({
       <MeetingReportModal
         open={reportOpen}
         onClose={() => setReportOpen(false)}
-        reportUrl={hasDocx ? record?.reportUrl || '' : ''}
+        reportUrl={protocolRefKey ? '' : hasDocx ? record?.reportUrl || '' : ''}
         reportName={record?.reportName || 'protocol.docx'}
         protocolRefKey={protocolRefKey}
       />

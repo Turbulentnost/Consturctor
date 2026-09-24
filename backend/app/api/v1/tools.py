@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +159,10 @@ async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
     }
 
 
+# Long 1C/OData calls must not occupy the default pool: login and the FIO list use it.
+_TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-invoke")
+
+
 def _bearer_token(request: Request) -> str:
     raw = request.headers.get("Authorization") or ""
     if raw.lower().startswith("bearer "):
@@ -203,7 +208,13 @@ async def _invoke_with_gateway_fallback(
                 raise
 
     try:
-        return await asyncio.to_thread(_dispatch_server_tool, tool_name, arguments, auth)
+        return await asyncio.get_running_loop().run_in_executor(
+            _TOOL_EXECUTOR,
+            _dispatch_server_tool,
+            tool_name,
+            arguments,
+            auth,
+        )
     except HTTPException as exc:
         if (
             exc.status_code == 502
