@@ -946,8 +946,26 @@ async function runAgent(command: RunCommand): Promise<void> {
       if (!command.resumeAgentId || !isActiveRunError(error)) {
         throw error;
       }
-      emit({ type: "status", text: "Закрываю предыдущий запуск того же агента..." });
-      run = await withDbLockRetry(sendOnce, "send");
+      emit({
+        type: "status",
+        text: "Предыдущий запуск этого агента ещё занят. Запускаю нового.",
+      });
+      try {
+        await (agent as NonNullable<typeof agent>).close();
+      } catch {
+        /* the stuck cloud run is abandoned with the old agent */
+      }
+      resumed = false;
+      agent = await withDbLockRetry(
+        () => Agent.create(agentOptions as never),
+        "create-after-busy-resume",
+      );
+      const freshId = readAgentId(agent, "");
+      emit({ type: "agent", id, agentId: freshId, resumed: false });
+      run = await withDbLockRetry(
+        () => (agent as NonNullable<typeof agent>).send(command.prompt, sendOptions as never),
+        "send-after-busy-resume",
+      );
     }
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
     const finishIfReady = async (draft: string): Promise<boolean> => {

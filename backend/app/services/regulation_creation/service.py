@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections.abc import Iterator
 from typing import Any
@@ -48,6 +49,7 @@ from app.services.regulation_creation.interview import (
     append_user_turn,
     build_creation_prompt,
     build_followup_creation_prompt,
+    build_server_document_prompt,
     creation_interviewer_rules,
     creation_system_rules,
     current_interview_process_id,
@@ -100,6 +102,8 @@ from app.services.workflows.document import DocumentError, load_attachment_bytes
 _CREATION_ATTACH_SUFFIXES = {".doc", ".docx", ".pdf", ".md", ".txt"}
 _MAX_ATTACH_CHARS = 120_000
 _MESSAGE_CONTENT_LIMIT = 7900
+# A desktop run that never posted a reply should not resume the same cloud agent forever.
+_STALE_GENERATING_AFTER = timedelta(minutes=2)
 logger = logging.getLogger(__name__)
 
 
@@ -420,19 +424,240 @@ def submit_creation_round_answers(
     return _session(db, draft)
 
 
+def _release_stale_generation(db: Session, draft: RegulationCreationDraft) -> None:
+    """Drop a cloud agent left behind when a desktop run died mid-question."""
+    if draft.status != "generating":
+        return
+    updated = draft.updated_at
+    if updated is None:
+        return
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    raw_state = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    stale_after = timedelta(minutes=5) if raw_state.get("server_completion") else _STALE_GENERATING_AFTER
+    if datetime.now(timezone.utc) - updated < stale_after:
+        return
+    draft.status = "interview"
+    draft.cursor_agent_id = ""
+    draft.latest_run_id = ""
+    cleared = set_sdk_agent_id(draft.interview_json, "")
+    if isinstance(cleared, dict):
+        cleared.pop("server_completion", None)
+    draft.interview_json = cleared
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+
+
+def _interview_has_progress(state: Any) -> bool:
+    interview = normalize_interview_state(state)
+    if interview.get("askedQuestions"):
+        return True
+    turns = interview.get("turns")
+    return bool(turns)
+
+
+def _last_user_message(db: Session, draft_id: str) -> str:
+    for item in reversed(_messages_for_draft(db, draft_id)):
+        if item.role == "user":
+            return item.content or ""
+    return ""
+
+
+def _server_document_pending(draft: RegulationCreationDraft) -> bool:
+    if interview_sdk_agent_id(draft.interview_json):
+        return False
+    if draft.status == "finalized" or str(draft.result_regulation_id or "").strip():
+        return False
+    return interview_facts_closed(draft.interview_json)
+
+
+def _orphaned_interview(db: Session, draft: RegulationCreationDraft) -> bool:
+    """Interview already started, but the desktop agent id is gone and a user answer is waiting."""
+    if interview_sdk_agent_id(draft.interview_json):
+        return False
+    if interview_facts_closed(draft.interview_json):
+        return False
+    messages = _messages_for_draft(db, draft.id)
+    if not messages or messages[-1].role != "user":
+        return False
+    return any(item.role == "assistant" for item in messages)
+
+
+def _server_completion_is_fresh(draft: RegulationCreationDraft) -> bool:
+    if draft.status != "generating":
+        return False
+    raw = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    if not raw.get("server_completion"):
+        return False
+    updated = draft.updated_at
+    if updated is None:
+        return False
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - updated < _STALE_GENERATING_AFTER
+
+
+def _claim_server_completion(db: Session, draft: RegulationCreationDraft) -> str:
+    locked = (
+        db.query(RegulationCreationDraft)
+        .filter(RegulationCreationDraft.id == draft.id)
+        .with_for_update()
+        .one()
+    )
+    if _server_completion_is_fresh(locked):
+        db.commit()
+        return "busy"
+    document = _server_document_pending(locked)
+    if not document and not _orphaned_interview(db, locked):
+        db.commit()
+        return "skip"
+    state = dict(locked.interview_json or {})
+    state["server_completion"] = "document" if document else "question"
+    locked.interview_json = state
+    locked.status = "generating"
+    db.add(locked)
+    db.commit()
+    db.refresh(draft)
+    return "claimed"
+
+
+def _finalize_collected_document(
+    db: Session,
+    draft: RegulationCreationDraft,
+    *,
+    user_id: str,
+) -> bool:
+    """Write the regulation from the uploaded sources and confirmed answers."""
+    document = document_from_interview(draft.interview_json, "")
+    if not document_has_body(document):
+        return False
+    try:
+        result = _finalize_document(db, user_id=user_id, draft=draft, document=document)
+    except (RegulationError, RegulationCreationError):
+        logger.exception("collected document finalize failed draft_id=%s", draft.id)
+        return False
+    state = dict(draft.interview_json or {})
+    state.pop("document_write_required", None)
+    state.pop("server_completion", None)
+    draft.interview_json = state
+    _add_message(
+        db,
+        draft=draft,
+        role="assistant",
+        content="Регламент собран по исходным файлам и подтверждённым ответам.",
+        structured={"resultRegulationId": result.regulationId, "document": document},
+    )
+    draft.status = "finalized"
+    draft.result_regulation_id = result.regulationId
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return True
+
+
+def _answer_orphaned_on_server(db: Session, draft: RegulationCreationDraft, *, user_id: str) -> bool:
+    """Write the next question on the gateway. True means the desktop must not start Cursor."""
+    claim = _claim_server_completion(db, draft)
+    if claim == "busy":
+        return True
+    if claim != "claimed":
+        return False
+    from app.services.regulation_creation.server_interview import run_server_interview_model
+
+    try:
+        message = _last_user_message(db, draft.id)
+        document = _server_document_pending(draft)
+        if document:
+            prompt = build_server_document_prompt(state=draft.interview_json, message=message)
+            rules = (
+                "Отвечай только JSON регламента. Не вызывай инструменты и не читай файлы с диска. "
+                "Не задавай вопрос."
+            )
+            mode = "document"
+            timeout = 200
+        else:
+            prompt = build_followup_creation_prompt(
+                message=message,
+                force_create=False,
+                state=draft.interview_json,
+                write_document=False,
+                resume=False,
+            )
+            rules = creation_interviewer_rules()
+            mode = "question"
+            timeout = 110
+        answer = run_server_interview_model(
+            prompt=prompt,
+            rules=rules,
+            workflow_id=f"server-{draft.id}",
+            timeout=timeout,
+            mode=mode,
+        )
+        state = dict(draft.interview_json or {})
+        state.pop("server_completion", None)
+        draft.interview_json = state
+        apply_creation_reply(
+            db,
+            user_id=user_id,
+            draft_id=draft.id,
+            request=RegulationCreationApplyRequest(answer=answer, sdkAgentId=""),
+        )
+        db.refresh(draft)
+        if draft.status != "finalized" and _server_document_pending(draft):
+            message = _last_user_message(db, draft.id)
+            answer = run_server_interview_model(
+                prompt=build_server_document_prompt(state=draft.interview_json, message=message),
+                rules=(
+                    "Отвечай только JSON регламента. Не вызывай инструменты и не читай файлы с диска. "
+                    "Не задавай вопрос."
+                ),
+                workflow_id=f"server-{draft.id}-document",
+                timeout=200,
+                mode="document",
+            )
+            apply_creation_reply(
+                db,
+                user_id=user_id,
+                draft_id=draft.id,
+                request=RegulationCreationApplyRequest(answer=answer, sdkAgentId=""),
+            )
+            db.refresh(draft)
+        if draft.status != "finalized" and _server_document_pending(draft):
+            _finalize_collected_document(db, draft, user_id=user_id)
+        return True
+    except Exception:
+        logger.exception("server interview failed draft_id=%s", draft.id)
+        db.rollback()
+        failed = _get_draft(db, user_id=user_id, draft_id=draft.id)
+        if failed.status == "finalized":
+            return True
+        state = dict(failed.interview_json or {})
+        state.pop("server_completion", None)
+        failed.interview_json = state
+        if _server_document_pending(failed) and _finalize_collected_document(
+            db, failed, user_id=user_id
+        ):
+            return True
+        failed.status = "interview"
+        db.add(failed)
+        db.commit()
+        return False
+
+
 def peek_creation_turn(db: Session, *, user_id: str, draft_id: str) -> RegulationCreationTurn:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
-    last_user = ""
-    for item in reversed(_messages_for_draft(db, draft.id)):
-        if item.role == "user":
-            last_user = item.content or ""
-            break
+    _release_stale_generation(db, draft)
+    suppress_sdk = _answer_orphaned_on_server(db, draft, user_id=user_id)
+    db.refresh(draft)
+    last_user = _last_user_message(db, draft.id)
     return _turn_payload(
         db,
         draft,
         message=last_user,
         force_create=_is_force_create_message(last_user),
         new_attachments=False,
+        suppress_sdk=suppress_sdk,
     )
 
 
@@ -502,6 +727,16 @@ def persist_creation_turn(
     db.add(draft)
     db.commit()
     db.refresh(draft)
+    if _answer_orphaned_on_server(db, draft, user_id=user_id):
+        db.refresh(draft)
+        return _turn_payload(
+            db,
+            draft,
+            message=message,
+            force_create=force_create,
+            new_attachments=bool(attachments),
+            suppress_sdk=True,
+        )
     return _turn_payload(
         db,
         draft,
@@ -544,6 +779,7 @@ def _turn_payload(
     message: str,
     force_create: bool,
     new_attachments: bool = False,
+    suppress_sdk: bool = False,
 ) -> RegulationCreationTurn:
     sdk_id = interview_sdk_agent_id(draft.interview_json)
     write_document = interview_write_document(draft.interview_json, force_create=force_create)
@@ -579,12 +815,13 @@ def _turn_payload(
             include_attachment_bodies=False,
         )
         rules = creation_system_rules(force_create=force_create)
-    elif sdk_id:
+    elif sdk_id or _interview_has_progress(draft.interview_json):
         prompt = build_followup_creation_prompt(
             message=message,
             force_create=force_create,
             state=draft.interview_json,
             write_document=False,
+            resume=bool(sdk_id),
         )
         rules = creation_interviewer_rules()
     else:
@@ -596,6 +833,11 @@ def _turn_payload(
             include_attachment_bodies=True,
         )
         rules = creation_interviewer_rules()
+    if suppress_sdk:
+        prompt = ""
+        sdk_id = ""
+        write_document = False
+        use_tools = False
     return RegulationCreationTurn(
         session=_session(db, draft),
         interview=interview_snapshot(draft.interview_json),

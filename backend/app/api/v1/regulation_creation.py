@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -12,6 +13,7 @@ from app.core.jwt import AuthContext
 from app.db.session import get_db
 from app.schemas.regulation import (
     RegulationCreationApplyRequest,
+    RegulationCreationHistoryResult,
     RegulationCreationRoundAnswersRequest,
     RegulationCreationSelectProcessesRequest,
     RegulationCreationSendRequest,
@@ -25,8 +27,10 @@ from app.services.regulation_creation import (
     get_active_creation_session,
     get_creation_document,
     get_creation_session,
+    list_creation_sessions,
     peek_creation_turn,
     persist_creation_turn,
+    resume_creation_session,
     select_creation_processes,
     send_creation_message,
     start_creation_session,
@@ -91,6 +95,14 @@ async def read_active_regulation_creation_session(
     return session
 
 
+@router.get("/sessions/history", response_model=RegulationCreationHistoryResult)
+async def list_regulation_creation_history(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationCreationHistoryResult:
+    return list_creation_sessions(db, user_id=auth.user_id)
+
+
 @router.get("/sessions/{draft_id}/turn", response_model=RegulationCreationTurn)
 async def peek_regulation_creation_turn(
     draft_id: str,
@@ -98,7 +110,9 @@ async def peek_regulation_creation_turn(
     db: Session = Depends(get_db),
 ) -> RegulationCreationTurn:
     try:
-        return peek_creation_turn(db, user_id=auth.user_id, draft_id=draft_id)
+        return await asyncio.to_thread(
+            peek_creation_turn, db, user_id=auth.user_id, draft_id=draft_id
+        )
     except RegulationCreationError as exc:
         logger.warning(
             "reg_create message failed draft_id=%s status=%s detail=%s",
@@ -175,6 +189,18 @@ async def read_regulation_creation_session(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
+@router.post("/sessions/{draft_id}/resume", response_model=RegulationCreationSession)
+async def resume_regulation_creation_session(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationCreationSession:
+    try:
+        return resume_creation_session(db, user_id=auth.user_id, draft_id=draft_id)
+    except RegulationCreationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
 @router.post("/sessions/{draft_id}/turns", response_model=RegulationCreationTurn)
 async def persist_regulation_creation_turn(
     draft_id: str,
@@ -184,7 +210,8 @@ async def persist_regulation_creation_turn(
 ) -> RegulationCreationTurn:
     try:
         payload, files = await _parse_send_payload(request)
-        return persist_creation_turn(
+        return await asyncio.to_thread(
+            persist_creation_turn,
             db,
             user_id=auth.user_id,
             draft_id=draft_id,

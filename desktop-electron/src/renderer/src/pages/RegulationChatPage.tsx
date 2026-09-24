@@ -673,7 +673,6 @@ export function RegulationChatPage({
   onSessionChange,
   onReady,
   onBack,
-  onStopped,
   onBusyChange,
   banner,
   active = true
@@ -783,7 +782,7 @@ export function RegulationChatPage({
         prompt: turn.prefetchPrompt,
         rules: turn.sdkRules,
         interview: turn.interview,
-        resumeAgentId: turn.sdkAgentId || session.sdkAgentId
+        resumeAgentId: turn.sdkAgentId || ''
       })
       try {
         const sdk = await waitForRegulationSdk(runId, () => undefined)
@@ -1030,10 +1029,18 @@ export function RegulationChatPage({
       agentClient.cancel(runIdRef.current)
       runIdRef.current = ''
     }
+    const pending = pendingUserMessageId(session)
+    if (pending) resumeKeyRef.current = `${session.draftId}:${pending}`
     setBusy(false)
+    setSubmitLocked(false)
+    submittingRef.current = false
     setError('')
-    await api.terminateRegulationCreationSessions()
-    onStopped?.()
+    try {
+      const latest = await api.getRegulationCreationSession(session.draftId)
+      pushSession(latest.status === 'generating' ? { ...latest, status: 'interview' } : latest)
+    } catch {
+      /* the answered turns stay in the open chat */
+    }
   }
 
   async function send(text: string, files: PendingFile[]): Promise<void> {
@@ -1045,7 +1052,7 @@ export function RegulationChatPage({
       needsProcessSelection ||
       submittingRef.current ||
       submitLocked ||
-      awaitingAssistantReply(session)
+      (awaitingAssistantReply(session) && !stoppedRef.current)
     ) {
       return
     }
@@ -1445,7 +1452,7 @@ export function RegulationChatPage({
       prompt: afterSelect ? `${turn.sdkPrompt}\n\n${afterSelect}` : turn.sdkPrompt,
       rules: afterSelect ? `${turn.sdkRules}\n${afterSelect}` : turn.sdkRules,
       interview,
-      resumeAgentId: turn.sdkAgentId || session.sdkAgentId,
+      resumeAgentId: turn.sdkAgentId || '',
       writeDocument: turn.writeDocument || turn.forceCreate || writing,
       useTools: turn.useTools || turn.writeDocument || turn.forceCreate || writing,
       forceCreate: turn.forceCreate
