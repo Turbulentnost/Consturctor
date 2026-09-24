@@ -318,7 +318,7 @@ export function TodayGridTab({
   }
 
   const showOneCReconnect =
-    !data.sourcesLoading && !taskRows.length && data.oneCAuthFailure
+    !data.erpLoading && !taskRows.length && data.oneCAuthFailure
   const onecReconnectBlock = showOneCReconnect ? (
     <OneCReconnectInline
       errorHint={data.erpError || data.error}
@@ -331,9 +331,9 @@ export function TodayGridTab({
       setOnecDialogOpen(false)
       return
     }
-    if (data.sourcesLoading || !showOneCReconnect) return
+    if (data.erpLoading || !showOneCReconnect) return
     setOnecDialogOpen(true)
-  }, [data.sourcesLoading, showOneCReconnect, data.comPasswordInSession])
+  }, [data.erpLoading, showOneCReconnect, data.comPasswordInSession])
 
   const {
     layout,
@@ -409,14 +409,14 @@ export function TodayGridTab({
                 type="button"
                 className="today-refresh-btn"
                 title="Обновить задачи 1С:Документооборот: сегодня и просроченные"
-                disabled={data.sourcesLoading}
+                disabled={data.erpLoading}
                 onClick={() => forceRefresh()}
               >
                 <RefreshCw size={14} aria-hidden />
               </button>
             </>
           }
-          loading={data.sourcesLoading}
+          loading={data.erpLoading}
           error={
             taskRows.length
               ? data.erpError || data.error || undefined
@@ -622,6 +622,7 @@ export function TodayGridTab({
       data.sources.erp,
       data.sources.turbo,
       data.sourcesLoading,
+      data.erpLoading,
       erpFio,
       preparedDecisions.error,
       preparedDecisions.items,

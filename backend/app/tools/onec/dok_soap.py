@@ -1622,22 +1622,24 @@ def fetch_user_inbox_tasks(
         )
         return _with_cache_meta(payload, cached=cached, fetched_at=fetched_at)
 
+    # Выгрузка идёт минутами под общей блокировкой: пока запрос ждал очереди,
+    # её мог обновить сосед — тогда второй раз ДО не дёргаем.
+    requested_at = time.time()
     with lock:
-        if not force_refresh:
-            hit = _cache_entry(key)
-            if hit:
-                fetched_at, dump = hit
-                age = time.time() - fetched_at
-                if age >= _cache_ttl_sec():
-                    _schedule_refresh(
-                        key,
-                        only_open=only_open,
-                        env_file=env_file,
-                        username=username,
-                        password=password,
-                    )
-                logger.info("dok_soap dump cache hit age=%.0fs raw=%s", age, len(_dump_rows(dump)))
-                return _serve(dump, cached=True, fetched_at=fetched_at)
+        hit = _cache_entry(key)
+        if hit and (not force_refresh or hit[0] >= requested_at):
+            fetched_at, dump = hit
+            age = time.time() - fetched_at
+            if not force_refresh and age >= _cache_ttl_sec():
+                _schedule_refresh(
+                    key,
+                    only_open=only_open,
+                    env_file=env_file,
+                    username=username,
+                    password=password,
+                )
+            logger.info("dok_soap dump cache hit age=%.0fs raw=%s", age, len(_dump_rows(dump)))
+            return _serve(dump, cached=True, fetched_at=fetched_at)
         try:
             config = load_config(env_file=env_file, username=username, password=password)
             dump = fetch_open_dump(config, only_open=only_open)

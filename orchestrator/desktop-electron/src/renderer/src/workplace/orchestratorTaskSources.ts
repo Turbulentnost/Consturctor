@@ -229,18 +229,26 @@ export type OrchestratorErpLoad = {
   oneCAuthFailure: boolean
 }
 
+/** Полная выгрузка ДО идёт минутами, а на backend список ждёт до 420 с. */
+export const ONEC_LIVE_DUMP_TIMEOUT_MS = 600_000
+
 export async function loadOrchestratorErpTasks(
   user: UserProfile,
   erpFio: string,
   opts?: { forceRefresh?: boolean }
 ): Promise<OrchestratorErpLoad> {
+  const forceRefresh = Boolean(opts?.forceRefresh)
   const onecArgs = onecGatewayInvokeArgs(user, {
     limit: 80,
     only_open: true,
     today_and_overdue: false,
-    force_refresh: Boolean(opts?.forceRefresh)
+    force_refresh: forceRefresh
   })
-  const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 300_000)
+  const dfRes = await api.invokeServerTool(
+    'onec.docflow_tasks',
+    onecArgs,
+    forceRefresh ? ONEC_LIVE_DUMP_TIMEOUT_MS : 300_000
+  )
   const dfParsed = parseErpToolTasks(dfRes, erpFio)
   const tasks = dfParsed.rows
   const sourceLabel = tasks.length ? dfParsed.source || 'документооборот' : dfParsed.source || '—'
