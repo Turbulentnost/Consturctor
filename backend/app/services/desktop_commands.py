@@ -47,7 +47,7 @@ def push_desktop_command(user_id: str, payload: dict[str, Any], client: str = ""
                 default=str,
             ),
         )
-        return True
+        return delivered
     except Exception as exc:  # noqa: BLE001
         logger.warning("Desktop command publish failed user=%s: %s", uid, exc)
         return delivered

@@ -63,8 +63,15 @@ http_logger = logging.getLogger("app.http")
 
 
 def _http_trace(message: str) -> None:
-    print(message, flush=True)
-    http_logger.info(message)
+    try:
+        print(message, flush=True)
+    except OSError:
+        # Aborted Windows console / closed pipe: do not fail the request.
+        pass
+    try:
+        http_logger.info(message)
+    except OSError:
+        pass
 
 
 @asynccontextmanager
@@ -138,11 +145,26 @@ async def lifespan(_app: FastAPI):
                     logger.exception("KPI scheduler tick failed")
                 await asyncio.sleep(60)
 
+        from app.api.v1.platform_tasks import platform_task_scheduler
+
+        async def position_kpi_cache_scheduler() -> None:
+            from app.services.position_kpi.daily import run_daily_position_kpi_cache
+
+            await asyncio.sleep(25)
+            while True:
+                try:
+                    await asyncio.to_thread(run_daily_position_kpi_cache)
+                except Exception:
+                    logger.exception("Position KPI daily cache tick failed")
+                await asyncio.sleep(300)
+
         scheduler_tasks = [
+            asyncio.create_task(platform_task_scheduler()),
             asyncio.create_task(notification_scheduler()),
             asyncio.create_task(board_live_subscriber()),
             asyncio.create_task(trigger_scheduler()),
             asyncio.create_task(kpi_scheduler()),
+            asyncio.create_task(position_kpi_cache_scheduler()),
         ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")

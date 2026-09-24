@@ -3,6 +3,7 @@ import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/lega
 import 'react-grid-layout/css/styles.css'
 import { SpecSummaryTiles } from '../../workplace/specV04Components'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
+import { WorkplaceGlobalRangePicker } from '../../workplace/workplacePeriod'
 import {
   STANDARD_TAB_LABELS,
   TAB_CHROME_COLS,
@@ -301,8 +302,12 @@ export function TabChromeGrid({
     const node = canvasRef.current
     if (!node) return
     const measure = (): void => {
-      const height = Math.max(node.clientHeight, 200)
+      if (!node.isConnected) return
+      // Hidden / collapsed canvases (tab not visible, zero box) must not bin widgets.
+      if (node.offsetParent === null && node.getClientRects().length === 0) return
+      const height = node.clientHeight
       const width = node.clientWidth
+      if (height < 8 || width < 8) return
       const next = computeTabChromeMetrics(height, width, usedRows, metricsOptions)
       setMetrics((prev) =>
         prev.rowHeight === next.rowHeight &&
@@ -446,7 +451,8 @@ export function StandardTabChrome({
   labels,
   widgets,
   chromeTiles,
-  filterToolbarExtra
+  filterToolbarExtra,
+  hideGlobalPeriod
 }: {
   tabId: string
   userId: string
@@ -456,6 +462,8 @@ export function StandardTabChrome({
   chromeTiles?: ChromeTileSpec[]
   /** Кнопки справа в полосе фильтров (перед «Редактировать виджеты»). */
   filterToolbarExtra?: React.ReactNode
+  /** Скрыть общий KPI-календарь (редко — если дублируется). */
+  hideGlobalPeriod?: boolean
 }): React.JSX.Element {
   const layoutDefaults = useMemo(
     () => defaults.filter((item) => item.i !== 'tiles' && item.i !== 'filters' && !isTileWidgetId(item.i)),
@@ -494,6 +502,7 @@ export function StandardTabChrome({
       ) : null}
       <div className="tab-chrome-filters-bar">
         <div className="tab-chrome-filters-wrap">
+          {hideGlobalPeriod ? null : <WorkplaceGlobalRangePicker />}
           {filterNode}
           {filterToolbarExtra ? (
             <div className="tab-chrome-filters-extra">{filterToolbarExtra}</div>

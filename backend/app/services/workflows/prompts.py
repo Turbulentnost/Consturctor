@@ -557,7 +557,9 @@ def build_playbook_draft_prompt(
         "notify не берёт user_id из проекта или задачи 1С — сначала constructor · user · read или list.\n"
         "Отчёт-файл (Word/документ) — desktop · report · export, tool report.export_document "
         "(единственный экспорт готового текста в файл; text пиши сам в sections). "
-        "report.build_* дают только текст, не файл. Excel-файл — desktop · spreadsheet · export.\n"
+        "report.build_* дают только текст, не файл. Excel-файл — desktop · spreadsheet · export: "
+        "всегда оформленный, без голой таблицы. "
+        "Смена темы — desktop · document · export, tool office.format_document.\n"
         "Если агент ставит встречи в календарь (outlook · calendar_event · create), "
         "сначала outlook · calendar_event · list широким периодом (date_from/date_to "
         "или days_forward на год, не неделю): свободные слоты и уже стоящие встречи. "
@@ -584,7 +586,7 @@ def _parse_needs_from(raw: Any) -> list[dict[str, str]]:
 def _draft_step_from_dict(data: dict[str, Any], index: int) -> dict[str, Any]:
     step_id = str(data.get("id") or "").strip() or f"s{index}"
     required = data.get("required")
-    return {
+    step = {
         "id": step_id,
         "title": str(data.get("title") or "").strip(),
         "required": True if required is None else bool(required),
@@ -607,6 +609,20 @@ def _draft_step_from_dict(data: dict[str, Any], index: int) -> dict[str, Any]:
         "on_empty": str(data.get("on_empty") or data.get("onEmpty") or "").strip(),
         "on_error": str(data.get("on_error") or data.get("onError") or "").strip(),
     }
+    tool = str(data.get("tool") or data.get("tool_name") or "").strip()
+    if tool:
+        step["tool"] = tool
+    candidates = [
+        str(item).strip()
+        for item in (data.get("tool_candidates") or [])
+        if str(item).strip()
+    ]
+    if candidates:
+        step["tool_candidates"] = candidates
+    proven = data.get("proven_call")
+    if isinstance(proven, dict) and proven.get("tool"):
+        step["proven_call"] = proven
+    return step
 
 
 def _draft_clarification_from(raw: Any) -> dict[str, Any] | None:
@@ -736,6 +752,8 @@ def draft_summary_text(draft: dict[str, Any]) -> str:
             f"- {step.get('id')} [{mark}] {step.get('title')} "
             f"({step.get('system')}·{step.get('entity')}·{step.get('operation')})"
         )
+        if step.get("tool"):
+            lines.append(f"    инструмент: {step['tool']}")
         if step.get("tool_candidates"):
             lines.append(f"    инструменты: {', '.join(step['tool_candidates'])}")
         if step.get("provides"):
@@ -812,36 +830,82 @@ def build_playbook_prompt(
     )
 
 
+def _format_file_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} МБ"
+    if size >= 1024:
+        return f"{size / 1024:.0f} КБ"
+    return f"{size} Б"
+
+
+def _run_attachments_block(attachments: list[dict[str, Any]] | None) -> str:
+    """Вложения текущего запуска: агент берёт отсюда file_id для audio.transcribe."""
+    items = [item for item in (attachments or []) if isinstance(item, dict)]
+    if not items:
+        return ""
+    lines = ["===== ВЛОЖЕНИЯ ЗАПУСКА ====="]
+    for item in items:
+        file_id = str(item.get("file_id") or item.get("id") or "").strip()
+        filename = str(item.get("filename") or item.get("name") or "file").strip()
+        size = int(item.get("size") or 0)
+        lines.append(f"- file_id={file_id} · {filename} · {_format_file_size(size)}")
+    lines.append(
+        "Аудио/видео-вложение (wav, mp3, m4a, aac, ogg, opus, flac, webm, mp4, mkv, "
+        "wma, amr) расшифровывай инструментом audio.transcribe: блок constructor_tool "
+        'с {"name": "audio.transcribe", "arguments": {"file_id": "…"}}. '
+        "Он вернёт segments с таймкодами start/end, полный text и duration_sec. "
+        "Подтверждение человека для него не нужно."
+    )
+    lines.append("===== КОНЕЦ ВЛОЖЕНИЙ =====")
+    return "\n".join(lines) + "\n\n"
+
+
 def build_published_run_prompt(
     *,
     instructions: str,
     example_run: str,
     user_message: str,
     title: str = "",
+    steps: list[dict[str, Any]] | None = None,
+    chain: str = "",
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
+    from app.services.workflows.playbook_validation import verified_chain_text
+
+    chain_text = (chain or "").strip() or verified_chain_text({"steps": steps or []})
+    chain_block = (
+        "===== ПРОВЕРЕННАЯ ЦЕПОЧКА =====\n"
+        f"{chain_text}\n"
+        "===== КОНЕЦ ЦЕПОЧКИ =====\n\n"
+        if chain_text
+        else ""
+    )
     return (
         "Ты тот же агент Constructor, что уже успешно делал эту задачу.\n"
         "Работай как Cursor: tools через ```constructor_tool, потом понятный ответ.\n"
         "Не ищи MCP Constructor, OIDC, BACKEND_URL и не делай curl с Cloud VM — "
         "серверные инструменты вызываются блоком constructor_tool, backend выполнит их сам.\n"
-        "Следуй инструкции. Пример прогона — образец, не догма: "
-        "если задача чуть другая, адаптируй вызовы.\n"
+        "Повтори проверенную цепочку пробного запуска в том же порядке и теми же инструментами. "
+        "Пример прогона подтверждает эти вызовы. "
+        "Меняй только параметры текущей задачи (даты, ФИО, период), не набор инструментов.\n"
         "Если в инструкции и задаче сейчас не сказано, какие объекты брать "
         "(проекты, люди, период) — спроси человека блоком CLARIFY и остановись. "
         "Не бери весь каталог по умолчанию.\n"
-        "Не спрашивай про поля и протоколы. Не составляй план-JSON.\n"
+        "Не спрашивай про поля и протоколы. Не составляй новый план-JSON.\n"
         "Если инструкция или задача требуют уведомить человека — вызови notify.send сразу "
         "(user_id из users.list). Подтверждение человека для notify.send не нужно: "
         "не откладывай отправку и не пиши «алерт не отправлен (нужно подтверждение)». "
         "Без этого tool уведомление на компьютер не уйдёт.\n"
         f"{_RESULT_HINT}\n"
         f"Агент: {title or 'ИИ-агент'}\n\n"
+        f"{chain_block}"
         "===== ИНСТРУКЦИЯ =====\n"
         f"{(instructions or '').strip() or 'Выполни задачу по смыслу бизнес-процесса.'}\n"
         "===== КОНЕЦ ИНСТРУКЦИИ =====\n\n"
         "===== ПРИМЕР УСПЕШНОГО ПРОГОНА =====\n"
         f"{(example_run or '').strip() or '—'}\n"
         "===== КОНЕЦ ПРИМЕРА =====\n\n"
+        f"{_run_attachments_block(attachments)}"
         "===== ЗАДАЧА СЕЙЧАС =====\n"
         f"{(user_message or '').strip()}\n"
         "===== КОНЕЦ ЗАДАЧИ ====="
@@ -1315,7 +1379,7 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
     "Заказчик в 1С — реквизит Руководитель, параметр customer=ФИО. "
     "Карточка: action=get и number=АСТ00-.... Файлы вкладки «Файлы»: action=files. "
     "Содержимое вложения: `onec.download_artifact` с file_id=Ref_Key файла "
-    "(OData Base64, том, hs/dtw/files или UNC). "
+    "(только HTTP hs/dtw/files, без OData). "
     "Новые протоколы после заседания: action=protocols. "
     "Запись статуса, срока, новой карточки, комментария исполнителю — "
     "`onec.erp_assignments_write` (после подтверждения человека). "

@@ -5,6 +5,7 @@ import {
   gatewaySessionPassword,
   savedFio
 } from '../store/session'
+import { loadDocflowDelegates } from '../store/docflowDelegates'
 
 export const TURBO_DON_MAIL_DOMAIN = 'turbo-don.ru'
 
@@ -85,8 +86,10 @@ export function onecGatewayInvokeArgs(
   const password = gatewaySessionPassword() || devGatewayCredentials().password
   const typedLogin = (creds.login || '').trim()
   const username = erpActorComUsername(user)
+  const delegates = loadDocflowDelegates(user?.id || '')
   return {
     ...extra,
+    ...(delegates.length ? { delegate_fios: delegates } : {}),
     fio,
     user_id: userId,
     session_login: typedLogin || fio,

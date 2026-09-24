@@ -1,4 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
+import { spawn } from 'node:child_process'
 import { join, basename, dirname, extname } from 'node:path'
 
 const DESKTOP_APP_NAME = 'Orchestrator'
@@ -452,25 +453,51 @@ function pathIsAuthApi(path: string): boolean {
   return true
 }
 
+function pathIsAgentLibraryApi(path: string): boolean {
+  return (path || '').includes('/api/v1/agents/library')
+}
+
 async function backendBasesForRequest(opts: RequestOptions): Promise<string[]> {
   const primary = CONFIG.backendUrl.replace(/\/+$/, '')
   // Login / FIO search always via configured backend (loopback); gateway proxy is in backend/.env.
   if (pathIsAuthApi(opts.path)) return [primary]
+  // Agent library: route often exists only on local backend while BACKEND_URL points at LAN gateway.
+  // Prefer local when healthy; on 401/403 (JWT host mismatch) fall through to primary.
+  if (!app.isPackaged && pathIsAgentLibraryApi(opts.path)) {
+    if (isLoopback(primary)) {
+      await ensureLocalBackend(LOCAL_BACKEND)
+      return [primary]
+    }
+    const localUp = await pingBackendHealth(LOCAL_BACKEND, 800)
+    if (localUp) {
+      return [LOCAL_BACKEND, primary]
+    }
+    return [primary]
+  }
   if (!app.isPackaged && pathPrefersLocalBackendFirst(opts)) {
-    const gateway = resolveDocflowGatewayBase()
     await ensureLocalBackend(LOCAL_BACKEND)
+    // JWT is tied to BACKEND_URL host — LAN login must not hit 127.0.0.1 first.
+    if (!isLoopback(primary)) {
+      return [primary]
+    }
     const profileEnvPath = join(app.getPath('userData'), '.env')
     const profileEnv = existsSync(profileEnvPath) ? parseEnvFile(profileEnvPath) : {}
     const preferLocal = preferLocalBackend(profileEnv)
+    const gateway = resolveDocflowGatewayBase()
     const bases: string[] = []
     const push = (base: string) => {
       const normalized = (base || '').replace(/\/+$/, '')
       if (normalized && !bases.includes(normalized)) bases.push(normalized)
     }
-    // Local backend carries DOK_HTTP_* to 229; LAN gateway often returns stub/empty without session SOAP.
-    if (preferLocal || isLoopback(primary)) push(LOCAL_BACKEND)
-    if (!isLoopback(primary)) push(primary)
-    else if (gateway !== LOCAL_BACKEND) push(gateway)
+    // Loopback dev: local DOK_HTTP_*; optional second hop only with the same JWT host.
+    if (preferLocal) {
+      push(LOCAL_BACKEND)
+    } else {
+      push(primary)
+    }
+    if (gateway !== LOCAL_BACKEND && isLoopback(gateway)) {
+      push(gateway)
+    }
     if (bases.length) return bases
     return [LOCAL_BACKEND]
   }
@@ -513,6 +540,7 @@ function extractDetail(status: number, data: unknown): string {
 function pathUsesLocalBackendFallback(path: string, opts?: RequestOptions): boolean {
   const p = path || ''
   if (p.includes('/api/v1/admin/') || p.includes('/api/v1/workplace/kpi')) return true
+  if (p.includes('/api/v1/agents/library')) return true
   if (pathPrefersLocalBackendFirst(opts || { path })) return true
   return false
 }
@@ -523,6 +551,12 @@ function localBackendFallbackFailureMessage(path: string, localUp: boolean): str
   }
   if ((path || '').includes('/api/v1/workplace/kpi')) {
     return 'Не удалось загрузить KPI рабочего места. Перелогиньтесь или обновите вкладку.'
+  }
+  if ((path || '').includes('/api/v1/agents/library')) {
+    return (
+      'Библиотека агентов недоступна на gateway. Запустите локальный backend (orchestrator\\backend, run_dev.bat) ' +
+      'или обновите сервер с маршрутом GET /api/v1/agents/library.'
+    )
   }
   return 'Не удалось загрузить админ-данные. Перелогиньтесь или обновите страницу.'
 }
@@ -564,6 +598,10 @@ async function tryLocalBackendFallback(
       return { ok: true, status: localResponse.status, data: localData }
     }
     if (localResponse.status !== 404 && localResponse.status !== 405) {
+      // LAN JWT on loopback → «Недействительный токен»; keep primary error instead.
+      if (localResponse.status === 401 || localResponse.status === 403) {
+        return null
+      }
       return {
         ok: false,
         status: localResponse.status,
@@ -628,16 +666,17 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
         error: extractDetail(response.status, data)
       }
       const routeMissing = response.status === 404 || response.status === 405
-      const docflowAuthRejected =
-        pathPrefersLocalBackendFirst(opts) &&
+      const authRejectedOnWrongHost =
+        (pathPrefersLocalBackendFirst(opts) || pathIsAgentLibraryApi(opts.path)) &&
         (response.status === 401 || response.status === 403)
+      const docflowAuthRejected = authRejectedOnWrongHost
       if (docflowAuthRejected && hasNext) {
         console.log(
           `Backend API retry: ${opts.path} — ${base} (docflow auth ${response.status}) → ${bases[index + 1]}`
         )
         continue
       }
-      if (docflowAuthRejected) {
+      if (docflowAuthRejected && !hasNext) {
         return { ok: false, status: lastError.status, error: lastError.error }
       }
       if (hasNext) {
@@ -791,6 +830,39 @@ async function handleFetchDataUrl(
     return { ok: true, dataUrl: `data:${mime};base64,${buffer.toString('base64')}` }
   } catch {
     return { ok: false, error: 'Не удалось загрузить изображение' }
+  }
+}
+
+const FETCH_BINARY_MAX_BYTES = 50 * 1024 * 1024
+
+/** Fetch arbitrary bytes from backend (docx/pdf/etc.) without MIME sniffing — for in-app viewers. */
+async function handleFetchBinary(
+  _evt: unknown,
+  opts: { url: string; token?: string | null; maxBytes?: number }
+): Promise<{ ok: boolean; base64?: string; contentType?: string; size?: number; error?: string }> {
+  const raw = String(opts?.url || '').trim()
+  if (!raw) return { ok: false, error: 'Нет ссылки на файл' }
+  const url = absoluteBackendUrl(raw)
+  const headers: Record<string, string> = {}
+  if (opts.token) headers.Authorization = `Bearer ${opts.token}`
+  const limit =
+    typeof opts.maxBytes === 'number' && opts.maxBytes > 0
+      ? Math.min(opts.maxBytes, FETCH_BINARY_MAX_BYTES)
+      : FETCH_BINARY_MAX_BYTES
+  try {
+    const response = await fetch(url, { headers })
+    if (!response.ok) return { ok: false, error: `Ошибка загрузки (${response.status})` }
+    const buffer = Buffer.from(await response.arrayBuffer())
+    if (buffer.length > limit) {
+      return { ok: false, error: 'Файл слишком большой для просмотра' }
+    }
+    const contentType = (response.headers.get('content-type') || 'application/octet-stream')
+      .split(';')[0]
+      .trim()
+      .toLowerCase()
+    return { ok: true, base64: buffer.toString('base64'), contentType, size: buffer.length }
+  } catch {
+    return { ok: false, error: 'Не удалось загрузить файл' }
   }
 }
 
@@ -1187,6 +1259,7 @@ function registerMainIpcHandlers(): void {
   ipcHandle('api:request', handleRequest)
   ipcHandle('api:upload', handleUpload)
   ipcHandle('api:fetchDataUrl', handleFetchDataUrl)
+  ipcHandle('api:fetchBinary', handleFetchBinary)
   ipcHandle('api:download', handleDownload)
   ipcHandle('api:saveLocalFile', handleSaveLocalFile)
   ipcHandle('api:exportPdf', handleExportPdf)
@@ -1247,6 +1320,18 @@ function registerMainIpcHandlers(): void {
     const win = BrowserWindow.getFocusedWindow()
     const result = await dialog.showOpenDialog(win!, options)
     return result.canceled ? [] : result.filePaths
+  })
+  ipcHandle('shell:focusOutlook', async () => {
+    if (process.platform !== 'win32') {
+      return { ok: false, error: 'Outlook открывается только в Windows' }
+    }
+    const child = spawn('cmd.exe', ['/c', 'start', '', 'outlook'], {
+      detached: true,
+      windowsHide: true,
+      stdio: 'ignore'
+    })
+    child.unref()
+    return { ok: true }
   })
   ipcHandle('shell:openPath', async (_evt, filePath: string) => {
     const target = String(filePath || '').trim()

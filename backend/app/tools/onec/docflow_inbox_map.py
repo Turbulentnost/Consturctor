@@ -6,10 +6,12 @@ from datetime import datetime
 from typing import Any
 
 from app.services.erp_tasks import from_1c_datetime, task_is_late
+from app.tools.onec.docflow_task_kinds import docflow_task_kind
 from app.tools.onec.dok_soap import (
     CHANNEL_SOAP,
     ROLE_AUTHOR,
     ROLE_BOTH,
+    ROLE_DELEGATE,
     ROLE_EXECUTOR,
     source_for_role,
     task_role_for_user,
@@ -37,10 +39,11 @@ def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
     done = bool(row.get("executed"))
     author = str(row.get("author") or "").strip()
     step = str(row.get("step") or "").strip()
+    name = " ".join(str(row.get("name") or "").split())
     target = str(row.get("target") or "").strip()
     raw_performer = str(row.get("performer") or "").strip()
     tagged_role = str(row.get("role") or "").strip()
-    role = tagged_role if tagged_role in {ROLE_EXECUTOR, ROLE_AUTHOR, ROLE_BOTH} else (
+    role = tagged_role if tagged_role in {ROLE_EXECUTOR, ROLE_AUTHOR, ROLE_BOTH, ROLE_DELEGATE} else (
         task_role_for_user({"author": author, "performer": raw_performer}, fio) or ROLE_EXECUTOR
     )
     performer = raw_performer or ("" if role == ROLE_AUTHOR else fio)
@@ -64,6 +67,11 @@ def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
         "source": source_for_role(role),
         "ref_key": str(row.get("id") or "").strip(),
         "target_id": str(row.get("target_id") or "").strip(),
+        "step": step,
+        "task_name": name,
+        "importance": str(row.get("importance") or "").strip(),
+        "kind": docflow_task_kind(step, name),
+        "on_behalf_of": str(row.get("on_behalf_of") or "").strip(),
     }
 
 

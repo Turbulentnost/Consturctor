@@ -10,11 +10,22 @@ import {
 } from '../utils/imapMail'
 import {
   dayKeyLocal,
-  fetchOutlookMailForDay,
-  fetchOutlookMailForRange,
+  ensureOutlookMailRange,
+  formatMailTime,
   outlookMailWeekRange,
+  resolveOutlookMailFetchRange,
   skipOutlookCom
 } from '../utils/outlookMail'
+
+function withFormattedMailTime(row: SpecMailRow): SpecMailRow {
+  const raw = row.receivedAt || row.time
+  return {
+    ...row,
+    receivedAt: row.receivedAt || (raw && !/^\d{2}\.\d{2}\.\d{2} \d{2}:\d{2}$/.test(raw) ? raw : undefined),
+    time: formatMailTime(raw),
+    receivedLabel: row.receivedLabel ? formatMailTime(row.receivedLabel) : formatMailTime(raw)
+  }
+}
 
 export type MailPrimary = 'imap' | 'outlook'
 
@@ -41,7 +52,7 @@ export type OrchestratorMailLoad = {
   imapStatus: string
 }
 
-const PROBE_TTL_MS = 120_000
+const PROBE_TTL_MS = 600_000
 let probeCache: { at: number; day: string; result: MailProbeResult } | null = null
 
 const RE_PREFIX = /^(re|fw|fwd|ответ|пересл)\s*:\s*/i
@@ -166,7 +177,7 @@ export function attachOutlookEntryIds(
       message_id: row.messageId,
       from: row.sender,
       subject: row.subject,
-      date: row.time
+      date: row.receivedAt || row.time
     })
     const entryId = keys.map((key) => byKey.get(key)).find(Boolean)
     return entryId ? { ...row, entryId } : row
@@ -211,15 +222,38 @@ function mergeImapMessages(...batches: Record<string, unknown>[][]): Record<stri
   return out
 }
 
-export async function probeMailToday(now = new Date()): Promise<MailProbeResult> {
+export async function probeMailToday(
+  now = new Date(),
+  options?: { comToday?: Record<string, unknown>[]; comOk?: boolean; comError?: string }
+): Promise<MailProbeResult> {
   const day = dayKeyLocal(now)
-  if (probeCache && probeCache.day === day && Date.now() - probeCache.at < PROBE_TTL_MS) {
+  if (
+    !options?.comToday &&
+    probeCache &&
+    probeCache.day === day &&
+    Date.now() - probeCache.at < PROBE_TTL_MS
+  ) {
     return probeCache.result
   }
 
+  const usePrefetchedCom = options?.comToday !== undefined
   const comPromise = skipOutlookCom()
-    ? Promise.resolve({ ok: false, messages: [] as Record<string, unknown>[], error: 'Outlook COM отключён' })
-    : fetchOutlookMailForDay(now, { folder: 'Inbox', maxResults: 50 })
+    ? Promise.resolve({
+        ok: false,
+        messages: [] as Record<string, unknown>[],
+        error: 'Outlook COM отключён'
+      })
+    : usePrefetchedCom
+      ? Promise.resolve({
+          ok: options.comOk ?? options.comToday!.length > 0,
+          messages: options.comToday || [],
+          error: options.comError || ''
+        })
+      : Promise.resolve({
+          ok: false,
+          messages: [] as Record<string, unknown>[],
+          error: ''
+        })
 
   const [comRes, imapStatus, imapSearch, imapUnread] = await Promise.all([
     comPromise.catch((err) => ({
@@ -271,25 +305,67 @@ export function pickMailRows(input: {
   imapRows: SpecMailRow[]
   comRows: SpecMailRow[]
 }): SpecMailRow[] {
-  if (input.primary === 'imap' && input.imapRows.length) return input.imapRows
   if (input.comRows.length) return input.comRows
-  if (input.imapUsable && input.imapRows.length) return input.imapRows
+  if (input.imapRows.length) return input.imapRows
+  if (input.primary === 'imap' && input.imapUsable) return []
   return []
 }
 
-export async function loadOrchestratorMail(outlookMailbox: string): Promise<OrchestratorMailLoad> {
-  const range = outlookMailWeekRange()
-  const [probe, comWeek, imapWeek] = await Promise.all([
-    probeMailToday(),
-    skipOutlookCom()
-      ? Promise.resolve({
-          ok: false,
-          messages: [] as Record<string, unknown>[],
-          error: 'Outlook COM отключён (VITE_SKIP_OUTLOOK_COM)',
-          source: ''
-        })
-      : fetchOutlookMailForRange(range.dateFrom, range.dateTo, { folder: 'All', maxResults: 50 }),
-    fetchImapSearch({ since: range.dateFrom, before: nextDayKey(range.dateTo), limit: 50 })
+export async function loadOrchestratorMail(
+  outlookMailbox: string,
+  period?: { dateFrom: string; dateTo: string },
+  options?: { forceOutlook?: boolean }
+): Promise<OrchestratorMailLoad> {
+  const range = resolveOutlookMailFetchRange(
+    period?.dateFrom || '',
+    period?.dateTo || '',
+    outlookMailWeekRange()
+  )
+  const imapWeekP = fetchImapSearch({
+    since: range.dateFrom,
+    before: nextDayKey(range.dateTo),
+    limit: 120
+  })
+
+  let comWeek: {
+    ok: boolean
+    messages: Record<string, unknown>[]
+    error?: string
+    source?: string
+    cached?: boolean
+  }
+  if (skipOutlookCom()) {
+    comWeek = {
+      ok: false,
+      messages: [],
+      error: 'Outlook COM отключён (VITE_SKIP_OUTLOOK_COM)',
+      source: ''
+    }
+  } else {
+    const ensured = await ensureOutlookMailRange(
+      outlookMailbox,
+      range.dateFrom,
+      range.dateTo,
+      { folder: 'All', maxResults: 120, force: options?.forceOutlook }
+    )
+    comWeek = {
+      ok: ensured.ok,
+      messages: ensured.messages,
+      error: ensured.error,
+      source: 'outlook_com',
+      cached: ensured.cached
+    }
+  }
+
+  const todayKey = dayKeyLocal(new Date())
+  const comToday = comWeek.ok ? filterMessagesOnDay(comWeek.messages, todayKey) : []
+  const [probe, imapWeek] = await Promise.all([
+    probeMailToday(new Date(), {
+      comToday,
+      comOk: comWeek.ok,
+      comError: comWeek.error
+    }),
+    imapWeekP
   ])
 
   const comError = uniqueMailErrors(probe.comError, comWeek.ok ? '' : comWeek.error || 'Outlook недоступен')
@@ -320,7 +396,7 @@ export async function loadOrchestratorMail(outlookMailbox: string): Promise<Orch
       : comError || (outlookMailbox ? `Outlook: ${outlookMailbox}` : 'outlook_mail')
 
   return {
-    rows,
+    rows: rows.map(withFormattedMailTime),
     sourceLabel,
     primary: probe.primary,
     imapPrimary: probe.imapPrimary,
@@ -348,14 +424,20 @@ export function mailListEmptyHint(input: {
   imapPrimary: boolean
   mailbox: string
   imapStatus?: string
+  periodFrom?: string
+  periodTo?: string
 }): string {
   if (input.loading) return 'Загружаем письма…'
   const status = input.imapStatus?.trim() || ''
+  const period =
+    input.periodFrom && input.periodTo
+      ? ` за период ${input.periodFrom} — ${input.periodTo}`
+      : ' за выбранный период'
   if (input.imapPrimary) {
-    return status ? `Нет писем в IMAP. ${status}` : 'Нет писем в IMAP.'
+    return status ? `Нет писем в IMAP${period}. ${status}` : `Нет писем в IMAP${period}.`
   }
   const box = input.mailbox ? ` Ящик: ${input.mailbox}.` : ''
   return status
-    ? `Нет писем за неделю (Outlook COM).${box} ${status}`
-    : `Нет писем за неделю (Outlook COM).${box}`.trim()
+    ? `Нет писем${period} (Outlook COM).${box} ${status}`
+    : `Нет писем${period} (Outlook COM).${box}`.trim()
 }

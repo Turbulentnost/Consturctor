@@ -69,6 +69,7 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
             command["trigger_id"] = row.id
             command["evidence"] = row.last_evidence or ""
             command["source"] = "trigger"
+            command["title"] = (workflow.title or "").strip()
             if push_desktop_command(row.owner_user_id, command):
                 logger.info(
                     "Scheduled trigger %s dispatched while a run is started user=%s",
@@ -122,6 +123,7 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
     command["trigger_id"] = row.id
     command["evidence"] = row.last_evidence or ""
     command["source"] = "trigger"
+    command["title"] = (workflow.title or "").strip()
     if push_desktop_command(row.owner_user_id, command):
         if not (row.condition_text or "").strip():
             mark_fired(

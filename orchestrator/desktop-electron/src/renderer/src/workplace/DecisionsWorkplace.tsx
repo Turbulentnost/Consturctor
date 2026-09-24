@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { usePageSearchOptional } from '../layout/pageSearchContext'
 import { StandardTabChrome, type ChromeTileSpec } from '../tabs/grid/TabChromeGrid'
 import { DEFAULT_DECISIONS_LAYOUT } from '../tabs/grid/useTabChromeLayout'
 import { api } from '../api/client'
@@ -22,6 +23,9 @@ import {
 } from './decisionTools'
 import { agentResultToToolDecision } from './agentResultDecisions'
 import { agentAccentStyle } from './agentAccent'
+import { useWorkplacePeriod } from './workplacePeriod'
+import { isoTimestampInWorkplacePeriod } from './workplacePeriodFilter'
+import { currentWeekRange } from './kpiPeriod'
 
 function pad(value: number): string {
   return String(value).padStart(2, '0')
@@ -477,15 +481,17 @@ export function DecisionsTab({
   userId?: string
 }): React.JSX.Element {
   const today = todayKey()
-  const [query, setQuery] = useState('')
+  const pageSearch = usePageSearchOptional()
+  const [localQuery, setLocalQuery] = useState('')
+  const query = inGridShell && pageSearch ? pageSearch.query : localQuery
+  const setQuery = inGridShell && pageSearch ? pageSearch.setQuery : setLocalQuery
   const [processId, setProcessId] = useState('')
   const [status, setStatus] = useState<DecisionStatusFilter>('')
   const [due, setDue] = useState<DueFilter>('all')
   const [priority, setPriority] = useState<PriorityFilter>('')
   const [attachmentsOnly, setAttachmentsOnly] = useState(false)
   const [sort, setSort] = useState<DecisionSort>('due_asc')
-  const [fromDay, setFromDay] = useState(() => shiftDay(today, -90))
-  const [toDay, setToDay] = useState(() => shiftDay(today, 30))
+  const { from: fromDay, to: toDay, setRange: setWorkplaceRange } = useWorkplacePeriod()
   const [duePanelOpen, setDuePanelOpen] = useState(false)
   const [dueAnchor, setDueAnchor] = useState(() => {
     const now = new Date()
@@ -746,18 +752,6 @@ export function DecisionsTab({
     [agents]
   )
 
-  useEffect(() => {
-    if (due === 'today') {
-      setFromDay(today)
-      setToDay(today)
-      return
-    }
-    if (due === 'all' || due === 'overdue') {
-      setFromDay(shiftDay(today, -90))
-      setToDay(shiftDay(today, 30))
-    }
-  }, [due, today])
-
   const visibleTools = useMemo(() => {
     const q = query.trim().toLowerCase()
     const seen = new Set<string>()
@@ -773,6 +767,7 @@ export function DecisionsTab({
       if (status && decisionStatusBucket(item) !== status) continue
       if (priority && itemPriority(item) !== priority) continue
       if (attachmentsOnly && !itemHasAttachment(item)) continue
+      if (!isoTimestampInWorkplacePeriod(item.at, fromDay, toDay)) continue
       if (due === 'today') {
         const stamp = parseIso(item.at)
         if (!stamp || dayKey(stamp) !== today) continue
@@ -792,7 +787,7 @@ export function DecisionsTab({
       return sort === 'due_desc' ? rightDue - leftDue : leftDue - rightDue
     })
     return merged
-  }, [livePending, tools, query, processId, status, priority, attachmentsOnly, due, sort, today])
+  }, [livePending, tools, query, processId, status, priority, attachmentsOnly, due, sort, today, fromDay, toDay])
 
   const pending = visibleTools.filter((item) => item.status === 'pending')
   const awaitingMe = visibleTools.filter((item) => decisionStatusBucket(item) === 'pending')
@@ -890,6 +885,7 @@ export function DecisionsTab({
       .filter((item) => {
         if (processId && item.workflowId !== processId) return false
         if (q && !`${item.agentName} ${item.workflowId} ${item.text}`.toLowerCase().includes(q)) return false
+        if (!isoTimestampInWorkplacePeriod(item.at, fromDay, toDay)) return false
         if (due === 'today') {
           const stamp = parseIso(item.at)
           if (!stamp || dayKey(stamp) !== today) return false
@@ -902,7 +898,7 @@ export function DecisionsTab({
         const rightAt = right.at || ''
         return sort === 'due_desc' ? rightAt.localeCompare(leftAt) : leftAt.localeCompare(rightAt)
       })
-  }, [results, query, processId, due, sort, today])
+  }, [results, query, processId, due, sort, today, fromDay, toDay])
 
   const dueMonthLabel = dueAnchor.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
   const dueCells = useMemo(() => {
@@ -925,15 +921,13 @@ export function DecisionsTab({
     setPriority('')
     setAttachmentsOnly(false)
     setSort('due_asc')
-    setFromDay(shiftDay(today, -90))
-    setToDay(shiftDay(today, 30))
+    setWorkplaceRange(currentWeekRange())
     setDuePanelOpen(false)
   }
 
   function pickDay(key: string): void {
     setDue('period')
-    setFromDay(key)
-    setToDay(key)
+    setWorkplaceRange({ from: key, to: key })
     setDuePanelOpen(false)
   }
 
@@ -956,8 +950,7 @@ export function DecisionsTab({
       label: due !== 'all' ? `Срок: ${DUE_FILTER_LABEL[due]}` : '',
       onClear: () => {
         setDue('all')
-        setFromDay(shiftDay(today, -90))
-        setToDay(shiftDay(today, 30))
+        setWorkplaceRange(currentWeekRange())
         setDuePanelOpen(false)
       }
     },

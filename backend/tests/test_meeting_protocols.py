@@ -21,6 +21,14 @@ def test_build_protocol_filter_rk_review() -> None:
     assert "Статус eq 'Подготовлен'" in filt
 
 
+def test_build_protocol_filter_psd_mark_only() -> None:
+    filt = build_protocol_filter({"psd_mark": True}, kind="sd")
+    assert "startswith(Number,'ПСД')" in filt
+    assert "СПГ" not in filt
+    assert "Posted eq false" not in filt
+    assert "Статус ne 'Закрыт'" not in filt
+
+
 def test_build_protocol_filter_sd_prefixes() -> None:
     filt = build_protocol_filter({"meeting_kind": "sd", "review_only": False}, kind="sd")
     assert "startswith(Number,'ПСД')" in filt
@@ -52,6 +60,7 @@ def test_normalize_protocol_row_needs_review() -> None:
         "Ref_Key": "8003225f-ab4c-11f1-987b-6cb31113810c",
         "Number": "СПГ_076_О_169",
         "Date": "2026-09-08T09:13:49",
+        "ДатаСоздания": "2026-09-04T09:13:49",
         "Posted": False,
         "Статус": "Подготовлен",
         "ТемаСовещания": {"Description": "Совет директоров по ГК"},
@@ -59,6 +68,7 @@ def test_normalize_protocol_row_needs_review() -> None:
     }
     item = normalize_protocol_row(row, kind="sd")
     assert item["number"] == "СПГ_076_О_169"
+    assert item["created_at"] == "2026-09-04T09:13:49"
     assert item["needs_review"] is True
     assert item["meeting_topic"] == "Совет директоров по ГК"
 
@@ -130,6 +140,49 @@ def test_build_protocol_filter_sd_includes_psd() -> None:
     )
     assert "startswith(Number,'ПСД')" in filt
     assert "Date ge datetime'2026-09-01T00:00:00'" in filt
+
+
+def test_build_protocol_filter_any_is_the_whole_journal_for_period() -> None:
+    filt = build_protocol_filter(
+        {"meeting_kind": "any", "date_from": "2026-09-21", "date_to": "2026-09-21"},
+        kind="any",
+    )
+    assert "DeletionMark eq false" in filt
+    assert "startswith" not in filt
+    assert "Posted eq false" not in filt
+    assert "Закрыт" not in filt
+    assert "Date ge datetime'2026-09-21T00:00:00'" in filt
+    assert "Date le datetime'2026-09-21T23:59:59'" in filt
+
+
+def test_list_meeting_protocols_any_requires_period() -> None:
+    result = list_meeting_protocols({"meeting_kind": "any"})
+    assert result["protocols"] == []
+    assert "date" in result["error"]
+
+
+def test_normalize_protocol_row_clock() -> None:
+    row = normalize_protocol_row(
+        {
+            "Ref_Key": "96396617-b5b0-11f1-9889-6cb31113810c",
+            "Number": "ДР__062_О_426",
+            "Date": "2026-09-21T10:30:00",
+            "Posted": False,
+            "Статус": "Подготовлен",
+            "ВидСовещания": "Отчетное",
+            "ВремяНачалаСовещания": "0001-01-01T10:30:00",
+            "ВремяОкончанияСовещания": "0001-01-01T11:00:00",
+            "КраткийСоставДокумента": "Жалыбин Максим Дмитриевич",
+            "Комментарий": "outlook:abc",
+            "ТемаСовещания": {"Description": "Еженедельное совещание"},
+        },
+        kind="any",
+    )
+    assert row["time_start"] == "10:30"
+    assert row["time_end"] == "11:00"
+    assert row["meeting_topic"] == "Еженедельное совещание"
+    assert row["brief"] == "Жалыбин Максим Дмитриевич"
+    assert row["meeting_kind_label"] == "Все протоколы"
 
 
 def test_list_meeting_protocols_sd_september_live() -> None:

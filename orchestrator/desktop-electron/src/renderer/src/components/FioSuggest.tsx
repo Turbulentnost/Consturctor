@@ -12,6 +12,8 @@ interface FioSuggestProps {
   variant?: 'light' | 'dark'
   onEnter?: () => void
   autoFocus?: boolean
+  /** Login screen: only public /auth/users, no chat/directory (needs JWT and floods ERP). */
+  publicOnly?: boolean
 }
 
 function initials(name: string): string {
@@ -33,14 +35,17 @@ export function FioSuggest({
   inputClassName,
   variant = 'light',
   onEnter,
-  autoFocus
+  autoFocus,
+  publicOnly = false
 }: FioSuggestProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<DirectoryUser[]>([])
+  const [loading, setLoading] = useState(false)
   const [avatars, setAvatars] = useState<Record<string, string>>({})
   const [highlight, setHighlight] = useState(-1)
   const wrapRef = useRef<HTMLDivElement>(null)
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const querySeq = useRef(0)
 
   useEffect(() => {
     function onDocClick(e: MouseEvent): void {
@@ -57,7 +62,7 @@ export function FioSuggest({
     void Promise.all(
       items.map(async (user) => {
         let url = await loadUserAvatar({ id: user.id, avatarUrl: user.avatarUrl })
-        if (!url && user.fio) {
+        if (!url && user.fio && !publicOnly && user.id) {
           const matches = await api.listDirectoryUsers(user.fio)
           const match =
             matches.find((item) => item.fio.toLowerCase() === user.fio.toLowerCase() && item.id) ||
@@ -84,33 +89,52 @@ export function FioSuggest({
     return () => {
       alive = false
     }
-  }, [items])
+  }, [items, publicOnly])
 
   function query(search: string): void {
     if (debounce.current) clearTimeout(debounce.current)
     debounce.current = setTimeout(async () => {
+      const seq = ++querySeq.current
+      setLoading(true)
       let results: DirectoryUser[] = []
+      const onLoginScreen = publicOnly || !api.getToken()
       try {
-        results = await api.listDirectoryUsers(search)
+        if (onLoginScreen) {
+          const names = await api.searchUsers(search)
+          results = names.map((fio) => ({
+            id: '',
+            fio,
+            position: '',
+            department: '',
+            activityStatus: 'online',
+            online: false,
+            isSupport: false,
+            avatarUrl: null
+          }))
+        } else {
+          results = await api.listDirectoryUsers(search)
+          if (!results.length) {
+            const names = await api.searchUsers(search)
+            results = names.map((fio) => ({
+              id: '',
+              fio,
+              position: '',
+              department: '',
+              activityStatus: 'online',
+              online: false,
+              isSupport: false,
+              avatarUrl: null
+            }))
+          }
+        }
       } catch {
         results = []
       }
-      if (!results.length) {
-        const names = await api.searchUsers(search)
-        results = names.map((fio) => ({
-          id: '',
-          fio,
-          position: '',
-          department: '',
-          activityStatus: 'online',
-          online: false,
-          isSupport: false,
-          avatarUrl: null
-        }))
-      }
+      if (seq !== querySeq.current) return
       setItems(results.slice(0, 20))
       setHighlight(-1)
-    }, 180)
+      setLoading(false)
+    }, 120)
   }
 
   function handleFocus(): void {
@@ -153,7 +177,7 @@ export function FioSuggest({
     }
   }
 
-  const showPopup = open && items.length > 0
+  const showPopup = open && (items.length > 0 || loading)
 
   return (
     <div className={showPopup ? 'fio-suggest open' : 'fio-suggest'} ref={wrapRef}>
@@ -168,6 +192,9 @@ export function FioSuggest({
       />
       {showPopup && (
         <div className={variant === 'dark' ? 'fio-popup dark' : 'fio-popup'}>
+          {loading && !items.length ? (
+            <div className="fio-option fio-option-muted">Загружаем список из 1С…</div>
+          ) : null}
           {items.map((user, index) => {
             const key = userKey(user)
             const avatar = avatars[key]

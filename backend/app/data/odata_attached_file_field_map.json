@@ -1,0 +1,27 @@
+{
+  "entity": "Catalog_ТД_ВходящаяКорреспонденцияПрисоединенныеФайлы",
+  "owner_document_entity": "Document_ТД_ВходящаяКорреспонденция",
+  "fields": {
+    "name": "Description",
+    "extension": "Расширение",
+    "owner_key": "ВладелецФайла_Key",
+    "volume_key": "Том_Key",
+    "file_path": "ПутьКФайлу",
+    "storage_binary": "ФайлХранилище_Base64Data",
+    "storage_binary_type": "ФайлХранилище_Type",
+    "storage_stream": "ФайлХранилище",
+    "storage_kind": "ТипХраненияФайла",
+    "size": "Размер",
+    "created_at": "ДатаСоздания",
+    "modified_at": "ДатаМодификацииУниверсальная",
+    "author_key": "Автор_Key"
+  },
+  "defaults": {
+    "storage_mode": "database",
+    "storage_kind": "ВИнформационнойБазе",
+    "storage_binary_type": "application/octet-stream",
+    "minimal_payload": true,
+    "omit_storage_kind": true,
+    "verify_mode": "bsp_exchange"
+  }
+}

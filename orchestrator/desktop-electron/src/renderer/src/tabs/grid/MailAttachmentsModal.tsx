@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { SpecMailRow } from '../../workplace/specV04DemoData'
 import type { OutlookMailAttachment } from '../../utils/outlookMailActions'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
 import {
   downloadAttachmentCopy,
   ensureAttachmentSaved,
@@ -201,7 +202,7 @@ export function MailAttachmentsModal({
         <header className="spec-mail-att-modal-head">
           <div>
             <h3 id="spec-mail-att-modal-title">Вложения письма</h3>
-            <p className="spec-v04-muted spec-mail-att-modal-sub">{mail.subject}</p>
+            <p className="spec-v04-muted spec-mail-att-modal-sub">{decodeMimeHeader(mail.subject)}</p>
           </div>
           <button type="button" className="spec-mail-att-modal-close" onClick={onClose} aria-label="Закрыть">
             ×

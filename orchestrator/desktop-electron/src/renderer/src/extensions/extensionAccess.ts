@@ -25,3 +25,8 @@ export function isChairmanBoardAssistant(user: UserProfile): boolean {
 export function canUseAssignmentsRegistry(user: UserProfile): boolean {
   return isPromptEngineer(user) || isChairmanBoardAssistant(user)
 }
+
+/** Библиотека агентов — каталог опубликованных агентов всех пользователей. */
+export function canUseAgentLibrary(_user: UserProfile): boolean {
+  return true
+}

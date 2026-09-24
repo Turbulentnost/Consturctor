@@ -11,6 +11,8 @@ export interface UserProfile {
   canChangeDepartment: boolean
   activityStatus: string
   isSupport: boolean
+  /** Ref_Key Catalog_Пользователи — только для записи в 1С, в UI не показывается. */
+  onecCatalogRefKey?: string
 }
 
 export interface LoginResult {
@@ -701,6 +703,92 @@ export interface SupportTicketItem {
   authorPosition: string
   preview: string
   queuedAt: string
+}
+
+export interface PositionKpiTile {
+  code: string
+  name: string
+  weight: number
+  unit: string
+  plan: number | null
+  fact: number | null
+  score: number | null
+  contrib: number | null
+  evidence: string
+}
+
+export interface PositionKpiDaily {
+  position: string
+  profileId: string
+  periodFrom: string
+  periodTo: string
+  asOf: string
+  computedAt: string
+  cached: boolean
+  stale: boolean
+  tiles: PositionKpiTile[]
+}
+
+export interface PositionKpiDataSourceInfo {
+  name: string
+  title: string
+  description: string
+  kind: string
+  params: Record<string, string>
+  perEmployee: boolean
+}
+
+/** Что считает плитку KPI: код модуля, источник и формула (кнопка «i»). */
+export interface PositionKpiMetricDetail {
+  position: string
+  sharedNote: string
+  code: string
+  name: string
+  weight: number
+  unit: string
+  plan: number | null
+  formulaKind: string
+  formulaHuman: string
+  module: {
+    name: string
+    origin: 'generated' | 'builtin' | string
+    code: string
+    tests: string
+    updatedAt: string
+  } | null
+  dataSource: {
+    source: string
+    params: Record<string, unknown>
+    legacy: Record<string, unknown>
+    registry: PositionKpiDataSourceInfo | null
+    ok: boolean
+    errors: string[]
+    warnings: string[]
+  }
+  sources: { role: string; kind: string; title: string; detail: string; updateRule: string }[]
+}
+
+export interface PositionKpiBuildMessage {
+  messageId: string
+  role: string
+  content: string
+  structured: Record<string, unknown>
+  createdAt: string
+}
+
+export interface PositionKpiBuildSession {
+  buildId: string
+  position: string
+  status: string
+  cursorAgentId: string
+  extracted: Record<string, unknown>
+  catalogDraft: Record<string, unknown>
+  modules: Record<string, unknown>[]
+  profileId: string
+  sdkPrompt: string
+  messages: PositionKpiBuildMessage[]
+  createdAt: string
+  updatedAt: string
 }
 
 export class ApiError extends Error {

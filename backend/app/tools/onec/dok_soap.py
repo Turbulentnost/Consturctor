@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import html
 import json
 import logging
 import os
@@ -30,7 +31,7 @@ from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
-_DEFAULT_LIST_TIMEOUT_SEC = 210.0
+_DEFAULT_LIST_TIMEOUT_SEC = 420.0
 _DEFAULT_CACHE_TTL_SEC = 1800.0
 _cache_guard = threading.Lock()
 _key_locks: dict[str, threading.Lock] = {}
@@ -394,6 +395,85 @@ def _store_cache(key: str, payload: dict[str, Any]) -> dict[str, Any]:
     return _with_cache_meta(stored, cached=False, fetched_at=fetched_at)
 
 
+_MEMO_NUMBER_RE = re.compile(r"Служебная записка\s+0*(\d{3,})", re.IGNORECASE)
+_memo_index: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
+
+
+def _memo_number_key(number: str) -> str:
+    return str(number or "").strip().lstrip("0")
+
+
+def memo_tasks_index() -> dict[str, list[dict[str, Any]]]:
+    """Открытые задачи ДО из последней полной выгрузки, по номеру служебной записки."""
+    global _memo_index
+    try:
+        files = sorted(_cache_dir().glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return {}
+    if not files:
+        return {}
+    newest = files[0]
+    mtime = newest.stat().st_mtime
+    if _memo_index and _memo_index[0] == mtime:
+        return _memo_index[1]
+    try:
+        data = json.loads(newest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _memo_index[1] if _memo_index else {}
+    payload = data.get("payload") if isinstance(data, dict) else None
+    index: dict[str, list[dict[str, Any]]] = {}
+    for row in _dump_rows(payload if isinstance(payload, dict) else {}):
+        text = f"{row.get('target') or ''} {row.get('name') or ''}"
+        match = _MEMO_NUMBER_RE.search(text)
+        if match:
+            index.setdefault(_memo_number_key(match.group(1)), []).append(row)
+    _memo_index = (mtime, index)
+    return index
+
+
+def memo_open_tasks(number: str) -> list[dict[str, Any]]:
+    return memo_tasks_index().get(_memo_number_key(number), [])
+
+
+def tasks_for_target(
+    config: DokConfig,
+    target_id: str,
+    target_type: str,
+    *,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    """Все задачи документа ДО (и исполненные): история маршрута служебной записки."""
+    target_id = str(target_id or "").strip()
+    if not target_id:
+        return []
+    filters = [condition("withExecuted", bool_value(True))]
+    if target_type:
+        filters.append(condition("target", object_id_value(target_id, target_type)))
+    root = execute_dm(
+        config,
+        '<dm:request xsi:type="dm:DMGetObjectListRequest">'
+        "<dm:type>DMBusinessProcessTask</dm:type>"
+        "<dm:query>"
+        f"{''.join(filters)}"
+        "<dm:limit>300</dm:limit>"
+        "</dm:query>"
+        "</dm:request>",
+        timeout=timeout,
+    )
+    return [row for row in parse_tasks(root) if row["target_id"].casefold() == target_id.casefold()]
+
+
+def invalidate_inbox_cache() -> None:
+    """Сброс кеша входящих задач: после закрытия список должен читаться из ДО."""
+    with _cache_guard:
+        _inbox_cache.clear()
+    try:
+        for path in _cache_dir().glob("*.json"):
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("dok_soap cache drop failed: %s", exc)
+
+
 def _with_cache_meta(payload: dict[str, Any], *, cached: bool, fetched_at: float) -> dict[str, Any]:
     out = dict(payload)
     out["cached"] = cached
@@ -458,6 +538,13 @@ def _ensure_docflow_tcp(config: DokConfig, *, connect_timeout: float = 12.0) -> 
         ) from exc
 
 
+def soap_fault_text(text: str, limit: int = 4000) -> str:
+    """Текст faultstring целиком: причина XDTO стоит в конце длинной цепочки."""
+    match = re.search(r"<faultstring[^>]*>(.*?)</faultstring>", text or "", flags=re.S)
+    body = html.unescape(match.group(1)) if match else (text or "")
+    return " ".join(body.split())[:limit]
+
+
 def _execute_dm_once(config: DokConfig, request_xml: str, *, timeout: float) -> ET.Element:
     _ensure_docflow_tcp(config)
     body = envelope(request_xml).encode("utf-8")
@@ -481,7 +568,7 @@ def _execute_dm_once(config: DokConfig, request_xml: str, *, timeout: float) -> 
             raise RuntimeError(
                 f"HTTP {error.code}: Документооборот отклонил Basic-учётку"
             ) from error
-        raise RuntimeError(f"HTTP {error.code}: {text[:800]}") from error
+        raise RuntimeError(f"HTTP {error.code}: {soap_fault_text(text)}") from error
     except TimeoutError as error:
         raise RuntimeError(soap_timeout_message(timeout)) from error
     except URLError as error:
@@ -551,35 +638,51 @@ def parse_users(root: ET.Element) -> list[dict[str, str]]:
     return users
 
 
+def importance_level(raw: str) -> str:
+    """Важность задачи ДО → high | normal | low. Пусто, если 1С её не отдала."""
+    text = (raw or "").strip().casefold()
+    if not text:
+        return ""
+    if "высок" in text or "критич" in text or "срочн" in text:
+        return "high"
+    if "низк" in text:
+        return "low"
+    if "обычн" in text or "средн" in text or "нормальн" in text:
+        return "normal"
+    return ""
+
+
+def task_row(obj: ET.Element) -> dict[str, Any]:
+    due = xml_text(obj, "m:dueDate")
+    importance_raw = xml_text(obj, "m:importance/m:name") or xml_text(obj, "m:importance/m:objectID/m:id")
+    return {
+        "name": xml_text(obj, "m:name"),
+        "id": xml_text(obj, "m:objectID/m:id"),
+        "performer": xml_text(obj, "m:performer/m:user/m:name")
+        or xml_text(obj, "m:performer/m:name"),
+        "author": xml_text(obj, "m:author/m:name"),
+        "begin": xml_text(obj, "m:beginDate"),
+        "due": "" if due.startswith(EMPTY_DATE_PREFIX) else due,
+        "executed": xml_text(obj, "m:executed") == "true",
+        "execution_mark": xml_text(obj, "m:executionMark"),
+        "step": xml_text(obj, "m:businessProcessStep"),
+        "number": xml_text(obj, "m:number"),
+        "description": xml_text(obj, "m:description"),
+        "target": xml_text(obj, "m:target/m:name"),
+        "target_id": xml_text(obj, "m:target/m:objectID/m:id"),
+        "target_type": xml_text(obj, "m:target/m:objectID/m:type"),
+        "state": xml_text(obj, "m:state/m:name"),
+        "importance_name": importance_raw,
+        "importance": importance_level(importance_raw),
+    }
+
+
 def parse_tasks(root: ET.Element) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
     objects = list(root.findall(".//m:items/m:object", NS))
     if not objects:
         objects = list(root.findall(".//m:objects", NS))
-    for obj in objects:
-        due = xml_text(obj, "m:dueDate")
-        task_id = xml_text(obj, "m:objectID/m:id")
-        if not task_id:
-            continue
-        rows.append(
-            {
-                "name": xml_text(obj, "m:name"),
-                "id": task_id,
-                "performer": xml_text(obj, "m:performer/m:user/m:name")
-                or xml_text(obj, "m:performer/m:name"),
-                "author": xml_text(obj, "m:author/m:name"),
-                "begin": xml_text(obj, "m:beginDate"),
-                "due": "" if due.startswith(EMPTY_DATE_PREFIX) else due,
-                "executed": xml_text(obj, "m:executed") == "true",
-                "step": xml_text(obj, "m:businessProcessStep"),
-                "number": xml_text(obj, "m:number"),
-                "description": xml_text(obj, "m:description"),
-                "target": xml_text(obj, "m:target/m:name"),
-                "target_id": xml_text(obj, "m:target/m:objectID/m:id"),
-                "state": xml_text(obj, "m:state/m:name"),
-            }
-        )
-    return rows
+    rows = [task_row(obj) for obj in objects]
+    return [row for row in rows if row["id"]]
 
 
 def find_user(config: DokConfig, name: str) -> dict[str, str]:
@@ -657,6 +760,19 @@ def list_open_tasks(
         )
     elif user and user.get("id") and filter_mode == "performer":
         filters.append(condition("performer", performer_value(user)))
+
+    # columnSet строго из полей, которые эта база отдаёт быстро: лишнее имя
+    # (например importance) заставляет ДО молчать до таймаута.
+    columns = [
+        "name",
+        "performer",
+        "author",
+        "beginDate",
+        "dueDate",
+        "executed",
+        "description",
+        "target",
+    ]
     root = execute_dm(
         config,
         '<dm:request xsi:type="dm:DMGetObjectListRequest">'
@@ -664,15 +780,8 @@ def list_open_tasks(
         "<dm:query>"
         f"{''.join(filters)}"
         f"<dm:limit>{max(1, min(int(limit), 500))}</dm:limit>"
-        "<dm:columnSet>name</dm:columnSet>"
-        "<dm:columnSet>performer</dm:columnSet>"
-        "<dm:columnSet>author</dm:columnSet>"
-        "<dm:columnSet>beginDate</dm:columnSet>"
-        "<dm:columnSet>dueDate</dm:columnSet>"
-        "<dm:columnSet>executed</dm:columnSet>"
-        "<dm:columnSet>description</dm:columnSet>"
-        "<dm:columnSet>target</dm:columnSet>"
-        "</dm:query>"
+        + "".join(f"<dm:columnSet>{name}</dm:columnSet>" for name in columns)
+        + "</dm:query>"
         "</dm:request>",
         timeout=timeout,
     )
@@ -700,9 +809,293 @@ def retrieve_tasks(config: DokConfig, task_ids: list[str], *, timeout: float) ->
     return parse_tasks(root)
 
 
+def business_process_id_for_task(config: DokConfig, task_id: str, *, timeout: float) -> str:
+    """УИД бизнес-процесса задачи ДО. TaskPatch закрывает процесс, не карточку задачи."""
+    task_id = str(task_id or "").strip()
+    if not task_id:
+        return ""
+    ids_xml = (
+        "<dm:objectIds>"
+        f"<dm:id>{xml_escape(task_id)}</dm:id>"
+        "<dm:type>DMBusinessProcessTask</dm:type>"
+        "</dm:objectIds>"
+    )
+    root = execute_dm(
+        config,
+        f'<dm:request xsi:type="dm:DMRetrieveRequest">{ids_xml}</dm:request>',
+        timeout=timeout,
+    )
+
+    def local_name(tag: str) -> str:
+        return tag.split("}")[-1]
+
+    for node in root.iter():
+        if local_name(node.tag) not in {"businessProcess", "parentBusinessProcess"}:
+            continue
+        for child in node.iter():
+            if local_name(child.tag) != "id":
+                continue
+            text = (child.text or "").strip()
+            if text and text.casefold() != task_id.casefold():
+                return text
+    tags = sorted({local_name(node.tag) for node in root.iter()})
+    logger.info("TaskPatch: в карточке %s нет УИД процесса, теги=%s", task_id, ",".join(tags)[:400])
+    return ""
+
+
+def _object_xml(node: ET.Element, *, tag: str = "") -> str:
+    """Элемент ответа ДО обратно в XML запроса: префиксы dm/xsi и xsi:type через dm."""
+    ET.register_namespace("dm", DM_NS)
+    ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
+    clone = ET.fromstring(ET.tostring(node, encoding="unicode"))
+    if tag:
+        clone.tag = f"{{{DM_NS}}}{tag}"
+    for item in clone.iter():
+        type_name = item.attrib.get(XSI_TYPE)
+        if type_name:
+            item.set(XSI_TYPE, f"dm:{type_name.split(':')[-1]}")
+    return ET.tostring(clone, encoding="unicode")
+
+
+def _task_ids_xml(task_id: str) -> str:
+    return (
+        "<dm:objectIds>"
+        f"<dm:id>{xml_escape(task_id)}</dm:id>"
+        "<dm:type>DMBusinessProcessTask</dm:type>"
+        "</dm:objectIds>"
+    )
+
+
+def _retrieve_task_node(config: DokConfig, task_id: str, *, timeout: float) -> ET.Element:
+    root = execute_dm(
+        config,
+        f'<dm:request xsi:type="dm:DMRetrieveRequest">{_task_ids_xml(task_id)}</dm:request>',
+        timeout=timeout,
+    )
+    node = root.find(".//m:objects", NS)
+    if node is None:
+        node = root.find(".//m:items/m:object", NS)
+    if node is None:
+        raise RuntimeError("Документооборот не вернул карточку задачи")
+    return node
+
+
+def retrieve_task_card(config: DokConfig, task_id: str, *, timeout: float) -> dict[str, Any]:
+    return task_row(_retrieve_task_node(config, task_id, timeout=timeout))
+
+
+def open_tasks_for_target(
+    config: DokConfig,
+    target_id: str,
+    target_type: str,
+    *,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    """Незавершённые задачи по документу. Доработка создаёт задачу с новым УИД."""
+    target_id = str(target_id or "").strip()
+    target_type = str(target_type or "").strip()
+    if not target_id:
+        return []
+    def request(filters: list[str]) -> list[dict[str, Any]]:
+        root = execute_dm(
+            config,
+            '<dm:request xsi:type="dm:DMGetObjectListRequest">'
+            "<dm:type>DMBusinessProcessTask</dm:type>"
+            "<dm:query>"
+            f"{''.join(filters)}"
+            "<dm:limit>500</dm:limit>"
+            "<dm:columnSet>name</dm:columnSet>"
+            "<dm:columnSet>performer</dm:columnSet>"
+            "<dm:columnSet>author</dm:columnSet>"
+            "<dm:columnSet>beginDate</dm:columnSet>"
+            "<dm:columnSet>dueDate</dm:columnSet>"
+            "<dm:columnSet>executed</dm:columnSet>"
+            "<dm:columnSet>description</dm:columnSet>"
+            "<dm:columnSet>businessProcessStep</dm:columnSet>"
+            "<dm:columnSet>target</dm:columnSet>"
+            "</dm:query>"
+            "</dm:request>",
+            timeout=timeout,
+        )
+        # Эта база игнорирует часть условий, поэтому предмет проверяем сами.
+        return [
+            row
+            for row in parse_tasks(root)
+            if not row["executed"] and row["target_id"].casefold() == target_id.casefold()
+        ]
+
+    open_filter = condition("withExecuted", bool_value(False))
+    if not target_type:
+        return request([open_filter])
+    try:
+        return request([open_filter, condition("target", object_id_value(target_id, target_type))])
+    except RuntimeError as exc:
+        logger.warning("Фильтр по предмету %s не принят: %s", target_id, str(exc)[:200])
+        return request([open_filter])
+
+
+def accept_task(config: DokConfig, task: ET.Element, *, timeout: float) -> None:
+    """Принять задачу к исполнению. Непринятую задачу ДО не даёт выполнить.
+
+    Передаём карточку целиком: XDTO проверяет структуру DMBusinessProcessTask,
+    заглушка из одного objectID не проходит проверку.
+    """
+    execute_dm(
+        config,
+        '<dm:request xsi:type="dm:DMAcceptTasksRequest">'
+        f'{_object_xml(task, tag="tasks")}'
+        "</dm:request>",
+        timeout=timeout,
+    )
+
+
+def is_object_locked_error(text: str) -> bool:
+    """Пессимистическая блокировка объекта в 1С (часто своей же прошлой веб-сессией)."""
+    return bool(
+        re.search(
+            r"уже\s+заблокирован|ЗаблокироватьДанныеДляРедактирования|Ошибка\s+блокировки",
+            text or "",
+            re.I,
+        )
+    )
+
+
+def _apply_execution_fields(
+    node: ET.Element, *, mark: str, comment: str, accept: bool
+) -> None:
+    """Готовит карточку задачи к завершению: приём (при необходимости), executed и пометка."""
+    if accept:
+        accepted = node.find("m:accepted", NS)
+        if accepted is not None:
+            accepted.text = "true"
+    executed = node.find("m:executed", NS)
+    if executed is None:
+        raise RuntimeError("В карточке задачи нет признака исполнения")
+    executed.text = "true"
+    # Без пометки исполнения ДО принимает объект, но задачу не завершает.
+    mark_node = node.find("m:executionMark", NS)
+    if mark_node is None:
+        mark_node = ET.Element(f"{{{DM_NS}}}executionMark")
+        node.insert(list(node).index(executed) + 1, mark_node)
+    mark_node.text = mark
+    if comment:
+        note = node.find("m:executionComment", NS)
+        if note is None:
+            note = ET.SubElement(node, f"{{{DM_NS}}}executionComment")
+        note.text = comment
+
+
+def _update_task_with_retry(
+    config: DokConfig,
+    node: ET.Element,
+    *,
+    timeout: float,
+    attempts: int = 4,
+    delay: float = 3.0,
+) -> ET.Element:
+    """DMUpdateRequest с повтором, если объект временно заблокирован веб-сессией 1С."""
+    last: RuntimeError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return execute_dm(
+                config,
+                f'<dm:request xsi:type="dm:DMUpdateRequest">{_object_xml(node)}</dm:request>',
+                timeout=timeout,
+            )
+        except RuntimeError as exc:
+            last = exc
+            if is_object_locked_error(str(exc)) and attempt < attempts:
+                logger.warning(
+                    "Задача заблокирована веб-сессией 1С, повтор %s/%s через %.0f c: %s",
+                    attempt,
+                    attempts,
+                    delay,
+                    str(exc)[:200],
+                )
+                time.sleep(delay)
+                continue
+            raise
+    assert last is not None
+    raise last
+
+
+def mark_task_executed(
+    config: DokConfig,
+    task_id: str,
+    *,
+    timeout: float,
+    comment: str = "",
+    mark: str = "ExecutedPositive",
+) -> dict[str, Any]:
+    """Завершение задачи: executed = true и executionMark (результат: исполнено, согласовано, отказ…)."""
+    task_id = str(task_id or "").strip()
+    if not task_id:
+        raise RuntimeError("Не указан task_id")
+    node = _retrieve_task_node(config, task_id, timeout=timeout)
+    logger.info(
+        "Задача %s до отметки: executed=%s, executionMark=%s, accepted=%s, шаг=%s",
+        task_id,
+        xml_text(node, "m:executed") or "—",
+        xml_text(node, "m:executionMark") or "—",
+        xml_text(node, "m:accepted") or "—",
+        xml_text(node, "m:businessProcessStep") or "—",
+    )
+    already_accepted = xml_text(node, "m:accepted") == "true"
+
+    # Приём и исполнение — одним DMUpdateRequest в одной веб-сессии 1С.
+    # Раздельные запросы открывают две WS-сессии: первая (приём) держит
+    # блокировку объекта, вторая (исполнение) падает «Объект уже заблокирован».
+    _apply_execution_fields(node, mark=mark, comment=comment, accept=not already_accepted)
+    update = _update_task_with_retry(config, node, timeout=timeout)
+
+    if (
+        not already_accepted
+        and xml_text(update.find(".//m:objects", NS), "m:executed") != "true"
+    ):
+        # Маршрут потребовал формального приёма задачи отдельным запросом.
+        logger.info("Задача %s не завершилась совмещённым приёмом, принимаю отдельно", task_id)
+        node = _retrieve_task_node(config, task_id, timeout=timeout)
+        if xml_text(node, "m:executed") != "true":
+            try:
+                accept_task(config, node, timeout=timeout)
+            except RuntimeError as exc:
+                logger.warning("Задача %s не принята к исполнению: %s", task_id, str(exc)[:300])
+            node = _retrieve_task_node(config, task_id, timeout=timeout)
+            _apply_execution_fields(node, mark=mark, comment=comment, accept=False)
+            update = _update_task_with_retry(config, node, timeout=timeout)
+
+    updated = update.find(".//m:objects", NS)
+    logger.info(
+        "Задача %s после DMUpdateRequest: executed=%s, executionMark=%s",
+        task_id,
+        xml_text(updated, "m:executed") or "—",
+        xml_text(updated, "m:executionMark") or "—",
+    )
+    rows = parse_tasks(update)
+    return rows[0] if rows else {"id": task_id, "executed": True}
+
+
+def dm_request_type_names(config: DokConfig, *, timeout: float) -> list[str]:
+    """Имена запросов DM из WSDL. Нужны, когда сервис не знает наш xsi:type."""
+    url = f"http://{config.server}:{config.port}{config.base_path}/ws/dm.1cws?wsdl"
+    request = Request(url, method="GET", headers={"Authorization": config.auth_header()})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            text = decode_body(response.read())
+    except (HTTPError, URLError, TimeoutError) as error:
+        raise RuntimeError(f"WSDL документооборота недоступен: {error}") from error
+    names = {match for match in re.findall(r'name="(DM\w*Request)"', text)}
+    path = _cache_dir() / "dm_wsdl.xml"
+    path.write_text(text, encoding="utf-8")
+    logger.info("dok_soap WSDL сохранён в %s, запросов=%s", path, len(names))
+    return sorted(names)
+
+
 ROLE_EXECUTOR = "executor"
 ROLE_AUTHOR = "author"
 ROLE_BOTH = "both"
+# Задача другого сотрудника, которую пользователь ведёт за него (замещение / помощник).
+ROLE_DELEGATE = "delegate"
 
 SOURCE_INBOX = "документооборот"
 SOURCE_FROM_ME = "документооборот (от меня)"
@@ -791,6 +1184,102 @@ def source_for_role(role: str) -> str:
     return SOURCE_INBOX
 
 
+def parse_delegate_fios(value: Any) -> list[str]:
+    """ФИО тех, за кого пользователь работает (замещение / помощник): список или строка через , ; перевод строки."""
+    items = value if isinstance(value, (list, tuple)) else re.split(r"[,;\n]+", str(value or ""))
+    out: list[str] = []
+    for item in items:
+        name = " ".join(str(item or "").split())
+        if name and name.casefold() not in {existing.casefold() for existing in out}:
+            out.append(name)
+    return out
+
+
+_PROBE_OK_TTL_SEC = 12 * 3600.0
+_PROBE_FAIL_TTL_SEC = 1800.0
+_PROBE_TIMEOUT_SEC = 30.0
+# Больше стольких строк или чужих исполнителей — сервер фильтр byUser не применил.
+_PROBE_MAX_ROWS = 480
+_PROBE_MAX_DELEGATES = 5
+
+
+def _probe_path(user_fio: str) -> Path:
+    digest = hashlib.sha256(normalize_person(user_fio).encode("utf-8")).hexdigest()[:32]
+    folder = _cache_dir() / "delegates"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{digest}.json"
+
+
+def read_delegate_probe(user_fio: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(_probe_path(user_fio).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def probe_by_user_delegates(config: DokConfig, user_fio: str) -> dict[str, Any]:
+    """Спрашивает ДО «задачи пользователя» (byUser). Если сервер фильтр выполнил,
+    чужие исполнители в ответе — те, за кого пользователь работает (замещение / помощник)."""
+    cached = read_delegate_probe(user_fio)
+    if cached:
+        ttl = _PROBE_OK_TTL_SEC if cached.get("status") in {"ok", "ignored"} else _PROBE_FAIL_TTL_SEC
+        if time.time() - float(cached.get("checked_at") or 0) < ttl:
+            return cached
+    started = time.perf_counter()
+    result: dict[str, Any]
+    try:
+        user = find_user(config, user_fio)
+        rows = list_open_tasks(
+            config,
+            None,
+            timeout=_PROBE_TIMEOUT_SEC,
+            user=user,
+            limit=_PROBE_MAX_ROWS,
+            filter_mode="byUser",
+        )
+    except (RuntimeError, ValueError) as exc:
+        text = str(exc)
+        status = "ignored" if _is_timeout_reason(text) else "error"
+        result = {"status": status, "delegates": [], "detail": text[:300]}
+    else:
+        others: dict[str, int] = {}
+        for row in rows:
+            performer = " ".join(str(row.get("performer") or "").split())
+            if not performer or person_names_match(user_fio, performer):
+                continue
+            if person_names_match(user_fio, str(row.get("author") or "")):
+                continue
+            others[performer] = others.get(performer, 0) + 1
+        ignored = len(rows) >= _PROBE_MAX_ROWS or len(others) > _PROBE_MAX_DELEGATES
+        result = {
+            "status": "ignored" if ignored else "ok",
+            "delegates": [] if ignored else sorted(others),
+            "raw": len(rows),
+        }
+    result["checked_at"] = time.time()
+    logger.info(
+        "dok_soap byUser probe fio=%s status=%s delegates=%s raw=%s in %.1fs",
+        user_fio,
+        result["status"],
+        result.get("delegates"),
+        result.get("raw"),
+        time.perf_counter() - started,
+    )
+    try:
+        _probe_path(user_fio).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("dok_soap probe cache write failed: %s", exc)
+    return result
+
+
+def known_delegates(user_fio: str, extra: Any = None) -> list[str]:
+    """Проба byUser из кеша + ФИО из настроек пользователя."""
+    probe = read_delegate_probe(user_fio) or {}
+    names = [*parse_delegate_fios(extra), *parse_delegate_fios(probe.get("delegates") or [])]
+    return [name for name in parse_delegate_fios(names) if not person_names_match(user_fio, name)]
+
+
 def _filter_ignored(rows: list[dict[str, Any]], user_name: str) -> bool:
     mine = normalize_person(user_name)
     others = {
@@ -825,6 +1314,56 @@ def fetch_open_dump(config: DokConfig, *, only_open: bool = True) -> dict[str, A
     }
 
 
+def fetch_user_closed_tasks(
+    user_fio: str,
+    *,
+    date_from: datetime,
+    date_to: datetime | None = None,
+    env_file: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Исполненные задачи пользователя за период.
+
+    Полная выгрузка с withExecuted идёт минутами, поэтому список запрашивается
+    с границами по beginDate и dueDate и без кеша дампа.
+    """
+    config = load_config(env_file=env_file, username=username, password=password)
+    user: dict[str, str] | None = None
+    try:
+        user = find_user(config, user_fio)
+    except (RuntimeError, ValueError, OSError) as exc:
+        logger.warning("dok_soap closed: user lookup failed: %s", str(exc)[:200])
+    started = time.perf_counter()
+    rows = list_open_tasks(
+        config,
+        date_from,
+        timeout=max(float(config.timeout), 120.0),
+        only_open=False,
+        user=user,
+        limit=limit,
+        filter_mode="byUser" if user else None,
+        due_to=date_to,
+    )
+    logger.info(
+        "dok_soap closed list=%.1fs raw=%s fio=%s",
+        time.perf_counter() - started,
+        len(rows),
+        user_fio,
+    )
+    sliced = slice_dump_for_user({"endpoint": config.soap_url(), "rows": rows}, user_fio)
+    executed = [row for row in sliced["rows"] if row.get("executed")]
+    return {
+        "endpoint": config.soap_url(),
+        "user_fio": user_fio,
+        "since": date_from.date().isoformat(),
+        "count": len(executed),
+        "rows": executed,
+        "dump_count": len(rows),
+    }
+
+
 def _dump_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     raw = payload.get("rows")
     if not isinstance(raw, list):
@@ -852,12 +1391,20 @@ def slice_dump_for_user(
     user_fio: str,
     *,
     today_and_overdue: bool = False,
+    delegate_fios: list[str] | None = None,
 ) -> dict[str, Any]:
     today = date.today()
     seen: set[str] = set()
     rows: list[dict[str, Any]] = []
+    delegates = delegate_fios or []
     for row in _dump_rows(dump):
         role = task_role_for_user(row, user_fio)
+        on_behalf_of = ""
+        if role is None and delegates:
+            performer = str(row.get("performer") or "")
+            if any(person_names_match(name, performer) for name in delegates):
+                role = ROLE_DELEGATE
+                on_behalf_of = performer
         if role is None:
             continue
         key = task_dedup_key(row)
@@ -867,6 +1414,8 @@ def slice_dump_for_user(
             seen.add(key)
         tagged = dict(row)
         tagged["role"] = role
+        if on_behalf_of:
+            tagged["on_behalf_of"] = on_behalf_of
         rows.append(tagged)
     if today_and_overdue:
         rows = [row for row in rows if is_today_or_overdue(row, today=today)]
@@ -994,10 +1543,13 @@ def fetch_user_inbox_tasks(
     retrieve: bool = False,
     today_and_overdue: bool = False,
     force_refresh: bool = False,
+    delegate_fios: Any = None,
 ) -> dict[str, Any]:
     """Public API for inbox SOAP (used by dump script and onec.docflow_tasks).
 
     1C returns the full open-task dump; we cache that once and slice per user.
+    Задачи тех, за кого пользователь работает, добавляются с ролью delegate:
+    из пробы byUser под сессией пользователя и из списка в его настройках.
     """
     try:
         endpoint = load_config(env_file=env_file, username=username, password=password).soap_url()
@@ -1011,11 +1563,39 @@ def fetch_user_inbox_tasks(
     )
     lock = _lock_for(key)
 
+    def _drop_executed_rows(payload: dict[str, Any]) -> dict[str, Any]:
+        # Полная выгрузка идёт минуты и в кеше живёт часами; исполненное
+        # с тех пор отсеиваем точечной проверкой задач этого пользователя.
+        ids = [str(row.get("id") or "") for row in payload["rows"] if row.get("id")][:200]
+        try:
+            config = load_config(env_file=env_file, username=username, password=password)
+            cards = retrieve_tasks(config, ids, timeout=30.0)
+        except Exception as exc:  # noqa: BLE001 — список показываем и без проверки
+            logger.warning("dok_soap executed check failed: %s", str(exc)[:200])
+            return payload
+        done = {str(card["id"]).casefold() for card in cards if card.get("executed")}
+        if not done:
+            return payload
+        rows = [row for row in payload["rows"] if str(row.get("id") or "").casefold() not in done]
+        logger.info("dok_soap executed check dropped=%s", len(payload["rows"]) - len(rows))
+        return {**payload, "rows": rows, "count": len(rows)}
+
+    def _delegates() -> list[str]:
+        if username and password:
+            try:
+                probe_by_user_delegates(
+                    load_config(env_file=env_file, username=username, password=password), user_fio
+                )
+            except Exception as exc:  # noqa: BLE001 — без пробы показываем свои задачи
+                logger.warning("dok_soap byUser probe failed: %s", str(exc)[:200])
+        return known_delegates(user_fio, delegate_fios)
+
     def _serve(dump: dict[str, Any], *, cached: bool, fetched_at: float) -> dict[str, Any]:
         payload = slice_dump_for_user(
             dump,
             user_fio,
             today_and_overdue=today_and_overdue,
+            delegate_fios=_delegates(),
         )
         if retrieve and payload["rows"]:
             try:
@@ -1031,6 +1611,8 @@ def fetch_user_inbox_tasks(
                 payload["rows"] = [details.get(row.get("id"), row) for row in payload["rows"]]
             except Exception:
                 logger.warning("dok_soap retrieve after dump slice failed")
+        elif only_open and payload["rows"]:
+            payload = _drop_executed_rows(payload)
         logger.info(
             "dok_soap slice fio=%s cached=%s dump=%s kept=%s",
             user_fio,

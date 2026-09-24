@@ -27,6 +27,10 @@ def normalize_onec_cred_keys(payload: dict[str, Any]) -> dict[str, Any]:
         ("nameMail", "name_mail"),
         ("erpLogin", "erp_login"),
         ("erpPassword", "erp_password"),
+        ("onecCatalogRefKey", "onec_catalog_ref_key"),
+        ("userId", "user_id"),
+        ("sessionOnecRef", "session_onec_ref"),
+        ("sessionCustomerKey", "session_customer_key"),
     )
     for src, dst in pairs:
         if src in payload and not str(out.get(dst) or "").strip():

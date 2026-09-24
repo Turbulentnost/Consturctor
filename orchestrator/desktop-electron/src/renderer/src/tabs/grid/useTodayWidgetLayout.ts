@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
 import { resolveLayoutOverlaps } from './gridReflow'
 
-export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v5'
+export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v6'
 
 export const TODAY_GRID_COLS = 8
 export const TODAY_GRID_MAX_ROWS = 6
@@ -70,26 +70,31 @@ export type TodayWidgetLayoutPersist = {
 }
 
 /**
- * 8×6 grid — mirrors pre-RGL todayGrid.css placement:
- * row band 1: plan (6 col) + results (2 col, full height);
- * row band 2: outlook / 1С / projects (3×2 col);
- * row band 3: events / decisions (4+4 col).
+ * 8×6 — как эталон «Сегодня»:
+ * ряд 1: план (6) + задачи 1С (2);
+ * ряд 2: письма Outlook (4) + результаты агентов (4);
+ * ряд 3: события (4) + решения (4).
+ * Проектные задачи в корзине, открываются из «Редактировать виджеты».
  */
 export const DEFAULT_TODAY_WIDGET_LAYOUT: LayoutItem[] = [
-  { i: 'plan', x: 0, y: 0, w: 6, h: 3, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'results', x: 6, y: 0, w: 2, h: 6, minW: 2, minH: 2, maxW: 8, maxH: 6 },
-  { i: 'outlook', x: 0, y: 3, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'onec', x: 2, y: 3, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'projects', x: 4, y: 3, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'events', x: 0, y: 5, w: 4, h: 1, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'decisions', x: 4, y: 5, w: 4, h: 1, minW: 2, minH: 1, maxW: 8, maxH: 6 }
+  { i: 'plan', x: 0, y: 0, w: 6, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
+  { i: 'onec', x: 6, y: 0, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
+  { i: 'outlook', x: 0, y: 2, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
+  { i: 'results', x: 4, y: 2, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
+  { i: 'events', x: 0, y: 4, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
+  { i: 'decisions', x: 4, y: 4, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
+  { i: 'projects', x: 0, y: 6, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 }
 ]
+
+export const DEFAULT_TODAY_WIDGET_VISIBLE: Partial<Record<TodayWidgetId, boolean>> = {
+  projects: false
+}
 
 export const TODAY_WIDGET_LABELS: Record<TodayWidgetId, string> = {
   plan: 'План на день',
   results: 'Результаты агентов',
   outlook: 'Письма Outlook',
-  onec: 'Задачи 1С',
+  onec: 'Задачи на сегодня (1С и платформа)',
   projects: 'Проектные задачи',
   events: 'События',
   decisions: 'Решения'
@@ -191,7 +196,7 @@ function readPersist(userId: string): TodayWidgetLayoutPersist {
   try {
     const raw = localStorage.getItem(storageKeyForUser(userId))
     if (!raw) {
-      return { layout: cloneDefaultLayout(), locked: {}, visible: {}, color: {} }
+      return { layout: cloneDefaultLayout(), locked: {}, visible: { ...DEFAULT_TODAY_WIDGET_VISIBLE }, color: {} }
     }
     const parsed = JSON.parse(raw) as TodayWidgetLayoutPersist
     return {
@@ -201,7 +206,7 @@ function readPersist(userId: string): TodayWidgetLayoutPersist {
       color: sanitizeColorMap(parsed.color)
     }
   } catch {
-    return { layout: cloneDefaultLayout(), locked: {}, visible: {}, color: {} }
+    return { layout: cloneDefaultLayout(), locked: {}, visible: { ...DEFAULT_TODAY_WIDGET_VISIBLE }, color: {} }
   }
 }
 
@@ -212,6 +217,63 @@ function writePersist(userId: string, state: TodayWidgetLayoutPersist): void {
     /* ignore quota */
   }
 }
+
+const LEGACY_WIDGET_VISIBILITY_KEY = 'orch-today-widgets-v1'
+
+function legacyVisibilityStorageKey(userId: string): string {
+  return `${LEGACY_WIDGET_VISIBILITY_KEY}:${userId.trim() || 'default'}`
+}
+
+function visibilityRecordFromPartial(
+  visible: Partial<Record<TodayWidgetId, boolean>>
+): Record<TodayWidgetId, boolean> {
+  const out = Object.fromEntries(TODAY_WIDGET_IDS.map((id) => [id, true])) as Record<TodayWidgetId, boolean>
+  for (const id of TODAY_WIDGET_IDS) {
+    if (visible[id] === false) out[id] = false
+  }
+  return out
+}
+
+function partialFromVisibilityRecord(
+  visibility: Record<TodayWidgetId, boolean>
+): Partial<Record<TodayWidgetId, boolean>> {
+  const next: Partial<Record<TodayWidgetId, boolean>> = {}
+  for (const id of TODAY_WIDGET_IDS) {
+    if (visibility[id] === false) next[id] = false
+  }
+  return next
+}
+
+function mergeLegacyWidgetVisibility(userId: string, state: TodayWidgetLayoutPersist): TodayWidgetLayoutPersist {
+  try {
+    const raw = localStorage.getItem(legacyVisibilityStorageKey(userId))
+    if (!raw) return state
+    const parsed = JSON.parse(raw) as Partial<Record<string, boolean>>
+    localStorage.removeItem(legacyVisibilityStorageKey(userId))
+    const merged = { ...sanitizeFlagMap(state.visible), ...sanitizeFlagMap(parsed) }
+    const next = { ...state, visible: merged }
+    writePersist(userId, next)
+    return next
+  } catch {
+    return state
+  }
+}
+
+/** Settings → same store as «Сегодня» layout (field `visible`). */
+export function readTodayWidgetVisibilitySettings(userId: string): Record<TodayWidgetId, boolean> {
+  const state = mergeLegacyWidgetVisibility(userId, readPersist(userId))
+  return visibilityRecordFromPartial(state.visible || {})
+}
+
+export function writeTodayWidgetVisibilitySettings(
+  userId: string,
+  visibility: Record<TodayWidgetId, boolean>
+): void {
+  const state = readPersist(userId)
+  writePersist(userId, { ...state, visible: partialFromVisibilityRecord(visibility) })
+}
+
+export const TODAY_WIDGET_VISIBILITY_EVENT = 'orchestrator:today-widgets-changed'
 
 function layoutGeomEqual(left: LayoutItem[], right: LayoutItem[]): boolean {
   if (left.length !== right.length) return false
@@ -266,6 +328,17 @@ export function useTodayWidgetLayout(userId: string): {
     setEditModeState(false)
   }, [userId])
 
+  useEffect(() => {
+    const reload = (): void => {
+      const next = readPersist(userId)
+      setPersist(next)
+      layoutRef.current = next.layout
+      lockedRef.current = next.locked
+    }
+    window.addEventListener(TODAY_WIDGET_VISIBILITY_EVENT, reload)
+    return () => window.removeEventListener(TODAY_WIDGET_VISIBILITY_EVENT, reload)
+  }, [userId])
+
   const layout = persist.layout
   const locked = persist.locked
 
@@ -284,6 +357,10 @@ export function useTodayWidgetLayout(userId: string): {
   )
 
   const visible = persist.visible || {}
+
+  const notifyVisibilityChanged = useCallback(() => {
+    window.dispatchEvent(new CustomEvent(TODAY_WIDGET_VISIBILITY_EVENT))
+  }, [])
   const color = persist.color || {}
 
   const onLayoutChange = useCallback(
@@ -321,8 +398,9 @@ export function useTodayWidgetLayout(userId: string): {
     (id: TodayWidgetId) => {
       const nextVisible = { ...visible, [id]: visible[id] === false }
       persistState({ layout, locked, visible: nextVisible, color })
+      notifyVisibilityChanged()
     },
-    [color, layout, locked, persistState, visible]
+    [color, layout, locked, notifyVisibilityChanged, persistState, visible]
   )
 
   const restoreWidget = useCallback(
@@ -330,8 +408,9 @@ export function useTodayWidgetLayout(userId: string): {
       const nextVisible = { ...visible }
       delete nextVisible[id]
       persistState({ layout, locked, visible: nextVisible, color })
+      notifyVisibilityChanged()
     },
-    [color, layout, locked, persistState, visible]
+    [color, layout, locked, notifyVisibilityChanged, persistState, visible]
   )
 
   const setWidgetColor = useCallback(
@@ -344,8 +423,14 @@ export function useTodayWidgetLayout(userId: string): {
   )
 
   const resetLayout = useCallback(() => {
-    persistState({ layout: cloneDefaultLayout(), locked: {}, visible: {}, color: {} })
-  }, [persistState])
+    persistState({
+      layout: cloneDefaultLayout(),
+      locked: {},
+      visible: { ...DEFAULT_TODAY_WIDGET_VISIBLE },
+      color: {}
+    })
+    notifyVisibilityChanged()
+  }, [notifyVisibilityChanged, persistState])
 
   const layoutWithStatic = useMemo(() => {
     const flagged = applyTodayLayoutStaticFlags(layout, editMode, locked)

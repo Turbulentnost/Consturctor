@@ -25,17 +25,35 @@ def init_db() -> None:
     from app.models import agent_run as _agent_run  # noqa: F401
     from app.models import calendar_overlay as _calendar_overlay  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
+    from app.models import org as _org  # noqa: F401
     from app.models import orchestrator as _orchestrator  # noqa: F401
+    from app.models import platform_task as _platform_task  # noqa: F401
     from app.models import regulation as _regulation  # noqa: F401
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401
     from app.models import kpi_daily_metric as _kpi_daily_metric  # noqa: F401
+    from app.models import position_kpi as _position_kpi  # noqa: F401
     from app.models import workflow as _workflow  # noqa: F401
     from app.modules.chat import models as _chat  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
     _ensure_indexes()
+    _seed_position_kpi()
+
+
+def _seed_position_kpi() -> None:
+    from kpi.seed_pl_npo_010 import upsert_catalog
+
+    db = SessionLocal()
+    try:
+        upsert_catalog(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 # create_all() only adds indexes together with a new table, so existing
@@ -94,6 +112,8 @@ def _ensure_columns() -> None:
             alters.append("ADD COLUMN activity_status VARCHAR(16) NOT NULL DEFAULT 'online'")
         if "is_support" not in existing:
             alters.append("ADD COLUMN is_support BOOLEAN NOT NULL DEFAULT FALSE")
+        if "onec_catalog_ref_key" not in existing:
+            alters.append("ADD COLUMN onec_catalog_ref_key VARCHAR(36) NOT NULL DEFAULT ''")
         if existing and "fio" not in existing:
             alters.append("ADD COLUMN fio VARCHAR(512) NOT NULL DEFAULT ''")
         if existing:
@@ -189,6 +209,24 @@ def _ensure_columns() -> None:
                 """
             )
         ).fetchall()
+        ptask_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'platform_tasks'
+                """
+            )
+        ).fetchall()
+        ptask_cols = {str(r[0]) for r in ptask_rows}
+        if ptask_cols and "review_due_at" not in ptask_cols:
+            conn.execute(text("ALTER TABLE platform_tasks ADD COLUMN review_due_at TIMESTAMPTZ NULL"))
+        if ptask_cols and "accepted_at" not in ptask_cols:
+            conn.execute(text("ALTER TABLE platform_tasks ADD COLUMN accepted_at TIMESTAMPTZ NULL"))
+        if ptask_cols and "rework_count" not in ptask_cols:
+            conn.execute(
+                text("ALTER TABLE platform_tasks ADD COLUMN rework_count INTEGER NOT NULL DEFAULT 0")
+            )
         creation_cols = {str(r[0]) for r in creation_rows}
         if creation_cols and "interview_json" not in creation_cols:
             conn.execute(

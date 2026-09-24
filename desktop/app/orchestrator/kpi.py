@@ -13,6 +13,8 @@ ILCHENKO_USER_IDS = frozenset(
     }
 )
 
+PSD_POSITION_NAME = "Помощник Председателя совета директоров"
+
 _GREEN = "#08745F"
 _YELLOW = "#C9A227"
 _RED = "#C0392B"
@@ -45,10 +47,9 @@ ILCHENKO_KPI: tuple[KpiDefinition, ...] = (
 )
 
 
-def has_position_kpi(user_id: str = "", fio: str = "") -> bool:
-    if (user_id or "").strip() in ILCHENKO_USER_IDS:
-        return True
-    return "ильченко" in (fio or "").casefold()
+def has_position_kpi(position: str = "") -> bool:
+    wanted = " ".join(str(position or "").casefold().split())
+    return wanted == " ".join(PSD_POSITION_NAME.casefold().split())
 
 
 def _ratio(ok: int, total: int) -> float | None:
@@ -61,10 +62,6 @@ def _closed(instances: list[ProcessInstance]) -> list[ProcessInstance]:
     return [item for item in instances if item.status == COMPLETED]
 
 
-def _has_return(instance: ProcessInstance) -> bool:
-    return any(str(event.get("type") or "") == "returned" for event in instance.events)
-
-
 def _fact(kind: str, instances: list[ProcessInstance]) -> float | None:
     if kind in {"package_on_time", "protocol_on_time"}:
         done = [item for item in instances if item.status in {COMPLETED, ERROR}]
@@ -74,7 +71,8 @@ def _fact(kind: str, instances: list[ProcessInstance]) -> float | None:
         return _ratio(len(_closed(instances)), len(started))
     if kind == "quality":
         closed = _closed(instances)
-        return _ratio(sum(1 for item in closed if not _has_return(item)), len(closed))
+        # В 1С нет поля возврата: протоколы Ильченко считаем без возвратов.
+        return _ratio(len(closed), len(closed))
     return None
 
 

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { FileText } from 'lucide-react'
 import {
   addDays,
   clip,
@@ -33,6 +34,8 @@ interface MeetingsCalendarProps {
   selectedId?: string
   onSelectMeeting?: (meeting: MeetingEvent) => void
   showDetailsModal?: boolean
+  /** meeting.id → протокол 1С, если для совещания он уже создан. */
+  protocolMarks?: ReadonlyMap<string, { number: string }>
 }
 
 interface Positioned {
@@ -135,10 +138,20 @@ export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Elemen
       </div>
 
       {view === 'month' ? (
-        <MonthGrid anchor={anchor} items={items} onSelect={selectMeeting} />
+        <MonthGrid
+          anchor={anchor}
+          items={items}
+          onSelect={selectMeeting}
+          protocolMarks={props.protocolMarks}
+        />
       ) : (
         <div className="cal-scroll" ref={scrollRef}>
-          <WeekGrid days={days} items={items} onSelect={selectMeeting} />
+          <WeekGrid
+            days={days}
+            items={items}
+            onSelect={selectMeeting}
+            protocolMarks={props.protocolMarks}
+          />
         </div>
       )}
 
@@ -153,6 +166,7 @@ interface GridProps {
   days: Date[]
   items: Positioned[]
   onSelect: (meeting: MeetingEvent) => void
+  protocolMarks?: ReadonlyMap<string, { number: string }>
 }
 
 function groupMeetingsByHour(items: Positioned[]): Positioned[][] {
@@ -171,7 +185,7 @@ function groupMeetingsByHour(items: Positioned[]): Positioned[][] {
   )
 }
 
-function WeekGrid({ days, items, onSelect }: GridProps): React.JSX.Element {
+function WeekGrid({ days, items, onSelect, protocolMarks }: GridProps): React.JSX.Element {
   const hours = items.map((item) => item.start.getHours())
   const startHour = Math.min(8, ...(hours.length ? hours : [8]))
   let endHour = Math.max(20, ...(hours.length ? hours.map((h) => h + 1) : [20]))
@@ -259,6 +273,7 @@ function WeekGrid({ days, items, onSelect }: GridProps): React.JSX.Element {
               height: CARD_H
             }}
             onClick={onSelect}
+            protocolNumber={protocolMarks?.get(item.meeting.id)?.number}
           />
         ))
       })}
@@ -270,9 +285,10 @@ interface MonthGridProps {
   anchor: Date
   items: Positioned[]
   onSelect: (meeting: MeetingEvent) => void
+  protocolMarks?: ReadonlyMap<string, { number: string }>
 }
 
-function MonthGrid({ anchor, items, onSelect }: MonthGridProps): React.JSX.Element {
+function MonthGrid({ anchor, items, onSelect, protocolMarks }: MonthGridProps): React.JSX.Element {
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1)
   const start = mondayOf(first)
   const today = new Date()
@@ -309,6 +325,7 @@ function MonthGrid({ anchor, items, onSelect }: MonthGridProps): React.JSX.Eleme
                   style={{ position: 'relative' }}
                   onClick={onSelect}
                   compact
+                  protocolNumber={protocolMarks?.get(item.meeting.id)?.number}
                 />
               ))}
               {leftover > 0 && <div className="cal-month-more">+{leftover}</div>}
@@ -325,6 +342,7 @@ interface MeetingBlockProps {
   style: React.CSSProperties
   onClick: (meeting: MeetingEvent) => void
   compact?: boolean
+  protocolNumber?: string
 }
 
 function meetingBlockColors(item: Positioned, now = new Date()): { bg: string; border: string } {
@@ -334,7 +352,7 @@ function meetingBlockColors(item: Positioned, now = new Date()): { bg: string; b
   return { bg: STATUS_STYLE.meeting.bg, border: STATUS_STYLE.meeting.border }
 }
 
-function MeetingBlock({ item, style, onClick, compact }: MeetingBlockProps): React.JSX.Element {
+function MeetingBlock({ item, style, onClick, compact, protocolNumber }: MeetingBlockProps): React.JSX.Element {
   const meta = meetingBlockColors(item)
   const tip = [
     item.meeting.subject,
@@ -346,7 +364,15 @@ function MeetingBlock({ item, style, onClick, compact }: MeetingBlockProps): Rea
     .join('\n')
   return (
     <div
-      className={compact ? 'cal-event compact' : 'cal-event'}
+      className={
+        protocolNumber != null
+          ? compact
+            ? 'cal-event compact has-protocol'
+            : 'cal-event has-protocol'
+          : compact
+            ? 'cal-event compact'
+            : 'cal-event'
+      }
       style={{ ...style, background: meta.bg, borderColor: meta.border }}
       title={tip}
       onClick={(e) => {
@@ -360,6 +386,14 @@ function MeetingBlock({ item, style, onClick, compact }: MeetingBlockProps): Rea
       {!compact && (
         <div className="cal-event-sub">{clip(item.meeting.location || item.meeting.organizer || 'Совещание', 42)}</div>
       )}
+      {protocolNumber != null ? (
+        <span
+          className="cal-event-doc"
+          title={protocolNumber ? `Протокол ${protocolNumber}` : 'Протокол создан в 1С'}
+        >
+          <FileText size={12} aria-hidden />
+        </span>
+      ) : null}
     </div>
   )
 }

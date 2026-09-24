@@ -457,6 +457,11 @@ _RK_TIPS = (
     "пл-01-001",
     "пл 01-001",
 )
+_ARTIFACT_CLOSE_TIPS = (
+    "проверка артефактов",
+    "предложение поручений к закрытию",
+    "предложение к закрытию поручений",
+)
 
 RK_RUN_HINT = (
     "This is RK meeting prep (ПЛ-01-001), not calendar control. "
@@ -472,15 +477,46 @@ RK_RUN_HINT = (
     "If the meeting date is unconfirmed, still export the file, then WORK_RESULT "
     "with «Недостаточно данных». Finish with TESTS: PASS; no step narration in chat."
 )
+ARTIFACT_CLOSE_HINT = (
+    "This is artifact check and close proposal, not RK meeting prep. "
+    "Do not search a meeting date, agenda, or \\\\192.168.1.198 RK folders. "
+    "Do not ask for an Excel registry or launch files. "
+    "Call onec.erp_assignments action=list only_open=true include_files=true limit=100. "
+    "If that times out, retry once without include_files, then action=files per card. "
+    "Download executor files with onec.download_artifact one file_id at a time. "
+    "Read Word/PDF/images via office.read_file, Excel via excel.read_workbook. "
+    "Decide per card: recommend close / partial / no / insufficient data. "
+    "Export Word, then ## WORK_RESULT. No 1C write without HITL."
+)
+
+DAILY_ASSIGNMENT_HINT = (
+    "This is the ACT00 journal plus PSD protocols into Action Tracker, "
+    "not artifact close and not an open-cards-only sync. "
+    "Call onec.erp_assignments action=list customer=Амураль Игорь Борисович "
+    "include_all=true only_open=false. Every status goes to the tracker. "
+    "Call onec.meeting_protocols meeting_kind=sd psd_mark=true review_only=false "
+    "include_closed=true. PSD mark means the number starts with ПСД; "
+    "the tool returns the whole series, including closed. "
+    "Write every returned assignment and every returned protocol into Action Tracker. "
+    "WORK_RESULT counts must equal the tool counts. Do not keep only open cards."
+)
 
 CALENDAR_CONTROL_HINT = (
     "This is calendar control / morning briefing, not a meeting-series job. "
-    "Morning: users.current, outlook.read_calendar for today, outlook.search_mail once "
-    "(query отпуск), calendar.show_meetings, then ## WORK_RESULT and TESTS: PASS. "
+    "PSD is Амураль Игорь Борисович. His meetings are in the shared mailbox "
+    "«Совещания», not the assistant calendar and not Жалыбин's mailbox. "
+    "Morning: users.current, outlook.read_calendar for today "
+    "(folder=Совещания, people=[Амураль Игорь Борисович]), "
+    "outlook.search_mail once (query отпуск), calendar.show_meetings, "
+    "then if slots overlap or a window exists add «Предложение» and call "
+    "outlook.create_event — HITL must approve before anything is written. "
+    "Do not ask the same via askQuestion. If there is no overlap and no window, "
+    "skip create_event. Then ## WORK_RESULT with the full oral list. "
     "If search_mail returned 0 messages, absences are empty — do not call it again. "
-    "Do not ask what the agent should do. Do not call create_event in the morning. "
+    "Do not ask what the agent should do. "
+    "If folder Совещания is missing, say so — do not read your own calendar. "
     "Evening after 16:00 MSK: same reads for tomorrow, show keep/add/cancel, "
-    "create_event only after HITL to shift existing meetings. "
+    "propose shifts and call create_event the same way — still wait for HITL. "
     "After WORK_RESULT call no more tools."
 )
 
@@ -618,11 +654,12 @@ FILE_QUESTION_SKIP_ANSWER = (
     "Файла нет. Продолжай без вложения: ищи данные в 1С, Outlook, Excel "
     "и сетевых папках по playbook агента. Не спрашивай этот файл снова."
 )
-RUN_INPUT_SKIP_ANSWER = (
+RK_FOLDER_SKIP_ANSWER = (
     "Файла нет. Ищи план работ в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\8. Планы работ, "
     "реестр в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\10. Секретарь РК\\РЕЕСТР ПОРУЧЕНИЙ "
     "и поручения в 1С ERP. Не спрашивай файл снова."
 )
+RUN_INPUT_SKIP_ANSWER = FILE_QUESTION_SKIP_ANSWER
 _RUN_INPUT_GATE_HINTS = (
     "файл, который пользователь будет прикладывать",
     "прикладывать при каждом запуске",
@@ -635,9 +672,31 @@ def _is_calendar_control_text(*parts: Any) -> bool:
     return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
 
 
+def _is_artifact_close_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    return any(tip in blob for tip in _ARTIFACT_CLOSE_TIPS)
+
+
+def _is_daily_assignment_prompt(prompt: str) -> bool:
+    blob = (prompt or "").casefold().replace("ё", "е")
+    if _is_artifact_close_text(blob):
+        return False
+    return any(
+        tip in blob
+        for tip in (
+            "ежедневный контроль поручений",
+            "контроль поручений по 1с",
+            "аст00 и action tracker",
+            "action tracker",
+        )
+    )
+
+
 def _is_assignment_journal_text(*parts: Any) -> bool:
     """Журнал поручений — не серия совещаний Outlook; playbook не подменяем."""
     blob = _meeting_blob(*parts)
+    if _is_artifact_close_text(blob):
+        return True
     if _is_rk_text(blob) or _is_sd_meeting_text(blob):
         return False
     return any(tip in blob for tip in ("аст00", "action tracker", "журнал поруч"))
@@ -645,6 +704,8 @@ def _is_assignment_journal_text(*parts: Any) -> bool:
 
 def _is_rk_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
+    if _is_artifact_close_text(blob):
+        return False
     if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
         return False
     return any(tip in blob for tip in _RK_TIPS)
@@ -808,6 +869,10 @@ def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
     parts = [KEEP_FILE_HINT]
     if _is_calendar_control_text(prompt):
         parts.append(CALENDAR_CONTROL_HINT)
+    elif _is_artifact_close_text(prompt):
+        parts.append(ARTIFACT_CLOSE_HINT)
+    elif _is_daily_assignment_prompt(prompt):
+        parts.append(DAILY_ASSIGNMENT_HINT)
     elif _is_sd_meeting_text(prompt):
         parts.append(SD_MEETING_HINT)
     elif _is_rk_text(prompt):
@@ -1752,6 +1817,29 @@ def _upload_knowledge_files(
         return False
 
 
+_OUTPUT_SWEEP_MAX_AGE_SEC = 12 * 3600
+
+
+def _recent_output_paths(paths: list[Path]) -> list[Path]:
+    """Keep documents written during this run, not leftover clone files."""
+    cutoff = time.time() - _OUTPUT_SWEEP_MAX_AGE_SEC
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            resolved = path.resolve()
+            key = str(resolved)
+            if key in seen or not resolved.is_file():
+                continue
+            if resolved.stat().st_mtime < cutoff:
+                continue
+            seen.add(key)
+            out.append(resolved)
+        except OSError:
+            continue
+    return out
+
+
 def _upload_run_outputs(
     api: ApiClient,
     workflow_id: str,
@@ -1799,9 +1887,11 @@ def _persist_run_outputs(
     ):
         should_sweep = True
     if should_sweep:
-        found.extend(collect_workspace_output_files(workflow_id))
+        swept: list[Path] = []
+        swept.extend(collect_workspace_output_files(workflow_id))
         cwd = Path(run_cwd) if run_cwd else None
-        found.extend(collect_output_files_from_dir(cwd))
+        swept.extend(collect_output_files_from_dir(cwd))
+        found.extend(_recent_output_paths(swept))
     paths = [str(path) for path in found if path.is_file()]
     if not paths:
         return []
@@ -1891,23 +1981,62 @@ def _ensure_result_files_from_answer(
     return created
 
 
+def _work_result_body(answer: str) -> str:
+    raw = (answer or "").strip()
+    match = _WORK_RESULT_DONE_RE.search(raw)
+    return raw[match.start() :].strip() if match else raw
+
+
+def _persist_work_result_if_needed(
+    api: ApiClient | None,
+    workflow_id: str,
+    run_cwd: str,
+    answer: str,
+    run_id: str = "",
+    existing: list[str] | None = None,
+) -> list[str]:
+    """If the run produced WORK_RESULT but no result file, store the oral result."""
+    if api is None or not (workflow_id or "").strip():
+        return []
+    if any(Path(item).name.lower().startswith(("результат", "result_")) for item in existing or []):
+        return []
+    if not _text_has_finished_work_result(answer):
+        return []
+    body = _work_result_body(answer)
+    if not body:
+        return []
+    folder = Path(run_cwd) if run_cwd else None
+    if folder is None:
+        return []
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    path = folder / f"Результат_{stamp}.md"
+    path.write_text(body, encoding="utf-8")
+    _upload_run_outputs(api, workflow_id, [str(path)], run_id=run_id)
+    return [str(path)]
+
+
 def _upload_run_attachments(
     api: ApiClient,
     workflow_id: str,
     file_paths: list[str],
     run_id: str = "",
-) -> bool:
-    """Upload files as temporary per-run attachments (not permanent knowledge)."""
+) -> list[Any]:
+    """Upload files as temporary per-run attachments (not permanent knowledge).
+
+    Returns the stored attachment records (with server file ids) so the agent
+    prompt can name the file_id tools like audio.transcribe require.
+    """
     allowed = [str(path) for path in file_paths if Path(str(path)).is_file()]
     if not (workflow_id.strip() and run_id.strip() and allowed):
-        return False
+        return []
     try:
-        api.register_run_attachments(workflow_id, run_id, allowed)
+        stored = api.register_run_attachments(workflow_id, run_id, allowed)
         _emit_files_updated(workflow_id, run_id)
-        return True
+        return list(getattr(stored, "run_attachments", []) or [])
     except Exception as exc:  # noqa: BLE001
         log("run attachment upload failed: " + _ascii(repr(exc)))
-        return False
+        return []
 
 
 def _persist_run_attachment(
@@ -1925,8 +2054,8 @@ def _persist_run_attachment(
     Only the explicit keepKnowledgeFile tool writes permanent knowledge.
     """
     copied = _copy_attachments(run_cwd, file_paths)
-    _upload_run_attachments(api, workflow_id, file_paths, run_id=run_id)
-    return copied
+    stored = _upload_run_attachments(api, workflow_id, file_paths, run_id=run_id)
+    return _pair_attachments(copied, stored)
 
 
 def _persist_knowledge_files(
@@ -2381,6 +2510,7 @@ class Sidecar:
                 active.dedup_key = dedup_key
                 active.kind = kind
                 active.workflow_id = str(command.get("workflowId") or "").strip()
+                active.event_workflow_id = active.workflow_id
                 if active.workflow_id:
                     gate.bind(workflow_id=active.workflow_id, kind=kind)
                 self._active[run_id] = active
@@ -3002,18 +3132,27 @@ class Sidecar:
         )
         active.history_finished = True
         try:
-            _persist_run_outputs(
+            output_paths = _persist_run_outputs(
                 self._api,
                 workflow_id,
                 run_cwd,
                 run_id=str(run_ref or active.run_id).strip(),
             )
-            _ensure_result_files_from_answer(
+            if not output_paths:
+                output_paths = _ensure_result_files_from_answer(
+                    self._api,
+                    workflow_id,
+                    run_cwd,
+                    answer,
+                    run_id=str(run_ref or active.run_id).strip(),
+                )
+            _persist_work_result_if_needed(
                 self._api,
                 workflow_id,
                 run_cwd,
                 answer,
                 run_id=str(run_ref or active.run_id).strip(),
+                existing=output_paths,
             )
         except Exception as exc:  # noqa: BLE001
             log("run output sweep failed: " + repr(exc))
@@ -3370,6 +3509,11 @@ class Sidecar:
         run_inputs = _run_inputs_from_local(dict(getattr(workflow, "local_run", None) or {}))
         if not run_inputs:
             return []
+        skip_answer = (
+            RK_FOLDER_SKIP_ANSWER
+            if _is_rk_meeting_workflow(workflow)
+            else FILE_QUESTION_SKIP_ANSWER
+        )
         notes: list[str] = []
         for idx, spec in enumerate(run_inputs):
             if idx < provided_count:
@@ -3389,16 +3533,16 @@ class Sidecar:
                     "needsFile": True,
                     "accept": accept,
                     "autoContinueSeconds": RUN_INPUT_WAIT_SECONDS,
-                    "autoContinueAnswer": RUN_INPUT_SKIP_ANSWER,
+                    "autoContinueAnswer": skip_answer,
                     "why": (
                         "Это временный файл только для текущего запуска, "
                         "он не сохраняется в базу знаний. "
-                        "Через 30 секунд агент продолжит сам: 1С и папки РК."
+                        "Через 30 секунд агент продолжит сам по playbook."
                     ),
                 },
                 should_stop=active.stop.is_set,
             )
-            answer = str(reply.get("answer") or "").strip() or RUN_INPUT_SKIP_ANSWER
+            answer = str(reply.get("answer") or "").strip() or skip_answer
             notes.append(answer)
         return notes
 
@@ -3613,7 +3757,7 @@ class Sidecar:
         dedup_key = f"run:{workflow_id}" if workflow_id else ""
         remove_ids: list[str] = []
         for active in list(self._active.values()):
-            ui_id = (active.event_workflow_id or "").strip()
+            ui_id = (getattr(active, "event_workflow_id", None) or "").strip()
             by_run = bool(run_id) and active.run_id == run_id
             by_workflow = bool(workflow_id) and (
                 active.workflow_id == workflow_id or ui_id == workflow_id
@@ -3660,6 +3804,7 @@ class ActiveRun:
         self.thread: threading.Thread | None = None
         self.run_cwd: str = ""
         self.workflow_id: str = ""
+        self.event_workflow_id: str = ""
         self.kind: str = ""
         self.dedup_key: str = ""
         self.history_run_id: str = ""
@@ -3774,14 +3919,50 @@ def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[
         marker.write_text(digest, encoding="utf-8")
 
 
-def _attachments_note(relative_paths: list[str]) -> str:
-    if not relative_paths:
+def _pair_attachments(relative_paths: list[str], stored: list[Any]) -> list[dict[str, str]]:
+    """Join workspace copies with the server records by filename order.
+
+    Upload keeps the source order and skips missing files the same way the copy
+    does, so the i-th stored record matches the i-th copied path.
+    """
+    paired: list[dict[str, str]] = []
+    for index, path in enumerate(relative_paths):
+        item = stored[index] if index < len(stored) else None
+        paired.append(
+            {
+                "path": path,
+                "file_id": str(getattr(item, "id", "") or ""),
+                "filename": str(getattr(item, "filename", "") or Path(path).name),
+            }
+        )
+    return paired
+
+
+def _attachments_note(attachments: list[Any]) -> str:
+    if not attachments:
         return ""
-    listing = ", ".join(relative_paths)
-    return (
-        "Прикреплённые файлы (прочитай их из рабочей области): "
-        + listing
-    )
+    lines: list[str] = []
+    for entry in attachments:
+        if isinstance(entry, str):
+            lines.append(f"- {entry}")
+            continue
+        path = str(entry.get("path") or "")
+        file_id = str(entry.get("file_id") or "")
+        filename = str(entry.get("filename") or Path(path).name)
+        if file_id:
+            lines.append(f"- file_id={file_id} · {filename} · {path}")
+        else:
+            lines.append(f"- {path}")
+    has_ids = any("file_id=" in line for line in lines)
+    hint = ""
+    if has_ids:
+        hint = (
+            "\nАудио/видео-вложение расшифровывай инструментом audio.transcribe, "
+            'передав file_id: {"name": "audio.transcribe", "arguments": {"file_id": "…"}}. '
+            "Он вернёт сегменты с таймкодами start/end, полный текст и длительность. "
+            "Подтверждение человека для него не нужно."
+        )
+    return "Прикреплённые файлы этого запуска:\n" + "\n".join(lines) + hint
 
 
 def main() -> None:

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import ast
+import json
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -130,7 +132,28 @@ def theme_names() -> list[str]:
     return list(THEMES)
 
 
+def _parse_struct(value: Any) -> Any:
+    """Agent often sends a Python/JSON literal as one string. Recover the structure."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return value
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    try:
+        parsed = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return value
+    if isinstance(parsed, (list, dict)):
+        return parsed
+    return value
+
+
 def as_sections(value: Any) -> list[dict[str, str]]:
+    value = _parse_struct(value)
     sections: list[dict[str, str]] = []
     if isinstance(value, list):
         for item in value:
@@ -147,6 +170,7 @@ def as_sections(value: Any) -> list[dict[str, str]]:
 
 
 def as_kpis(value: Any) -> list[dict[str, str]]:
+    value = _parse_struct(value)
     items: list[dict[str, str]] = []
     if not isinstance(value, list):
         return items
@@ -192,6 +216,7 @@ def normalize_table(headers: object, rows: object) -> tuple[list[str], list[list
 
 
 def as_word_table(value: Any) -> tuple[list[str], list[list[str]]]:
+    value = _parse_struct(value)
     if not isinstance(value, dict):
         return [], []
     headers, rows = normalize_table(value.get("headers"), value.get("rows"))
@@ -578,7 +603,7 @@ def _write_word_body(
 
     if summary:
         box = document.add_table(rows=1, cols=1)
-        box.cell(0, 0).text = summary
+        _fill_cell_lines(box.cell(0, 0), summary)
         _shade(box.cell(0, 0), theme.alt_row)
         _style_word_table(box, theme)
         document.add_paragraph("")
@@ -586,22 +611,145 @@ def _write_word_body(
     for section in sections:
         if section.get("heading"):
             document.add_heading(section["heading"], level=1)
-        body = section.get("body") or ""
-        for block in _split_blocks(body):
-            if block.startswith(("- ", "* ", "• ")):
-                document.add_paragraph(block[2:].strip(), style="List Bullet")
-            else:
-                document.add_paragraph(block)
+        _render_markdown_body(document, section.get("body") or "", theme)
 
     if headers and rows:
-        table = document.add_table(rows=1, cols=len(headers))
-        for idx, head in enumerate(headers):
-            table.rows[0].cells[idx].text = head
-        for row in rows:
-            cells = table.add_row().cells
-            for idx in range(len(headers)):
-                cells[idx].text = row[idx] if idx < len(row) else ""
-        _style_word_table(table, theme)
+        _add_word_table(document, headers, rows, theme)
+
+
+_MD_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$")
+_MD_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
+_MD_BULLET_RE = re.compile(r"^\s*(?:[-*•])\s+(.*)$")
+_MD_NUMBER_RE = re.compile(r"^\s*(\d{1,3})[.)]\s+(.*)$")
+_MD_INLINE_RE = re.compile(r"(\*\*[^*\n]+\*\*|`[^`\n]+`)")
+_MD_RULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+
+
+def _split_md_row(line: str) -> list[str]:
+    text = line.strip()
+    if text.startswith("|"):
+        text = text[1:]
+    if text.endswith("|"):
+        text = text[:-1]
+    return [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", text)]
+
+
+def _is_md_table_row(line: str) -> bool:
+    text = line.strip()
+    # Leading pipe is the usual markdown table. Agents also write "Кто | Роль | Срок".
+    return text.count("|") >= 2 and not text.lower().startswith("http")
+
+
+def _md_plain(text: str) -> str:
+    """Drop inline markdown markers for table cells."""
+    return re.sub(r"\*\*([^*]+)\*\*", r"\1", text).replace("`", "").strip()
+
+
+def _add_inline_runs(paragraph: Any, text: str) -> None:
+    """Write text with **bold** and `code` markers into a paragraph."""
+    for piece in _MD_INLINE_RE.split(text):
+        if not piece:
+            continue
+        if piece.startswith("**") and piece.endswith("**") and len(piece) > 4:
+            run = paragraph.add_run(piece[2:-2])
+            run.bold = True
+        elif piece.startswith("`") and piece.endswith("`") and len(piece) > 2:
+            paragraph.add_run(piece[1:-1])
+        else:
+            paragraph.add_run(piece)
+
+
+def _fill_cell_lines(cell: Any, text: str) -> None:
+    """One paragraph per non-empty line inside a table cell."""
+    lines = [line.strip() for line in str(text or "").replace("\r\n", "\n").split("\n")]
+    lines = [line for line in lines if line]
+    if not lines:
+        cell.text = ""
+        return
+    first = cell.paragraphs[0]
+    for run in list(first.runs):
+        run._r.getparent().remove(run._r)
+    _add_inline_runs(first, lines[0])
+    for line in lines[1:]:
+        _add_inline_runs(cell.add_paragraph(), line)
+
+
+def _add_word_table(
+    document: Any, headers: list[str], rows: list[list[str]], theme: OfficeTheme
+) -> Any:
+    width = max(len(headers), max((len(row) for row in rows), default=0), 1)
+    table = document.add_table(rows=1, cols=width)
+    for idx in range(width):
+        table.rows[0].cells[idx].text = _md_plain(headers[idx]) if idx < len(headers) else ""
+    for row in rows:
+        cells = table.add_row().cells
+        for idx in range(width):
+            _fill_cell_lines(cells[idx], _md_plain(row[idx]) if idx < len(row) else "")
+    _style_word_table(table, theme)
+    return table
+
+
+def _render_markdown_body(document: Any, body: str, theme: OfficeTheme) -> None:
+    """Section body → Word blocks.
+
+    Every non-empty line becomes its own paragraph (line breaks are kept),
+    markdown tables become real Word tables, ``-``/``1.`` lists become list
+    paragraphs, ``###`` lines become sub-headings, ``**bold**`` is rendered.
+    Nothing is truncated.
+    """
+    text = str(body or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        return
+    lines = text.split("\n")
+    i = 0
+    total = len(lines)
+    while i < total:
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped:
+            i += 1
+            continue
+        if _is_md_table_row(line):
+            block: list[str] = []
+            while i < total and _is_md_table_row(lines[i]):
+                block.append(lines[i])
+                i += 1
+            header_cells = _split_md_row(block[0])
+            data_rows = block[1:]
+            if data_rows and _MD_TABLE_SEP_RE.match(data_rows[0]):
+                data_rows = data_rows[1:]
+            rows = [_split_md_row(item) for item in data_rows if not _MD_TABLE_SEP_RE.match(item)]
+            _add_word_table(document, header_cells, rows, theme)
+            document.add_paragraph("")
+            continue
+        if _MD_RULE_RE.match(stripped):
+            i += 1
+            continue
+        heading = _MD_HEADING_RE.match(line)
+        if heading:
+            level = min(max(len(heading.group(1)), 2), 3)
+            document.add_heading(_md_plain(heading.group(2)), level=level)
+            i += 1
+            continue
+        bullet = _MD_BULLET_RE.match(line)
+        if bullet:
+            _add_inline_runs(document.add_paragraph(style="List Bullet"), bullet.group(1).strip())
+            i += 1
+            continue
+        numbered = _MD_NUMBER_RE.match(line)
+        if numbered:
+            # Keep the agent's own numbers: Word's "List Number" would continue
+            # counting across sections (Повестка 1-6 → Решения 7-…).
+            from docx.shared import Pt
+
+            paragraph = document.add_paragraph()
+            paragraph.paragraph_format.left_indent = Pt(18)
+            paragraph.paragraph_format.first_line_indent = Pt(-18)
+            _add_inline_runs(paragraph, f"{numbered.group(1)}. {numbered.group(2).strip()}")
+            i += 1
+            continue
+        _add_inline_runs(document.add_paragraph(), stripped)
+        i += 1
 
 
 def _style_word_table(table: Any, theme: OfficeTheme) -> None:

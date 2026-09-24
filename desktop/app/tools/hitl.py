@@ -63,10 +63,12 @@ _READ_EXACT = frozenset(
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
+        "onec.open_form",
         "onec.meeting_service_notes",
         "agent.wait",
         "turboproject",
         "users.list",
+        "audio.transcribe",
         "users.current",
         "users.subordinates",
         "agent.schedule",
@@ -166,6 +168,15 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
     "onec.erp_assignments_write": (
         "Изменение поручения",
         "Создаёт или меняет карточку журнала АСТ00, либо пишет комментарий исполнителю.",
+    ),
+    "onec.meeting_protocol_write": (
+        "Протокол в 1С",
+        "Создаёт черновик протокола совещания (ТД_Протокол) с участниками, повесткой, "
+        "решениями и поставленными задачами. Документ не проводится — его проверит секретарь.",
+    ),
+    "onec.incoming_correspondence_write": (
+        "Входящая в 1С",
+        "Создаёт документ входящей корреспонденции через OData и прикрепляет .msg письма.",
     ),
     "outlook.send_mail": (
         "Отправка письма",

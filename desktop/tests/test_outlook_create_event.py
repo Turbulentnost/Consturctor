@@ -7,11 +7,17 @@ from app.tools.ac.com_backed_tools import (
 
 from app.tools.ac.workers.outlook_com_actions import (
     _attach_attendees,
+    _calendar_access_hint,
     _compute_free_slots,
+    _folder_matches_person,
+    _is_public_meetings_label,
+    _iter_outlook_explorers,
     _meeting_specs,
     _open_shared_calendar,
     _people_from_input,
     _people_names,
+    _resolve_person_calendar_folder,
+    event_involves_person,
     stamp_ai_agent_meeting,
 )
 
@@ -30,13 +36,12 @@ def test_outlook_com_timeout_allows_slow_calendar() -> None:
 def test_outlook_create_runs_in_gui_process() -> None:
     from app.tools.ac.dispatch import build_registry
     from app.tools.ac.workers.outlook_com_worker import OutlookComWorker
-    from app.tools.ac.workers.subprocess_com_worker import SubprocessComWorker
 
     registry = build_registry()
     create = registry.get("outlook.create_event")
     read = registry.get("outlook.read_calendar")
     assert isinstance(create._worker, OutlookComWorker)
-    assert isinstance(read._worker, SubprocessComWorker)
+    assert isinstance(read._worker, OutlookComWorker)
 
 
 def test_outlook_mail_panel_tools_registered() -> None:
@@ -46,6 +51,8 @@ def test_outlook_mail_panel_tools_registered() -> None:
     for name in (
         "outlook.fetch_message",
         "outlook.save_attachment",
+        "outlook.save_message",
+        "onec.register_incoming_from_mail",
         "outlook.display_message",
         "outlook.mark_read",
     ):
@@ -110,6 +117,136 @@ def test_attach_attendees_marks_meeting() -> None:
     assert added == ["Иванов", "Петров"]
     assert appt.MeetingStatus == 1
     assert appt.Recipients.added == ["Иванов", "Петров"]
+
+
+def test_public_meetings_label() -> None:
+    assert _is_public_meetings_label("Совещания")
+    assert _is_public_meetings_label("Совещания - Календарь")
+    assert not _is_public_meetings_label("Календарь")
+
+
+def test_event_involves_person_filters_attendees() -> None:
+    event = {
+        "own_calendar": False,
+        "organizer": "Секретарь",
+        "required_attendees": "Амураль Игорь Борисович; Ильченко Е.А.",
+        "optional_attendees": "",
+        "subject": "Совет директоров",
+        "calendar_owner": "Совещания",
+    }
+    assert event_involves_person(event, "Амураль Игорь Борисович")
+    assert not event_involves_person(event, "Жалыбин Максим Дмитриевич")
+
+
+def test_folder_matches_person_by_lastname() -> None:
+    assert _folder_matches_person("Календарь — Жалыбин Максим", "Жалыбин Максим Дмитриевич")
+    assert _folder_matches_person("Жалыбин Максим Дмитриевич", "Жалыбин М.Д.")
+    assert not _folder_matches_person("Календарь", "Жалыбин Максим Дмитриевич")
+    assert not _folder_matches_person("Комарькова Анастасия", "Жалыбин Максим Дмитриевич")
+
+
+def test_resolve_person_calendar_uses_visible_not_own() -> None:
+    shared = object()
+    own = object()
+
+    class _Ns:
+        pass
+
+    def fake_own(_namespace):
+        return own
+
+    def fake_visible(_outlook, _namespace, _own_name=""):
+        return [
+            ("Комарькова Анастасия Эдуардовна", own, True),
+            ("Календарь — Жалыбин", shared, False),
+        ]
+
+    def fail_shared(_namespace, _person):
+        raise AssertionError("shared should not be called when visible matches")
+
+    import app.tools.ac.workers.outlook_com_actions as actions
+
+    original_own = actions._own_calendar_folder
+    original_visible = actions._iter_visible_calendar_folders
+    original_shared = actions._open_shared_calendar
+    actions._own_calendar_folder = fake_own
+    actions._iter_visible_calendar_folders = fake_visible
+    actions._open_shared_calendar = fail_shared
+    try:
+        folder, status = _resolve_person_calendar_folder(
+            object(),
+            _Ns(),
+            "Жалыбин Максим Дмитриевич",
+            "Комарькова Анастасия Эдуардовна",
+        )
+    finally:
+        actions._own_calendar_folder = original_own
+        actions._iter_visible_calendar_folders = original_visible
+        actions._open_shared_calendar = original_shared
+    assert folder is shared
+    assert status == "visible"
+
+
+def test_resolve_person_calendar_does_not_fallback_to_own() -> None:
+    own = object()
+
+    class _Ns:
+        pass
+
+    def fake_own(_namespace):
+        return own
+
+    def fake_visible(_outlook, _namespace, _own_name=""):
+        return [("Комарькова Анастасия Эдуардовна", own, True)]
+
+    def fake_shared(_namespace, _person):
+        return None, "denied"
+
+    import app.tools.ac.workers.outlook_com_actions as actions
+
+    original_own = actions._own_calendar_folder
+    original_visible = actions._iter_visible_calendar_folders
+    original_shared = actions._open_shared_calendar
+    actions._own_calendar_folder = fake_own
+    actions._iter_visible_calendar_folders = fake_visible
+    actions._open_shared_calendar = fake_shared
+    try:
+        folder, status = _resolve_person_calendar_folder(
+            object(),
+            _Ns(),
+            "Жалыбин Максим Дмитриевич",
+            "Ильченко Екатерина Александровна",
+        )
+    finally:
+        actions._own_calendar_folder = original_own
+        actions._iter_visible_calendar_folders = original_visible
+        actions._open_shared_calendar = original_shared
+    assert folder is None
+    assert status == "denied"
+
+
+def test_iter_outlook_explorers_uses_collection_when_active_missing() -> None:
+    second = object()
+
+    class _Explorers:
+        Count = 1
+
+        def Item(self, index: int):
+            assert index == 1
+            return second
+
+    class _Outlook:
+        def ActiveExplorer(self):
+            return None
+
+        Explorers = _Explorers()
+
+    assert list(_iter_outlook_explorers(_Outlook())) == [second]
+
+
+def test_unreadable_calendar_has_access_hint() -> None:
+    assert _calendar_access_hint("unreadable")
+    assert not _calendar_access_hint("shared")
 
 
 def test_open_shared_calendar_unresolved() -> None:
@@ -498,3 +635,49 @@ def test_own_calendar_falls_back_to_store() -> None:
             raise _mapi_not_found()
 
     assert _own_calendar_folder(_Namespace()) is calendar
+
+
+def test_own_calendar_logs_on_then_opens() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _own_calendar_folder
+
+    calendar = object()
+
+    class _Namespace:
+        Stores = []
+        Folders = []
+        logged = False
+
+        def GetDefaultFolder(self, folder_id: int):
+            if self.logged:
+                return calendar
+            raise _mapi_not_found()
+
+        def Logon(self, *_args, **_kwargs):
+            self.logged = True
+
+    assert _own_calendar_folder(_Namespace()) is calendar
+
+
+def test_own_calendar_walks_appointment_folder() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _own_calendar_folder
+
+    class _Cal:
+        DefaultItemType = 1
+        Name = "Календарь"
+        EntryID = "cal"
+        Folders = []
+
+    class _Root:
+        DefaultItemType = 0
+        Name = "Mailbox"
+        EntryID = "root"
+        Folders = [_Cal()]
+
+    class _Namespace:
+        Stores = []
+        Folders = [_Root()]
+
+        def GetDefaultFolder(self, folder_id: int):
+            raise _mapi_not_found()
+
+    assert _own_calendar_folder(_Namespace()) is _Root.Folders[0]

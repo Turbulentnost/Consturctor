@@ -25,7 +25,15 @@ function yMaxForMetric(metric: WorkplaceKpiEmployeeMetric): number {
   return 100
 }
 
-function KpiEmployeeTile({ metric, gradId }: { metric: WorkplaceKpiEmployeeMetric; gradId: string }): React.JSX.Element {
+function KpiEmployeeTile({
+  metric,
+  gradId,
+  onInfo
+}: {
+  metric: WorkplaceKpiEmployeeMetric
+  gradId: string
+  onInfo?: (code: string) => void
+}): React.JSX.Element {
   const width = 200
   const height = 52
   const yMax = yMaxForMetric(metric)
@@ -38,6 +46,17 @@ function KpiEmployeeTile({ metric, gradId }: { metric: WorkplaceKpiEmployeeMetri
     <article className="kpi-employee-tile">
       <div className="kpi-employee-tile-head">
         <span className="kpi-employee-tile-title">{metric.title}</span>
+        {onInfo ? (
+          <button
+            type="button"
+            className="kpi-employee-info"
+            title="Как считается этот показатель"
+            aria-label={`Как считается «${metric.title}»`}
+            onClick={() => onInfo(metric.id)}
+          >
+            i
+          </button>
+        ) : null}
       </div>
       <div className="kpi-employee-tile-values">
         <strong>{metric.displayValue}</strong>
@@ -65,11 +84,19 @@ function KpiEmployeeTile({ metric, gradId }: { metric: WorkplaceKpiEmployeeMetri
 export function KpiEmployeePanel({
   metrics,
   loading,
-  onDetails
+  needsMethodology,
+  onCalculate,
+  onDetails,
+  onInfo
 }: {
   metrics: WorkplaceKpiEmployeeMetric[]
   loading?: boolean
+  /** Нет готового модуля расчёта KPI должности — не показываем заглушку. */
+  needsMethodology?: boolean
+  onCalculate?: () => void
   onDetails?: () => void
+  /** Открыть код, источник и формулу показателя. */
+  onInfo?: (code: string) => void
 }): React.JSX.Element {
   const gradPrefix = useId().replace(/:/g, '')
   return (
@@ -93,10 +120,17 @@ export function KpiEmployeePanel({
       </header>
       {loading && !metrics.length ? (
         <p className="spec-v04-muted kpi-employee-loading">Загружаем…</p>
+      ) : needsMethodology ? (
+        <div className="kpi-employee-empty">
+          <p>Для этой должности ещё нет модуля расчёта KPI.</p>
+          <button type="button" className="spec-btn-launch" onClick={() => onCalculate?.()}>
+            Рассчитать методику
+          </button>
+        </div>
       ) : (
         <div className="kpi-employee-grid">
           {metrics.map((m) => (
-            <KpiEmployeeTile key={m.id} metric={m} gradId={`${gradPrefix}-${m.id}`} />
+            <KpiEmployeeTile key={m.id} metric={m} gradId={`${gradPrefix}-${m.id}`} onInfo={onInfo} />
           ))}
         </div>
       )}

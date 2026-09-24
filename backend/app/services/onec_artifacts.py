@@ -1,8 +1,6 @@
-"""Download attached 1C files (porucheniya / protocols).
+"""Download attached 1C files over HTTP only (hs/dtw/files/{id}).
 
-Same lookup chain as AIAgentBack download_artifact_file:
-OData ФайлХранилище_Base64Data, volume share (ВТомахНаДиске +
-Catalog_ТомаХраненияФайлов), HTTP hs/dtw/files/{id}, then UNC path.
+Listing cards may still use OData. Bytes never do.
 """
 
 from __future__ import annotations
@@ -15,6 +13,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
@@ -22,16 +21,15 @@ from app.config import BACKEND_ROOT, settings
 
 ASSIGNMENT_FILES_ENTITY = "Catalog_ТД_ПорученияПрисоединенныеФайлы"
 PROTOCOL_FILES_ENTITY = "Catalog_ТД_ПротоколПрисоединенныеФайлы"
-ARTIFACT_ENTITIES = (ASSIGNMENT_FILES_ENTITY, PROTOCOL_FILES_ENTITY)
-VOLUME_STORAGE_CATALOG = "Catalog_ТомаХраненияФайлов"
-VOLUME_STORAGE_TYPE = "ВТомахНаДиске"
-_EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 _GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _INLINE_BASE64_LIMIT = 256 * 1024
-_FALLBACK_TIMEOUT = 15.0
 _FILE_HTTP_TIMEOUT = 90.0
+_FILENAME_HEADER_RE = re.compile(
+    r"filename\*?=(?:UTF-8''|\"?)([^\";]+)",
+    re.IGNORECASE,
+)
 
 
 class ArtifactError(RuntimeError):
@@ -71,30 +69,6 @@ def _guess_content_type(extension: str, filename: str) -> str:
     return guessed or "application/octet-stream"
 
 
-def _normalize_filename(row: dict[str, Any]) -> str:
-    description = str(row.get("Description") or row.get("Subject") or "").strip()
-    path_value = str(row.get("ПутьКФайлу") or "").strip().replace("/", "\\")
-    extension = str(row.get("Расширение") or "").strip().lstrip(".")
-    if path_value:
-        filename = path_value.rsplit("\\", 1)[-1]
-        if filename:
-            return filename
-    if description:
-        if extension and not description.casefold().endswith(f".{extension.casefold()}"):
-            return f"{description}.{extension}"
-        return description
-    if extension:
-        return f"file.{extension}"
-    return "artifact.bin"
-
-
-def _row_meta(row: dict[str, Any]) -> tuple[str, str, str]:
-    file_id = str(row.get("Ref_Key") or "").strip()
-    filename = _normalize_filename(row)
-    extension = str(row.get("Расширение") or "").strip().lstrip(".")
-    return file_id, filename, _guess_content_type(extension, filename)
-
-
 def _decode_base64_bytes(value: object) -> bytes | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -104,134 +78,61 @@ def _decode_base64_bytes(value: object) -> bytes | None:
         return None
 
 
-def _unwrap_dtw_file_payload(content: bytes | None) -> bytes | None:
-    if content is None:
-        return None
+def _filename_from_header(disposition: str) -> str:
+    match = _FILENAME_HEADER_RE.search(disposition or "")
+    if not match:
+        return ""
+    return Path(unquote(match.group(1).strip().strip('"'))).name
+
+
+def _filename_from_bytes(file_id: str, content: bytes, hinted: str) -> str:
+    name = Path(hinted).name if hinted else ""
+    if name:
+        return name
+    if content.startswith(b"%PDF"):
+        return f"{file_id}.pdf"
+    if content[:3] == b"\xff\xd8\xff":
+        return f"{file_id}.jpg"
+    if content.startswith(b"\x89PNG"):
+        return f"{file_id}.png"
+    if content[:2] == b"PK":
+        return f"{file_id}.zip"
+    return f"{file_id}.bin"
+
+
+def _parse_dtw_response(
+    content: bytes,
+    *,
+    disposition: str = "",
+) -> tuple[bytes | None, str]:
+    hinted = _filename_from_header(disposition)
     stripped = content.lstrip()
-    if not stripped.startswith(b"{"):
-        return content
-    try:
-        payload = json.loads(stripped.decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return content
-    if not isinstance(payload, dict) or "contentBase64" not in payload or "fileName" not in payload:
-        return content
-    return _decode_base64_bytes(payload.get("contentBase64"))
+    if stripped.startswith(b"{"):
+        try:
+            payload = json.loads(stripped.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if (
+            isinstance(payload, dict)
+            and "contentBase64" in payload
+            and "fileName" in payload
+        ):
+            body = _decode_base64_bytes(payload.get("contentBase64"))
+            name = Path(str(payload.get("fileName") or hinted)).name
+            return body, name
+    return content if content else None, hinted
 
 
-def _read_base64_payload(row: dict[str, Any]) -> bytes | None:
-    return _decode_base64_bytes(row.get("ФайлХранилище_Base64Data"))
-
-
-def _read_via_unc(path_value: str) -> bytes | None:
-    if not path_value:
-        return None
-    unc_path = Path(path_value)
-    try:
-        if unc_path.exists() and unc_path.is_file():
-            return unc_path.read_bytes()
-    except OSError:
-        return None
-    return None
-
-
-def _odata_auth() -> tuple[str, str] | None:
+def _http_auth() -> tuple[str, str] | None:
     from app.services.onec_tools import _odata_auth as _auth
 
     return _auth()
 
 
-def _odata_timeout() -> float:
-    return float(getattr(settings, "odata_timeout_sec", 60.0) or 60.0)
-
-
-def odata_json(path: str, timeout: float | None = None) -> tuple[int, Any]:
-    from app.services.onec_tools import _odata_url
-
-    auth = _odata_auth()
-    if not auth:
-        raise ArtifactError("OData credentials not configured")
-    if not settings.odata_base_url:
-        raise ArtifactError("ODATA_BASE_URL not configured")
-    url = _odata_url(path)
-    wait = float(timeout) if timeout is not None else _odata_timeout()
-    with httpx.Client(timeout=wait, auth=auth) as client:
-        response = client.get(url, headers={"Accept": "application/json"})
-        if response.status_code >= 400:
-            return response.status_code, None
-        try:
-            return response.status_code, response.json()
-        except json.JSONDecodeError:
-            return response.status_code, None
-
-
-def http_bytes(url: str, timeout: float | None = None) -> tuple[int, bytes]:
-    auth = _odata_auth()
-    if not auth:
-        raise ArtifactError("OData credentials not configured")
-    wait = float(timeout) if timeout is not None else _FILE_HTTP_TIMEOUT
-    with httpx.Client(timeout=wait, auth=auth) as client:
-        response = client.get(url)
-        return response.status_code, response.content or b""
-
-
-def _find_attachment_row(
-    file_id: str,
-    *,
-    entity: str = "",
-) -> tuple[str, dict[str, Any]]:
-    candidates: list[str] = []
-    named = str(entity or "").strip()
-    if named:
-        candidates.append(named)
-    for item in ARTIFACT_ENTITIES:
-        if item not in candidates:
-            candidates.append(item)
-    last_status = 0
-    for name in candidates:
-        path = f"{name}(guid'{file_id}')?$format=json"
-        status, data = odata_json(path)
-        last_status = status
-        if status == 404 or data is None:
-            continue
-        if status >= 400:
-            continue
-        if isinstance(data, dict) and (data.get("Ref_Key") or data.get("value")):
-            row = data
-            if isinstance(data.get("value"), list) and data["value"]:
-                first = data["value"][0]
-                if isinstance(first, dict):
-                    row = first
-            if isinstance(row, dict):
-                return name, row
-    if last_status in {401, 402, 403}:
-        raise ArtifactError(f"1C OData HTTP {last_status}: access denied")
-    raise ArtifactError(f"1C file not found: {file_id}")
-
-
-def _read_via_volume(row: dict[str, Any]) -> bytes | None:
-    if str(row.get("ТипХраненияФайла") or "").strip() != VOLUME_STORAGE_TYPE:
-        return None
-    tom_key = str(row.get("Том_Key") or "").strip()
-    rel_path = str(row.get("ПутьКФайлу") or "").strip()
-    if not tom_key or tom_key.startswith(_EMPTY_GUID) or not rel_path:
-        return None
-    path = (
-        f"{VOLUME_STORAGE_CATALOG}(guid'{tom_key}')"
-        f"?$select=ПолныйПутьWindows,ПолныйПутьLinux&$format=json"
-    )
-    status, volume = odata_json(path, timeout=_FALLBACK_TIMEOUT)
-    if status >= 400 or not isinstance(volume, dict):
-        return None
-    base = str(volume.get("ПолныйПутьWindows") or "").strip()
-    if not base:
-        return None
-    full_path = f"{base.rstrip(chr(92) + '/')}\\{rel_path.replace('/', chr(92)).lstrip(chr(92))}"
-    return _read_via_unc(full_path)
-
-
 def _dtw_base_url() -> str:
-    base = settings.odata_base_url.rstrip("/")
+    base = str(getattr(settings, "odata_base_url", "") or "").rstrip("/")
+    if not base:
+        raise ArtifactError("ODATA_BASE_URL not configured")
     marker = "/odata/standard.odata"
     if marker in base:
         return base.split(marker, 1)[0]
@@ -240,15 +141,18 @@ def _dtw_base_url() -> str:
     return base
 
 
-def _read_via_dtw(file_id: str) -> bytes | None:
-    url = f"{_dtw_base_url()}/hs/dtw/files/{file_id}"
+def http_bytes(url: str, timeout: float | None = None) -> tuple[int, bytes, str]:
+    auth = _http_auth()
+    if not auth:
+        raise ArtifactError("1C HTTP credentials not configured")
+    wait = float(timeout) if timeout is not None else _FILE_HTTP_TIMEOUT
     try:
-        status, content = http_bytes(url, timeout=_FILE_HTTP_TIMEOUT)
-    except Exception:  # noqa: BLE001
-        return None
-    if status != 200 or not content:
-        return None
-    return _unwrap_dtw_file_payload(content)
+        with httpx.Client(timeout=wait, auth=auth) as client:
+            response = client.get(url)
+    except httpx.TimeoutException as exc:
+        raise ArtifactError(f"1C HTTP: нет ответа за {int(wait)} с") from exc
+    disposition = str(response.headers.get("content-disposition") or "")
+    return response.status_code, response.content or b"", disposition
 
 
 def _cache_path(file_id: str, filename: str) -> Path:
@@ -281,23 +185,6 @@ def cached_artifact_download(file_id: str) -> ArtifactDownload | None:
     )
 
 
-def load_artifact_file(file_id: str, *, entity: str = "") -> ArtifactDownload:
-    cached = cached_artifact_download(file_id)
-    if cached is not None:
-        return cached
-    return download_artifact_file(file_id, entity=entity)
-
-
-def _read_cached_bytes(file_id: str, filename: str) -> bytes | None:
-    path = _cache_path(file_id, filename)
-    if not path.is_file():
-        return None
-    try:
-        return path.read_bytes()
-    except OSError:
-        return None
-
-
 def _write_cached_bytes(file_id: str, filename: str, content: bytes) -> Path:
     path = _cache_path(file_id, filename)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -306,49 +193,48 @@ def _write_cached_bytes(file_id: str, filename: str, content: bytes) -> Path:
 
 
 def download_artifact_file(file_id: str, *, entity: str = "") -> ArtifactDownload:
+    _ = entity
     normalized = str(file_id or "").strip()
     if not normalized:
         raise ArtifactError("file_id required")
     if not _GUID_RE.match(normalized):
         raise ArtifactError("file_id must be a GUID")
 
-    source_entity, row = _find_attachment_row(normalized, entity=entity)
-    file_id_value, filename, content_type = _row_meta(row)
-    file_id_value = file_id_value or normalized
+    cached_hit = cached_artifact_download(normalized)
+    if cached_hit is not None:
+        return cached_hit
 
-    cached = _read_cached_bytes(file_id_value, filename)
-    content = _unwrap_dtw_file_payload(cached) if cached is not None else None
-    method = "cache" if content is not None else ""
-    if content is None:
-        content = _read_base64_payload(row)
-        method = "odata_base64" if content else method
-    if content is None:
-        content = _read_via_volume(row)
-        method = "volume" if content else method
-    if content is None:
-        content = _read_via_dtw(file_id_value)
-        method = "dtw" if content else method
-    if content is None:
-        content = _read_via_unc(str(row.get("ПутьКФайлу") or "").strip())
-        method = "unc" if content else method
+    url = f"{_dtw_base_url()}/hs/dtw/files/{normalized}"
+    status, raw, disposition = http_bytes(url, timeout=_FILE_HTTP_TIMEOUT)
+    if status in {401, 402, 403}:
+        raise ArtifactError(f"1C HTTP {status}: access denied")
+    if status == 404 or not raw:
+        raise ArtifactError(f"1C file not found: {normalized}")
+    if status != 200:
+        raise ArtifactError(f"1C HTTP {status}: could not download {normalized}")
 
+    content, hinted = _parse_dtw_response(raw, disposition=disposition)
     if content is None:
-        if row.get("DeletionMark"):
-            raise ArtifactError(
-                f"1C file is marked deleted and cannot be downloaded: {filename or normalized}"
-            )
         raise ArtifactError(f"Could not read 1C file bytes: {normalized}")
-
-    saved = _write_cached_bytes(file_id_value, filename, content)
+    filename = _filename_from_bytes(normalized, content, hinted)
+    content_type = _guess_content_type(Path(filename).suffix, filename)
+    saved = _write_cached_bytes(normalized, filename, content)
     return ArtifactDownload(
-        file_id=file_id_value,
+        file_id=normalized,
         filename=filename,
         content_type=content_type,
         content=content,
-        source_entity=source_entity,
-        method=method or "odata",
+        source_entity="",
+        method="http",
         saved_path=str(saved),
     )
+
+
+def load_artifact_file(file_id: str, *, entity: str = "") -> ArtifactDownload:
+    cached = cached_artifact_download(file_id)
+    if cached is not None:
+        return cached
+    return download_artifact_file(file_id, entity=entity)
 
 
 def _payload_from_download(artifact: ArtifactDownload) -> dict[str, Any]:
@@ -366,7 +252,7 @@ def _payload_from_download(artifact: ArtifactDownload) -> dict[str, Any]:
         "saved_path": artifact.saved_path,
         "file": artifact.saved_path,
         "path": artifact.saved_path,
-        "source": "odata",
+        "source": "http",
     }
     if size <= _INLINE_BASE64_LIMIT:
         result["content_base64"] = base64.b64encode(artifact.content).decode("ascii")
@@ -386,7 +272,7 @@ def handle_download_artifact(args: dict[str, Any] | None = None) -> dict[str, An
     ).strip()
     if not file_id:
         raise ArtifactError("file_id required (GUID from action=files)")
-    artifact = download_artifact_file(
+    artifact = load_artifact_file(
         file_id,
         entity=str(payload.get("entity") or "").strip(),
     )

@@ -91,6 +91,30 @@ function installBrowserApi(): void {
     },
     upload: async () => ({ ok: false, status: 501, error: 'Загрузка файлов только в Electron' }),
     fetchDataUrl: async () => ({ ok: false, error: 'Только в Electron' }),
+    fetchBinary: async (opts) => {
+      const raw = String(opts.url || '').trim()
+      if (!raw) return { ok: false, error: 'Нет ссылки на файл' }
+      const url = raw.startsWith('http://') || raw.startsWith('https://') ? raw : `${BACKEND}${raw.startsWith('/') ? raw : `/${raw}`}`
+      const headers: Record<string, string> = {}
+      if (opts.token) headers.Authorization = `Bearer ${opts.token}`
+      try {
+        const res = await fetch(url, { headers })
+        if (!res.ok) return { ok: false, error: `Ошибка загрузки (${res.status})` }
+        const buffer = await res.arrayBuffer()
+        const limit = typeof opts.maxBytes === 'number' && opts.maxBytes > 0 ? opts.maxBytes : 50 * 1024 * 1024
+        if (buffer.byteLength > limit) return { ok: false, error: 'Файл слишком большой для просмотра' }
+        const bytes = new Uint8Array(buffer)
+        let binary = ''
+        const chunk = 0x8000
+        for (let i = 0; i < bytes.length; i += chunk) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+        }
+        const contentType = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim().toLowerCase()
+        return { ok: true, base64: btoa(binary), contentType, size: bytes.length }
+      } catch {
+        return { ok: false, error: 'Не удалось загрузить файл' }
+      }
+    },
     fetchFilePreview: async (opts) => {
       const raw = String(opts.url || '').trim()
       if (!raw) return { ok: false, error: 'Нет ссылки на файл' }
@@ -151,6 +175,7 @@ function installBrowserApi(): void {
     getPathForFile: () => '',
     openFile: async () => [],
     openPath: async () => ({ ok: false, error: 'Только в Electron' }),
+    focusOutlook: async () => ({ ok: false, error: 'Только в Electron' }),
     printToPdf: async () => ({ ok: false, error: 'Только в Electron' }),
     printPreview: async () => ({ ok: false, error: 'Только в Electron' }),
     printDialog: async () => ({ ok: false, error: 'Только в Electron' }),

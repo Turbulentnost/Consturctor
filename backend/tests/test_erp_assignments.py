@@ -7,10 +7,12 @@ from datetime import datetime
 from app.models.workflow import Workflow
 from app.services.erp_assignments import (
     ASSIGNMENT_ENTITY,
+    ASSIGNMENT_LINES_NAV,
     PROBE_MARK,
     build_assignment_filter,
     build_create_body,
     handle_assignments,
+    normalize_assignment_number,
     pick_user_row,
     probe_assignment_write,
     stub_assignments,
@@ -48,6 +50,51 @@ def test_pick_user_row_prefers_exact_fio() -> None:
     assert chosen["Ref_Key"] == "amural"
 
 
+def test_include_all_skips_open_and_today_window(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_odata_get(args: dict) -> dict:
+        seen.update(args)
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    monkeypatch.setattr(
+        "app.services.erp_assignments.resolve_user",
+        lambda name: {"ref_key": "4c6b539d-5606-11e0-b816-008048428575", "fio": name},
+    )
+    result = handle_assignments(
+        {
+            "action": "list",
+            "customer": "Амураль Игорь Борисович",
+            "include_all": True,
+            "only_open": False,
+        }
+    )
+    filt = str(seen.get("filter") or "")
+    assert "startswith(Number,'АСТ')" in filt
+    assert "Создано" not in filt
+    assert "Date ge" not in filt
+    assert result["count"] == 0
+
+
+def test_protocols_psd_mark_skips_default_period(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_odata_get(args: dict) -> dict:
+        seen.update(args)
+        return {
+            "value": [{"Number": "ПСД_001_О_226", "Статус": "Закрыт", "Date": "2026-08-28T00:00:00"}],
+            "source": "odata",
+        }
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    result = handle_assignments({"action": "protocols", "psd_mark": True})
+    filt = str(seen.get("filter") or "")
+    assert "startswith(Number,'ПСД')" in filt
+    assert "Date ge" not in filt
+    assert result["count"] == 1
+
+
 def test_filter_uses_cyrillic_prefix_and_leader() -> None:
     filt = build_assignment_filter(
         customer_key="4c6b539d-5606-11e0-b816-008048428575",
@@ -59,6 +106,78 @@ def test_filter_uses_cyrillic_prefix_and_leader() -> None:
     assert "Создано" in filt
     assert "ВРаботе" in filt
     assert "2026-09-10T00:00:00" in filt
+
+
+def test_create_body_uses_session_actor_ref() -> None:
+    session_ref = "4c6b539d-5606-11e0-b816-008048428575"
+    body = build_create_body(
+        {"topic": "Tema", "due": "2026-09-20", "lines": [{"text": "Punkt"}]},
+        actor_fio="Амураль Игорь Борисович",
+        actor_onec_ref=session_ref,
+    )
+    assert body["Руководитель_Key"] == session_ref
+    assert body["ОЧем"] == "Tema"
+
+
+def test_only_open_false_skips_open_and_today_window(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_odata_get(args: dict) -> dict:
+        seen.update(args)
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    monkeypatch.setattr(
+        "app.services.erp_assignments.resolve_user",
+        lambda name: {"ref_key": "4c6b539d-5606-11e0-b816-008048428575", "fio": name},
+    )
+    handle_assignments(
+        {
+            "action": "list",
+            "customer": "Амураль Игорь Борисович",
+            "only_open": False,
+        }
+    )
+    filt = str(seen.get("filter") or "")
+    assert "Создано" not in filt
+    assert "Date ge" not in filt
+
+
+def test_include_all_pages_past_first_hundred(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_odata_get(args: dict) -> dict:
+        calls.append(args)
+        if int(args.get("skip") or 0) == 0:
+            return {
+                "value": [
+                    {"Number": f"АСТ00-{index}", "Статус": "Принято", "Ref_Key": "not-a-guid"}
+                    for index in range(100)
+                ],
+                "source": "odata",
+            }
+        return {
+            "value": [{"Number": "АСТ00-tail", "Статус": "Принято", "Ref_Key": "not-a-guid"}],
+            "source": "odata",
+        }
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    monkeypatch.setattr(
+        "app.services.erp_assignments.resolve_user",
+        lambda name: {"ref_key": "4c6b539d-5606-11e0-b816-008048428575", "fio": name},
+    )
+    result = handle_assignments(
+        {
+            "action": "list",
+            "customer": "Амураль Игорь Борисович",
+            "include_all": True,
+            "limit": 100,
+        }
+    )
+    assert len(calls) == 2
+    assert int(calls[1].get("skip") or 0) == 100
+    assert result["count"] == 101
+    assert result["truncated"] is False
 
 
 def test_create_body_builds_lines() -> None:
@@ -324,6 +443,7 @@ def test_published_assignment_agent_gets_odata_and_excel_tools() -> None:
     assert "onec.erp_assignments" in tools
     assert "onec.erp_assignments_write" in tools
     assert "excel.read_workbook" in tools
+    assert "office.read_file" in tools
     assert "onec.erp_tasks_current" not in tools
 
 
@@ -355,6 +475,7 @@ def test_tools_registered() -> None:
     assert "onec.erp_assignments" in names
     assert "onec.erp_assignments_write" in names
     assert "onec.download_artifact" in names
+    assert "office.read_file" in names
     assert "onec.download_artifact" in ONEC_TOOLS
     assert "onec.download_artifact" not in ONEC_WRITE_TOOLS
     read_tool = next(item for item in list_tools() if item["name"] == "onec.erp_assignments")
@@ -388,6 +509,82 @@ def test_catalog_search_finds_assignment_document() -> None:
 def test_assignment_entity_default_top() -> None:
     assert _parse_top_limit("", {"entity": ASSIGNMENT_ENTITY}) == 40
     assert _parse_top_limit("", {"entity": "Catalog_Контрагенты"}) == 3
+
+
+def test_list_lite_skips_line_fetch(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_odata(args: dict) -> dict:
+        calls.append(dict(args))
+        if str(args.get("entity") or "") == ASSIGNMENT_ENTITY:
+            return {
+                "value": [
+                    {
+                        "Number": "АСТ00-00001",
+                        "Ref_Key": "b75214dc-a846-11f1-9877-6cb31113810c",
+                        "Date": "2026-09-10T09:00:00",
+                        "Posted": True,
+                        "ОЧем": "Tema",
+                        "Статус": "ВРаботе",
+                        "Руководитель_Name": "Ivanov",
+                    }
+                ],
+                "source": "odata",
+            }
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata)
+    result = handle_assignments({"action": "list", "limit": 5, "include_lines": False})
+    assert result["include_lines"] is False
+    assert result["assignments"][0]["lines"] == []
+    assert calls[0].get("select")
+    assert "expand" not in calls[0]
+    nav_calls = [c for c in calls if ASSIGNMENT_LINES_NAV in str(c.get("path") or "")]
+    assert not nav_calls
+
+
+def test_list_fetches_lines_via_navigation_when_missing(monkeypatch) -> None:
+    doc_key = "b75214dc-a846-11f1-9877-6cb31113810c"
+
+    def fake_odata(args: dict) -> dict:
+        path = str(args.get("path") or "")
+        entity = str(args.get("entity") or "")
+        if ASSIGNMENT_LINES_NAV in path and doc_key in path:
+            return {
+                "value": [
+                    {
+                        "LineNumber": "1",
+                        "Мероприятие": "NavLine",
+                        "СрокИсполнения": "2026-09-20T00:00:00",
+                        "ОтветственноеЛицо_Key": "11111111-1111-1111-1111-111111111111",
+                    }
+                ],
+                "source": "odata",
+            }
+        if entity == ASSIGNMENT_ENTITY and args.get("expand"):
+            raise RuntimeError("expand not supported")
+        if entity == ASSIGNMENT_ENTITY:
+            return {
+                "value": [
+                    {
+                        "Number": "АСТ00-00001",
+                        "Ref_Key": doc_key,
+                        "Date": "2026-09-10T09:00:00",
+                        "Posted": True,
+                        "ОЧем": "Tema",
+                        "Статус": "ВРаботе",
+                        "Руководитель_Key": "4c6b539d-5606-11e0-b816-008048428575",
+                    }
+                ],
+                "source": "odata",
+            }
+        if entity == "Catalog_Пользователи":
+            return {"value": [], "source": "odata"}
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata)
+    result = handle_assignments({"action": "list", "limit": 5})
+    assert result["assignments"][0]["lines"][0]["text"] == "NavLine"
 
 
 def test_list_normalizes_card(monkeypatch) -> None:
@@ -455,6 +652,51 @@ def test_list_normalizes_card(monkeypatch) -> None:
     assert "startswith(Number,'АСТ')" in result["filter"]
 
 
+def test_normalize_assignment_number_fixes_latin_act() -> None:
+    assert normalize_assignment_number("ACT00-000001") == "АСТ00-000001"
+    assert normalize_assignment_number("АСТ00-00093") == "АСТ00-00093"
+    assert normalize_assignment_number("") == ""
+
+
+def test_get_assignment_uses_cyrillic_number(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_odata_get(args: dict) -> dict:
+        seen.append(str(args.get("number") or ""))
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    try:
+        handle_assignments({"action": "get", "number": "ACT00-000001"})
+    except Exception as exc:
+        assert "ACT00-000001" not in str(exc) or "АСТ00-000001" in str(exc)
+    assert seen == ["АСТ00-000001"]
+
+
+def test_list_empty_customer_has_no_ocr_hint(monkeypatch) -> None:
+    def fake_odata_get(args: dict) -> dict:
+        entity = str(args.get("entity") or "")
+        if entity == "Catalog_Пользователи":
+            return {
+                "value": [
+                    {
+                        "Description": "Ильченко Екатерина Александровна",
+                        "Ref_Key": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    }
+                ],
+                "source": "odata",
+            }
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    result = handle_assignments(
+        {"action": "list", "customer": "Ильченко Екатерина Александровна"}
+    )
+    assert result["count"] == 0
+    assert "OCR" in str(result.get("hint") or "")
+    assert "action=list" in str(result.get("hint") or "")
+
+
 def test_list_tasks_has_no_default_check_assignment_title(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
@@ -471,6 +713,77 @@ def test_list_tasks_has_no_default_check_assignment_title(monkeypatch) -> None:
     hint = str(result.get("hint") or "")
     assert "action=list" in hint
     assert "erp_tasks_current" not in hint
+
+
+def test_list_include_files_batches_owner_filter(monkeypatch) -> None:
+    first = "11111111-1111-1111-1111-111111111111"
+    second = "22222222-2222-2222-2222-222222222222"
+    file_filters: list[str] = []
+
+    def fake_odata_get(args: dict) -> dict:
+        entity = str(args.get("entity") or "")
+        filt = str(args.get("filter") or "")
+        if entity == ASSIGNMENT_ENTITY:
+            return {
+                "value": [
+                    {
+                        "Number": "АСТ00-00001",
+                        "Ref_Key": first,
+                        "Date": "2026-09-10T09:00:00",
+                        "Posted": True,
+                        "ОЧем": "Tema 1",
+                        "Статус": "ВРаботе",
+                        "Поручения": [
+                            {
+                                "LineNumber": "1",
+                                "Мероприятие": "Sdelat",
+                                "СрокИсполнения": "2026-09-20T00:00:00",
+                            }
+                        ],
+                    },
+                    {
+                        "Number": "АСТ00-00002",
+                        "Ref_Key": second,
+                        "Date": "2026-09-11T09:00:00",
+                        "Posted": True,
+                        "ОЧем": "Tema 2",
+                        "Статус": "Создано",
+                        "Поручения": [],
+                    },
+                ],
+                "source": "odata",
+            }
+        if entity == "Catalog_ТД_ПорученияПрисоединенныеФайлы":
+            file_filters.append(filt)
+            return {
+                "value": [
+                    {
+                        "Description": "akt",
+                        "Расширение": "pdf",
+                        "Ref_Key": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "ВладелецФайла_Key": first,
+                    },
+                    {
+                        "Description": "scan",
+                        "Расширение": "jpg",
+                        "Ref_Key": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        "ВладелецФайла_Key": second,
+                    },
+                ],
+                "source": "odata",
+            }
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    result = handle_assignments(
+        {"action": "list", "only_open": True, "include_files": True, "limit": 100}
+    )
+    assert result["count"] == 2
+    assert len(file_filters) == 1
+    assert first in file_filters[0]
+    assert second in file_filters[0]
+    assert result["assignments"][0]["files"][0]["name"] == "akt"
+    assert result["assignments"][1]["files"][0]["name"] == "scan"
 
 
 def test_live_or_stub_list() -> None:

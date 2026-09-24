@@ -75,6 +75,7 @@ class PhaseResult:
     git: dict[str, Any] = field(default_factory=dict)
     successful_live_tools: list[str] = field(default_factory=list)
     step_ledger: list[dict[str, Any]] = field(default_factory=list)
+    tool_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 def workflow_health() -> WorkflowHealth:
@@ -422,15 +423,37 @@ def _validate_and_store_draft(
         validate_draft,
     )
 
+    from app.services.workflows.artifact_close_playbook import (
+        artifact_close_playbook_draft,
+        is_artifact_close_agent,
+    )
     from app.services.workflows.meeting_agent_config import apply_meeting_agent_config
+    from app.services.workflows.calendar_control_playbook import (
+        calendar_control_playbook_draft,
+        is_calendar_control_agent,
+    )
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_playbook_draft
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_playbook_draft
+    from app.services.workflows.daily_assignment_playbook import (
+        daily_assignment_playbook_draft,
+        is_daily_assignment_agent,
+    )
 
     _fill_when_to_run_from_materials(row, draft)
     allow_web = regulation_allows_web(_regulation_blob(row))
     enriched = attach_tool_candidates(draft, allow_web=allow_web)
     blob = _regulation_blob(row)
-    if is_rk_meeting_agent(row.title or "", row.notes or "", blob):
+    if is_artifact_close_agent(row.title or "", row.notes or "", blob):
+        seed = artifact_close_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": seed["steps"],
+            "run_inputs": [],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
+    elif is_rk_meeting_agent(row.title or "", row.notes or "", blob):
         seed = rk_playbook_draft()
         enriched = {
             **seed,
@@ -448,6 +471,26 @@ def _validate_and_store_draft(
             "runtime": seed.get("runtime") or enriched.get("runtime"),
         }
         enriched = attach_tool_candidates(enriched, allow_web=allow_web)
+    elif is_daily_assignment_agent(row.title or "", row.notes or "", blob):
+        seed = daily_assignment_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": seed["steps"],
+            "run_inputs": [],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
+    elif is_calendar_control_agent(row.title or "", row.notes or "", blob):
+        seed = calendar_control_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": seed["steps"],
+            "run_inputs": [],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
     validation = validate_draft(
         enriched,
         allow_web=allow_web,
@@ -457,7 +500,14 @@ def _validate_and_store_draft(
     local = apply_meeting_agent_config(local, title=row.title or "", notes=row.notes or "")
     local["playbook_draft"] = enriched
     local["draft_validation"] = validation.to_dict()
+    from app.services.workflows.tool_whitelist import collect_runtime_whitelist, store_whitelist
+
+    local = store_whitelist(
+        local,
+        collect_runtime_whitelist(local=local, playbook=local.get("playbook") if isinstance(local.get("playbook"), dict) else {}),
+    )
     row.local_run = local
+    flag_modified(row, "local_run")
     db.commit()
     db.refresh(row)
     return enriched, validation
@@ -1185,7 +1235,8 @@ def finish_local_demo_workflow(
         status="FINISHED",
         text=(answer or "").strip(),
         successful_live_tools=tools,
-        step_ledger=_local_demo_ledger(draft, tools),
+        step_ledger=_local_demo_ledger(draft, tools, events=events or []),
+        tool_events=list(events or []),
     )
     local = dict(row.local_run or {})
     local["runtime"] = "cursor-sdk"
@@ -1657,6 +1708,15 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     )
     plan = WorkflowPlan.from_dict(row.plan_json or {})
     local = apply_meeting_agent_config(local, title=row.title or "", notes=row.notes or "")
+    published_playbook = playbook or (local.get("playbook") if isinstance(local.get("playbook"), dict) else {}) or {}
+    from app.services.workflows.tool_whitelist import collect_runtime_whitelist
+
+    tools = collect_runtime_whitelist(
+        row=row,
+        local=local,
+        playbook=published_playbook if isinstance(published_playbook, dict) else {},
+        plan=row.plan_json if isinstance(row.plan_json, dict) else {},
+    ) or _tools_for_published_plan(plan, row)
     local.update(
         {
             "status": "published",
@@ -1664,9 +1724,9 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
             "published": True,
             "tests_status": "pass",
             "runtime": "cursor" if has_demo else "mcp",
-            "tools": _tools_for_published_plan(plan, row),
+            "tools": tools,
             "ui_mode": "chat",
-            "playbook": playbook or local.get("playbook") or {},
+            "playbook": published_playbook,
         }
     )
     row.local_run = local
@@ -1911,6 +1971,7 @@ def _finish_demo_stream(
         demo_text=phase.text or "",
         tools=tools,
         report=report,
+        events=list(phase.tool_events or []),
         on_event=on_event,
     )
     local = dict(row.local_run or {})
@@ -1922,6 +1983,17 @@ def _finish_demo_stream(
             "steps": playbook.get("steps") or draft.get("steps"),
             "status": prompts.DRAFT_STATUS_VERIFIED,
         }
+    from app.services.workflows.tool_whitelist import collect_runtime_whitelist, store_whitelist
+
+    chain_tools = list(playbook.get("tools") or tools)
+    whitelist = collect_runtime_whitelist(
+        local={**local, "live_tools_invoked": chain_tools},
+        playbook=playbook,
+    )
+    if whitelist:
+        playbook["tools"] = whitelist
+        local["playbook"] = playbook
+    local = store_whitelist(local, whitelist)
     local["demo_ok"] = bool(playbook.get("demo_ok"))
     local["can_publish"] = bool(playbook.get("instructions"))
     local["tests_status"] = "pass" if playbook.get("demo_ok") else "unknown"
@@ -1929,16 +2001,18 @@ def _finish_demo_stream(
     local["runtime"] = str(local.get("runtime") or "cursor")
     local["awaiting_demo_answers"] = False
     local["work_result"] = work
-    name = str(playbook.get("name") or "").strip()
-    if name and not prompts.is_placeholder_title(name):
-        row.title = name
-    elif prompts.is_placeholder_title(row.title):
-        row.title = prompts.title_from_materials(
-            notes=row.notes or "",
-            document_text=row.document_text or "",
-            document_name=row.document_name or "",
-            fallback=row.title or "ИИ-агент",
-        )
+    current_title = str(row.title or "").strip()
+    if not current_title or prompts.is_placeholder_title(current_title):
+        name = str(playbook.get("name") or "").strip()
+        if name and not prompts.is_placeholder_title(name):
+            row.title = name
+        else:
+            row.title = prompts.title_from_materials(
+                notes=row.notes or "",
+                document_text=row.document_text or "",
+                document_name=row.document_name or "",
+                fallback=row.title or "ИИ-агент",
+            )
     from app.services.workflows.schedule_draft import draft_after_demo
 
     plan_for_scope = (
@@ -2202,21 +2276,30 @@ def _successful_tools_from_events(events: list[dict[str, Any]]) -> list[str]:
     return [name for name in tools if name not in failed]
 
 
-def _local_demo_ledger(draft: dict[str, Any], tools: list[str]) -> list[dict[str, Any]]:
-    steps = [item for item in (draft.get("steps") or []) if isinstance(item, dict)]
+def _local_demo_ledger(
+    draft: dict[str, Any],
+    tools: list[str],
+    events: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    from app.services.workflows.playbook_validation import lock_verified_chain
+
+    locked = lock_verified_chain(draft, events=events, tools=tools)
+    steps = [item for item in (locked.get("steps") or []) if isinstance(item, dict)]
     if not steps:
         return []
     fallback_tool = tools[0] if tools else ""
     ledger: list[dict[str, Any]] = []
     for index, step in enumerate(steps, start=1):
         step_id = str(step.get("id") or step.get("title") or f"step-{index}")
-        tool = str(step.get("tool") or step.get("tool_name") or fallback_tool)
+        tool = str(step.get("tool") or step.get("tool_name") or "")
+        if not tool and fallback_tool:
+            tool = fallback_tool
         ledger.append(
             {
                 "id": step_id,
                 "required": True,
-                "status": "completed",
-                "data_status": "complete" if tool else "empty_valid",
+                "status": "completed" if tool or tools else "pending",
+                "data_status": "complete" if tool or tools else "empty_valid",
                 "tool": tool,
                 "error": "",
                 "reasons": [],
@@ -2287,6 +2370,9 @@ def _playbook_from_draft(row: Workflow, draft: dict[str, Any]) -> dict[str, Any]
         playbook["write_recipe"] = recipe.get("recipe") or recipe
         if isinstance(recipe.get("recipes"), list) and recipe["recipes"]:
             playbook["write_recipes"] = recipe["recipes"]
+    steps = [dict(step) for step in (draft.get("steps") or []) if isinstance(step, dict)]
+    if steps:
+        playbook["steps"] = steps
     # Carry over per-run inputs and the run trigger so they survive into the
     # published playbook (the schedule draft and run-start prompts rely on them).
     when_to_run = str(draft.get("when_to_run") or "").strip()
@@ -2336,6 +2422,35 @@ def _fail_demo_validation(
     return _to_schema(row)
 
 
+def _lock_playbook_chain(
+    playbook: dict[str, Any],
+    draft: dict[str, Any],
+    *,
+    tools: list[str],
+    report: dict[str, Any],
+    events: list[dict[str, Any]] | None = None,
+    steps: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    from app.services.workflows.playbook_validation import (
+        chain_tools,
+        lock_verified_chain,
+        verified_chain_text,
+    )
+
+    source = {**draft, "steps": steps or playbook.get("steps") or draft.get("steps") or []}
+    locked = lock_verified_chain(
+        source,
+        ledger=report.get("ledger") if isinstance(report.get("ledger"), list) else [],
+        events=events,
+        tools=tools,
+    )
+    playbook["steps"] = locked.get("steps") or []
+    helpers = [name for name in tools if name in {"users.current", "users.list"}]
+    playbook["tools"] = chain_tools(playbook["steps"], extras=helpers) or list(tools)
+    playbook["chain"] = verified_chain_text({**playbook, "chain": ""})
+    return playbook
+
+
 def _refine_playbook(
     row: Workflow,
     *,
@@ -2343,6 +2458,7 @@ def _refine_playbook(
     demo_text: str,
     tools: list[str],
     report: dict[str, Any],
+    events: list[dict[str, Any]] | None = None,
     on_event: WorkflowEventCallback | None = None,
 ) -> dict[str, Any]:
     """Правка черновика по фактам запуска, а не первое его создание."""
@@ -2352,7 +2468,9 @@ def _refine_playbook(
         return playbook
 
     playbook = _playbook_from_draft(row, draft)
-    playbook["tools"] = list(tools)
+    playbook = _lock_playbook_chain(
+        playbook, draft, tools=tools, report=report, events=events
+    )
     playbook["example_run"] = (demo_text or "").strip()[:2500]
     playbook["demo_ok"] = True
     playbook["status"] = prompts.DRAFT_STATUS_VERIFIED
@@ -2389,7 +2507,17 @@ def _refine_playbook(
     if parsed.get("triggers"):
         playbook["triggers"] = parsed["triggers"]
     if parsed.get("steps"):
-        playbook["steps"] = parsed["steps"]
+        from app.services.workflows.playbook_validation import attach_tool_candidates
+
+        refined = attach_tool_candidates({**draft, "steps": parsed["steps"]})
+        playbook = _lock_playbook_chain(
+            playbook,
+            refined,
+            tools=tools,
+            report=report,
+            events=events,
+            steps=refined.get("steps"),
+        )
     return playbook
 
 
@@ -2467,6 +2595,7 @@ def _onec_domain_tools(blob: str) -> list[str]:
         "onec.erp_assignments",
         "onec.erp_assignments_write",
         "onec.download_artifact",
+        "office.read_file",
         "users.subordinates",
         "turboproject",
     ]
@@ -2487,9 +2616,29 @@ def _onec_domain_tools(blob: str) -> list[str]:
 
 
 def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
-    """Pick MCP tools from plan domain — never force web_search for Outlook/meetings."""
+    """Playbook whitelist first; otherwise MCP tools from the plan domain."""
+    from app.services.workflows.tool_whitelist import collect_runtime_whitelist
+    from app.services.workflows.artifact_close_playbook import (
+        artifact_close_runtime_tools,
+        is_artifact_close_agent,
+    )
+    from app.services.workflows.calendar_control_playbook import (
+        calendar_control_runtime_tools,
+        is_calendar_control_agent,
+    )
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_runtime_tools
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_runtime_tools
+    from app.services.workflows.daily_assignment_playbook import (
+        daily_assignment_runtime_tools,
+        is_daily_assignment_agent,
+    )
+
+    collected = collect_runtime_whitelist(
+        row=row,
+        plan=plan.to_dict() if hasattr(plan, "to_dict") else {},
+    )
+    if collected:
+        return collected
 
     answered = " ".join(
         f"{q.question} {q.answer}" for q in (plan.answered_questions or []) if q.answer
@@ -2508,11 +2657,20 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
     ).casefold()
     kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
 
+    if kind == "assignment_artifacts" or is_artifact_close_agent(blob):
+        return artifact_close_runtime_tools()
+
     if kind == "revision_commission" or is_rk_meeting_agent(blob):
         return rk_runtime_tools()
 
     if kind == "board_meeting" or is_sd_meeting_agent(blob):
         return sd_runtime_tools()
+
+    if is_daily_assignment_agent(blob):
+        return daily_assignment_runtime_tools()
+
+    if kind == "calendar_control" or is_calendar_control_agent(blob):
+        return calendar_control_runtime_tools()
 
     if kind == "onec" or (
         any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm"))

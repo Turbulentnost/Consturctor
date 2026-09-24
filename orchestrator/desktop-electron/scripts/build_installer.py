@@ -321,15 +321,27 @@ def prepare_playwright(skip: bool) -> None:
     print("playwright browser cache not found; packaged browser tools may need system browsers", flush=True)
 
 
-def build_electron(dir_only: bool) -> None:
+def build_electron(dir_only: bool, *, backend_url: str = "") -> None:
     env = build_env()
+    chosen = backend_url.strip().rstrip("/")
+    if chosen:
+        env["BACKEND_URL"] = chosen
+        env["VITE_BACKEND_URL"] = chosen
+        env["ORCH_PREFER_LOCAL"] = "0"
+        env["VITE_ORCH_PREFER_LOCAL"] = "0"
     run([tool("npm", env=env), "run", "build"], cwd=ELECTRON_ROOT, env=env)
     # Prefer local binary — npx may hit the network and fail offline.
     local_builder = ELECTRON_ROOT / "node_modules" / ".bin" / ("electron-builder.cmd" if os.name == "nt" else "electron-builder")
     if local_builder.is_file():
-        cmd = [str(local_builder)]
+        cmd = [str(local_builder), "--publish", "never"]
     else:
-        cmd = [tool("npm", env=env), "exec", "--", "electron-builder"]
+        cmd = [tool("npm", env=env), "exec", "--", "electron-builder", "--publish", "never"]
+    electron_dist = ELECTRON_ROOT / "node_modules" / "electron" / "dist"
+    electron_version = electron_dist / "version"
+    if electron_dist.is_dir() and (electron_dist / "electron.exe").is_file():
+        cmd.extend(["--config.electronDist", str(electron_dist)])
+        if electron_version.is_file():
+            cmd.extend(["--config.electronVersion", electron_version.read_text(encoding="utf-8").strip()])
     if dir_only:
         cmd.append("--dir")
     run(cmd, cwd=ELECTRON_ROOT, env=env)
@@ -346,12 +358,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-browsers", action="store_true", help="Do not copy Playwright browser cache")
     args = parser.parse_args(argv)
 
-    prepare_env(args.backend_url)
+    backend_url = prepare_env(args.backend_url)
     prepare_sdk_agent(args.skip_sdk_install)
     prepare_node(args.skip_node, download_node=args.download_node)
     prepare_python(args.skip_python)
     prepare_playwright(args.skip_browsers)
-    build_electron(args.dir)
+    build_electron(args.dir, backend_url=backend_url)
     return 0
 
 

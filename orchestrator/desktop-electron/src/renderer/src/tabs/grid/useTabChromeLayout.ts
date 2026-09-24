@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
 import { resolveLayoutOverlaps } from './gridReflow'
 
-export const TAB_CHROME_STORAGE_KEY = 'orch-tab-chrome-v10'
+export const TAB_CHROME_STORAGE_KEY = 'orch-tab-chrome-v11'
 export const TAB_CHROME_COLS = 16
 export const TAB_CHROME_MAX_ROWS = 12
 /** KPI body widgets — same 8×6 snap as вкладка «Сегодня». */
@@ -11,6 +11,9 @@ export const KPI_TAB_GRID_ROWS = 6
 /** Реестр поручений: рабочее поле 8×6 (col×row). */
 export const REGISTRY_TAB_GRID_COLS = 8
 export const REGISTRY_TAB_GRID_ROWS = 6
+/** Библиотека агентов: 8×8, низ 2×8 — «Мои агенты». */
+export const AGENT_LIBRARY_TAB_GRID_COLS = 8
+export const AGENT_LIBRARY_TAB_GRID_ROWS = 8
 
 export function tabChromeGridDimensions(tabId: string): { cols: number; maxRows: number } {
   if (tabId === 'kpi') {
@@ -19,11 +22,14 @@ export function tabChromeGridDimensions(tabId: string): { cols: number; maxRows:
   if (tabId === 'assignments_registry') {
     return { cols: REGISTRY_TAB_GRID_COLS, maxRows: REGISTRY_TAB_GRID_ROWS }
   }
+  if (tabId === 'agent_library') {
+    return { cols: AGENT_LIBRARY_TAB_GRID_COLS, maxRows: AGENT_LIBRARY_TAB_GRID_ROWS }
+  }
   return { cols: TAB_CHROME_COLS, maxRows: TAB_CHROME_MAX_ROWS }
 }
 
 export function tabUsesSnapGrid(tabId: string): boolean {
-  return tabId === 'kpi' || tabId === 'assignments_registry'
+  return tabId === 'kpi' || tabId === 'assignments_registry' || tabId === 'agent_library'
 }
 export const TAB_CHROME_MARGIN: [number, number] = [5, 5]
 export const TAB_CHROME_MIN_ROW = 48
@@ -110,6 +116,32 @@ export const DEFAULT_WIDE_MAIN_LAYOUT: LayoutItem[] = [
 ]
 
 /** 8×6: таблица 6×6, карточка поручения 2×6. */
+/** 8×8: каталог 8×6, добавленные 8×2. */
+export const DEFAULT_AGENT_LIBRARY_LAYOUT: LayoutItem[] = [
+  {
+    i: 'main',
+    x: 0,
+    y: 0,
+    w: AGENT_LIBRARY_TAB_GRID_COLS,
+    h: 6,
+    minW: 4,
+    minH: 3,
+    maxW: AGENT_LIBRARY_TAB_GRID_COLS,
+    maxH: AGENT_LIBRARY_TAB_GRID_ROWS
+  },
+  {
+    i: 'botA',
+    x: 0,
+    y: 6,
+    w: AGENT_LIBRARY_TAB_GRID_COLS,
+    h: 2,
+    minW: 4,
+    minH: 2,
+    maxW: AGENT_LIBRARY_TAB_GRID_COLS,
+    maxH: 4
+  }
+]
+
 export const DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT: LayoutItem[] = [
   {
     i: 'main',
@@ -136,10 +168,10 @@ export const DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT: LayoutItem[] = [
 ]
 
 export const DEFAULT_PROCESS_LAYOUT: LayoutItem[] = [
-  { i: 'main', x: 0, y: 0, w: 12, h: 10, minW: 6, minH: 4, maxW: 16, maxH: 12 },
-  { i: 'side', x: 12, y: 0, w: 4, h: 10, minW: 4, minH: 4, maxW: 16, maxH: 12 },
-  { i: 'botA', x: 0, y: 10, w: 8, h: 2, minW: 4, minH: 1, maxW: 16, maxH: 4 },
-  { i: 'botB', x: 8, y: 10, w: 8, h: 2, minW: 4, minH: 1, maxW: 16, maxH: 4 }
+  { i: 'main', x: 0, y: 0, w: 12, h: 7, minW: 6, minH: 3, maxW: 16, maxH: 12 },
+  { i: 'side', x: 12, y: 0, w: 4, h: 7, minW: 4, minH: 3, maxW: 16, maxH: 12 },
+  { i: 'botA', x: 0, y: 7, w: 8, h: 5, minW: 4, minH: 2, maxW: 16, maxH: 6 },
+  { i: 'botB', x: 8, y: 7, w: 8, h: 5, minW: 4, minH: 2, maxW: 16, maxH: 6 }
 ]
 
 /**
@@ -163,6 +195,9 @@ function storageKey(tabId: string, userId: string): string {
   const uid = userId.trim() || 'default'
   if (tabId === 'assignments_registry') {
     return `${TAB_CHROME_STORAGE_KEY}:assignments_registry-v2:${uid}`
+  }
+  if (tabId === 'agent_library') {
+    return `${TAB_CHROME_STORAGE_KEY}:agent_library-v1:${uid}`
   }
   return `${TAB_CHROME_STORAGE_KEY}:${tabId}:${uid}`
 }
@@ -455,6 +490,8 @@ export function useTabChromeLayout(
   const widgetIds = useMemo(() => defaults.map((item) => item.i), [defaults])
   const [persist, setPersist] = useState(() => readPersist(tabId, userId, defaults, widgetIds))
   const [editMode, setEditMode] = useState(false)
+  const persistRef = useRef(persist)
+  persistRef.current = persist
 
   useEffect(() => {
     setPersist(readPersist(tabId, userId, defaults, widgetIds))
@@ -530,20 +567,25 @@ export function useTabChromeLayout(
     (containerHeight: number, containerWidth: number) => {
       if (editMode) return
       if (tabId === 'kpi') return
+      // Read layout/meta from a ref so this callback identity stays stable.
+      // Recreating it after every bin flip re-fires ResizeObserver effects.
+      const { layout, meta: prevMeta } = persistRef.current
       const fit = viewportFitCells(containerHeight, containerWidth, grid)
-      const overflow = new Set(pickOverflowWidgetIds(persist.layout, persist.meta, fit.rows, fit.cols))
+      const overflow = new Set(pickOverflowWidgetIds(layout, prevMeta, fit.rows, fit.cols))
       let changed = false
-      const meta = { ...persist.meta }
+      const meta = { ...prevMeta }
       for (const id of widgetIds) {
+        if (!overflow.has(id)) continue
         const current = meta[id] || { visible: true, color: '', locked: false, binned: false }
-        const shouldBin = overflow.has(id)
-        if (Boolean(current.binned) === shouldBin) continue
-        meta[id] = { ...current, binned: shouldBin }
+        if (current.binned) continue
+        meta[id] = { ...current, binned: true }
         changed = true
       }
-      if (changed) save({ layout: persist.layout, meta })
+      // Never auto-unbin: putting widgets back changes canvas size and restarts
+      // the overflow loop (Maximum update depth). Restore only via basket UI.
+      if (changed) save({ layout, meta })
     },
-    [editMode, grid, persist.layout, persist.meta, save, tabId, widgetIds]
+    [editMode, grid, save, tabId, widgetIds]
   )
 
   const basketIds = useMemo(

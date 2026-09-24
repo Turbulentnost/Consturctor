@@ -25,6 +25,7 @@ _ONEC_TOOLS = [
     "onec.erp_assignments",
     "onec.erp_assignments_write",
     "onec.download_artifact",
+    "office.read_file",
     "onec.odata_catalog",
     "onec.list_attachments",
     "onec.read_attachment",
@@ -47,6 +48,7 @@ _RK_TOOLS = [
     "onec.sql_query",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_task_report",
     "report.build_meeting_summary",
     "report.export_document",
@@ -70,6 +72,7 @@ _SD_TOOLS = [
     "onec.docflow_tasks",
     "excel.list_files",
     "excel.read_workbook",
+    "office.read_file",
     "report.build_meeting_summary",
     "report.export_document",
     "users.current",
@@ -217,10 +220,18 @@ def _is_revision_commission_blob(blob: str) -> bool:
 
 def infer_kind_from_blob(blob: str) -> str:
     low = blob.casefold()
+    from app.services.workflows.artifact_close_playbook import is_artifact_close_agent
+
+    if is_artifact_close_agent(low):
+        return "assignment_artifacts"
     if _is_revision_commission_blob(low):
         return "revision_commission"
     if _is_board_meeting_blob(low):
         return "board_meeting"
+    from app.services.workflows.calendar_control_playbook import is_calendar_control_agent
+
+    if is_calendar_control_agent(low):
+        return "calendar_control"
     has_onec = any(tip in low for tip in ("1с", "1c", "onec", "odata"))
     has_outlook = any(
         tip in low
@@ -256,10 +267,18 @@ def _extract_site_url_from_blob(blob: str) -> str:
 
 def default_tools_for_kind(kind: str, *, blob: str = "") -> list[str]:
     low = blob.casefold()
+    if kind == "assignment_artifacts":
+        from app.services.workflows.artifact_close_playbook import artifact_close_runtime_tools
+
+        return artifact_close_runtime_tools()
     if kind == "revision_commission":
         return list(_RK_TOOLS)
     if kind == "board_meeting":
         return list(_SD_TOOLS)
+    if kind == "calendar_control":
+        from app.services.workflows.calendar_control_playbook import calendar_control_runtime_tools
+
+        return calendar_control_runtime_tools()
     if kind == "onec":
         return list(_ONEC_TOOLS)
     if kind == "outlook_calendar":

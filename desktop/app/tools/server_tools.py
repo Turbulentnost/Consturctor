@@ -187,6 +187,9 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             "Журнал поручений 1С ERP (Document_ТД_Поручения, серия АСТ00). "
             "Проверка поручений = action=list, задачи «Проверить поручение» в 1С нет. "
             "Заказчик = реквизит Руководитель. action=list/get/files/download/tasks/protocols. "
+            "include_all=true или only_open=false — весь журнал заказчика, любые статусы, "
+            "не только открытые и не только за сегодня. "
+            "action=protocols + psd_mark=true — все протоколы с номером ПСД*, включая закрытые. "
             "Содержимое файла: onec.download_artifact с file_id из action=files. "
             "Номер кириллический АСТ, не латиница ACT. Сервер."
         ),
@@ -199,8 +202,16 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "query": _prop("string", "Подстрока в ОЧем или задаче"),
                 "date_from": _prop("string", "YYYY-MM-DD"),
                 "date_to": _prop("string", "YYYY-MM-DD"),
-                "only_open": _prop("boolean", "Только Создано/ВРаботе"),
+                "only_open": _prop("boolean", "Только Создано/ВРаботе. false — весь журнал"),
+                "include_all": _prop(
+                    "boolean",
+                    "Все поручения заказчика, любые статусы, без окна «открытые/сегодня»",
+                ),
                 "include_last_day": _prop("boolean", "Открытые плюс все за сегодня", default=True),
+                "psd_mark": _prop(
+                    "boolean",
+                    "Для action=protocols: все номера ПСД*, включая закрытые",
+                ),
                 "include_files": _prop("boolean", "Сразу вернуть файлы", default=False),
                 "file_id": _prop("string", "GUID вложения для action=download"),
                 "limit": _prop("integer", "Максимум записей", default=40),
@@ -213,7 +224,7 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "Скачать приложенный файл 1С по GUID вкладки «Файлы». "
             "file_id из onec.erp_assignments action=files. "
-            "OData Base64, том на диске, hs/dtw/files или UNC. Сервер, только чтение. "
+            "Только HTTP hs/dtw/files, без OData. Сервер, только чтение. "
             "Дальше: Word/PDF/картинки — office.read_file, Excel — excel.read_workbook. "
             "Встроенный Read по saved_path не вызывай."
         ),
@@ -227,6 +238,38 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 ),
             },
             ["file_id"],
+        ),
+    ),
+    (
+        "onec.incoming_correspondence",
+        (
+            "Справочник подразделений для ручной регистрации входящей (как agent-pochta). "
+            "action=departments."
+        ),
+        _schema({"action": _prop("string", "departments | list_departments", default="departments")}),
+    ),
+    (
+        "onec.incoming_correspondence_write",
+        (
+            "Создание Document_ТД_ВходящаяКорреспонденция через OData POST. "
+            "Требует подтверждения. action=create, department_id, theme, msg_base64 или staged_path."
+        ),
+        _schema(
+            {
+                "action": _prop("string", "create", default="create"),
+                "department_id": _prop("string", "Код подразделения 00-000066"),
+                "department_name": _prop("string", "Название подразделения"),
+                "theme": _prop("string", "ТемаСлужебнойЗаписки"),
+                "partner": _prop("string", "Партнер"),
+                "organization": _prop("string", "Код организации НП/АЛ/…"),
+                "email_sender": _prop("string", "Email отправителя письма"),
+                "email_recipient": _prop("string", "Email получателя письма"),
+                "content": _prop("string", "Содержание"),
+                "msg_base64": _prop("string", "Файл .msg Base64"),
+                "staged_path": _prop("string", "Путь к .msg на сервере"),
+                "attach_msg": _prop("boolean", "Прикрепить .msg после POST", default=True),
+            },
+            ["department_id", "theme"],
         ),
     ),
     (
@@ -283,19 +326,65 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "Протоколы Document_ТД_Протокол через OData (desktop, фильтр локально). "
             "meeting_kind rk - РК (номер «РК*»), sd - СД («ПСД*», также «СПГ*»/«СД*»). "
-            "По умолчанию черновики на проверку. date или date_from/date_to."
+            "По умолчанию черновики на проверку. "
+            "psd_mark=true — только номер с «ПСД», все статусы включая закрытые, "
+            "выборка листается целиком, max_results её не обрезает."
         ),
         _schema(
             {
-                "meeting_kind": _prop("string", "rk или sd"),
+                "meeting_kind": _prop("string", "rk, sd или any (все протоколы за период, для календаря)"),
                 "date": _prop("string", "Один день YYYY-MM-DD"),
                 "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
                 "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
                 "number": _prop("string", "Точный номер протокола"),
                 "review_only": _prop("boolean", "Только на проверку", default=True),
-                "max_results": _prop("integer", "Максимум протоколов"),
+                "psd_mark": _prop(
+                    "boolean",
+                    "Только протоколы с пометкой ПСД (номер начинается с ПСД), все статусы",
+                ),
+                "include_closed": _prop(
+                    "boolean",
+                    "Включать закрытые. Для psd_mark по умолчанию true",
+                ),
+                "max_results": _prop("integer", "Максимум протоколов. Для psd_mark не обрезает серию"),
             },
             ["meeting_kind"],
+        ),
+    ),
+    (
+        "onec.meeting_protocol_write",
+        (
+            "Создать протокол совещания Document_ТД_Протокол в 1С (черновик «Подготовлен», "
+            "не проведён). Заполняет шапку (тема, руководитель, проверяющий, подготовил, "
+            "подразделение, проект, кабинет, вид совещания, время), «Присутствующие», "
+            "«Повестка совещания», «Решения» и «Поставленные задачи» (задача, исполнитель, срок). "
+            "ФИО передавай как в 1С — сервер сам найдёт ссылки. Требует подтверждения человека. Сервер."
+        ),
+        _schema(
+            {
+                "action": _prop("string", "create | probe", default="create"),
+                "topic": _prop("string", "Тема совещания как в справочнике «Темы совещаний» 1С"),
+                "date": _prop("string", "Дата совещания YYYY-MM-DD"),
+                "time_start": _prop("string", "Время начала HH:MM"),
+                "time_end": _prop("string", "Время окончания HH:MM"),
+                "leader": _prop("string", "ФИО руководителя совещания (пользователь 1С). Пусто — из темы или сессии"),
+                "responsible": _prop("string", "ФИО проверяющего. Пусто — из темы или руководитель"),
+                "prepared_by": _prop("string", "ФИО подготовившего. Пусто — текущий пользователь"),
+                "department": _prop("string", "Подразделение. Пусто — из темы или руководителя"),
+                "project": _prop("string", "Проект. Пусто — из темы"),
+                "room": _prop("string", "Кабинет / место проведения"),
+                "meeting_type": _prop("string", "Вид совещания, по умолчанию «Отчетное»"),
+                "next_meeting_date": _prop("string", "Дата следующего совещания YYYY-MM-DD"),
+                "participants": _prop("array", "ФИО присутствующих"),
+                "agenda": _prop("array", "Вопросы повестки: строка или {question, responsible}"),
+                "decisions": _prop("array", "Решения: строка или {text, due}"),
+                "tasks": _prop(
+                    "array",
+                    "Поставленные задачи: {text, executor (ФИО), due YYYY-MM-DD, priority, note}",
+                ),
+                "comment": _prop("string", "Комментарий к протоколу"),
+            },
+            ["date"],
         ),
     ),
     (
@@ -333,6 +422,26 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
+        "audio.transcribe",
+        (
+            "Расшифровка аудио-вложения запуска (faster-whisper): сегменты с таймкодами "
+            "start/end/text, полный текст и длительность. file_id бери из блока "
+            "«Вложения запуска» промпта. names — ФИО участников из Outlook: они подсказываются "
+            "распознаванию, чтобы фамилии не искажались. Меток говорящих в сегментах нет. "
+            "Только чтение, подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "file_id": _prop("string", "id аудио-вложения запуска из блока «Вложения запуска»"),
+                "names": _prop(
+                    "array",
+                    "ФИО участников из Outlook, по одному. Пусто — распознавание без подсказки имён",
+                ),
+            },
+            ["file_id"],
+        ),
+    ),
+    (
         "notify.send",
         (
             "Отправить уведомление получателю (Windows-тост + inbox). user_id бери из users.list - "
@@ -367,6 +476,10 @@ SERVER_TOOL_NAMES: frozenset[str] = frozenset(
 )
 SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
+    # Journal list + files: 1C OData, not a quick catalog ping.
+    "onec.erp_assignments": 180,
+    # faster-whisper small на CPU: ~8 минут на 25 минут аудио, берём запас.
+    "audio.transcribe": 3600,
 }
 
 

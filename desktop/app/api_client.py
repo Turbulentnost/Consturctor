@@ -444,6 +444,7 @@ class WorkflowFileItem:
 class WorkflowFiles:
     user_files: list[WorkflowFileItem] = field(default_factory=list)
     agent_files: list[WorkflowFileItem] = field(default_factory=list)
+    run_attachments: list[WorkflowFileItem] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -912,9 +913,13 @@ def _parse_workflow_file_item(raw: object) -> WorkflowFileItem:
 def _parse_workflow_files(data: dict) -> WorkflowFiles:
     user_raw = data.get("user_files") if isinstance(data.get("user_files"), list) else []
     agent_raw = data.get("agent_files") if isinstance(data.get("agent_files"), list) else []
+    run_raw = (
+        data.get("run_attachments") if isinstance(data.get("run_attachments"), list) else []
+    )
     return WorkflowFiles(
         user_files=[_parse_workflow_file_item(item) for item in user_raw],
         agent_files=[_parse_workflow_file_item(item) for item in agent_raw],
+        run_attachments=[_parse_workflow_file_item(item) for item in run_raw],
     )
 
 
@@ -1827,6 +1832,55 @@ class ApiClient:
         if not isinstance(data, dict):
             raise ApiError("Backend не вернул итоговый workflow")
         return self._parse_workflow(data)
+
+    def get_position_kpi_build(self, build_id: str) -> dict:
+        data = self._request(
+            "GET",
+            f"/api/v1/position-kpi/builds/{build_id}",
+            timeout=60.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Backend не вернул сессию KPI")
+        return data
+
+    def finish_position_kpi_build(
+        self,
+        build_id: str,
+        *,
+        answer: str,
+        events: list[dict] | None = None,
+        modules: list[dict] | None = None,
+        catalog_draft: dict | None = None,
+        cursor_agent_id: str = "",
+        connect: bool = False,
+    ) -> dict:
+        data = self._request(
+            "POST",
+            f"/api/v1/position-kpi/builds/{build_id}/sdk-finish",
+            json={
+                "answer": answer,
+                "events": events or [],
+                "modules": modules or [],
+                "catalog_draft": catalog_draft or {},
+                "cursor_agent_id": cursor_agent_id,
+                "connect": connect,
+            },
+            timeout=180.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Backend не вернул итог KPI-модуля")
+        return data
+
+    def connect_position_kpi_build(self, build_id: str) -> dict:
+        data = self._request(
+            "POST",
+            f"/api/v1/position-kpi/builds/{build_id}/connect",
+            json={},
+            timeout=180.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Backend не подключил KPI")
+        return data
 
     def prepare_demo_writes(self, workflow_id: str) -> WorkflowRecord:
         data = self._request(

@@ -5,7 +5,14 @@ import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../lay
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
 import { TODAY_WIDGET_IDS, type TodayWidgetId } from './useTodayWidgetLayout'
 import { TodayOutlookMailPanel } from './TodayOutlookMailPanel'
-import { SpecAskOrchestratorBlock, SpecPanel, SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
+import {
+  NewOneCTaskMark,
+  SpecAskOrchestratorBlock,
+  SpecPanel,
+  SpecPill,
+  SpecSummaryTiles
+} from '../../workplace/specV04Components'
+import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useTodayKpiData } from '../../workplace/useTodayKpiData'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
@@ -28,13 +35,41 @@ import {
   EMPTY_TODAY_KPI_TILE
 } from '../../workplace/tileFilters'
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
+import { TodayFullPlanModal } from './TodayFullPlanModal'
+import { TodayTaskDetailModal, type TodayTaskDetailRow } from './TodayTaskDetailModal'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
+import {
+  isPlatformTaskForDay,
+  isPlatformTaskFromMe,
+  isPlatformTaskMine,
+  needsPlatformReview
+} from '../../workplace/platformTasks'
+import './platformTasks.css'
 
 function TodayCellText({ text }: { text: string }): React.JSX.Element {
   return (
     <span className="today-cell-text" title={text}>
       {text}
+    </span>
+  )
+}
+
+function TodayTaskTitle({
+  text,
+  isNew,
+  platform = false
+}: {
+  text: string
+  isNew: boolean
+  platform?: boolean
+}): React.JSX.Element {
+  if (!isNew && !platform) return <TodayCellText text={text} />
+  return (
+    <span className="today-cell-with-mark">
+      {platform ? <span className="today-ptask-badge">Платформа</span> : null}
+      <TodayCellText text={text} />
+      {isNew ? <NewOneCTaskMark /> : null}
     </span>
   )
 }
@@ -75,6 +110,8 @@ function MiniTableCard({
   columns,
   rows,
   rowTones,
+  rowClassNames,
+  onRowClick,
   loading,
   error,
   emptyText,
@@ -87,6 +124,10 @@ function MiniTableCard({
   rows: React.ReactNode[][]
   /** Тона строк (по индексам rows): done | overdue | due_soon | neutral. */
   rowTones?: TodayRowTone[]
+  /** Дополнительные классы строк (по индексам rows). */
+  rowClassNames?: (string | undefined)[]
+  /** Клик по строке: открыть карточку записи. */
+  onRowClick?: (index: number) => void
   loading?: boolean
   /** Shown above the table (KPI/banner), never as a fake data row. */
   error?: string
@@ -116,8 +157,30 @@ function MiniTableCard({
     }
     return rows.map((cells, index) => {
       const tone = rowTones?.[index]
+      const className = [
+        tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : '',
+        rowClassNames?.[index] || '',
+        onRowClick ? 'today-tr-clickable' : ''
+      ]
+        .filter(Boolean)
+        .join(' ')
       return (
-        <tr key={index} className={tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : undefined}>
+        <tr
+          key={index}
+          className={className || undefined}
+          tabIndex={onRowClick ? 0 : undefined}
+          onClick={onRowClick ? () => onRowClick(index) : undefined}
+          onKeyDown={
+            onRowClick
+              ? (event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onRowClick(index)
+                  }
+                }
+              : undefined
+          }
+        >
           {cells.map((cell, cellIndex) => (
             <td key={cellIndex}>{cell}</td>
           ))}
@@ -173,6 +236,8 @@ export function TodayGridTab({
   const [periodDay, setPeriodDay] = useState(startOfToday)
   const { data, tiles } = useTodayKpiData(user, periodDay)
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
+  const [fullPlanOpen, setFullPlanOpen] = useState(false)
+  const [taskDetail, setTaskDetail] = useState<TodayTaskDetailRow | null>(null)
   const [kpiTiles, setKpiTiles] = useState(EMPTY_TODAY_KPI_TILE)
   const onecFromMe = kpiTiles.onecFromMe
   const outlookFromMe = kpiTiles.outlookFromMe
@@ -194,13 +259,21 @@ export function TodayGridTab({
     )
   }, [projectAsManager, projectTasks.rows])
   const taskRows = useMemo(() => {
-    return data.erpTasks.filter((row) => {
+    const platformRows = data.platformTasks.filter((row) => {
+      const task = row.platform
+      if (!task || !isPlatformTaskForDay(task, periodDay)) return false
+      // Приёмка — работа постановщика на сегодня, показываем в любом режиме.
+      if (needsPlatformReview(task)) return true
+      return onecFromMe ? isPlatformTaskFromMe(task) : isPlatformTaskMine(task)
+    })
+    const onecRows = data.erpTasks.filter((row) => {
       if (onecFromMe) {
         return isDocflowFromMe(row, erpFio) && isTaskDueOnDay(row, periodDay)
       }
       return isDocflowToMe(row)
     })
-  }, [data.erpTasks, onecFromMe, erpFio, periodDay])
+    return [...platformRows, ...onecRows]
+  }, [data.erpTasks, data.platformTasks, onecFromMe, erpFio, periodDay])
   const meetingRows = useMemo(() => {
     return data.meetings
       .filter((meeting) => {
@@ -282,7 +355,12 @@ export function TodayGridTab({
     () => ({
       plan: (
         <TodayWindow>
-          <TodayPlanPanel periodDay={periodDay} userId={user.id || ''} fio={erpFio} />
+          <TodayPlanPanel
+            periodDay={periodDay}
+            userId={user.id || ''}
+            fio={erpFio}
+            onOpenFullPlan={() => setFullPlanOpen(true)}
+          />
         </TodayWindow>
       ),
       results: (
@@ -297,13 +375,17 @@ export function TodayGridTab({
             compactRows={mailRows}
             loading={outlookMail.loading}
             error={outlookMail.error}
+            fromMe={outlookFromMe}
+            onToggleFromMe={(next) =>
+              setKpiTiles((current) => ({ ...current, outlookFromMe: next, activeIds: ['outlook'] }))
+            }
           />
         </TodayWindow>
       ),
       onec: (
         <TodayWindow>
         <MiniTableCard
-          title="Задачи из 1С"
+          title="Задачи на сегодня"
           tableClassName={
             onecFromMe ? 'today-mini-table-tasks today-mini-table-from-me' : 'today-mini-table-to-me'
           }
@@ -354,10 +436,23 @@ export function TodayGridTab({
           emptyExtra={onecReconnectBlock}
           columns={onecFromMe ? ['Задача', 'Исполнитель', 'Статус'] : ['Задача', 'Статус']}
           rowTones={taskRows.map((row) => todayRowTone(row.status, row.deadline, row.urgent))}
+          rowClassNames={taskRows.map((row) =>
+            row.platform
+              ? `today-tr-ptask prio-${row.platform.priority}${row.platform.awaitingReview ? ' ptask-review' : ''}`
+              : isNewOneCTask(data.newOneCTaskKeys, row)
+                ? 'today-tr-new-onec'
+                : undefined
+          )}
+          onRowClick={(index) => setTaskDetail(taskRows[index] || null)}
           rows={taskRows.map((row) =>
             onecFromMe
               ? [
-                  <TodayCellText key={`${row.id}-t`} text={row.title} />,
+                  <TodayTaskTitle
+                    key={`${row.id}-t`}
+                    text={row.title}
+                    isNew={!row.platform && isNewOneCTask(data.newOneCTaskKeys, row)}
+                    platform={Boolean(row.platform)}
+                  />,
                   <TodayCellText
                     key={`${row.id}-p`}
                     text={formatSurnameInitials(row.performer || row.executor)}
@@ -367,7 +462,12 @@ export function TodayGridTab({
                   </SpecPill>
                 ]
               : [
-                  <TodayCellText key={`${row.id}-t`} text={row.title} />,
+                  <TodayTaskTitle
+                    key={`${row.id}-t`}
+                    text={row.title}
+                    isNew={!row.platform && isNewOneCTask(data.newOneCTaskKeys, row)}
+                    platform={Boolean(row.platform)}
+                  />,
                   <SpecPill key={`${row.id}-st`} tone={row.statusTone}>
                     {row.status}
                   </SpecPill>
@@ -408,6 +508,7 @@ export function TodayGridTab({
           }
           columns={['Задача', 'Срок', 'Статус']}
           rowTones={projectRows.map((row) => todayRowTone(row.status, row.deadline))}
+          onRowClick={(index) => setTaskDetail(projectRows[index] || null)}
           rows={projectRows.map((row) => [
             <TodayCellText key={`${row.id}-t`} text={row.title} />,
             <TodayCellText key={`${row.id}-d`} text={row.deadline} />,
@@ -513,6 +614,7 @@ export function TodayGridTab({
       data.erpError,
       data.erpTasks,
       data.error,
+      data.newOneCTaskKeys,
       data.oneCAuthFailure,
       onecReconnectBlock,
       data.meetings,
@@ -590,6 +692,18 @@ export function TodayGridTab({
         onClose={() => setOnecDialogOpen(false)}
         user={user}
         errorHint={data.erpError || data.error}
+      />
+      <TodayTaskDetailModal
+        row={taskDetail}
+        onClose={() => setTaskDetail(null)}
+        onAskOrchestrator={onAskOrchestrator}
+      />
+      <TodayFullPlanModal
+        open={fullPlanOpen}
+        periodDay={periodDay}
+        fio={erpFio}
+        onClose={() => setFullPlanOpen(false)}
+        onOpenRun={onOpenRun}
       />
     </>
   )

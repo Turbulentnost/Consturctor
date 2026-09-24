@@ -66,11 +66,20 @@ def validate_token(token: str) -> AuthContext:
     position = payload.get("position")
     session_id = payload.get("sid")
     raw_client = payload.get("cid") or payload.get("client")
+    fio_text = fio if isinstance(fio, str) else ""
+    department_text = department if isinstance(department, str) else ""
+    position_text = position if isinstance(position, str) else ""
+    if fio_text:
+        from app.services.profile_overrides import apply_profile_overrides
+
+        department_text, position_text = apply_profile_overrides(
+            fio_text, department_text, position_text
+        )
     return AuthContext(
         user_id=user_id,
-        fio=fio if isinstance(fio, str) else None,
-        department=department if isinstance(department, str) else None,
-        position=position if isinstance(position, str) else None,
+        fio=fio_text or None,
+        department=department_text or None,
+        position=position_text or None,
         session_id=session_id if isinstance(session_id, str) else "",
         client=normalize_client(raw_client if isinstance(raw_client, str) else ""),
     )

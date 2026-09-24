@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ if str(PYBRIDGE) not in sys.path:
 
 from agent_sidecar import (  # noqa: E402
     _persist_run_outputs,
+    _persist_work_result_if_needed,
     _stamp_run_event,
     needs_confirmation,
     OUTLOOK_MEETING_RULE,
@@ -62,9 +64,19 @@ class _Api:
 
     def register_run_attachments(
         self, workflow_id: str, run_id: str, paths: list[str]
-    ) -> None:
+    ) -> WorkflowFiles:
         self.run_attachments.append(
             (workflow_id, run_id, [str(item) for item in paths])
+        )
+        return WorkflowFiles(
+            run_attachments=[
+                WorkflowFileItem(
+                    id=f"file-{index}",
+                    filename=Path(path).name,
+                    scope="run_attachment",
+                )
+                for index, path in enumerate(paths, start=1)
+            ]
         )
 
     def register_workflow_run_files(
@@ -198,6 +210,17 @@ def test_sidecar_prompt_includes_outlook_series_rule() -> None:
     assert "keepKnowledgeFile" in text
     assert "outlook.create_event" in text
     assert "Sdelai demo" in text
+
+
+def test_sidecar_prompt_calendar_control_uses_chairman() -> None:
+    text = _with_sidecar_prompt("Подготовка ПСД к рабочему дню и контроль календаря")
+    assert "Амураль Игорь Борисович" in text
+    assert "Совещания" in text
+    assert "people=" in text
+    assert "do not read your own" in text
+    assert "Предложение" in text
+    assert "HITL" in text
+    assert "create_event" in text
 
 
 def test_meeting_text_detects_outlook_task() -> None:
@@ -347,9 +370,38 @@ def test_persist_run_attachment_is_temporary(tmp_path: Path) -> None:
     copied = _persist_run_attachment(api, "wf-meet", str(cwd), [str(source)], run_id="run-1")
 
     assert copied
-    assert copied[0].startswith("materials/attachments/")
+    assert copied[0]["path"].startswith("materials/attachments/")
+    assert copied[0]["file_id"] == "file-1"
+    assert copied[0]["filename"] == "meetings-2026.xlsx"
     assert api.uploaded == []
     assert api.run_attachments == [("wf-meet", "run-1", [str(source)])]
+
+
+def test_attachments_note_names_file_id_for_audio() -> None:
+    from agent_sidecar import _attachments_note
+
+    note = _attachments_note(
+        [
+            {
+                "path": "materials/attachments/001_meeting.aac",
+                "file_id": "abc-123",
+                "filename": "meeting.aac",
+            }
+        ]
+    )
+
+    assert "file_id=abc-123" in note
+    assert "materials/attachments/001_meeting.aac" in note
+    assert "audio.transcribe" in note
+
+
+def test_attachments_note_keeps_plain_paths() -> None:
+    from agent_sidecar import _attachments_note
+
+    note = _attachments_note(["materials/attachments/001_notes.txt"])
+
+    assert "materials/attachments/001_notes.txt" in note
+    assert "audio.transcribe" not in note
 
 
 def test_keep_knowledge_upload_uses_keep_origin(tmp_path: Path) -> None:
@@ -526,6 +578,27 @@ def test_persist_run_outputs_sweeps_cwd_at_end(tmp_path: Path, monkeypatch) -> N
     )
     assert uploaded == [str(report.resolve())]
     assert api.run_outputs == [("wf-meet", "run-1", [str(report.resolve())])]
+
+
+def test_persist_run_outputs_skips_old_leftovers(tmp_path: Path, monkeypatch) -> None:
+    leftover = tmp_path / "porucheniya_td.xlsx"
+    leftover.write_bytes(b"old")
+    older = leftover.stat().st_mtime - 20 * 3600
+    os.utime(leftover, (older, older))
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path / "missing")
+    api = _Api(tmp_path)
+    uploaded = _persist_run_outputs(api, "wf-cal", str(tmp_path), run_id="run-1")
+    assert uploaded == []
+    assert api.run_outputs == []
+
+
+def test_persist_work_result_writes_oral_md(tmp_path: Path) -> None:
+    api = _Api(tmp_path)
+    answer = "## WORK_RESULT\nУстный список.\n\nTESTS: PASS\n"
+    written = _persist_work_result_if_needed(api, "wf-cal", str(tmp_path), answer, run_id="run-2")
+    assert written
+    assert Path(written[0]).name.startswith("Результат_")
+    assert api.run_outputs
 
 
 def test_persist_run_outputs_skips_read_tools(tmp_path: Path, monkeypatch) -> None:

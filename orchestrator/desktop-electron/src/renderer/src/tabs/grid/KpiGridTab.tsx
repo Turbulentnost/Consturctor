@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../../api/client'
+import { ApiError } from '../../api/types'
+import { FioSuggest } from '../../components/FioSuggest'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_KPI_LAYOUT } from './useTabChromeLayout'
 import type { UserProfile } from '../../api/types'
-import { KpiRangePicker, type KpiRangeShortcut } from '../../pages/KpiRangePicker'
-import { SpecFilters, SpecPanel, SpecPill, SpecProgress } from '../../workplace/specV04Components'
+import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
+import { SpecPanel, SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { SpecIconSearch } from '../../workplace/specV04Icons'
-import { currentWeekRange, rollingKpiRange } from '../../workplace/kpiPeriod'
 import { setKpiExportSnapshot } from '../../workplace/kpiExportSnapshot'
 import {
   buildKpiDailySyncPayload,
@@ -19,12 +21,14 @@ import { useKpiWorkflowBoard } from '../../workplace/useKpiWorkflowBoard'
 import { useWorkplaceKpiDashboard } from '../../workplace/useWorkplaceKpiDashboard'
 import { agentMatchesKpiTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import type { WorkplaceKpiCard } from '../../workplace/workplaceKpiTypes'
+import { OrchSlotMain } from '../../layout/GridSlots'
+import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
+import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel } from './KpiEmployeePanel'
+import { KpiMetricCodeModal } from './KpiMetricCodeModal'
 import { KpiPeriodDynamicsChart } from './KpiPeriodDynamicsChart'
 import { KpiProblemZonesTable } from './KpiProblemZonesTable'
 import './kpiGrid.css'
-
-const WEEK = currentWeekRange()
 
 const LOADING_TILES: SpecSummaryTile[] = [
   { id: 'tasks', label: 'Выполнение задач', value: '—', tone: 'orange' },
@@ -34,6 +38,17 @@ const LOADING_TILES: SpecSummaryTile[] = [
   { id: 'auto', label: 'Доля автоматизации', value: '—', tone: 'yellow' },
   { id: 'quality', label: 'Качество', value: '—', tone: 'lilac' }
 ]
+
+/** Форма премирования — помесячная: период внутри одного месяца расширяем до всего месяца. */
+function bonusMonth(from: string, to: string): { from: string; to: string } {
+  if (!from || !to || from.slice(0, 7) !== to.slice(0, 7)) return { from, to }
+  const [yearText, monthText] = to.slice(0, 7).split('-')
+  const year = Number(yearText)
+  const month = Number(monthText)
+  const last = new Date(year, month, 0).getDate()
+  const mm = String(month).padStart(2, '0')
+  return { from: `${year}-${mm}-01`, to: `${year}-${mm}-${String(last).padStart(2, '0')}` }
+}
 
 function cardsToTiles(cards: WorkplaceKpiCard[]): SpecSummaryTile[] {
   return cards.map((card) => ({
@@ -52,12 +67,20 @@ export function KpiGridTab(_props: {
   onOpenProcesses?: () => void
   onOpenDecisions?: () => void
 }): React.JSX.Element {
-  const [from, setFrom] = useState(WEEK.from)
-  const [to, setTo] = useState(WEEK.to)
-  const [shortcut, setShortcut] = useState<KpiRangeShortcut | null>(null)
+  const { from, to } = useWorkplacePeriod()
+  const selfFio = (_props.user?.fio || '').trim()
+  const [formOpen, setFormOpen] = useState(false)
+  const [person, setPerson] = useState(selfFio)
+  const [personPosition, setPersonPosition] = useState('')
+  const [subjectError, setSubjectError] = useState('')
+  const [formBusy, setFormBusy] = useState(false)
+  const [formNote, setFormNote] = useState('')
   const [agentQuery, setAgentQuery] = useState('')
   const [tileFilter, setTileFilter] = useState('all')
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
+  const positionKpi = usePositionKpi(_props.user?.position || '')
+  const [buildingMethod, setBuildingMethod] = useState(false)
+  const [codeFor, setCodeFor] = useState('')
   const periodSources = useKpiPeriodSources()
   const { board: workflowBoard } = useKpiWorkflowBoard(from, to)
   const dailySyncKeyRef = useRef('')
@@ -105,20 +128,88 @@ export function KpiGridTab(_props: {
       })
   }, [from, to, loading, periodSources, reload])
 
-  const applyRange = (next: { from: string; to: string }): void => {
-    setFrom(next.from)
-    setTo(next.to)
-    setShortcut(null)
+  useEffect(() => {
+    if (!formOpen) return
+    const fio = person.trim()
+    if (fio.split(/\s+/).filter(Boolean).length < 2) {
+      setPersonPosition('')
+      setSubjectError('')
+      return
+    }
+    let alive = true
+    const timer = window.setTimeout(() => {
+      void api
+        .getPositionKpiSubject(fio)
+        .then((subject) => {
+          if (!alive) return
+          setPersonPosition(subject.position)
+          setSubjectError('')
+        })
+        .catch((err: unknown) => {
+          if (!alive) return
+          setPersonPosition('')
+          setSubjectError(err instanceof ApiError ? err.message : 'Не удалось определить должность')
+        })
+    }, 250)
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
+  }, [formOpen, person])
+
+  const downloadForm = async (): Promise<void> => {
+    if (formBusy) return
+    setFormBusy(true)
+    setFormNote('')
+    const period = bonusMonth(from, to)
+    try {
+      const result = await api.downloadPositionKpiForm(person.trim() || selfFio, period.from, period.to)
+      if (result.canceled) return
+      if (!result.ok) {
+        setFormNote(result.error || 'Не удалось сохранить форму')
+        return
+      }
+      setFormNote('Форма премирования сохранена')
+      setFormOpen(false)
+    } catch (err: unknown) {
+      setFormNote(err instanceof Error ? err.message : 'Не удалось сохранить форму')
+    } finally {
+      setFormBusy(false)
+    }
   }
 
-  const applyShortcut = (days: KpiRangeShortcut): void => {
-    const next = rollingKpiRange(days)
-    setFrom(next.from)
-    setTo(next.to)
-    setShortcut(days)
+  const openForm = (): void => {
+    setPerson((current) => current.trim() || selfFio)
+    setFormNote('')
+    setFormOpen(true)
+  }
+
+  if (buildingMethod) {
+    return (
+      <OrchSlotMain spanAll heavyEmbed>
+        <div className="kpi-method-slot">
+          <PositionKpiBuildPage
+            position={_props.user?.position || ''}
+            onBack={() => setBuildingMethod(false)}
+            onReady={() => {
+              setBuildingMethod(false)
+              positionKpi.reload()
+            }}
+          />
+        </div>
+      </OrchSlotMain>
+    )
   }
 
   return (
+    <>
+    {codeFor ? (
+      <KpiMetricCodeModal
+        position={_props.user?.position || ''}
+        code={codeFor}
+        onClose={() => setCodeFor('')}
+      />
+    ) : null}
     <StandardTabChrome
       tabId="kpi"
       userId={_props.user?.id || ''}
@@ -136,21 +227,70 @@ export function KpiGridTab(_props: {
       widgets={{
         filters: (
         <>
-        <SpecFilters layout="row">
-          <KpiRangePicker from={from} to={to} shortcut={shortcut} onApply={applyRange} onShortcut={applyShortcut} />
-        </SpecFilters>
+        <div className="kpi-form-toolbar">
+          <button className="btn-primary kpi-form-download" type="button" onClick={openForm}>
+            Скачать форму
+          </button>
+          <span className="spec-v04-muted">Индивидуальные целевые показатели за месяц выбранного периода</span>
+        </div>
         {!tiles.length && loading ? (
           <p className="kpi-dash-status-banner">Загружаем показатели…</p>
         ) : null}
         {notice ? <p className="kpi-dash-status-banner">{notice}</p> : null}
+        {formNote && !formOpen ? (
+          <p className={`kpi-dash-status-banner${formNote.includes('сохранена') ? '' : ' error'}`}>{formNote}</p>
+        ) : null}
         {error ? <p className="kpi-dash-status-banner error">{error}</p> : null}
+        {formOpen
+          ? createPortal(
+              <div className="kpi-form-modal" role="dialog" aria-modal="true" aria-labelledby="kpi-form-title">
+                <button className="kpi-form-modal-backdrop" type="button" aria-label="Закрыть" onClick={() => setFormOpen(false)} />
+                <div className="kpi-form-modal-card">
+                  <h3 id="kpi-form-title">Индивидуальные целевые показатели</h3>
+                  <p className="kpi-form-modal-lead">
+                    Форма за месяц выбранного периода. Цели подставятся по должности сотрудника.
+                  </p>
+                  <label className="spec-filter-input kpi-form-person">
+                    <FioSuggest
+                      value={person}
+                      onChange={setPerson}
+                      onSelect={(fio) => setPerson(fio)}
+                      placeholder="ФИО, например Ильченко Екатерина Александровна"
+                      inputClassName="wp-search"
+                      autoFocus
+                    />
+                  </label>
+                  {personPosition ? <p className="kpi-form-modal-position">{personPosition}</p> : null}
+                  {subjectError ? <p className="kpi-form-modal-error">{subjectError}</p> : null}
+                  {formNote ? <p className="kpi-form-modal-error">{formNote}</p> : null}
+                  <div className="kpi-form-modal-actions">
+                    <button
+                      className="btn-primary"
+                      type="button"
+                      disabled={formBusy || !person.trim()}
+                      onClick={() => void downloadForm()}
+                    >
+                      {formBusy ? 'Готовлю…' : 'Скачать'}
+                    </button>
+                    <button className="spec-btn-outline" type="button" onClick={() => setFormOpen(false)}>
+                      Отмена
+                    </button>
+                  </div>
+                </div>
+              </div>,
+              document.body
+            )
+          : null}
         </>
         ),
         side: (
           <KpiEmployeePanel
-            metrics={dashboard?.employeeKpi ?? []}
-            loading={loading}
+            metrics={positionKpi.metrics}
+            loading={positionKpi.loading}
+            needsMethodology={!positionKpi.loading && (positionKpi.needsBuild || !positionKpi.metrics.length)}
+            onCalculate={() => setBuildingMethod(true)}
             onDetails={() => _props.onOpenProcesses?.()}
+            onInfo={(code) => setCodeFor(code)}
           />
         ),
         main: (
@@ -269,5 +409,6 @@ export function KpiGridTab(_props: {
         )
       }}
     />
+    </>
   )
 }

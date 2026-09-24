@@ -1,0 +1,165 @@
+/* Строка задачи платформы: цвет по приоритету (только открытые). */
+.spec-v04-table tr.ptask-row.prio-high > td {
+  background: rgba(211, 47, 47, 0.07);
+}
+
+.spec-v04-table tr.ptask-row.prio-high > td:first-child {
+  box-shadow: inset 3px 0 0 #d32f2f;
+}
+
+.spec-v04-table tr.ptask-row.prio-normal > td {
+  background: rgba(245, 158, 11, 0.07);
+}
+
+.spec-v04-table tr.ptask-row.prio-normal > td:first-child {
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+
+.spec-v04-table tr.ptask-row.prio-low > td {
+  background: rgba(96, 125, 139, 0.06);
+}
+
+.spec-v04-table tr.ptask-row.prio-low > td:first-child {
+  box-shadow: inset 3px 0 0 #90a4ae;
+}
+
+/* Задача на приёмке у постановщика: срок — конец дня. */
+.spec-v04-table tr.ptask-row.ptask-review > td {
+  background: rgba(21, 101, 192, 0.08);
+}
+
+.spec-v04-table tr.ptask-row.ptask-review > td:first-child {
+  box-shadow: inset 3px 0 0 #1565c0;
+}
+
+/* Строка задачи из 1С («мои» и «от меня») по важности документооборота. */
+.spec-v04-table tr.onec-row.prio-high > td {
+  background: rgba(211, 47, 47, 0.07);
+}
+
+.spec-v04-table tr.onec-row.prio-high > td:first-child {
+  box-shadow: inset 3px 0 0 #d32f2f;
+}
+
+.spec-v04-table tr.onec-row.prio-normal > td {
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.spec-v04-table tr.onec-row.prio-normal > td:first-child {
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+
+.spec-v04-table tr.onec-row.prio-low > td:first-child {
+  box-shadow: inset 3px 0 0 #90a4ae;
+}
+
+.spec-v04-table tr.ptask-row.selected > td,
+.spec-v04-table tr.onec-row.selected > td {
+  background: rgba(21, 101, 192, 0.1);
+}
+
+/* «Сегодня»: задачи платформы в общем виджете задач. */
+.today-ptask-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #6a1b9a;
+  background: rgba(106, 27, 154, 0.1);
+  border-radius: 6px;
+  padding: 1px 5px;
+  margin-right: 4px;
+}
+
+.today-mini-table tr.today-tr-ptask.prio-high td:first-child {
+  box-shadow: inset 3px 0 0 #d32f2f;
+}
+
+.today-mini-table tr.today-tr-ptask.prio-normal td:first-child {
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+
+.today-mini-table tr.today-tr-ptask.prio-low td:first-child {
+  box-shadow: inset 3px 0 0 #90a4ae;
+}
+
+.today-mini-table tr.today-tr-ptask.ptask-review td:first-child {
+  box-shadow: inset 3px 0 0 #1565c0;
+}
+
+.ptask-detail.prio-high {
+  border-top: 3px solid #d32f2f;
+}
+
+.ptask-detail.prio-normal {
+  border-top: 3px solid #f59e0b;
+}
+
+.ptask-detail.prio-low {
+  border-top: 3px solid #90a4ae;
+}
+
+.ptask-detail-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ptask-detail-text {
+  margin: 10px 0;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ptask-detail-files h3 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+}
+
+.ptask-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(13, 59, 115, 0.12);
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.ptask-detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.ptask-detail-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.ptask-detail-buttons button {
+  flex: 1;
+}
+
+.ptask-detail-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #9b1c1c;
+}
+
+.ptask-detail-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #0d3b73;
+}

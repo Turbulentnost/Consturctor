@@ -30,11 +30,15 @@ import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
 import { FilesPage } from './pages/FilesPage'
 import { OrchGridShell } from './layout/OrchGridShell'
+import { PageSearchProvider } from './layout/pageSearchContext'
 import type { WorkplaceTabKey } from './layout/tabRegistry'
 import { ProcessesGridTab } from './tabs/grid/ProcessesGridTab'
 import { TasksGridTab } from './tabs/grid/TasksGridTab'
 import { ProjectsGridTab } from './tabs/grid/ProjectsGridTab'
 import { MailGridTab } from './tabs/grid/MailGridTab'
+import { DocflowGridTab } from './tabs/grid/DocflowGridTab'
+import { CreateOneCTaskPage } from './tabs/grid/CreateOneCTaskPage'
+import { CreatePlatformTaskPage } from './tabs/grid/CreatePlatformTaskPage'
 import { MeetingsGridTab } from './tabs/grid/MeetingsGridTab'
 import { KnowledgeGridTab } from './tabs/grid/KnowledgeGridTab'
 import { TodayGridTab } from './tabs/grid/TodayGridTab'
@@ -50,6 +54,7 @@ import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
+import { WorkplacePeriodProvider } from './workplace/workplacePeriod'
 import { clearGridCacheForUser } from './workplace/gridDataCache'
 import { ORCH_OPEN_TAB, type WorkplaceTabIntent } from './workplace/workplaceNav'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
@@ -84,12 +89,15 @@ const WORKPLACE_TAB_KEYS: WorkplaceTabKey[] = [
   'tasks',
   'projects',
   'mail',
+  'docflow',
   'meetings',
   'decisions',
   'kpi',
   'history',
   'knowledge',
   'extensions',
+  'task_create',
+  'platform_task_create',
   ...EXTENSION_MODULES.map((item) => item.pageKey as WorkplaceTabKey)
 ]
 
@@ -238,7 +246,7 @@ function AppShell(): React.JSX.Element {
       done = true
       setBooting(false)
     }
-    const watchdog = window.setTimeout(finish, 10_000)
+    const watchdog = window.setTimeout(finish, 4_000)
     ;(async () => {
       try {
         const config = await window.api.getConfig()
@@ -520,7 +528,7 @@ function AppShell(): React.JSX.Element {
     setRequireComLogin(false)
     void agentClient
       .ready(result.accessToken || null, {
-        login: result.user.fio,
+        login: typedLogin || result.user.fio,
         password
       })
       .catch(() => undefined)
@@ -532,10 +540,13 @@ function AppShell(): React.JSX.Element {
     setUser(result.user)
     setModeForUser(result.user)
     if (result.accessToken) {
-      void api.me().then((profile) => {
-        setUser(profile)
-        setModeForUser(profile)
-      }).catch(() => undefined)
+      void api
+        .me()
+        .then((profile) => {
+          setUser(profile)
+          setModeForUser(profile)
+        })
+        .catch(() => undefined)
     }
   }
 
@@ -691,7 +702,7 @@ function AppShell(): React.JSX.Element {
         onLoggedIn={onLoggedIn}
         banner={
           requireComLogin
-            ? 'Сеанс Orchestrator восстановлен по сохранённому токену. Введите пароль 1С для загрузки задач и OData.'
+            ? 'Сеанс восстановлен по токену. Введите пароль 1С — без него erp_pm и COM недоступны.'
             : undefined
         }
       />
@@ -880,6 +891,12 @@ function AppShell(): React.JSX.Element {
         return <ProjectsGridTab user={activeUser} />
       case 'mail':
         return <MailGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+      case 'docflow':
+        return <DocflowGridTab user={activeUser} />
+      case 'task_create':
+        return <CreateOneCTaskPage user={activeUser} />
+      case 'platform_task_create':
+        return <CreatePlatformTaskPage user={activeUser} />
       case 'meetings':
         return <MeetingsGridTab user={activeUser} />
       case 'decisions':
@@ -913,7 +930,9 @@ function AppShell(): React.JSX.Element {
                 onNavigate: (pageKey) => {
                   setLastTab(pageKey)
                   setView({ kind: 'tab', key: pageKey })
-                }
+                },
+                onOpenPassport: (workflowId, title, tab) =>
+                  setView({ kind: 'passport', workflowId, title, tab })
               })}
             </>
           )
@@ -993,12 +1012,14 @@ function AppShell(): React.JSX.Element {
   return (
     <ExtensionsProvider user={activeUser}>
       <GridDataRefreshProvider userId={activeUser.id}>
+        <WorkplacePeriodProvider>
         <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
           <DebugSourcesLifetime />
           <WithExtensionNav>
             {(pinnedExtensionNav) =>
               workplaceShellKey ? (
           <div className="app-root orch-app-root">
+            <PageSearchProvider tabKey={workplaceShellKey}>
             <OrchGridShell
               activeKey={workplaceShellKey}
               pinnedExtensionNav={pinnedExtensionNav}
@@ -1009,7 +1030,19 @@ function AppShell(): React.JSX.Element {
                     ? 'orch-grid-kpi'
                     : workplaceShellKey === 'assignments_registry'
                       ? 'orch-grid-registry'
-                      : ''
+                      : workplaceShellKey === 'history'
+                        ? 'orch-grid-history'
+                        : workplaceShellKey === 'extensions'
+                          ? 'orch-grid-extensions'
+                          : workplaceShellKey === 'agent_library'
+                            ? 'orch-grid-agent-library'
+                            : workplaceShellKey === 'processes'
+                              ? 'orch-grid-processes'
+                              : workplaceShellKey === 'docflow' ||
+                                  workplaceShellKey === 'task_create' ||
+                                  workplaceShellKey === 'platform_task_create'
+                                ? 'orch-grid-docflow'
+                                : ''
               }
               user={activeUser}
               avatarUrl={avatarUrl}
@@ -1037,6 +1070,7 @@ function AppShell(): React.JSX.Element {
             >
               {renderWorkplaceGridTab(workplaceShellKey)}
             </OrchGridShell>
+            </PageSearchProvider>
             <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
           </div>
               ) : (
@@ -1088,6 +1122,7 @@ function AppShell(): React.JSX.Element {
             }
           </WithExtensionNav>
         </SpecV04SourcesProvider>
+        </WorkplacePeriodProvider>
       </GridDataRefreshProvider>
     </ExtensionsProvider>
   )

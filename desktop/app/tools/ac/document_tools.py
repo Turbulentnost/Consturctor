@@ -42,7 +42,10 @@ class ReportExportDocumentTool(BaseTool):
                     "если python-docx доступен, иначе Markdown (.md). "
                     "На вход — title, sections (heading/body), summary, table, "
                     "необязательно theme/kpis. Текст пиши в sections сам — "
-                    "инструмент ничего не выдумывает."
+                    "инструмент ничего не выдумывает. В body поддерживается markdown: "
+                    "каждая строка — отдельный абзац, markdown-таблицы (| a | b |) "
+                    "становятся настоящими таблицами Word, списки «- » и «1. », "
+                    "подзаголовки «### », **жирный**. Текст не обрезается."
                 ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,
@@ -58,7 +61,11 @@ class ReportExportDocumentTool(BaseTool):
                         "summary": {"type": "string", "description": "Короткое резюме в начале"},
                         "sections": {
                             "type": "array",
-                            "description": "Разделы отчёта: [{heading, body}]. body - готовый текст.",
+                            "description": (
+                                "Разделы отчёта: [{heading, body}]. body — готовый текст "
+                                "(markdown: строки → абзацы, | таблицы |, списки, **жирный**). "
+                                "Передавай полный текст, без сокращений."
+                            ),
                             "items": {
                                 "type": "object",
                                 "properties": {

@@ -7,7 +7,9 @@ import {
   useState,
   type ReactNode
 } from 'react'
+import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
+import { platformTaskToRow } from './platformTasks'
 import {
   countMeetingsOnDay,
   dedupeMeetingEvents,
@@ -27,8 +29,11 @@ import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from '.
 import { useWorkplaceData } from './WorkplaceBoard'
 import { summarizeDayLaunches } from './todayKpiLaunches'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
-import { fetchOrchestratorTaskSources, ORCH_SOURCE_ID } from './orchestratorTaskSources'
+import { fetchOrchestratorCoreSources, ORCH_SOURCE_ID } from './orchestratorTaskSources'
+import { loadOrchestratorMail } from './mailProbe'
+import { useWorkplacePeriod } from './workplacePeriod'
 import type { SpecV04SourcesState } from './useSpecV04Data'
+import { diffAndStoreOneCTaskSnapshot } from './onecTaskSnapshot'
 
 const EMPTY: SpecV04SourcesState = {
   sourcesLoading: false,
@@ -69,8 +74,17 @@ const EMPTY: SpecV04SourcesState = {
   turboNoSession: false,
   comPasswordInSession: false,
   oneCAuthFailure: false,
+  newOneCTaskKeys: new Set(),
+  platformTasks: [],
+  platformTaskCount: 0,
+  platformLoading: false,
+  platformError: '',
   user: null
 }
+
+const PLATFORM_POLL_MS = 60_000
+/** Исполненные и отклонённые задачи платформы видны ещё неделю — чтобы постановщик увидел итог. */
+const PLATFORM_CLOSED_KEEP_MS = 7 * 24 * 3600 * 1000
 
 export const SpecV04SourcesContext = createContext<SpecV04SourcesState>(EMPTY)
 
@@ -86,6 +100,9 @@ export function SpecV04SourcesProvider({
 }): React.JSX.Element {
   const erpFio = erpActorFio(user)
   const outlookMailbox = outlookMailboxAddress(user)
+  const { from: mailPeriodFrom, to: mailPeriodTo } = useWorkplacePeriod()
+  const mailPeriodKey = `${mailPeriodFrom}:${mailPeriodTo}`
+  const mailPeriodKeyRef = useRef('')
   const { generation, takeHardRefresh } = useGridDataRefreshContext()
   const { agents, board, loading: agentsLoading } = useWorkplaceData({
     userId: user.id || '',
@@ -111,6 +128,8 @@ export function SpecV04SourcesProvider({
   const [mailImapStatus, setMailImapStatus] = useState('')
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
   const [oneCAuthFailure, setOneCAuthFailure] = useState(false)
+  const [newOneCTaskKeys, setNewOneCTaskKeys] = useState<ReadonlySet<string>>(() => new Set())
+  const snapshotUserRef = useRef('')
   const hasLoadedSourcesRef = useRef(false)
 
   useEffect(() => {
@@ -126,7 +145,7 @@ export function SpecV04SourcesProvider({
       setTurboTasksError('')
       setOneCAuthFailure(false)
       try {
-        const bundle = await fetchOrchestratorTaskSources(user, erpFio, outlookMailbox, {
+        const bundle = await fetchOrchestratorCoreSources(user, erpFio, {
           forceRefresh: takeHardRefresh()
         })
         if (!alive) return
@@ -136,6 +155,14 @@ export function SpecV04SourcesProvider({
         setErpError(bundle.erp.error)
         setErpSecondaryHint(bundle.erp.erpSecondaryHint || '')
         setOneCAuthFailure(bundle.erp.oneCAuthFailure)
+        const erpLoaded =
+          !bundle.erp.oneCAuthFailure &&
+          bundle.erp.sourceLabel !== 'stub' &&
+          (bundle.erp.tasks.length > 0 || !bundle.erp.error?.trim())
+        if (erpLoaded && snapshotUserRef.current !== user.id) {
+          snapshotUserRef.current = user.id
+          setNewOneCTaskKeys(diffAndStoreOneCTaskSnapshot(user.id, bundle.erp.tasks))
+        }
         const blockingErp = bundle.erp.error?.trim() || ''
         if (blockingErp) {
           setError((prev) => (prev && prev.includes(blockingErp) ? prev : blockingErp))
@@ -157,12 +184,6 @@ export function SpecV04SourcesProvider({
           )
         }
 
-        setMailRows(bundle.mail.rows)
-        setMailSource(bundle.mail.sourceLabel)
-        setMailComError(bundle.mail.comError || '')
-        setMailImapError(bundle.mail.imapError || '')
-        setMailImapPrimary(Boolean(bundle.mail.imapPrimary))
-        setMailImapStatus(bundle.mail.imapStatus || '')
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : 'Не удалось загрузить данные')
       } finally {
@@ -176,6 +197,28 @@ export function SpecV04SourcesProvider({
       alive = false
     }
   }, [user.id, erpFio, outlookMailbox, generation, comCredsRevision])
+
+  useEffect(() => {
+    if (!user.id) return
+    let alive = true
+    void loadOrchestratorMail(
+      outlookMailbox,
+      { dateFrom: mailPeriodFrom, dateTo: mailPeriodTo },
+      { forceOutlook: takeHardRefresh() }
+    ).then((mail) => {
+      if (!alive) return
+      setMailRows(mail.rows)
+      setMailSource(mail.sourceLabel)
+      setMailComError(mail.comError || '')
+      setMailImapError(mail.imapError || '')
+      setMailImapPrimary(Boolean(mail.imapPrimary))
+      setMailImapStatus(mail.imapStatus || '')
+      mailPeriodKeyRef.current = mailPeriodKey
+    })
+    return () => {
+      alive = false
+    }
+  }, [user.id, outlookMailbox, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
 
   useEffect(() => {
     if (!user.id) return
@@ -221,6 +264,42 @@ export function SpecV04SourcesProvider({
     [erpTasks.length, turboTasks.length, regRows.length]
   )
 
+  const [platformTasks, setPlatformTasks] = useState<SpecTaskRow[]>([])
+  const [platformLoading, setPlatformLoading] = useState(true)
+  const [platformError, setPlatformError] = useState('')
+
+  // Задачи от коллег приходят без действий пользователя, поэтому список ещё и опрашиваем.
+  useEffect(() => {
+    if (!user.id) return
+    let alive = true
+    const load = (): void => {
+      void api
+        .listPlatformTasks()
+        .then((items) => {
+          if (!alive) return
+          const keepSince = Date.now() - PLATFORM_CLOSED_KEEP_MS
+          setPlatformTasks(
+            items
+              .filter((task) => task.status === 'open' || new Date(task.statusAt || 0).getTime() >= keepSince)
+              .map(platformTaskToRow)
+          )
+          setPlatformError('')
+        })
+        .catch((err: unknown) => {
+          if (alive) setPlatformError(err instanceof Error ? err.message : 'Задачи платформы не загрузились')
+        })
+        .finally(() => {
+          if (alive) setPlatformLoading(false)
+        })
+    }
+    load()
+    const timer = window.setInterval(load, PLATFORM_POLL_MS)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [user.id, generation])
+
   const allProcessRows = useMemo(() => {
     const erpRows = erpTasks.map(erpTaskToProcessRow)
     const projRows = projects.map(turboProjectToProcessRow)
@@ -249,7 +328,7 @@ export function SpecV04SourcesProvider({
       turboTaskCount: turboTasks.length,
       turboLoading: sourcesLoading,
       turboError: turboTasksError,
-      allTaskCount,
+      allTaskCount: allTaskCount + platformTasks.length,
       projects,
       projectCount: projects.length,
       mailRows,
@@ -276,9 +355,17 @@ export function SpecV04SourcesProvider({
       turboNoSession,
       comPasswordInSession: hasComPassword(),
       oneCAuthFailure,
+      newOneCTaskKeys,
+      platformTasks,
+      platformTaskCount: platformTasks.length,
+      platformLoading,
+      platformError,
       user
     }),
     [
+      platformTasks,
+      platformLoading,
+      platformError,
       sourcesLoading,
       tableLoading,
       error,
@@ -309,6 +396,7 @@ export function SpecV04SourcesProvider({
       turboNoSession,
       comCredsRevision,
       oneCAuthFailure,
+      newOneCTaskKeys,
       user
     ]
   )

@@ -13,6 +13,7 @@ export type TaskSourceFilter =
   | 'proj-mine'
   | 'proj-mgr'
   | 'reg'
+  | 'platform'
 
 export type TaskTileFilter = {
   source: TaskSourceFilter
@@ -31,7 +32,8 @@ const TASK_SOURCE_IDS = new Set<string>([
   'proj',
   'proj-mine',
   'proj-mgr',
-  'reg'
+  'reg',
+  'platform'
 ])
 
 function norm(value: string | undefined): string {
@@ -43,9 +45,10 @@ export function docflowRoleOf(row: { role?: string }): string {
   return norm(row.role)
 }
 
+/** Исполнитель — я или тот, за кого я работаю (role=delegate). */
 export function isDocflowToMe(row: { role?: string }): boolean {
   const role = docflowRoleOf(row)
-  return role === 'executor' || role === 'both' || role === ''
+  return role === 'executor' || role === 'both' || role === 'delegate' || role === ''
 }
 
 export function isTurboTaskToMe(row: { turboScope?: string }): boolean {
@@ -162,10 +165,11 @@ export function processRowToTaskRow(row: SpecProcessRow): SpecTaskRow {
 export function buildTaskCatalog(
   erpTasks: SpecTaskRow[],
   turboTasks: SpecTaskRow[],
-  processRows: SpecProcessRow[]
+  processRows: SpecProcessRow[],
+  platformTasks: SpecTaskRow[] = []
 ): { rows: SpecTaskRow[]; erpIds: Set<string>; turboIds: Set<string> } {
   return {
-    rows: [...erpTasks, ...turboTasks, ...processRows.map(processRowToTaskRow)],
+    rows: [...platformTasks, ...erpTasks, ...turboTasks, ...processRows.map(processRowToTaskRow)],
     erpIds: new Set(erpTasks.map((row) => row.id)),
     turboIds: new Set(turboTasks.map((row) => row.id))
   }
@@ -176,6 +180,7 @@ function taskOrigin(
   erpIds: Set<string>,
   turboIds: Set<string>
 ): TaskSourceFilter {
+  if (row.sourceKind === 'platform') return 'platform'
   if (erpIds.has(row.id)) return 'onec'
   if (turboIds.has(row.id)) return 'proj'
   return 'reg'
@@ -189,7 +194,7 @@ function matchesTaskSource(
 ): boolean {
   if (source === 'all') return true
   const origin = taskOrigin(row, erpIds, turboIds)
-  if (source === 'proj' || source === 'reg') return origin === source
+  if (source === 'proj' || source === 'reg' || source === 'platform') return origin === source
   if (source === 'proj-mine') return origin === 'proj' && isTurboTaskToMe(row)
   if (source === 'proj-mgr') return origin === 'proj' && isTurboTaskAsManager(row)
   if (origin !== 'onec') return false
@@ -368,19 +373,19 @@ export function todayRowsForTile<T>(filter: string, widgetId: string, rows: T[])
 }
 
 export function mailMatchesTile(row: SpecMailRow, id: string): boolean {
-  if (id === 'all' || id === 'new') return true
+  if (id === 'all' || id === 'inbox' || id === 'sent' || id === 'new') return true
   if (id === 'proc') return /обработ|непрочитан/i.test(row.status)
   if (id === 'hi') return /высок/i.test(row.priority) || row.unread === true
+  if (id === 'proj') return row.appFolderId === 'proj'
   const blob = `${row.subject} ${row.category} ${row.link}`
-  if (id === 'proj') return /проект|turbo|crm/i.test(blob)
   if (id === 'reg') return /регламент|договор|акт|согласован/i.test(blob)
   return true
 }
 
 export function countMailTiles(rows: SpecMailRow[]): Record<string, number> {
   return {
-    new: rows.filter((row) => row.unread).length || rows.length,
-    proc: rows.filter((row) => mailMatchesTile(row, 'proc')).length,
+    inbox: rows.filter((row) => row.direction !== 'sent').length,
+    sent: rows.filter((row) => row.direction === 'sent').length,
     hi: rows.filter((row) => mailMatchesTile(row, 'hi')).length,
     proj: rows.filter((row) => mailMatchesTile(row, 'proj')).length,
     reg: rows.filter((row) => mailMatchesTile(row, 'reg')).length

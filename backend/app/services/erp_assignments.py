@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
 ASSIGNMENT_ENTITY = "Document_ТД_Поручения"
 ASSIGNMENT_LINES_ENTITY = "Document_ТД_Поручения_Поручения"
+ASSIGNMENT_LINES_NAV = "Поручения"
+_LINES_FETCH_WORKERS = 12
+_USER_LOOKUP_CHUNK = 25
+_USER_LOOKUP_WORKERS = 4
+ORGANIZATION_ENTITY = "Catalog_Организации"
+
+# Lite journal list: header fields only (tabular part loaded on demand).
+ASSIGNMENT_LIST_SELECT = (
+    "Ref_Key,Number,Date,Posted,DeletionMark,Статус,ОЧем,Основание,"
+    "Руководитель_Key,СекретарьРК_Key,КтоДоложитОЗавершенииМероприятий_Key,Организация_Key,"
+    "СрокПолногоУстраненияНарушений,ДатаЕженедельногоОтчетаОВыполненииМероприятий,ДатаИтоговогоДоклада"
+)
 ASSIGNMENT_FILES_ENTITY = "Catalog_ТД_ПорученияПрисоединенныеФайлы"
 PROTOCOL_ENTITY = "Document_ТД_Протокол"
 USER_ENTITY = "Catalog_Пользователи"
@@ -30,6 +43,10 @@ CLOSED_STATUSES = {
 }
 
 _GUID_EMPTY = "00000000-0000-0000-0000-000000000000"
+_FILE_LIST_SELECT = (
+    "Ref_Key,Description,Расширение,Размер,ПутьКФайлу,"
+    "ДатаСоздания,ВладелецФайла_Key"
+)
 
 
 class AssignmentError(RuntimeError):
@@ -67,6 +84,26 @@ def _empty_guid(value: Any) -> bool:
 
 def _odata_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def normalize_assignment_number(number: str) -> str:
+    """Journal series is Cyrillic АСТ00. Models often send Latin ACT."""
+    text = str(number or "").strip()
+    if len(text) < 3:
+        return text
+    mapped: list[str] = []
+    for char in text[:3]:
+        if char in "Aa":
+            mapped.append("А")
+        elif char in "CcСс":
+            mapped.append("С")
+        elif char in "TtТт":
+            mapped.append("Т")
+        else:
+            mapped.append(char)
+    if "".join(mapped) == "АСТ" and text[:3] != "АСТ":
+        return "АСТ" + text[3:]
+    return text
 
 
 def _parse_day(raw: str, *, end: bool = False) -> datetime | None:
@@ -262,21 +299,61 @@ def _looks_like_guid(value: str) -> bool:
     return len(text) == 36 and text.count("-") == 4
 
 
+def _flag_on(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _fetch_lines_for_document(ref_key: str) -> tuple[str, list[dict[str, Any]]]:
+    """Tabular rows: navigation from document, not Ref_Key on the lines register."""
+    path = f"{ASSIGNMENT_ENTITY}(guid'{ref_key}')/{ASSIGNMENT_LINES_NAV}"
+    try:
+        result = _odata_get({"path": path, "entity": ASSIGNMENT_ENTITY, "top": 500})
+    except Exception:  # noqa: BLE001
+        return ref_key, []
+    rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+    return ref_key, rows
+
+
 def _fetch_lines_map(ref_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
     keys = [key for key in dict.fromkeys(ref_keys) if _looks_like_guid(key)]
+    if not keys:
+        return {}
     out: dict[str, list[dict[str, Any]]] = {}
-    for index in range(0, len(keys), 15):
-        chunk = keys[index : index + 15]
-        filt = " or ".join(f"Ref_Key eq guid'{key}'" for key in chunk)
-        try:
-            result = _odata_get({"entity": ASSIGNMENT_LINES_ENTITY, "top": 200, "filter": filt})
-        except Exception:  # noqa: BLE001
-            continue
-        for row in result.get("value") or []:
-            if not isinstance(row, dict):
-                continue
-            out.setdefault(str(row.get("Ref_Key") or ""), []).append(row)
+    workers = min(_LINES_FETCH_WORKERS, len(keys))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_fetch_lines_for_document, key) for key in keys]
+        for future in as_completed(futures):
+            doc_key, rows = future.result()
+            if rows:
+                out[doc_key] = rows
     return out
+
+
+def _odata_list_assignments(
+    *, top: int, filt: str, include_lines: bool, skip: int = 0
+) -> dict[str, Any]:
+    """Journal list. Without lines: $select only (fast). With lines: $expand or navigation fallback."""
+    base: dict[str, Any] = {
+        "entity": ASSIGNMENT_ENTITY,
+        "top": top,
+        "filter": filt,
+        "skip": max(0, skip),
+    }
+    if not include_lines:
+        return _odata_get({**base, "select": ASSIGNMENT_LIST_SELECT})
+    try:
+        return _odata_get({**base, "expand": ASSIGNMENT_LINES_NAV})
+    except Exception:  # noqa: BLE001
+        return _odata_get(base)
 
 
 def _attach_missing_lines(rows: list[dict[str, Any]]) -> None:
@@ -301,24 +378,96 @@ def _attach_missing_lines(rows: list[dict[str, Any]]) -> None:
             row["Поручения"] = found[key]
 
 
-def _user_names_by_keys(keys: list[str]) -> dict[str, str]:
+def _user_names_erp_sql(keys: list[str]) -> dict[str, str]:
     unique = [key for key in dict.fromkeys(keys) if _looks_like_guid(key)]
+    if not unique:
+        return {}
+    try:
+        from app.clients.erp_sql import ErpSqlError, _connect
+        from app.services.onec_access import odata_guid_to_sql_hex, sql_hex_to_odata_guid
+        from app.services.onec_tools import _erp_sql_ready
+    except ImportError:
+        return {}
+    if not _erp_sql_ready():
+        return {}
     names: dict[str, str] = {}
-    for index in range(0, len(unique), 10):
-        chunk = unique[index : index + 10]
+    try:
+        conn = _connect()
+        try:
+            cursor = conn.cursor()
+            for index in range(0, len(unique), 80):
+                chunk = unique[index : index + 80]
+                in_list = ",".join(f"0x{odata_guid_to_sql_hex(key)}" for key in chunk)
+                cursor.execute(
+                    f"""
+                    SELECT CONVERT(varchar(64), _IDRRef, 2) AS hid,
+                           CAST(_Description AS nvarchar(512)) AS descr
+                    FROM dbo._Reference366 WITH (NOLOCK)
+                    WHERE _IDRRef IN ({in_list})
+                    """
+                )
+                for hid, descr in cursor.fetchall():
+                    guid = sql_hex_to_odata_guid(str(hid or ""))
+                    label = str(descr or "").strip()
+                    if guid and label:
+                        names[guid] = label
+        finally:
+            conn.close()
+    except ErpSqlError:
+        return {}
+    return names
+
+
+def _catalog_names_by_keys_odata(entity: str, keys: list[str]) -> dict[str, str]:
+    unique = [key for key in dict.fromkeys(keys) if _looks_like_guid(key)]
+    if not unique:
+        return {}
+
+    def _fetch_chunk(chunk: list[str]) -> dict[str, str]:
+        out: dict[str, str] = {}
         filt = " or ".join(f"Ref_Key eq guid'{key}'" for key in chunk)
         try:
-            result = _odata_get({"entity": USER_ENTITY, "top": 20, "filter": filt})
+            result = _odata_get({"entity": entity, "top": len(chunk), "filter": filt})
         except Exception:  # noqa: BLE001
-            continue
+            return out
         for row in result.get("value") or []:
             if not isinstance(row, dict):
                 continue
             key = str(row.get("Ref_Key") or "")
             name = str(row.get("Description") or row.get("Subject") or "").strip()
             if key and name:
-                names[key] = name
+                out[key] = name
+        return out
+
+    chunks = [
+        unique[index : index + _USER_LOOKUP_CHUNK]
+        for index in range(0, len(unique), _USER_LOOKUP_CHUNK)
+    ]
+    names: dict[str, str] = {}
+    workers = min(_USER_LOOKUP_WORKERS, len(chunks))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for chunk_names in pool.map(_fetch_chunk, chunks):
+            names.update(chunk_names)
     return names
+
+
+def _catalog_names_by_keys(entity: str, keys: list[str]) -> dict[str, str]:
+    if entity == USER_ENTITY:
+        sql_names = _user_names_erp_sql(keys)
+        missing = [
+            key
+            for key in dict.fromkeys(keys)
+            if _looks_like_guid(key) and key not in sql_names
+        ]
+        if not missing:
+            return sql_names
+        sql_names.update(_catalog_names_by_keys_odata(entity, missing))
+        return sql_names
+    return _catalog_names_by_keys_odata(entity, keys)
+
+
+def _user_names_by_keys(keys: list[str]) -> dict[str, str]:
+    return _catalog_names_by_keys(USER_ENTITY, keys)
 
 
 def _enrich_assignment_names(
@@ -327,8 +476,11 @@ def _enrich_assignment_names(
     customer: str = "",
     customer_key: str = "",
     raw_rows: list[dict[str, Any]] | None = None,
+    enrich_line_executors: bool = True,
+    enrich_organizations: bool = True,
 ) -> None:
     user_keys: list[str] = []
+    org_keys: list[str] = []
     header_fields = (
         ("Руководитель_Key", "customer"),
         ("СекретарьРК_Key", "secretary"),
@@ -347,12 +499,18 @@ def _enrich_assignment_names(
             guid = str(row.get(key_field) or item.get(f"{attr}_key") or "")
             if _looks_like_guid(guid):
                 user_keys.append(guid)
-        for line in item.get("lines") or []:
-            if isinstance(line, dict) and not line.get("executor"):
-                user_keys.append(str(line.get("executor_key") or ""))
-    if not user_keys:
-        return
-    names = _user_names_by_keys(user_keys)
+        if enrich_organizations and (
+            not item.get("organization") or str(item.get("organization")).strip() in {"", "—"}
+        ):
+            org_guid = str(row.get("Организация_Key") or "")
+            if _looks_like_guid(org_guid):
+                org_keys.append(org_guid)
+        if enrich_line_executors:
+            for line in item.get("lines") or []:
+                if isinstance(line, dict) and not line.get("executor"):
+                    user_keys.append(str(line.get("executor_key") or ""))
+    names = _user_names_by_keys(user_keys) if user_keys else {}
+    org_names = _catalog_names_by_keys(ORGANIZATION_ENTITY, org_keys) if org_keys else {}
     for index, item in enumerate(items):
         row = rows[index] if index < len(rows) else {}
         for key_field, attr in header_fields:
@@ -361,6 +519,14 @@ def _enrich_assignment_names(
             guid = str(row.get(key_field) or "")
             if guid in names:
                 item[attr] = names[guid]
+        if org_names and (
+            not item.get("organization") or str(item.get("organization")).strip() in {"", "—"}
+        ):
+            org_guid = str(row.get("Организация_Key") or "")
+            if org_guid in org_names:
+                item["organization"] = org_names[org_guid]
+        if not enrich_line_executors:
+            continue
         for line in item.get("lines") or []:
             if not isinstance(line, dict) or line.get("executor"):
                 continue
@@ -373,6 +539,7 @@ def _fetch_files(ref_key: str) -> list[dict[str, Any]]:
     result = _odata_get(
         {
             "entity": ASSIGNMENT_FILES_ENTITY,
+            "path": f"{ASSIGNMENT_FILES_ENTITY}?$select={_FILE_LIST_SELECT}",
             "top": 50,
             "filter": f"ВладелецФайла_Key eq guid'{ref_key}'",
         }
@@ -380,7 +547,110 @@ def _fetch_files(ref_key: str) -> list[dict[str, Any]]:
     return [_normalize_file(row) for row in (result.get("value") or []) if isinstance(row, dict)]
 
 
+def _batch_assignment_lines(args: dict[str, Any]) -> dict[str, Any]:
+    raw_keys = args.get("ref_keys") or args.get("ref_key") or []
+    if isinstance(raw_keys, str):
+        raw_keys = [raw_keys]
+    ref_keys = [
+        str(key).strip()
+        for key in raw_keys
+        if isinstance(key, (str, int)) and _looks_like_guid(str(key).strip())
+    ][:50]
+    if not ref_keys:
+        raise AssignmentError("Nuzhen ref_keys (do 50 GUID)")
+    found = _fetch_lines_map(ref_keys)
+    lines_by_ref: dict[str, list[dict[str, Any]]] = {}
+    for doc_key, raw_lines in found.items():
+        lines_by_ref[doc_key] = [_normalize_line(row) for row in raw_lines if isinstance(row, dict)]
+    wrappers = [{"lines": lines_by_ref[key]} for key in lines_by_ref]
+    _enrich_assignment_names(wrappers, enrich_line_executors=True)
+    for key, wrapper in zip(lines_by_ref, wrappers, strict=False):
+        lines_by_ref[key] = wrapper.get("lines") or lines_by_ref[key]
+    return {
+        "summary": f"Stroki TCh: {len(lines_by_ref)} porucheniy",
+        "count": len(lines_by_ref),
+        "lines_by_ref": lines_by_ref,
+        "source": "odata",
+    }
+
+
+def _fetch_files_map(ref_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """One OData call per 15 owners — list+include_files must not N+1 to 1C."""
+    keys = [key for key in dict.fromkeys(ref_keys) if _looks_like_guid(key)]
+    out: dict[str, list[dict[str, Any]]] = {}
+    for index in range(0, len(keys), 15):
+        chunk = keys[index : index + 15]
+        filt = " or ".join(f"ВладелецФайла_Key eq guid'{key}'" for key in chunk)
+        try:
+            result = _odata_get(
+                {
+                    "entity": ASSIGNMENT_FILES_ENTITY,
+                    "path": f"{ASSIGNMENT_FILES_ENTITY}?$select={_FILE_LIST_SELECT}",
+                    "top": 200,
+                    "filter": filt,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            for key in chunk:
+                out.setdefault(key, []).extend(_fetch_files(key))
+            continue
+        for row in result.get("value") or []:
+            if not isinstance(row, dict):
+                continue
+            owner = str(row.get("ВладелецФайла_Key") or "")
+            if owner:
+                out.setdefault(owner, []).append(_normalize_file(row))
+    return out
+
+
+def _arg_flag(value: Any, default: bool | None = None) -> bool | None:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "да", "истина"}:
+        return True
+    if text in {"0", "false", "no", "нет", "ложь", ""}:
+        return False
+    return default
+
+
+_ASSIGNMENT_PAGE = 100
+
+
+def _odata_assignment_pages(
+    filt: str,
+    *,
+    top: int,
+    full_journal: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    if not full_journal:
+        result = _odata_get({"entity": ASSIGNMENT_ENTITY, "top": top, "filter": filt})
+        rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+        return rows, False
+    rows: list[dict[str, Any]] = []
+    skip = 0
+    while len(rows) < top:
+        take = min(_ASSIGNMENT_PAGE, top - len(rows))
+        result = _odata_get(
+            {"entity": ASSIGNMENT_ENTITY, "top": take, "skip": skip, "filter": filt}
+        )
+        batch = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+        rows.extend(batch)
+        if len(batch) < take:
+            return rows, False
+        skip += len(batch)
+    return rows, True
+
+
 def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
+    import time
+
+    profile = _flag_on(args.get("profile"), default=False)
+    marks: dict[str, float] = {}
+    t0 = time.perf_counter()
+
     customer = str(args.get("customer") or args.get("zakazchik") or args.get("fio") or "").strip()
     customer_key = str(args.get("customer_key") or args.get("Руководитель_Key") or "").strip()
     resolved = {}
@@ -388,25 +658,35 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         resolved = resolve_user(customer)
         customer_key = resolved["ref_key"]
         customer = resolved["fio"]
-    number = str(args.get("number") or "").strip()
+    number = normalize_assignment_number(str(args.get("number") or "").strip())
     query = str(args.get("query") or args.get("topic") or "").strip()
     date_from = _parse_day(str(args.get("date_from") or ""))
     date_to = _parse_day(str(args.get("date_to") or ""), end=True)
-    only_open = args.get("only_open")
-    include_day = args.get("include_last_day")
+    only_open_flag = _arg_flag(args.get("only_open"))
+    include_day = _arg_flag(args.get("include_last_day"))
+    include_all = _arg_flag(args.get("include_all")) is True
+    full_journal = include_all or only_open_flag is False
     changed_since = None
     open_only = False
-    if date_from is None and date_to is None:
-        if only_open is True and include_day is False:
+    if full_journal:
+        open_only = False
+        changed_since = None
+    elif date_from is None and date_to is None:
+        if only_open_flag is True and include_day is False:
             open_only = True
-        elif only_open is True and include_day is not True:
+        elif only_open_flag is True and include_day is not True:
             open_only = True
         else:
             changed_since = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    elif only_open is True:
+    elif only_open_flag is True:
         open_only = True
-    top = max(1, min(int(args.get("limit") or args.get("top") or 40), 100))
+    if full_journal:
+        top = 2000
+    else:
+        top = max(1, min(int(args.get("limit") or args.get("top") or 40), 100))
+    skip = max(0, int(args.get("skip") or 0))
     include_files = bool(args.get("include_files"))
+    include_lines = _flag_on(args.get("include_lines"), default=True)
     filt = build_assignment_filter(
         customer_key=customer_key,
         number=number,
@@ -416,20 +696,47 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         only_open=open_only,
         changed_since=changed_since,
     )
-    result = _odata_get({"entity": ASSIGNMENT_ENTITY, "top": top, "filter": filt})
-    raw_rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
-    _attach_missing_lines(raw_rows)
+    if full_journal:
+        raw_rows, truncated = _odata_assignment_pages(filt, top=top, full_journal=True)
+        result = {"source": "odata"}
+    else:
+        result = _odata_list_assignments(
+            top=top, filt=filt, include_lines=include_lines, skip=skip
+        )
+        raw_rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+        truncated = False
+    if profile:
+        marks["odata_list_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    if include_lines:
+        t_lines = time.perf_counter()
+        _attach_missing_lines(raw_rows)
+        if profile:
+            marks["lines_ms"] = round((time.perf_counter() - t_lines) * 1000, 1)
+    file_map = (
+        _fetch_files_map([str(row.get("Ref_Key") or "") for row in raw_rows])
+        if include_files
+        else {}
+    )
     items = []
     for row in raw_rows:
-        files = _fetch_files(str(row.get("Ref_Key") or "")) if include_files else []
+        files = file_map.get(str(row.get("Ref_Key") or ""), []) if include_files else []
         items.append(_normalize_assignment(row, files=files))
+    t_names = time.perf_counter()
     _enrich_assignment_names(
-        items, customer=customer, customer_key=customer_key, raw_rows=raw_rows
+        items,
+        customer=customer,
+        customer_key=customer_key,
+        raw_rows=raw_rows,
+        enrich_line_executors=include_lines,
+        enrich_organizations=include_lines,
     )
+    if profile:
+        marks["names_ms"] = round((time.perf_counter() - t_names) * 1000, 1)
+        marks["total_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     summary = f"Porucheniya 1C: {len(items)}"
     if customer:
         summary += f" (zakazchik {customer})"
-    return {
+    payload: dict[str, Any] = {
         "summary": summary,
         "entity": ASSIGNMENT_ENTITY,
         "number_series": "АСТ00",
@@ -438,15 +745,26 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         "filter": filt,
         "count": len(items),
         "assignments": items,
+        "include_lines": include_lines,
+        "truncated": truncated,
         "source": result.get("source") or "odata",
     }
+    if profile:
+        payload["timing_ms"] = marks
+    if not items:
+        payload["hint"] = (
+            "Zhurnal AST00 pust. Esli filtrovali po zakazchiku — povtori action=list "
+            "bez customer. Potom excel.create_workbook s tekstom «porucheniy net». "
+            "Ne ischi zadachi ispolnitelya, protokoly i ne delai OCR."
+        )
+    return payload
 
 
 def _get_assignment(args: dict[str, Any]) -> dict[str, Any]:
-    number = str(args.get("number") or "").strip()
+    number = normalize_assignment_number(str(args.get("number") or "").strip())
     ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
     if not number and not ref_key:
-        raise AssignmentError("Nuzhen number (AST00-...) ili ref_key")
+        raise AssignmentError("Nuzhen number (АСТ00-...) ili ref_key")
     call: dict[str, Any] = {"entity": ASSIGNMENT_ENTITY, "top": 5}
     if ref_key:
         call["ref_key"] = ref_key
@@ -538,7 +856,7 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
     if only_open is None:
         only_open = True
     top = max(1, min(int(args.get("limit") or 20), 100))
-    parts = ["DeletionMark eq false"]
+    parts: list[str] = []
     if query:
         safe = query.replace("'", "''")
         parts.append(f"(substringof('{safe}', Description) or substringof('{safe}', ПредметСтрокой))")
@@ -550,7 +868,10 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
         performer = user["fio"]
     filt = " and ".join(parts)
     try:
-        result = _odata_get({"entity": TASK_ENTITY, "top": top, "filter": filt})
+        call: dict[str, Any] = {"entity": TASK_ENTITY, "top": top}
+        if filt:
+            call["filter"] = filt
+        result = _odata_get(call)
         rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
         source = result.get("source") or "odata"
     except Exception as exc:  # noqa: BLE001
@@ -560,9 +881,9 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
             "count": 0,
             "tasks": [],
             "hint": (
-                "Zhurnal porucheniy - action=list (Document_TD_Porucheniya, AST00). "
-                "V 1C net zadachi 'Proverit poruchenie': agent sam chitaet zhurnal. "
-                "Ne ischi ee cherez onec.erp_tasks_current."
+                "Eto ne zhurnal porucheniy. Vozvratis k action=list "
+                "(Document_TD_Porucheniya, seriya AST00 kirillicey). "
+                "Ne ischi zadachu 'Proverit poruchenie', ne delai OCR."
             ),
             "source": "error",
         }
@@ -596,25 +917,46 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _list_protocols(args: dict[str, Any]) -> dict[str, Any]:
-    date_from = _parse_day(str(args.get("date_from") or "")) or (
-        datetime.now() - timedelta(days=14)
-    )
+    psd_mark = _arg_flag(args.get("psd_mark") if "psd_mark" in args else args.get("psd_only")) is True
+    raw_from = str(args.get("date_from") or "").strip()
+    date_from = _parse_day(raw_from)
+    if date_from is None and not psd_mark:
+        date_from = datetime.now() - timedelta(days=14)
     date_to = _parse_day(str(args.get("date_to") or ""), end=True)
     number = str(args.get("number") or "").strip()
-    top = max(1, min(int(args.get("limit") or 10), 50))
-    parts = [
-        "DeletionMark eq false",
-        f"Date ge datetime'{_odata_datetime(date_from)}'",
-    ]
+    filt_parts = ["DeletionMark eq false"]
+    if date_from is not None:
+        filt_parts.append(f"Date ge datetime'{_odata_datetime(date_from)}'")
     if date_to is not None:
-        parts.append(f"Date le datetime'{_odata_datetime(date_to)}'")
+        filt_parts.append(f"Date le datetime'{_odata_datetime(date_to)}'")
     if number:
-        parts.append(f"Number eq '{number.replace(chr(39), chr(39)+chr(39))}'")
-    result = _odata_get({"entity": PROTOCOL_ENTITY, "top": top, "filter": " and ".join(parts)})
+        filt_parts.append(f"Number eq '{number.replace(chr(39), chr(39)+chr(39))}'")
+    elif psd_mark:
+        filt_parts.append("startswith(Number,'ПСД')")
+    filt = " and ".join(filt_parts)
+    truncated = False
+    raw_rows: list[dict[str, Any]] = []
+    if psd_mark and not number:
+        skip = 0
+        cap = 2000
+        while len(raw_rows) < cap:
+            take = min(100, cap - len(raw_rows))
+            result = _odata_get(
+                {"entity": PROTOCOL_ENTITY, "top": take, "skip": skip, "filter": filt}
+            )
+            batch = [row for row in (result.get("value") or []) if isinstance(row, dict)]
+            raw_rows.extend(batch)
+            if len(batch) < take:
+                break
+            skip += len(batch)
+        else:
+            truncated = True
+    else:
+        top = max(1, min(int(args.get("limit") or 10), 100))
+        result = _odata_get({"entity": PROTOCOL_ENTITY, "top": top, "filter": filt})
+        raw_rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
     items = []
-    for row in result.get("value") or []:
-        if not isinstance(row, dict):
-            continue
+    for row in raw_rows:
         decisions = row.get("Решения")
         if not isinstance(decisions, list):
             parts_map = row.get("tabular_parts")
@@ -636,6 +978,8 @@ def _list_protocols(args: dict[str, Any]) -> dict[str, Any]:
         "entity": PROTOCOL_ENTITY,
         "count": len(items),
         "protocols": items,
+        "psd_mark": psd_mark,
+        "truncated": truncated,
         "source": result.get("source") or "odata",
     }
 
@@ -656,6 +1000,7 @@ def handle_assignments(
     handlers = {
         "list": _list_assignments,
         "get": _get_assignment,
+        "lines_batch": _batch_assignment_lines,
         "files": _list_files,
         "download": _download_assignment_files,
         "tasks": _list_tasks,
@@ -665,20 +1010,41 @@ def handle_assignments(
     handler = handlers.get(action)
     if handler is None:
         raise AssignmentError(
-            "action: list | get | files | download | tasks | protocols. "
+            "action: list | get | lines_batch | files | download | tasks | protocols. "
             "Zapis - onec.erp_assignments_write."
         )
     return handler(payload)
 
 
-def build_create_body(args: dict[str, Any]) -> dict[str, Any]:
+def _session_catalog_ref_key(
+    args: dict[str, Any],
+    *,
+    actor_onec_ref: str = "",
+) -> str:
+    trusted = (actor_onec_ref or "").strip()
+    if trusted:
+        return trusted
+    return str(args.get("session_customer_key") or args.get("session_onec_ref") or "").strip()
+
+
+def build_create_body(
+    args: dict[str, Any],
+    *,
+    actor_fio: str = "",
+    actor_onec_ref: str = "",
+) -> dict[str, Any]:
     topic = str(args.get("topic") or args.get("ОЧем") or "").strip()
     if not topic:
         raise AssignmentError("Dlya create nuzhen topic / ОЧем")
     customer = str(args.get("customer") or "").strip()
     customer_key = str(args.get("customer_key") or "").strip()
+    session_ref = _session_catalog_ref_key(args, actor_onec_ref=actor_onec_ref)
     if customer and not customer_key:
         customer_key = resolve_user(customer)["ref_key"]
+    if not customer_key and not customer and session_ref:
+        customer_key = session_ref
+        if not customer and actor_fio:
+            customer = actor_fio.strip()
     if not customer_key:
         raise AssignmentError("Dlya create nuzhen customer (FIO zakazchika)")
     due = str(args.get("due") or args.get("СрокПолногоУстраненияНарушений") or "").strip()
@@ -788,12 +1154,17 @@ def handle_assignments_write(
     *,
     actor_fio: str = "",
     actor_user_id: str = "",
+    actor_onec_ref: str = "",
     **_: Any,
 ) -> dict[str, Any]:
-    _ = actor_fio, actor_user_id
+    _ = actor_user_id
     action = str(args.get("action") or "update").strip().casefold()
     if action == "create":
-        body = build_create_body(args)
+        body = build_create_body(
+            args,
+            actor_fio=actor_fio,
+            actor_onec_ref=actor_onec_ref,
+        )
         result = _odata_post({"entity": ASSIGNMENT_ENTITY, "body": body})
         return {
             "summary": "Sozdano poruchenie v 1C (zhdi nomer AST00)",

@@ -17,7 +17,8 @@ import {
   saveOutlookAttachment
 } from '../../utils/outlookMailActions'
 import { openAttachmentExternally } from '../../utils/mailAttachmentPreview'
-import { useTodayWidgetExpanded } from './TodayWidgetExpandContext'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
+import { useRequestTodayWidgetExpand, useTodayWidgetExpanded } from './TodayWidgetExpandContext'
 import { TodayFileIcon } from './todayFileIcon'
 
 function senderInitials(name: string): string {
@@ -32,7 +33,7 @@ function senderInitials(name: string): string {
 }
 
 function mailPreview(row: SpecMailRow): string {
-  return row.preview || row.body?.replace(/\s+/g, ' ').slice(0, 140) || row.subject
+  return row.preview || row.body?.replace(/\s+/g, ' ').slice(0, 140) || decodeMimeHeader(row.subject)
 }
 
 function TodayCellText({ text }: { text: string }): React.JSX.Element {
@@ -113,11 +114,11 @@ function OutlookReadingPane({
       <div className="today-outlook-reading-card">
         <header className="today-outlook-reading-head">
           <div className="today-outlook-avatar" aria-hidden>
-            {senderInitials(row.sender)}
+            {senderInitials(decodeMimeHeader(row.sender))}
           </div>
           <div className="today-outlook-reading-meta">
             <div className="today-outlook-reading-title-row">
-              <strong className="today-outlook-sender">{row.sender}</strong>
+              <strong className="today-outlook-sender">{decodeMimeHeader(row.sender)}</strong>
               <span className="today-outlook-when">{row.receivedLabel || row.time}</span>
             </div>
             {row.to ? (
@@ -131,7 +132,7 @@ function OutlookReadingPane({
             </div>
           </div>
         </header>
-        <h2 className="today-outlook-subject">{row.subject}</h2>
+        <h2 className="today-outlook-subject">{decodeMimeHeader(row.subject)}</h2>
         {attachments.length ? (
           <div className="today-outlook-attachments-wrap">
             <div className="today-outlook-attachments-label">
@@ -174,6 +175,8 @@ export function TodayOutlookMailPanel({
   loading,
   error,
   hint,
+  fromMe = false,
+  onToggleFromMe,
   onPatchRow
 }: {
   rows: SpecMailRow[]
@@ -181,9 +184,13 @@ export function TodayOutlookMailPanel({
   loading?: boolean
   error?: string
   hint?: string
+  /** Режим блока: письма от меня вместо писем мне. */
+  fromMe?: boolean
+  onToggleFromMe?: (next: boolean) => void
   onPatchRow?: (id: string, patch: Partial<SpecMailRow>) => void
 }): React.JSX.Element {
   const expanded = useTodayWidgetExpanded()
+  const requestExpand = useRequestTodayWidgetExpand()
   const [selectedId, setSelectedId] = useState(rows[0]?.id || '')
   const [filter, setFilter] = useState<'all' | 'unread'>('all')
   const [busy, setBusy] = useState('')
@@ -261,6 +268,11 @@ export function TodayOutlookMailPanel({
 
   if (!expanded) {
     const tableRows = compactRows
+    // В компактном виде читалки нет: выбираем письмо и раскрываем виджет.
+    const openLetter = (id: string): void => {
+      setSelectedId(id)
+      requestExpand?.()
+    }
     const body = ((): React.ReactNode => {
       if (loading) {
         return (
@@ -284,18 +296,30 @@ export function TodayOutlookMailPanel({
         return (
           <tr>
             <td colSpan={4} className="today-table-status">
-              Нет писем мне и от меня за выбранный день
+              {fromMe ? 'Нет писем от меня за выбранный день' : 'Нет писем мне за выбранный день'}
             </td>
           </tr>
         )
       }
       return tableRows.map((row) => (
-        <tr key={row.id}>
+        <tr
+          key={row.id}
+          className="today-tr-clickable"
+          tabIndex={0}
+          title="Открыть письмо"
+          onClick={() => openLetter(row.id)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              openLetter(row.id)
+            }
+          }}
+        >
           <td>
             <TodayCellText text={mailPartyLabel(row)} />
           </td>
           <td>
-            <TodayCellText text={row.subject} />
+            <TodayCellText text={decodeMimeHeader(row.subject)} />
           </td>
           <td>
             <TodayCellText text={row.time} />
@@ -308,12 +332,28 @@ export function TodayOutlookMailPanel({
     })()
 
     return (
-      <SpecPanel title="Письма из Outlook">
+      <SpecPanel
+        title="Письма из Outlook"
+        extra={
+          onToggleFromMe ? (
+            <div className="today-mini-card-actions">
+              <label className="today-from-me-toggle">
+                <input
+                  type="checkbox"
+                  checked={fromMe}
+                  onChange={(event) => onToggleFromMe(event.target.checked)}
+                />
+                <span className="today-from-me-toggle-label">Письма от меня</span>
+              </label>
+            </div>
+          ) : undefined
+        }
+      >
         <div className="spec-v04-table-wrap today-table-scroll">
           <table className="today-mini-table">
             <thead>
               <tr>
-                <th>От / Кому</th>
+                <th>{fromMe ? 'Кому' : 'От кого'}</th>
                 <th>Тема</th>
                 <th>Время</th>
                 <th>Статус</th>
@@ -398,7 +438,7 @@ export function TodayOutlookMailPanel({
                         </span>
                         <span className="today-outlook-list-sender">{mailPartyLabel(row)}</span>
                         <span className="today-outlook-list-subject-wrap">
-                          <span className="today-outlook-list-subject">{row.subject}</span>
+                          <span className="today-outlook-list-subject">{decodeMimeHeader(row.subject)}</span>
                           <span className="today-outlook-list-preview">{mailPreview(row)}</span>
                         </span>
                         <span className="today-outlook-list-time">{row.time}</span>

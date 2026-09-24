@@ -94,6 +94,11 @@ function normalizeFioKey(value: string): string {
 
 const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
   {
+    needle: 'комарков',
+    position: 'Помощник руководителя',
+    department: 'Управление делами'
+  },
+  {
     needle: 'мангасарян',
     position: 'Помощник Председателя совета директоров',
     department: 'Управление делами'
@@ -121,7 +126,9 @@ function parseUser(data: Record<string, unknown>): UserProfile {
       (data.canChangeDepartment as boolean) ?? (data.can_change_department as boolean) ?? true,
     activityStatus:
       (data.activityStatus as string) ?? (data.activity_status as string) ?? 'online',
-    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false
+    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false,
+    onecCatalogRefKey:
+      String(data.onecCatalogRefKey ?? data.onec_catalog_ref_key ?? '').trim() || undefined
   })
 }
 

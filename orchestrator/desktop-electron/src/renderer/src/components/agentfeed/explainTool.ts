@@ -355,9 +355,49 @@ function excelWrite(tool: string, args: Record<string, unknown>): ToolExplanatio
   )
 }
 
+function protocolWrite(args: Record<string, unknown>): ToolExplanation {
+  const probe = asText(args.action).toLowerCase() === 'probe'
+  const topic = asText(args.topic || args.theme)
+  const date = asText(args.date)
+  const leader = asText(args.leader)
+  const count = (value: unknown): number => (Array.isArray(value) ? value.length : 0)
+  const participants = count(args.participants || args.attendees)
+  const agenda = count(args.agenda)
+  const decisions = count(args.decisions)
+  const tasks = count(args.tasks || args.assignments)
+  const facts: string[] = []
+  if (topic) facts.push(`Тема: ${clip(topic, 120)}`)
+  if (date) facts.push(`Дата совещания: ${formatDate(date)}`)
+  if (leader) facts.push(`Руководитель: ${leader}`)
+  if (participants) facts.push(`Присутствующих: ${participants}`)
+  if (agenda) facts.push(`Вопросов повестки: ${agenda}`)
+  if (decisions) facts.push(`Решений: ${decisions}`)
+  if (tasks) facts.push(`Поставленных задач: ${tasks}`)
+  if (probe) {
+    return explanation(
+      'Проба записи протокола',
+      'проверить создание протокола в 1С на тестовой карточке',
+      'Проверяет запись протокола',
+      facts,
+      'Создаст тестовый протокол CONSTRUCTOR_PROBE и сразу удалит его.'
+    )
+  }
+  return explanation(
+    'Протокол в 1С',
+    'создать протокол совещания в 1С',
+    'Создаёт протокол совещания',
+    facts,
+    joinDetail([
+      'Появится черновик документа «Протокол» (ТД_Протокол) в 1С со статусом «Подготовлен», не проведён.',
+      'Заполнит присутствующих, повестку, решения и вкладку «Поставленные задачи».'
+    ])
+  )
+}
+
 function byKnownName(name: string, args: Record<string, unknown>): ToolExplanation | null {
   if (name === 'onec.erp_assignments') return assignmentRead(args)
   if (name === 'onec.erp_assignments_write') return assignmentWrite(args)
+  if (name === 'onec.meeting_protocol_write') return protocolWrite(args)
   if (name === 'onec.odata_post' || name === 'onec.odata_patch') return odataWrite(name, args)
   if (name === 'outlook.create_event') return outlookEvent(args)
   if (name === 'outlook.send_mail' || name === 'email.send' || name === 'email.create_draft') {
@@ -437,6 +477,12 @@ function byKnownName(name: string, args: Record<string, unknown>): ToolExplanati
     'code.run_python': ['Запуск кода', 'запустить Python-скрипт на этом компьютере', 'Запускает код'],
     'workspace.powershell_run': ['Команда на компьютере', 'выполнить команду в папке агента', 'Выполняет команду'],
     'notify.send': ['Уведомление', 'отправить уведомление', 'Отправляет уведомление'],
+    'audio.transcribe': [
+      'Расшифровка аудио',
+      'расшифровать аудиозапись из вложения запуска',
+      'Расшифровывает аудио',
+      'Переведёт запись в текст с таймкодами. Файл никуда не отправляется, обработка на сервере Constructor.'
+    ],
     'users.current': ['Текущий пользователь', 'узнать, кто сейчас в системе', 'Смотрит текущего пользователя'],
     'users.list': ['Список сотрудников', 'посмотреть список сотрудников', 'Смотрит список сотрудников'],
     'users.subordinates': ['Подчинённые', 'посмотреть подчинённых', 'Смотрит подчинённых'],
@@ -483,6 +529,7 @@ export function explainTool(tool: string, args?: Record<string, unknown>): ToolE
   for (const key of [
     'onec.erp_assignments',
     'onec.erp_assignments_write',
+    'onec.meeting_protocol_write',
     'onec.odata_post',
     'onec.odata_patch',
     'outlook.create_event'

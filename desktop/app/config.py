@@ -29,11 +29,6 @@ REPO_ROOT = DESKTOP_ROOT.parent if not getattr(sys, "frozen", False) else DESKTO
 load_env_file(DESKTOP_ROOT / ".env", override=True)
 if getattr(sys, "frozen", False):
     load_env_file(DESKTOP_ROOT / ".env", override=True)
-    _bundled_browsers = DESKTOP_ROOT / "ms-playwright"
-    if _bundled_browsers.is_dir() and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_bundled_browsers)
-
-_CURSOR_ENV_KEYS = ("CURSOR_API_KEY", "CURSOR_API_BASE_URL", "CURSOR_SDK_MODEL")
 
 
 def _env_value(path: Path, name: str) -> str:
@@ -44,11 +39,53 @@ def _env_value(path: Path, name: str) -> str:
         text = line.strip()
         if not text.startswith(prefix):
             continue
-        raw = text[len(prefix):].strip()
+        raw = text[len(prefix) :].strip()
         if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
             raw = raw[1:-1]
         return raw.strip()
     return ""
+
+
+def _apply_backend_onec_fallback() -> None:
+    """1cv8c / COM: подставить ONEC_* из backend/.env, если desktop/.env пуст."""
+    if os.environ.get("ONEC_COM_SERVER") and os.environ.get("ONEC_COM_REF"):
+        if not os.environ.get("ONEC_ENTERPRISE_DB"):
+            server = os.environ["ONEC_COM_SERVER"].strip()
+            ref = os.environ.get("ONEC_COM_REF", "erp_pm").strip()
+            os.environ["ONEC_ENTERPRISE_DB"] = f'/S{server}\\{ref}'
+        return
+    backend_env = REPO_ROOT / "backend" / ".env"
+    if not backend_env.is_file():
+        return
+    server = (
+        _env_value(backend_env, "ONEC_COM_SERVER")
+        or _env_value(backend_env, "DOK_HTTP_SERVER")
+        or _env_value(backend_env, "ODATA_HOST")
+    ).strip()
+    ref = (
+        _env_value(backend_env, "ONEC_COM_REF")
+        or _env_value(backend_env, "ERP_SQL_DATABASE")
+        or "erp_pm"
+    ).strip()
+    conn = _env_value(backend_env, "ONEC_COM_CONNECTION_STRING").strip()
+    if conn and not os.environ.get("ONEC_COM_CONNECTION_STRING"):
+        os.environ["ONEC_COM_CONNECTION_STRING"] = conn
+    if server and not os.environ.get("ONEC_COM_SERVER"):
+        os.environ["ONEC_COM_SERVER"] = server
+    if ref and not os.environ.get("ONEC_COM_REF"):
+        os.environ["ONEC_COM_REF"] = ref
+    if server and ref and not os.environ.get("ONEC_ENTERPRISE_DB"):
+        os.environ["ONEC_ENTERPRISE_DB"] = f'/S{server}\\{ref}'
+
+
+_apply_backend_onec_fallback()
+
+if getattr(sys, "frozen", False):
+    _bundled_browsers = DESKTOP_ROOT / "ms-playwright"
+    if _bundled_browsers.is_dir() and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_bundled_browsers)
+
+_CURSOR_ENV_KEYS = ("CURSOR_API_KEY", "CURSOR_API_BASE_URL", "CURSOR_SDK_MODEL")
 
 
 def _cursor_env_candidates() -> list[Path]:
