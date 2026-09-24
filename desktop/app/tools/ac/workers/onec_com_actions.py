@@ -61,6 +61,7 @@ ENV_SEARCH_TASKS_METHOD = "ONEC_COM_SEARCH_TASKS_METHOD"
 ENV_GET_TASK_CARD_METHOD = "ONEC_COM_GET_TASK_CARD_METHOD"
 ENV_CLIENT_EXE = "ONEC_CLIENT_EXE"
 DEFAULT_ASSIGNMENT_LIST_FORM = "Документ.ТД_Поручения.Форма.ФормаСписка"
+DEFAULT_INCOMING_DOC_FORM = "Документ.ТД_ВходящаяКорреспонденция.Форма.ФормаДокумента"
 
 
 def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
@@ -75,6 +76,36 @@ def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
             error_type="ONEC_READONLY_POLICY_ERROR",
             error_message=str(exc),
         )
+
+    if task.tool_name == "onec.register_incoming_from_mail":
+        try:
+            from app.tools.ac.workers.mail_incoming_onec import register_incoming_from_outlook_mail
+
+            payload = register_incoming_from_outlook_mail(
+                task.input_data if isinstance(task.input_data, dict) else {}
+            )
+            return WorkerResult(task_id=task.task_id, ok=True, output_data=payload)
+        except Exception as exc:  # noqa: BLE001
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="ONEC_INCOMING_FROM_MAIL_ERROR",
+                error_message=str(exc),
+            )
+
+    if task.tool_name == "onec.save_incoming_mail_msg":
+        try:
+            from app.tools.ac.workers.mail_incoming_onec import save_incoming_mail_msg
+
+            payload = save_incoming_mail_msg(task.input_data if isinstance(task.input_data, dict) else {})
+            return WorkerResult(task_id=task.task_id, ok=True, output_data=payload)
+        except Exception as exc:  # noqa: BLE001
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="ONEC_SAVE_INCOMING_MSG_ERROR",
+                error_message=str(exc),
+            )
 
     if task.tool_name == "onec.open_form":
         try:
@@ -193,6 +224,14 @@ def _dispatch_via_com32(task: WorkerTask) -> dict[str, Any]:
         return _search_tasks_com32(task.input_data)
     if task.tool_name == "onec.get_task_card":
         return _get_task_card_com32(task.input_data)
+    if task.tool_name == "onec.register_incoming_from_mail":
+        from app.tools.ac.workers.mail_incoming_onec import register_incoming_from_outlook_mail
+
+        return register_incoming_from_outlook_mail(task.input_data if isinstance(task.input_data, dict) else {})
+    if task.tool_name == "onec.save_incoming_mail_msg":
+        from app.tools.ac.workers.mail_incoming_onec import save_incoming_mail_msg
+
+        return save_incoming_mail_msg(task.input_data if isinstance(task.input_data, dict) else {})
     if task.tool_name == "onec.open_form":
         return launch_onec_client_form(task.input_data if isinstance(task.input_data, dict) else {})
     raise OneCConnectionError(
@@ -967,6 +1006,14 @@ def _dispatch_tool(session: Any, task: WorkerTask) -> dict[str, Any]:
         }
     if task.tool_name == "onec.meeting_service_notes":
         return _list_meeting_service_notes(session, task.input_data)
+    if task.tool_name == "onec.register_incoming_from_mail":
+        from app.tools.ac.workers.mail_incoming_onec import register_incoming_from_outlook_mail
+
+        return register_incoming_from_outlook_mail(task.input_data if isinstance(task.input_data, dict) else {})
+    if task.tool_name == "onec.save_incoming_mail_msg":
+        from app.tools.ac.workers.mail_incoming_onec import save_incoming_mail_msg
+
+        return save_incoming_mail_msg(task.input_data if isinstance(task.input_data, dict) else {})
     if task.tool_name == "onec.open_form":
         return launch_onec_client_form(task.input_data if isinstance(task.input_data, dict) else {})
     raise OneCConnectionError(f"Неизвестный COM tool_name: {task.tool_name}")
@@ -1041,15 +1088,41 @@ def _enterprise_db_switch() -> str:
     )
 
 
+def _bsl_escape(value: str) -> str:
+    text = str(value or "").replace("\\", "\\\\").replace('"', '""').replace("\r", " ").replace("\n", " ")
+    return text[:500]
+
+
 def launch_onec_client_form(input_data: dict[str, Any]) -> dict[str, Any]:
     """Запуск толстого клиента 1С с /C «ОткрытьФорму(...)» — UI, без OData-записи."""
     form_path = str(input_data.get("form") or DEFAULT_ASSIGNMENT_LIST_FORM).strip()
     if not form_path:
         form_path = DEFAULT_ASSIGNMENT_LIST_FORM
+    form_path = form_path.replace(chr(34), "")
     db_switch = _enterprise_db_switch()
     exe = _resolve_onec_client_exe()
     user, password = _startup_login_from_input(input_data)
-    bsl = f'ОткрытьФорму("{form_path.replace(chr(34), "")}");'
+    mail_file = str(input_data.get("mail_file_path") or input_data.get("saved_path") or "").strip()
+    attach_mail = bool(input_data.get("attach_mail_file")) and bool(mail_file)
+    if attach_mail:
+        subject = _bsl_escape(str(input_data.get("mail_subject") or ""))
+        sender = _bsl_escape(str(input_data.get("mail_sender") or ""))
+        received = _bsl_escape(str(input_data.get("mail_received_at") or ""))
+        path_esc = _bsl_escape(str(Path(mail_file).resolve()))
+        if received:
+            bsl = (
+                f'Парам = Новый Структура("ФайлСообщения,Тема,Отправитель,ДатаПисьма", '
+                f'"{path_esc}","{subject}","{sender}","{received}");'
+                f'ОткрытьФорму("{form_path}", , , Парам);'
+            )
+        else:
+            bsl = (
+                f'Парам = Новый Структура("ФайлСообщения,Тема,Отправитель", '
+                f'"{path_esc}","{subject}","{sender}");'
+                f'ОткрытьФорму("{form_path}", , , Парам);'
+            )
+    else:
+        bsl = f'ОткрытьФорму("{form_path}");'
     args = ["ENTERPRISE", db_switch]
     if user:
         args.append(f'/N{user}')
@@ -1069,6 +1142,7 @@ def launch_onec_client_form(input_data: dict[str, Any]) -> dict[str, Any]:
         "form": form_path,
         "method": "1cv8c_startup",
         "executable": str(exe),
+        "mail_file_path": mail_file if attach_mail else "",
         "summary": f"Открываю {form_path} в клиенте 1С",
     }
 

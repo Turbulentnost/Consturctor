@@ -638,8 +638,23 @@ def parse_users(root: ET.Element) -> list[dict[str, str]]:
     return users
 
 
+def importance_level(raw: str) -> str:
+    """Важность задачи ДО → high | normal | low. Пусто, если 1С её не отдала."""
+    text = (raw or "").strip().casefold()
+    if not text:
+        return ""
+    if "высок" in text or "критич" in text or "срочн" in text:
+        return "high"
+    if "низк" in text:
+        return "low"
+    if "обычн" in text or "средн" in text or "нормальн" in text:
+        return "normal"
+    return ""
+
+
 def task_row(obj: ET.Element) -> dict[str, Any]:
     due = xml_text(obj, "m:dueDate")
+    importance_raw = xml_text(obj, "m:importance/m:name") or xml_text(obj, "m:importance/m:objectID/m:id")
     return {
         "name": xml_text(obj, "m:name"),
         "id": xml_text(obj, "m:objectID/m:id"),
@@ -657,6 +672,8 @@ def task_row(obj: ET.Element) -> dict[str, Any]:
         "target_id": xml_text(obj, "m:target/m:objectID/m:id"),
         "target_type": xml_text(obj, "m:target/m:objectID/m:type"),
         "state": xml_text(obj, "m:state/m:name"),
+        "importance_name": importance_raw,
+        "importance": importance_level(importance_raw),
     }
 
 
@@ -743,25 +760,37 @@ def list_open_tasks(
         )
     elif user and user.get("id") and filter_mode == "performer":
         filters.append(condition("performer", performer_value(user)))
-    root = execute_dm(
-        config,
-        '<dm:request xsi:type="dm:DMGetObjectListRequest">'
-        "<dm:type>DMBusinessProcessTask</dm:type>"
-        "<dm:query>"
-        f"{''.join(filters)}"
-        f"<dm:limit>{max(1, min(int(limit), 500))}</dm:limit>"
-        "<dm:columnSet>name</dm:columnSet>"
-        "<dm:columnSet>performer</dm:columnSet>"
-        "<dm:columnSet>author</dm:columnSet>"
-        "<dm:columnSet>beginDate</dm:columnSet>"
-        "<dm:columnSet>dueDate</dm:columnSet>"
-        "<dm:columnSet>executed</dm:columnSet>"
-        "<dm:columnSet>description</dm:columnSet>"
-        "<dm:columnSet>target</dm:columnSet>"
-        "</dm:query>"
-        "</dm:request>",
-        timeout=timeout,
-    )
+
+    def request(columns: list[str]) -> ET.Element:
+        return execute_dm(
+            config,
+            '<dm:request xsi:type="dm:DMGetObjectListRequest">'
+            "<dm:type>DMBusinessProcessTask</dm:type>"
+            "<dm:query>"
+            f"{''.join(filters)}"
+            f"<dm:limit>{max(1, min(int(limit), 500))}</dm:limit>"
+            + "".join(f"<dm:columnSet>{name}</dm:columnSet>" for name in columns)
+            + "</dm:query>"
+            "</dm:request>",
+            timeout=timeout,
+        )
+
+    columns = [
+        "name",
+        "performer",
+        "author",
+        "beginDate",
+        "dueDate",
+        "executed",
+        "description",
+        "target",
+    ]
+    try:
+        # Важность нужна для подсветки строк; часть баз ДО этот columnSet не принимает.
+        root = request([*columns, "importance"])
+    except RuntimeError as exc:
+        logger.warning("Документооборот не принял columnSet importance: %s", str(exc)[:200])
+        root = request(columns)
     rows = parse_tasks(root)
     if only_open:
         return [row for row in rows if not row["executed"]]

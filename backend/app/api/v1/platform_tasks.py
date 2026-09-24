@@ -144,6 +144,38 @@ def reject(
         raise
 
 
+@router.post("/{task_id}/accept")
+def accept(
+    task_id: str,
+    body: PlatformTaskStatus | None = None,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return platform_tasks.review_task(
+            db, user_id=auth.user_id, task_id=task_id, action="accept", comment=(body.comment if body else "")
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise(exc)
+        raise
+
+
+@router.post("/{task_id}/rework")
+def rework(
+    task_id: str,
+    body: PlatformTaskStatus,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return platform_tasks.review_task(
+            db, user_id=auth.user_id, task_id=task_id, action="rework", comment=body.comment
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise(exc)
+        raise
+
+
 @router.post("/{task_id}/files")
 def upload_file(
     task_id: str,
@@ -195,6 +227,9 @@ async def platform_task_scheduler() -> None:
             sent = platform_tasks.notify_overdue(db)
             if sent:
                 logger.info("platform tasks: overdue notifications for %s tasks", sent)
+            returned = platform_tasks.return_unreviewed(db)
+            if returned:
+                logger.info("platform tasks: %s tasks returned to rework (review expired)", returned)
         except Exception:
             logger.exception("platform task scheduler tick failed")
             stale = False

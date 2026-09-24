@@ -594,6 +594,7 @@ export function App(): React.JSX.Element {
     })
     try {
       const extracted = await api.extractRegulationFunctions(result.regulationId, position, department)
+      setRegulation(result)
       setRoleMatch(extracted)
       setView({ kind: 'rolematch' })
     } catch (err) {
@@ -864,11 +865,16 @@ export function App(): React.JSX.Element {
             if (!regulation || !roleMatch) {
               throw new Error('Нет данных регламента или проверки функций')
             }
+            const regulationId = roleMatch.regulationId || regulation.regulationId
+            const runId = roleMatch.runId
+            if (!regulationId || !runId) {
+              throw new Error('Нет данных регламента или проверки функций')
+            }
             setBusy(true)
             try {
               const updated = await api.decideRoleMatch(
-                regulation.regulationId,
-                roleMatch.runId,
+                regulationId,
+                runId,
                 matchId,
                 status
               )

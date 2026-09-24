@@ -7,16 +7,22 @@ import { DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT } from './useTabChromeLayout'
 import { KpiDayPicker } from '../../pages/KpiRangePicker'
 import { useAssignmentRegistry } from '../../workplace/useAssignmentRegistry'
 import { isDueWithinDays } from '../../workplace/assignmentRegistryMappers'
+import { selectRegistryReportRows } from '../../workplace/registryReportRows'
 import {
   fetchAssignmentLines,
   fetchAssignmentLinesBatch,
   mergeRowsWithLines,
   readCachedLines
 } from '../../workplace/assignmentRegistryLazyLoad'
-import { selectRegistryReportRows } from '../../workplace/registryReportRows'
-import type { AssignmentRegistryLine, AssignmentRegistryTileId } from '../../workplace/assignmentRegistryTypes'
+import type {
+  AssignmentRegistryLine,
+  AssignmentRegistryRow,
+  AssignmentRegistryTileId
+} from '../../workplace/assignmentRegistryTypes'
+import { toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { usePageSearch, valuesMatchPageSearch } from '../../layout/pageSearchContext'
 import { canUseExtension } from '../../extensions/extensionRegistry'
-import { AssignmentsRegistryTable } from './AssignmentsRegistryTable'
+import { AssignmentsRegistryReportTable, AssignmentsRegistryTable } from './AssignmentsRegistryTable'
 import { AssignmentsRegistryDetailPanel } from './AssignmentsRegistryDetailPanel'
 import { AssignmentsRegistryCreateDialog } from './AssignmentsRegistryCreateDialog'
 import { useRuns } from '../../store/runs'
@@ -27,7 +33,49 @@ import './registryGrid.css'
 
 export const ASSIGNMENTS_REGISTRY_AI_CONTEXT = 'Расширение «Реестр поручений»'
 
-const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon'])
+const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon', 'report'])
+
+type RegistryColumnFilterKey = 'reporter' | 'secretary' | 'status' | 'manager'
+
+const REGISTRY_COLUMN_FILTERS: { id: RegistryColumnFilterKey; emptyLabel: string }[] = [
+  { id: 'reporter', emptyLabel: 'Кто доложит: все' },
+  { id: 'secretary', emptyLabel: 'Секретарь: все' },
+  { id: 'status', emptyLabel: 'Статус: все' },
+  { id: 'manager', emptyLabel: 'Руководитель: все' }
+]
+
+function emptyRegistryColumnFilters(): Record<RegistryColumnFilterKey, string> {
+  return { reporter: '', secretary: '', status: '', manager: '' }
+}
+
+function readRegistryColumnFilters(raw: unknown): Record<RegistryColumnFilterKey, string> {
+  const next = emptyRegistryColumnFilters()
+  if (!raw || typeof raw !== 'object') return next
+  const record = raw as Partial<Record<RegistryColumnFilterKey, string>>
+  for (const { id } of REGISTRY_COLUMN_FILTERS) {
+    const value = String(record[id] || '').trim()
+    if (value) next[id] = value
+  }
+  return next
+}
+
+function registryRowSearchValues(row: AssignmentRegistryRow): string[] {
+  return [
+    row.date,
+    row.number,
+    row.topic,
+    row.basis,
+    row.weeklyReportDate,
+    row.fullRemediationDue,
+    row.reporter,
+    row.secretary,
+    row.finalReportDate,
+    row.status,
+    row.organization,
+    row.manager,
+    ...row.lines.flatMap((line) => [line.text, line.executor, line.priority, line.due])
+  ]
+}
 
 const AI_REVIEW_PROMPT =
   'Проверь все незакрытые поручения в журнале АСТ00 за выбранный период: для каждого открытого поручения проверь наличие артефактов (файлов через onec.erp_assignments action=files) и оцени, есть ли реальные основания для закрытия. Сформируй список сомнительных и готовых к закрытию с кратким обоснованием.'
@@ -99,17 +147,28 @@ export function AssignmentsRegistryGridTab({
 
   const initialFilters = useMemo(() => {
     const range = defaultRange()
-    const fallback = { from: range.from, to: range.to, tile: 'all' as AssignmentRegistryTileId | 'all' }
+    const fallback = {
+      from: range.from,
+      to: range.to,
+      tile: 'all' as AssignmentRegistryTileId | 'all',
+      columns: emptyRegistryColumnFilters()
+    }
     try {
       const raw = sessionStorage.getItem(filtersKey)
       if (!raw) return fallback
-      const parsed = JSON.parse(raw) as { from?: string; to?: string; tile?: string }
+      const parsed = JSON.parse(raw) as {
+        from?: string
+        to?: string
+        tile?: string
+        columns?: unknown
+      }
       return {
         from: /^\d{4}-\d{2}-\d{2}$/.test(parsed.from || '') ? String(parsed.from) : fallback.from,
         to: /^\d{4}-\d{2}-\d{2}$/.test(parsed.to || '') ? String(parsed.to) : fallback.to,
         tile: TILE_FILTER_IDS.has(parsed.tile || '')
           ? (parsed.tile as AssignmentRegistryTileId)
-          : ('all' as const)
+          : ('all' as const),
+        columns: readRegistryColumnFilters(parsed.columns)
       }
     } catch {
       return fallback
@@ -120,10 +179,17 @@ export function AssignmentsRegistryGridTab({
   const [dateFrom, setDateFrom] = useState(initialFilters.from)
   const [dateTo, setDateTo] = useState(initialFilters.to)
   const [tileFilter, setTileFilter] = useState<AssignmentRegistryTileId | 'all'>(initialFilters.tile)
+  const [columnFilters, setColumnFilters] = useState(initialFilters.columns)
+  const { query: pageQuery, setQuery: setPageQuery } = usePageSearch()
 
-  const persistFilters = (from: string, to: string, tile: AssignmentRegistryTileId | 'all'): void => {
+  const persistFilters = (
+    from: string,
+    to: string,
+    tile: AssignmentRegistryTileId | 'all',
+    columns: Record<RegistryColumnFilterKey, string> = columnFilters
+  ): void => {
     try {
-      sessionStorage.setItem(filtersKey, JSON.stringify({ from, to, tile }))
+      sessionStorage.setItem(filtersKey, JSON.stringify({ from, to, tile, columns }))
     } catch {
       /* ignore */
     }
@@ -139,6 +205,13 @@ export function AssignmentsRegistryGridTab({
   const changeTileFilter = (next: AssignmentRegistryTileId | 'all'): void => {
     setTileFilter(next)
     persistFilters(dateFrom, dateTo, next)
+  }
+  const changeColumnFilter = (key: RegistryColumnFilterKey, value: string): void => {
+    setColumnFilters((current) => {
+      const next = { ...current, [key]: value }
+      persistFilters(dateFrom, dateTo, tileFilter, next)
+      return next
+    })
   }
 
   const selectionKey = `orch-registry-selection:${user.id || 'default'}`
@@ -183,13 +256,62 @@ export function AssignmentsRegistryGridTab({
 
   const tiles = useMemo(() => buildRegistryTiles(rowsHydrated, aiHint), [rowsHydrated, aiHint])
 
+  const columnFilterOptions = useMemo(
+    () => ({
+      reporter: toFilterOptions(uniqueFilterValues(rowsHydrated.map((row) => row.reporter))),
+      secretary: toFilterOptions(uniqueFilterValues(rowsHydrated.map((row) => row.secretary))),
+      status: toFilterOptions(uniqueFilterValues(rowsHydrated.map((row) => row.status))),
+      manager: toFilterOptions(uniqueFilterValues(rowsHydrated.map((row) => row.manager)))
+    }),
+    [rowsHydrated]
+  )
+
   const filteredRows = useMemo(() => {
-    if (tileFilter === 'all') return rowsHydrated
-    if (tileFilter === 'done') return rowsHydrated.filter((row) => !row.open)
-    if (tileFilter === 'overdue') return rowsHydrated.filter((row) => row.open && row.overdue)
-    if (tileFilter === 'due_soon') return rowsHydrated.filter((row) => row.open && isDueWithinDays(row, 3))
-    return rowsHydrated
-  }, [rowsHydrated, tileFilter])
+    let list = rowsHydrated
+    if (tileFilter === 'report') list = selectRegistryReportRows(list).all
+    else if (tileFilter === 'done') list = list.filter((row) => !row.open)
+    else if (tileFilter === 'overdue') list = list.filter((row) => row.open && row.overdue)
+    else if (tileFilter === 'due_soon') list = list.filter((row) => row.open && isDueWithinDays(row, 3))
+
+    for (const { id } of REGISTRY_COLUMN_FILTERS) {
+      const picked = columnFilters[id]
+      if (!picked) continue
+      list = list.filter((row) => String(row[id] || '').trim() === picked)
+    }
+
+    if (pageQuery.trim()) {
+      list = list.filter((row) => valuesMatchPageSearch(registryRowSearchValues(row), pageQuery))
+    }
+    return list
+  }, [rowsHydrated, tileFilter, columnFilters, pageQuery])
+
+  const [reportLinesLoading, setReportLinesLoading] = useState(false)
+  useEffect(() => {
+    if (tileFilter !== 'report') return
+    const refKeys = filteredRows
+      .filter((row) => row.refKey && !row.lines.length)
+      .map((row) => row.refKey)
+    if (!refKeys.length) return
+    let cancelled = false
+    setReportLinesLoading(true)
+    void fetchAssignmentLinesBatch(refKeys)
+      .then((batch) => {
+        if (cancelled) return
+        const patch: Record<string, AssignmentRegistryLine[]> = {}
+        for (const [refKey, lines] of batch) {
+          if (lines.length) patch[refKey] = lines
+        }
+        if (Object.keys(patch).length) {
+          setLineOverlay((current) => ({ ...current, ...patch }))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReportLinesLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tileFilter, filteredRows])
 
   const filterRowCountLabel = useMemo((): string | null => {
     if (!firstRowReady && !filteredRows.length) return null
@@ -205,13 +327,15 @@ export function AssignmentsRegistryGridTab({
     changeTileFilter(tileFilter === id ? 'all' : (id as AssignmentRegistryTileId))
   }
 
-  const activeTileId = tileFilter === 'all' ? null : tileFilter
+  const activeTileId = tileFilter === 'all' || tileFilter === 'report' ? null : tileFilter
 
   const resetRegistryFilters = (): void => {
     const next = defaultRange()
     setDateFrom(next.from)
     setDateTo(next.to)
     setTileFilter('all')
+    setColumnFilters(emptyRegistryColumnFilters())
+    setPageQuery('')
     setSelectedId(null)
     try {
       sessionStorage.removeItem(filtersKey)
@@ -397,7 +521,12 @@ export function AssignmentsRegistryGridTab({
       }
       widgets={{
         filters: (
-          <div className="registry-filter-strip" role="toolbar" aria-label="Фильтры реестра поручений">
+          <div className="registry-filter-panel">
+          <div
+            className="registry-filter-strip registry-filter-one-row"
+            role="toolbar"
+            aria-label="Фильтры реестра поручений"
+          >
             <div className="registry-date-filters">
               <KpiDayPicker
                 prefixLabel="С"
@@ -416,6 +545,15 @@ export function AssignmentsRegistryGridTab({
               </button>
               <button
                 type="button"
+                className={`today-filter-layout-btn registry-report-filter-btn${tileFilter === 'report' ? ' is-active' : ''}`}
+                aria-pressed={tileFilter === 'report'}
+                title="Таблица для отчёта: просроченные, закрытые за неделю и срок в 3 рабочих дня, с мероприятиями"
+                onClick={() => changeTileFilter(tileFilter === 'report' ? 'all' : 'report')}
+              >
+                Отчёт
+              </button>
+              <button
+                type="button"
                 className="today-filter-layout-btn registry-create-open-btn"
                 title="Создать поручение в журнале АСТ00"
                 onClick={() => {
@@ -426,6 +564,24 @@ export function AssignmentsRegistryGridTab({
                 <Plus size={14} aria-hidden /> Создать
               </button>
             </div>
+            <div className="registry-column-filters-inline" aria-label="Фильтры по столбцам">
+              {REGISTRY_COLUMN_FILTERS.map((field) => (
+                <select
+                  key={field.id}
+                  className="wp-select registry-column-filter"
+                  value={columnFilters[field.id]}
+                  aria-label={field.emptyLabel}
+                  onChange={(event) => changeColumnFilter(field.id, event.target.value)}
+                >
+                  <option value="">{field.emptyLabel}</option>
+                  {columnFilterOptions[field.id].map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              ))}
+            </div>
             {filterRowCountLabel ? (
               <span className="registry-filter-row-count" aria-live="polite">
                 {filterRowCountLabel}
@@ -435,6 +591,7 @@ export function AssignmentsRegistryGridTab({
             <button type="button" className="spec-filter-reset" onClick={resetRegistryFilters}>
               Сбросить
             </button>
+          </div>
           </div>
         ),
         main: (
@@ -450,16 +607,29 @@ export function AssignmentsRegistryGridTab({
                 Загружено {rows.length}… подгружаем следующие поручения
               </p>
             ) : null}
-            <AssignmentsRegistryTable
-              rows={filteredRows}
-              loading={(!firstRowReady && !error) || (loading && !rows.length)}
-              selectedId={selectedId}
-              stateKey={tableStateKey}
-              onSelectRow={(row) => pickRow(row)}
-              emptyText={
-                tileFilter !== 'all' ? 'Нет поручений по выбранной плитке' : 'Нет поручений за период'
-              }
-            />
+            {tileFilter === 'report' ? (
+              <AssignmentsRegistryReportTable
+                rows={filteredRows}
+                linesLoading={reportLinesLoading}
+                selectedId={selectedId}
+                onSelectRow={(row) => pickRow(row)}
+              />
+            ) : (
+              <AssignmentsRegistryTable
+                rows={filteredRows}
+                loading={(!firstRowReady && !error) || (loading && !rows.length)}
+                selectedId={selectedId}
+                stateKey={tableStateKey}
+                onSelectRow={(row) => pickRow(row)}
+                emptyText={
+                  pageQuery.trim() || Object.values(columnFilters).some(Boolean)
+                    ? 'Нет поручений по фильтрам и поиску'
+                    : tileFilter !== 'all'
+                      ? 'Нет поручений по выбранной плитке'
+                      : 'Нет поручений за период'
+                }
+              />
+            )}
           </div>
         ),
         side: (

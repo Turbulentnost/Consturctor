@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -28,6 +29,12 @@ from app.services.sessions import DEFAULT_CLIENT, new_session_id, normalize_clie
 from tools.onec.password import verify_password
 
 logger = logging.getLogger(__name__)
+
+# Подсказки ФИО на экране входа — не дергать erp_pm на каждый символ.
+_FIO_LIST_CACHE_TTL_SEC = 120.0
+_fio_list_cache: dict[str, tuple[float, list[str]]] = {}
+_erp_reachable_cache: tuple[float, bool] | None = None
+_ERP_REACHABLE_CACHE_TTL_SEC = 12.0
 
 
 def _trace(message: str) -> None:
@@ -114,13 +121,19 @@ async def _local_erp_reachable() -> bool:
 
 async def _local_erp_reachable_quick(max_sec: float = 8.0) -> bool:
     """Short probe for login routing to gateway — must not block on full ODBC timeout."""
+    global _erp_reachable_cache
+    now = time.monotonic()
+    if _erp_reachable_cache is not None and now - _erp_reachable_cache[0] < _ERP_REACHABLE_CACHE_TTL_SEC:
+        return _erp_reachable_cache[1]
     try:
-        return await asyncio.wait_for(asyncio.to_thread(ping), timeout=max(2.0, max_sec))
+        ok = await asyncio.wait_for(asyncio.to_thread(ping), timeout=max(2.0, max_sec))
     except (TimeoutError, ErpSqlError):
-        return False
+        ok = False
     except Exception:
         logger.warning("Unexpected ERP quick ping error", exc_info=True)
-        return False
+        ok = False
+    _erp_reachable_cache = (now, bool(ok))
+    return bool(ok)
 
 
 def _user_out_from_gateway_payload(raw: dict[str, Any]) -> UserOut:
@@ -399,25 +412,37 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
 
 
 async def list_user_fios(search: str | None = None, *, limit: int = 200) -> list[str]:
+    cache_key = _fio_key(f"{search or ''}|{limit}")
+    now = time.monotonic()
+    cached = _fio_list_cache.get(cache_key)
+    if cached is not None and now - cached[0] < _FIO_LIST_CACHE_TTL_SEC:
+        return list(cached[1])
+
     if _erp_sql_bypass_enabled():
         fio = settings.erp_login.strip()
         if not fio:
             return []
         if search and _fio_key(search) not in _fio_key(fio):
             return []
-        return [fio]
+        items = [fio]
+        _fio_list_cache[cache_key] = (now, items)
+        return items
     gateway = _auth_gateway_base()
     if gateway and not await _local_erp_reachable_quick():
         items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit)
         if items or search:
+            _fio_list_cache[cache_key] = (now, items)
             return items
     try:
-        return await asyncio.to_thread(search_user_fios, search, limit)
+        items = await asyncio.to_thread(search_user_fios, search, limit)
+        _fio_list_cache[cache_key] = (now, items)
+        return items
     except ErpSqlError as exc:
         logger.exception("ERP SQL error listing users")
         if gateway:
             items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit)
             if items:
+                _fio_list_cache[cache_key] = (now, items)
                 return items
         raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc
 

@@ -8,6 +8,7 @@ import { SpecPill } from '../../workplace/specV04Components'
 import { type SpecKnowledgeRow } from '../../workplace/specV04DemoData'
 import { openHttpUrl } from '../../workplace/workplaceNav'
 import { GridFilterBar } from './gridFilters'
+import { usePageSearch } from '../../layout/pageSearchContext'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 
@@ -22,7 +23,7 @@ export function KnowledgeGridTab({
   const [openHint, setOpenHint] = useState('')
   const [opening, setOpening] = useState(false)
   const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
-  const [query, setQuery] = useState('')
+  const { query, setQuery } = usePageSearch()
   const [tileFilter, setTileFilter] = useState('all')
 
   useEffect(() => {

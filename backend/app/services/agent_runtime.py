@@ -235,6 +235,7 @@ def _run_with_playbook(
             title=workflow.title or "",
             steps=steps if steps else None,
             chain=str(playbook.get("chain") or ""),
+            attachments=_run_attachments_meta(db, workflow_id=workflow.id, run_id=run_id),
         ),
         draft=playbook if steps else None,
     )
@@ -317,6 +318,39 @@ def _run_with_playbook(
         "tool": "cursor",
         "tool_result": {"tools": list(phase.successful_live_tools or [])},
     }
+
+
+def _run_attachments_meta(db: Session, *, workflow_id: str, run_id: str) -> list[dict[str, Any]]:
+    """Метаданные вложений этого запуска (без content): агент видит file_id в промпте."""
+    from app.models.workflow import WorkflowFile
+    from app.services.workflow_files import SCOPE_RUN_ATTACHMENT
+
+    if not (run_id or "").strip():
+        return []
+    rows = (
+        db.query(
+            WorkflowFile.id,
+            WorkflowFile.filename,
+            WorkflowFile.mime_type,
+            WorkflowFile.size,
+        )
+        .filter(
+            WorkflowFile.workflow_id == workflow_id,
+            WorkflowFile.run_id == run_id,
+            WorkflowFile.scope == SCOPE_RUN_ATTACHMENT,
+        )
+        .order_by(WorkflowFile.created_at.asc(), WorkflowFile.filename.asc())
+        .all()
+    )
+    return [
+        {
+            "file_id": item.id,
+            "filename": item.filename or "file",
+            "mime_type": item.mime_type or "",
+            "size": int(item.size or 0),
+        }
+        for item in rows
+    ]
 
 
 def _playbook_plan_text(playbook: dict[str, Any], workflow: Workflow) -> str:

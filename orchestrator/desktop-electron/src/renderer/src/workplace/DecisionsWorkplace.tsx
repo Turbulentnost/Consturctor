@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { usePageSearchOptional } from '../layout/pageSearchContext'
 import { StandardTabChrome, type ChromeTileSpec } from '../tabs/grid/TabChromeGrid'
 import { DEFAULT_DECISIONS_LAYOUT } from '../tabs/grid/useTabChromeLayout'
 import { api } from '../api/client'
@@ -480,7 +481,10 @@ export function DecisionsTab({
   userId?: string
 }): React.JSX.Element {
   const today = todayKey()
-  const [query, setQuery] = useState('')
+  const pageSearch = usePageSearchOptional()
+  const [localQuery, setLocalQuery] = useState('')
+  const query = inGridShell && pageSearch ? pageSearch.query : localQuery
+  const setQuery = inGridShell && pageSearch ? pageSearch.setQuery : setLocalQuery
   const [processId, setProcessId] = useState('')
   const [status, setStatus] = useState<DecisionStatusFilter>('')
   const [due, setDue] = useState<DueFilter>('all')

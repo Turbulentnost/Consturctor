@@ -17,6 +17,7 @@ import {
   saveOutlookAttachment
 } from '../../utils/outlookMailActions'
 import { openAttachmentExternally } from '../../utils/mailAttachmentPreview'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
 import { useTodayWidgetExpanded } from './TodayWidgetExpandContext'
 import { TodayFileIcon } from './todayFileIcon'
 
@@ -32,7 +33,7 @@ function senderInitials(name: string): string {
 }
 
 function mailPreview(row: SpecMailRow): string {
-  return row.preview || row.body?.replace(/\s+/g, ' ').slice(0, 140) || row.subject
+  return row.preview || row.body?.replace(/\s+/g, ' ').slice(0, 140) || decodeMimeHeader(row.subject)
 }
 
 function TodayCellText({ text }: { text: string }): React.JSX.Element {
@@ -113,11 +114,11 @@ function OutlookReadingPane({
       <div className="today-outlook-reading-card">
         <header className="today-outlook-reading-head">
           <div className="today-outlook-avatar" aria-hidden>
-            {senderInitials(row.sender)}
+            {senderInitials(decodeMimeHeader(row.sender))}
           </div>
           <div className="today-outlook-reading-meta">
             <div className="today-outlook-reading-title-row">
-              <strong className="today-outlook-sender">{row.sender}</strong>
+              <strong className="today-outlook-sender">{decodeMimeHeader(row.sender)}</strong>
               <span className="today-outlook-when">{row.receivedLabel || row.time}</span>
             </div>
             {row.to ? (
@@ -131,7 +132,7 @@ function OutlookReadingPane({
             </div>
           </div>
         </header>
-        <h2 className="today-outlook-subject">{row.subject}</h2>
+        <h2 className="today-outlook-subject">{decodeMimeHeader(row.subject)}</h2>
         {attachments.length ? (
           <div className="today-outlook-attachments-wrap">
             <div className="today-outlook-attachments-label">
@@ -295,7 +296,7 @@ export function TodayOutlookMailPanel({
             <TodayCellText text={mailPartyLabel(row)} />
           </td>
           <td>
-            <TodayCellText text={row.subject} />
+            <TodayCellText text={decodeMimeHeader(row.subject)} />
           </td>
           <td>
             <TodayCellText text={row.time} />
@@ -398,7 +399,7 @@ export function TodayOutlookMailPanel({
                         </span>
                         <span className="today-outlook-list-sender">{mailPartyLabel(row)}</span>
                         <span className="today-outlook-list-subject-wrap">
-                          <span className="today-outlook-list-subject">{row.subject}</span>
+                          <span className="today-outlook-list-subject">{decodeMimeHeader(row.subject)}</span>
                           <span className="today-outlook-list-preview">{mailPreview(row)}</span>
                         </span>
                         <span className="today-outlook-list-time">{row.time}</span>

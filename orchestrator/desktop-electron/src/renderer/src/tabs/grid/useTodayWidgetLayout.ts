@@ -218,6 +218,63 @@ function writePersist(userId: string, state: TodayWidgetLayoutPersist): void {
   }
 }
 
+const LEGACY_WIDGET_VISIBILITY_KEY = 'orch-today-widgets-v1'
+
+function legacyVisibilityStorageKey(userId: string): string {
+  return `${LEGACY_WIDGET_VISIBILITY_KEY}:${userId.trim() || 'default'}`
+}
+
+function visibilityRecordFromPartial(
+  visible: Partial<Record<TodayWidgetId, boolean>>
+): Record<TodayWidgetId, boolean> {
+  const out = Object.fromEntries(TODAY_WIDGET_IDS.map((id) => [id, true])) as Record<TodayWidgetId, boolean>
+  for (const id of TODAY_WIDGET_IDS) {
+    if (visible[id] === false) out[id] = false
+  }
+  return out
+}
+
+function partialFromVisibilityRecord(
+  visibility: Record<TodayWidgetId, boolean>
+): Partial<Record<TodayWidgetId, boolean>> {
+  const next: Partial<Record<TodayWidgetId, boolean>> = {}
+  for (const id of TODAY_WIDGET_IDS) {
+    if (visibility[id] === false) next[id] = false
+  }
+  return next
+}
+
+function mergeLegacyWidgetVisibility(userId: string, state: TodayWidgetLayoutPersist): TodayWidgetLayoutPersist {
+  try {
+    const raw = localStorage.getItem(legacyVisibilityStorageKey(userId))
+    if (!raw) return state
+    const parsed = JSON.parse(raw) as Partial<Record<string, boolean>>
+    localStorage.removeItem(legacyVisibilityStorageKey(userId))
+    const merged = { ...sanitizeFlagMap(state.visible), ...sanitizeFlagMap(parsed) }
+    const next = { ...state, visible: merged }
+    writePersist(userId, next)
+    return next
+  } catch {
+    return state
+  }
+}
+
+/** Settings → same store as «Сегодня» layout (field `visible`). */
+export function readTodayWidgetVisibilitySettings(userId: string): Record<TodayWidgetId, boolean> {
+  const state = mergeLegacyWidgetVisibility(userId, readPersist(userId))
+  return visibilityRecordFromPartial(state.visible || {})
+}
+
+export function writeTodayWidgetVisibilitySettings(
+  userId: string,
+  visibility: Record<TodayWidgetId, boolean>
+): void {
+  const state = readPersist(userId)
+  writePersist(userId, { ...state, visible: partialFromVisibilityRecord(visibility) })
+}
+
+export const TODAY_WIDGET_VISIBILITY_EVENT = 'orchestrator:today-widgets-changed'
+
 function layoutGeomEqual(left: LayoutItem[], right: LayoutItem[]): boolean {
   if (left.length !== right.length) return false
   const rightById = new Map(right.map((item) => [item.i, item]))
@@ -271,6 +328,17 @@ export function useTodayWidgetLayout(userId: string): {
     setEditModeState(false)
   }, [userId])
 
+  useEffect(() => {
+    const reload = (): void => {
+      const next = readPersist(userId)
+      setPersist(next)
+      layoutRef.current = next.layout
+      lockedRef.current = next.locked
+    }
+    window.addEventListener(TODAY_WIDGET_VISIBILITY_EVENT, reload)
+    return () => window.removeEventListener(TODAY_WIDGET_VISIBILITY_EVENT, reload)
+  }, [userId])
+
   const layout = persist.layout
   const locked = persist.locked
 
@@ -289,6 +357,10 @@ export function useTodayWidgetLayout(userId: string): {
   )
 
   const visible = persist.visible || {}
+
+  const notifyVisibilityChanged = useCallback(() => {
+    window.dispatchEvent(new CustomEvent(TODAY_WIDGET_VISIBILITY_EVENT))
+  }, [])
   const color = persist.color || {}
 
   const onLayoutChange = useCallback(
@@ -326,8 +398,9 @@ export function useTodayWidgetLayout(userId: string): {
     (id: TodayWidgetId) => {
       const nextVisible = { ...visible, [id]: visible[id] === false }
       persistState({ layout, locked, visible: nextVisible, color })
+      notifyVisibilityChanged()
     },
-    [color, layout, locked, persistState, visible]
+    [color, layout, locked, notifyVisibilityChanged, persistState, visible]
   )
 
   const restoreWidget = useCallback(
@@ -335,8 +408,9 @@ export function useTodayWidgetLayout(userId: string): {
       const nextVisible = { ...visible }
       delete nextVisible[id]
       persistState({ layout, locked, visible: nextVisible, color })
+      notifyVisibilityChanged()
     },
-    [color, layout, locked, persistState, visible]
+    [color, layout, locked, notifyVisibilityChanged, persistState, visible]
   )
 
   const setWidgetColor = useCallback(
@@ -355,7 +429,8 @@ export function useTodayWidgetLayout(userId: string): {
       visible: { ...DEFAULT_TODAY_WIDGET_VISIBLE },
       color: {}
     })
-  }, [persistState])
+    notifyVisibilityChanged()
+  }, [notifyVisibilityChanged, persistState])
 
   const layoutWithStatic = useMemo(() => {
     const flagged = applyTodayLayoutStaticFlags(layout, editMode, locked)

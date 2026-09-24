@@ -3,6 +3,8 @@ import type { SpecMailRow, SpecPillTone, SpecProcessRow, SpecProjectRow, SpecTas
 import { parseIso, sameDay } from '../utils/calendar'
 import { personNameMatches } from './turboAssigneeMatch'
 import { docflowTaskKind } from './docflowTaskKind'
+import { decodeMimeHeader } from '../utils/mimeHeader'
+import { parseOnecImportance } from './onecTaskImportance'
 
 function toneForStatus(text: string): SpecPillTone {
   const key = text.toLowerCase()
@@ -108,6 +110,7 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
     taskNumber: number || undefined,
     step: step || undefined,
     taskName: taskName || undefined,
+    importance: parseOnecImportance(String(task.importance || task.importance_name || '')) || undefined,
     docflowKind: isDocflow ? docflowTaskKind(step, taskName, String(task.kind || '')) : undefined,
     targetId: String(task.target_id || task.targetId || '').trim() || undefined
   }
@@ -151,7 +154,7 @@ export function turboProjectToProcessRow(project: SpecProjectRow): SpecProcessRo
 export function mailRowToProcessRow(mail: SpecMailRow, index: number): SpecProcessRow {
   return {
     id: `mail:${mail.id || index}`,
-    name: mail.subject,
+    name: decodeMimeHeader(mail.subject),
     code: `ML-${String(index + 1).padStart(2, '0')}`,
     type: 'Письмо',
     typeTone: 'orange',
@@ -172,7 +175,7 @@ export function meetingToProcessRow(meeting: {
 }): SpecProcessRow {
   return {
     id: `meet:${meeting.id}:${meeting.start || ''}`,
-    name: meeting.subject,
+    name: decodeMimeHeader(meeting.subject),
     code: 'MTG',
     type: 'Совещание',
     typeTone: 'purple',
@@ -285,8 +288,8 @@ export function isOutlookMailFromMe(row: SpecMailRow): boolean {
 export function mailPartyLabel(row: SpecMailRow): string {
   const sent = isOutlookMailFromMe(row)
   const to = (row.to || '').trim()
-  if (sent && to) return to
-  return row.sender
+  if (sent && to) return decodeMimeHeader(to)
+  return decodeMimeHeader(row.sender)
 }
 
 /** Compact deadline for narrow today tiles: `16.09`, not a clipped ISO string. */
@@ -456,7 +459,7 @@ export function turboProjectToRow(item: Record<string, unknown>, actorFio = ''):
 }
 
 export function outlookMessageToMailRow(msg: Record<string, unknown>, index: number): SpecMailRow {
-  const subject = String(msg.subject || 'Без темы')
+  const subject = decodeMimeHeader(String(msg.subject || 'Без темы'))
   const rawTime = String(msg.datetime || msg.received_at || msg.sent_at || '')
   const direction = String(msg.direction || 'inbox')
   const entryId = String(msg.entry_id ?? msg.uid ?? index)
@@ -471,13 +474,14 @@ export function outlookMessageToMailRow(msg: Record<string, unknown>, index: num
     id: entryId,
     entryId,
     channel: 'outlook',
-    sender: String(msg.sender || msg.from || '—'),
-    to: to || undefined,
+    sender: decodeMimeHeader(String(msg.sender || msg.from || '—')),
+    to: to ? decodeMimeHeader(to) : undefined,
     subject,
     category: direction === 'sent' ? 'Отправленные' : 'Входящие',
     catTone: 'blue',
     link: attachmentNames.length ? `Вложений: ${attachmentNames.length}` : '—',
     time: rawTime,
+    receivedAt: rawTime || undefined,
     priority: unread ? 'Высокий' : 'Средний',
     priTone: unread ? 'red' : 'orange',
     status: direction === 'sent' ? 'Отправлено' : inboxStatus,
@@ -485,12 +489,13 @@ export function outlookMessageToMailRow(msg: Record<string, unknown>, index: num
     assignee: '—',
     unread,
     bodyPreview: bodyPreview || undefined,
-    attachmentNames: attachmentNames.length ? attachmentNames : undefined
+    attachmentNames: attachmentNames.length ? attachmentNames : undefined,
+    direction: direction === 'sent' ? 'sent' : 'inbox'
   }
 }
 
 export function imapMessageToMailRow(msg: Record<string, unknown>, index: number): SpecMailRow {
-  const subject = String(msg.subject || 'Без темы')
+  const subject = decodeMimeHeader(String(msg.subject || 'Без темы'))
   const uidRaw = Number(msg.uid)
   const uid = Number.isFinite(uidRaw) && uidRaw > 0 ? uidRaw : 0
   const messageId = String(msg.message_id || msg.messageId || '').trim()
@@ -500,18 +505,20 @@ export function imapMessageToMailRow(msg: Record<string, unknown>, index: number
     imapUid: uid || undefined,
     messageId: messageId || undefined,
     channel: 'imap',
-    sender: String(msg.from || msg.sender || '—'),
+    sender: decodeMimeHeader(String(msg.from || msg.sender || '—')),
     subject,
     category: 'Входящие',
     catTone: 'blue',
     link: '—',
     time: String(msg.date || msg.received_at || ''),
+    receivedAt: String(msg.date || msg.received_at || '') || undefined,
     priority: unread ? 'Высокий' : 'Средний',
     priTone: unread ? 'red' : 'orange',
     status: unread ? 'Непрочитано' : 'К обработке',
     stTone: unread ? 'orange' : 'blue',
     assignee: '—',
-    unread
+    unread,
+    direction: 'inbox'
   }
 }
 

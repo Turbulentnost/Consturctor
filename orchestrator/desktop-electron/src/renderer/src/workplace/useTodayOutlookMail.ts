@@ -70,6 +70,7 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
             const row = outlookMessageToMailRow(msg, index)
             return {
               ...row,
+              receivedAt: String(msg.datetime || msg.received_at || msg.sent_at || row.receivedAt || row.time),
               time: formatMailTime(String(msg.datetime || msg.received_at || msg.sent_at || row.time)),
               receivedLabel: formatMailReceivedLabel(
                 String(msg.datetime || msg.received_at || msg.sent_at || row.time)

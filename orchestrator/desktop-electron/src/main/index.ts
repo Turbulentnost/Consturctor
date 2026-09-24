@@ -1,4 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
+import { spawn } from 'node:child_process'
 import { join, basename, dirname, extname } from 'node:path'
 
 const DESKTOP_APP_NAME = 'Orchestrator'
@@ -460,12 +461,16 @@ async function backendBasesForRequest(opts: RequestOptions): Promise<string[]> {
   const primary = CONFIG.backendUrl.replace(/\/+$/, '')
   // Login / FIO search always via configured backend (loopback); gateway proxy is in backend/.env.
   if (pathIsAuthApi(opts.path)) return [primary]
-  // Agent library: JWT must match the backend that issued it (LAN vs 127.0.0.1).
-  // Local backend first only when BACKEND_URL is already loopback; LAN → gateway only (404 → fallback).
+  // Agent library: route often exists only on local backend while BACKEND_URL points at LAN gateway.
+  // Prefer local when healthy; on 401/403 (JWT host mismatch) fall through to primary.
   if (!app.isPackaged && pathIsAgentLibraryApi(opts.path)) {
     if (isLoopback(primary)) {
       await ensureLocalBackend(LOCAL_BACKEND)
       return [primary]
+    }
+    const localUp = await pingBackendHealth(LOCAL_BACKEND, 800)
+    if (localUp) {
+      return [LOCAL_BACKEND, primary]
     }
     return [primary]
   }
@@ -825,6 +830,39 @@ async function handleFetchDataUrl(
     return { ok: true, dataUrl: `data:${mime};base64,${buffer.toString('base64')}` }
   } catch {
     return { ok: false, error: 'Не удалось загрузить изображение' }
+  }
+}
+
+const FETCH_BINARY_MAX_BYTES = 50 * 1024 * 1024
+
+/** Fetch arbitrary bytes from backend (docx/pdf/etc.) without MIME sniffing — for in-app viewers. */
+async function handleFetchBinary(
+  _evt: unknown,
+  opts: { url: string; token?: string | null; maxBytes?: number }
+): Promise<{ ok: boolean; base64?: string; contentType?: string; size?: number; error?: string }> {
+  const raw = String(opts?.url || '').trim()
+  if (!raw) return { ok: false, error: 'Нет ссылки на файл' }
+  const url = absoluteBackendUrl(raw)
+  const headers: Record<string, string> = {}
+  if (opts.token) headers.Authorization = `Bearer ${opts.token}`
+  const limit =
+    typeof opts.maxBytes === 'number' && opts.maxBytes > 0
+      ? Math.min(opts.maxBytes, FETCH_BINARY_MAX_BYTES)
+      : FETCH_BINARY_MAX_BYTES
+  try {
+    const response = await fetch(url, { headers })
+    if (!response.ok) return { ok: false, error: `Ошибка загрузки (${response.status})` }
+    const buffer = Buffer.from(await response.arrayBuffer())
+    if (buffer.length > limit) {
+      return { ok: false, error: 'Файл слишком большой для просмотра' }
+    }
+    const contentType = (response.headers.get('content-type') || 'application/octet-stream')
+      .split(';')[0]
+      .trim()
+      .toLowerCase()
+    return { ok: true, base64: buffer.toString('base64'), contentType, size: buffer.length }
+  } catch {
+    return { ok: false, error: 'Не удалось загрузить файл' }
   }
 }
 
@@ -1221,6 +1259,7 @@ function registerMainIpcHandlers(): void {
   ipcHandle('api:request', handleRequest)
   ipcHandle('api:upload', handleUpload)
   ipcHandle('api:fetchDataUrl', handleFetchDataUrl)
+  ipcHandle('api:fetchBinary', handleFetchBinary)
   ipcHandle('api:download', handleDownload)
   ipcHandle('api:saveLocalFile', handleSaveLocalFile)
   ipcHandle('api:exportPdf', handleExportPdf)
@@ -1281,6 +1320,18 @@ function registerMainIpcHandlers(): void {
     const win = BrowserWindow.getFocusedWindow()
     const result = await dialog.showOpenDialog(win!, options)
     return result.canceled ? [] : result.filePaths
+  })
+  ipcHandle('shell:focusOutlook', async () => {
+    if (process.platform !== 'win32') {
+      return { ok: false, error: 'Outlook открывается только в Windows' }
+    }
+    const child = spawn('cmd.exe', ['/c', 'start', '', 'outlook'], {
+      detached: true,
+      windowsHide: true,
+      stdio: 'ignore'
+    })
+    child.unref()
+    return { ok: true }
   })
   ipcHandle('shell:openPath', async (_evt, filePath: string) => {
     const target = String(filePath || '').trim()

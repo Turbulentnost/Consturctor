@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { PAGE_SEARCH_PLACEHOLDER, usePageSearch } from './pageSearchContext'
 import { Sidebar, type PageKey, type SidebarNavItem } from '../components/Sidebar'
 import { PAGE_LABELS } from '../components/Sidebar'
 import type { ChatThread, DirectoryUser } from '../api/types'
@@ -74,6 +75,9 @@ export function OrchGridShell({
   const displayTitle = isToday ? todayGreeting(user.fio || '') : title
   const displaySub = isToday ? meta?.subtitle || '' : meta?.subtitle || ''
   const gridMods = [gridClassName, subpage ? 'orch-grid-subpage' : ''].filter(Boolean).join(' ')
+  const pageSearch = usePageSearch()
+  const searchPlaceholder =
+    PAGE_SEARCH_PLACEHOLDER[activeKey] || 'Поиск на открытой странице…'
 
   return (
     <div className="orch-grid-frame">
@@ -113,7 +117,13 @@ export function OrchGridShell({
           <div className="orch-grid-search" role="search">
             <div className="global-search">
               <span className="global-search-icon" aria-hidden />
-              <input placeholder="Поиск по процессам, документам, задачам, проектам…" aria-label="Поиск" />
+              <input
+                type="search"
+                value={pageSearch.query}
+                placeholder={searchPlaceholder}
+                aria-label="Поиск на странице"
+                onChange={(event) => pageSearch.setQuery(event.target.value)}
+              />
             </div>
           </div>
         </>

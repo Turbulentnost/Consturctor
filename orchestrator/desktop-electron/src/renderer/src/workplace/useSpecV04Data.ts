@@ -4,6 +4,7 @@ import type { BoardAgent, CalendarEvent, UserProfile } from '../api/types'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { SpecV04SourcesContext } from './SpecV04SourcesProvider'
+import { needsPlatformReview } from './platformTasks'
 import {
   buildTaskCatalog,
   filterTaskRows,
@@ -196,8 +197,14 @@ function taskTileValue(loading: boolean, count: number, dead?: boolean): string 
 export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
   const allPending = (data.erpLoading || data.turboLoading || data.tableLoading) && !data.allTaskCount
   const catalog = buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows, data.platformTasks)
-  const platformOpen = data.platformTasks.filter((row) => row.platform?.status === 'open')
-  const platformMine = platformOpen.filter((row) => row.platform?.role !== 'author').length
+  // В плитке всё, что ждёт действия: работа исполнителя и приёмка постановщика.
+  const platformOpen = data.platformTasks.filter(
+    (row) => row.platform && (row.platform.status === 'open' || row.platform.awaitingReview)
+  )
+  const platformMine = platformOpen.filter(
+    (row) => row.platform?.status === 'open' && row.platform?.role !== 'author'
+  ).length
+  const platformReview = platformOpen.filter((row) => row.platform && needsPlatformReview(row.platform)).length
   const platformFromMe = platformOpen.filter((row) => row.platform?.role !== 'assignee').length
   const overdue = filterTaskRows(
     catalog.rows,
@@ -259,7 +266,11 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
       id: 'platform',
       label: 'Платформа',
       value: taskTileValue(data.platformLoading && !data.platformTaskCount, platformOpen.length),
-      hint: platformOpen.length ? `${platformMine} мне · ${platformFromMe} от меня` : '',
+      hint: platformOpen.length
+        ? platformReview
+          ? `${platformReview} на приёмку · ${platformMine} мне`
+          : `${platformMine} мне · ${platformFromMe} от меня`
+        : '',
       tooltip: 'Задачи Оркестратора: поставленные вам и вами',
       tone: 'yellow'
     },

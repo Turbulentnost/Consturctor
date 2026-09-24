@@ -25,6 +25,14 @@ export interface PlatformTask {
   overdue: boolean
   /** Кем приходится текущему пользователю. */
   role: 'author' | 'assignee' | 'both'
+  /** Исполнитель закрыл задачу, постановщик ещё не принял результат. */
+  awaitingReview: boolean
+  /** До какого момента постановщику принять результат (конец дня). */
+  reviewDueAt: string
+  reviewOverdue: boolean
+  acceptedAt: string
+  /** Сколько раз задача уходила на доработку. */
+  reworkCount: number
   files: PlatformTaskFile[]
 }
 
@@ -70,6 +78,11 @@ export function parsePlatformTask(raw: unknown): PlatformTask {
     statusAt: str(item.status_at),
     overdue: Boolean(item.overdue),
     role: role === 'assignee' || role === 'both' ? role : 'author',
+    awaitingReview: Boolean(item.awaiting_review),
+    reviewDueAt: str(item.review_due_at),
+    reviewOverdue: Boolean(item.review_overdue),
+    acceptedAt: str(item.accepted_at),
+    reworkCount: Number(item.rework_count || 0),
     files: Array.isArray(item.files)
       ? item.files.map((file) => {
           const row = (file || {}) as Record<string, unknown>
@@ -104,33 +117,63 @@ export function isPlatformTaskFromMe(task: PlatformTask): boolean {
   return task.role === 'author' || task.role === 'both'
 }
 
+/** Постановщику пора принять результат или вернуть задачу на доработку. */
+export function needsPlatformReview(task: PlatformTask): boolean {
+  return task.awaitingReview && isPlatformTaskFromMe(task)
+}
+
+/** Задача ждёт исполнителя: работа или повторная доработка. */
+export function isPlatformTaskInWork(task: PlatformTask): boolean {
+  return task.status === 'open'
+}
+
 function firstLine(text: string): string {
   const line = text.trim().split('\n')[0]?.trim() || 'Задача'
   return line.length > 160 ? `${line.slice(0, 157)}…` : line
 }
 
+function platformStatusLabel(task: PlatformTask): string {
+  if (task.awaitingReview) {
+    return task.status === 'done' ? 'Ждёт приёмки' : 'Отклонена, ждёт приёмки'
+  }
+  if (task.status === 'open' && task.overdue) return 'Просрочена'
+  if (task.status === 'open' && task.reworkCount > 0) return 'На доработке'
+  return PLATFORM_STATUS_LABEL[task.status]
+}
+
+function platformStatusTone(task: PlatformTask): SpecPillTone {
+  if (task.awaitingReview) return task.reviewOverdue ? 'red' : 'orange'
+  if (task.status === 'done') return 'green'
+  if (task.status === 'rejected') return 'gray'
+  return task.overdue ? 'red' : 'blue'
+}
+
 export function platformTaskToRow(task: PlatformTask): SpecTaskRow {
-  const done = task.status === 'done'
-  const status = task.status === 'open' && task.overdue ? 'Просрочена' : PLATFORM_STATUS_LABEL[task.status]
-  const statusTone: SpecPillTone =
-    task.status === 'done' ? 'green' : task.status === 'rejected' ? 'gray' : task.overdue ? 'red' : 'blue'
+  const closed = !task.awaitingReview && task.status !== 'open'
   const mine = isPlatformTaskMine(task)
+  const review = needsPlatformReview(task)
+  // На приёмке срок задачи — конец дня у постановщика, а не исходный срок исполнителя.
+  const deadlineIso = review && task.reviewDueAt ? task.reviewDueAt : task.dueAt
   return {
     id: `platform:${task.id}`,
     title: firstLine(task.description),
     source: 'Платформа',
     sourceTone: 'purple',
-    process: mine ? `От: ${task.authorFio}` : `Кому: ${task.assigneeFio}`,
+    process: review
+      ? `Принять: ${task.assigneeFio}`
+      : mine
+        ? `От: ${task.authorFio}`
+        : `Кому: ${task.assigneeFio}`,
     project: '—',
-    deadline: formatPlatformDue(task.dueAt),
-    urgent: task.status === 'open' && task.overdue,
+    deadline: formatPlatformDue(deadlineIso),
+    urgent: review ? task.reviewOverdue : task.status === 'open' && task.overdue,
     priority: PLATFORM_PRIORITY_LABEL[task.priority],
     priorityTone: PRIORITY_TONE[task.priority],
-    status,
-    statusTone,
+    status: platformStatusLabel(task),
+    statusTone: platformStatusTone(task),
     executor: task.assigneeFio,
     who: task.role === 'both' ? 'Я / от меня' : mine ? 'Я' : 'от меня',
-    progress: done ? 100 : 0,
+    progress: closed && task.status === 'done' ? 100 : task.awaitingReview ? 90 : 0,
     author: task.authorFio,
     performer: task.assigneeFio,
     sourceKind: 'platform',
@@ -138,10 +181,11 @@ export function platformTaskToRow(task: PlatformTask): SpecTaskRow {
   }
 }
 
-/** Открытая задача, у которой срок сегодня или уже прошёл. */
+/** Задача требует действия и её срок сегодня либо уже прошёл. */
 export function isPlatformTaskForDay(task: PlatformTask, day = new Date()): boolean {
-  if (task.status !== 'open') return false
-  const due = new Date(task.dueAt)
+  const iso = needsPlatformReview(task) ? task.reviewDueAt || task.dueAt : task.dueAt
+  if (!needsPlatformReview(task) && task.status !== 'open') return false
+  const due = new Date(iso)
   if (Number.isNaN(due.getTime())) return false
   const end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 23, 59, 59)
   return due.getTime() <= end.getTime()

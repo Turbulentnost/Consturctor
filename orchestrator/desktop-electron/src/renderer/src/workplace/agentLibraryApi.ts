@@ -6,6 +6,10 @@ export type AgentLibraryPurpose = 'functional' | 'positional'
 export type AgentLibraryEntry = AgentSharePayload & {
   ownerId?: string
   ownerFio?: string
+  /** ФИО владельца workflow; null если пользователь не найден. */
+  author?: string | null
+  /** ISO-дата создания workflow. */
+  createdAt?: string
   purpose?: AgentLibraryPurpose
   alreadyAdded?: boolean
   adoptedWorkflowId?: string
@@ -25,6 +29,15 @@ export type AgentLibrarySnapshot = {
   adopted: AgentLibraryEntry[]
 }
 
+/** In-memory cache so revisiting the tab paints immediately while a refresh runs. */
+let cachedSnapshot: AgentLibrarySnapshot | null = null
+/** Dedupes StrictMode double-mount and overlapping refresh calls. */
+let inflight: Promise<AgentLibrarySnapshot> | null = null
+
+export function getCachedAgentLibrary(): AgentLibrarySnapshot | null {
+  return cachedSnapshot
+}
+
 function parseEntry(raw: Record<string, unknown>): AgentLibraryEntry {
   return {
     type: 'agent_card',
@@ -39,17 +52,30 @@ function parseEntry(raw: Record<string, unknown>): AgentLibraryEntry {
     tools: Array.isArray(raw.tools) ? raw.tools.map((x) => String(x)) : [],
     ownerId: String(raw.owner_id ?? raw.ownerId ?? ''),
     ownerFio: String(raw.owner_fio ?? raw.ownerFio ?? ''),
+    author: raw.author == null ? null : String(raw.author),
+    createdAt: String(raw.created_at ?? raw.createdAt ?? ''),
     purpose: parsePurpose(raw.purpose),
     alreadyAdded: Boolean(raw.already_added ?? raw.alreadyAdded),
     adoptedWorkflowId: String(raw.adopted_workflow_id ?? raw.adoptedWorkflowId ?? '')
   }
 }
 
-export async function fetchAgentLibrary(): Promise<AgentLibrarySnapshot> {
-  const data = await api.listAgentLibrary()
-  return {
-    catalog: data.catalog.map(parseEntry),
-    adopted: data.adopted.map(parseEntry)
+export async function fetchAgentLibrary(opts?: { force?: boolean }): Promise<AgentLibrarySnapshot> {
+  if (!opts?.force && inflight) return inflight
+  const run = (async () => {
+    const data = await api.listAgentLibrary()
+    const snap: AgentLibrarySnapshot = {
+      catalog: data.catalog.map(parseEntry),
+      adopted: data.adopted.map(parseEntry)
+    }
+    cachedSnapshot = snap
+    return snap
+  })()
+  inflight = run
+  try {
+    return await run
+  } finally {
+    if (inflight === run) inflight = null
   }
 }
 

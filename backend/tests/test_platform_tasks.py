@@ -150,7 +150,79 @@ def test_only_assignee_closes_and_reject_needs_reason(db, notes) -> None:
         platform_tasks.change_status(db, user_id=assignee, task_id=task["id"], action="reject")
     done = platform_tasks.change_status(db, user_id=assignee, task_id=task["id"], action="done")
     assert done["status"] == "done" and notes[-1]["recipient_id"] == _me()
+    # Исполнитель закрыл — задача ушла постановщику на приёмку до конца дня.
+    assert done["awaiting_review"] is True and done["review_due_at"]
     assert [item["id"] for item in platform_tasks.list_tasks(db, user_id=assignee)] == [task["id"]]
+
+
+def _done_task(db, *, description: str = "Проверить приёмку") -> tuple[dict, str]:
+    due = datetime.now(timezone.utc) + timedelta(days=1)
+    task = platform_tasks.create_task(
+        db,
+        author_id=_me(),
+        author_fio=ME,
+        assignee_fio=KOMARKOVA,
+        description=description,
+        priority="normal",
+        due_at=due,
+    )
+    assignee = LOGINS[org_structure.fio_key(KOMARKOVA)]
+    platform_tasks.change_status(db, user_id=assignee, task_id=task["id"], action="done")
+    return task, assignee
+
+
+def test_author_accepts_execution(db, notes) -> None:
+    task, assignee = _done_task(db)
+    with pytest.raises(platform_tasks.PlatformTaskError, match="только постановщик"):
+        platform_tasks.review_task(db, user_id=assignee, task_id=task["id"], action="accept")
+    notes.clear()
+    accepted = platform_tasks.review_task(db, user_id=_me(), task_id=task["id"], action="accept")
+    assert accepted["status"] == "done" and accepted["awaiting_review"] is False
+    assert accepted["accepted_at"] and notes[-1]["recipient_id"] == assignee
+    with pytest.raises(platform_tasks.PlatformTaskError, match="не на приёмке"):
+        platform_tasks.review_task(db, user_id=_me(), task_id=task["id"], action="accept")
+
+
+def test_author_rework_keeps_the_same_due(db, notes) -> None:
+    task, assignee = _done_task(db)
+    with pytest.raises(platform_tasks.PlatformTaskError, match="что доработать"):
+        platform_tasks.review_task(db, user_id=_me(), task_id=task["id"], action="rework")
+    notes.clear()
+    back = platform_tasks.review_task(
+        db, user_id=_me(), task_id=task["id"], action="rework", comment="Нет расчёта"
+    )
+    assert back["status"] == "open" and back["awaiting_review"] is False
+    assert back["due_at"] == task["due_at"] and back["rework_count"] == 1
+    assert notes[-1]["recipient_id"] == assignee
+
+
+def test_unreviewed_returns_to_rework_with_the_same_due(db, notes) -> None:
+    task, assignee = _done_task(db)
+    row = db.get(PlatformTask, task["id"])
+    row.review_due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.commit()
+    notes.clear()
+    assert platform_tasks.return_unreviewed(db) == 1
+    assert {note["recipient_id"] for note in notes} == {_me(), assignee}
+    back = next(item for item in platform_tasks.list_tasks(db, user_id=assignee) if item["id"] == task["id"])
+    assert back["status"] == "open" and back["due_at"] == task["due_at"]
+    assert back["rework_count"] == 1 and back["review_due_at"] is None
+    assert platform_tasks.return_unreviewed(db) == 0
+
+
+def test_review_due_is_end_of_the_same_day(db, notes) -> None:
+    task, _assignee = _done_task(db)
+    row = db.get(PlatformTask, task["id"])
+    from zoneinfo import ZoneInfo
+
+    def msk(value: datetime) -> datetime:
+        # SQLite отдаёт время без зоны — это UTC.
+        utc = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return utc.astimezone(ZoneInfo("Europe/Moscow"))
+
+    local = msk(row.review_due_at)
+    assert (local.hour, local.minute) == (23, 59)
+    assert local.date() == msk(row.status_at).date()
 
 
 def test_overdue_notifies_both_once(db, notes) -> None:

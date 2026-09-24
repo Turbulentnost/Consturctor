@@ -48,8 +48,10 @@ import {
   docflowTaskKind,
   type DocflowTaskKind
 } from '../../workplace/docflowTaskKind'
-import { isPlatformTaskMine } from '../../workplace/platformTasks'
-import { completePlatformTask, PlatformTaskDetail } from './PlatformTaskDetail'
+import { isPlatformTaskMine, needsPlatformReview } from '../../workplace/platformTasks'
+import { acceptPlatformTask, completePlatformTask, PlatformTaskDetail } from './PlatformTaskDetail'
+import { onecRowImportance } from '../../workplace/onecTaskImportance'
+import { usePageSearch } from '../../layout/pageSearchContext'
 
 export function TasksGridTab({
   user,
@@ -63,7 +65,7 @@ export function TasksGridTab({
   const [executedIds, setExecutedIds] = useState<Set<string>>(() => new Set())
   const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const [tileFilter, setTileFilter] = useState(navTaskFilter ?? EMPTY_TASK_TILE_FILTER)
-  const [query, setQuery] = useState('')
+  const { query, setQuery } = usePageSearch()
   const [barSource, setBarSource] = useState('')
   const [barStatus, setBarStatus] = useState('')
   const [barProject, setBarProject] = useState('')
@@ -157,13 +159,20 @@ export function TasksGridTab({
         : effectiveTile.source === 'platform'
           ? 'От кого / кому'
           : 'Процесс'
-  const platformAction = (row: (typeof taskRows)[number]): boolean =>
-    Boolean(row.platform && isPlatformTaskMine(row.platform) && row.platform.status === 'open')
-  const runPlatformDone = (row: (typeof taskRows)[number]): void => {
-    if (!row.platform || closingId) return
+  const platformAction = (row: (typeof taskRows)[number]): 'done' | 'accept' | null => {
+    const task = row.platform
+    if (!task) return null
+    if (needsPlatformReview(task)) return 'accept'
+    if (isPlatformTaskMine(task) && task.status === 'open') return 'done'
+    return null
+  }
+  const runPlatformAction = (row: (typeof taskRows)[number]): void => {
+    const action = platformAction(row)
+    if (!row.platform || !action || closingId) return
     setClosingId(row.id)
     setCloseNote('')
-    void completePlatformTask(row.platform)
+    const call = action === 'accept' ? acceptPlatformTask(row.platform) : completePlatformTask(row.platform)
+    void call
       .then((message) => {
         setCloseNote(message)
         softRefresh()
@@ -252,6 +261,7 @@ export function TasksGridTab({
     const isNew = catalog.erpIds.has(row.id) && isNewOneCTask(data.newOneCTaskKeys, row)
     const kind = kindOf(row)
     const action = rowAction(row)
+    const importance = onecRowImportance(row)
     return (
       <tr
         key={row.id}
@@ -259,7 +269,9 @@ export function TasksGridTab({
           effectiveId === row.id ? 'selected' : '',
           isNew ? 'is-new-onec' : '',
           row.platform ? 'ptask-row' : '',
-          row.platform?.status === 'open' ? `prio-${row.platform.priority}` : ''
+          row.platform?.status === 'open' ? `prio-${row.platform.priority}` : '',
+          row.platform?.awaitingReview ? 'ptask-review' : '',
+          importance ? `onec-row prio-${importance}` : ''
         ]
           .filter(Boolean)
           .join(' ')}
@@ -311,14 +323,22 @@ export function TasksGridTab({
             <button
               type="button"
               className="spec-row-action"
-              title="Отметить задачу исполненной"
+              title={
+                platformAction(row) === 'accept'
+                  ? 'Принять исполнение задачи платформы'
+                  : 'Отметить задачу исполненной'
+              }
               disabled={Boolean(closingId)}
               onClick={(event) => {
                 event.stopPropagation()
-                runPlatformDone(row)
+                runPlatformAction(row)
               }}
             >
-              {closingId === row.id ? 'Отправляем…' : 'Исполнено'}
+              {closingId === row.id
+                ? 'Отправляем…'
+                : platformAction(row) === 'accept'
+                  ? 'Принять'
+                  : 'Исполнено'}
             </button>
           ) : null}
         </td>

@@ -56,6 +56,15 @@ def _moscow(value: datetime) -> str:
     return _utc(value).astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M")
 
 
+def end_of_day(moment: datetime | None = None) -> datetime:
+    """23:59 московского дня, в котором наступил moment."""
+    from zoneinfo import ZoneInfo
+
+    msk = ZoneInfo("Europe/Moscow")
+    local = _utc(moment or datetime.now(timezone.utc)).astimezone(msk)
+    return local.replace(hour=23, minute=59, second=0, microsecond=0).astimezone(timezone.utc)
+
+
 def _ensure_app_user(db: Session, member: OrgMember) -> AppUser:
     """Исполнитель мог ещё не входить в Оркестратор — заводим его по учётке 1С, чтобы дошло уведомление."""
     user = db.get(AppUser, member.user_id)
@@ -88,10 +97,17 @@ def _get(db: Session, task_id: str, user_id: str) -> PlatformTask:
     return task
 
 
+def awaiting_review(task: PlatformTask) -> bool:
+    """Исполнитель закрыл задачу, постановщик ещё не принял результат."""
+    return task.status in {"done", "rejected"} and task.accepted_at is None
+
+
 def task_out(task: PlatformTask, files: list[PlatformTaskFile], *, user_id: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     mine = user_id == task.assignee_user_id
     authored = user_id == task.author_user_id
+    review = awaiting_review(task)
+    review_due = _utc(task.review_due_at) if task.review_due_at else None
     return {
         "id": task.id,
         "author_user_id": task.author_user_id,
@@ -107,6 +123,11 @@ def task_out(task: PlatformTask, files: list[PlatformTaskFile], *, user_id: str)
         "status_at": _utc(task.status_at).isoformat() if task.status_at else None,
         "overdue": task.status == "open" and _utc(task.due_at) < now,
         "role": "both" if mine and authored else "assignee" if mine else "author",
+        "awaiting_review": review,
+        "review_due_at": review_due.isoformat() if review_due else None,
+        "review_overdue": bool(review and review_due and review_due < now),
+        "accepted_at": _utc(task.accepted_at).isoformat() if task.accepted_at else None,
+        "rework_count": int(task.rework_count or 0),
         "files": [{"id": f.id, "filename": f.filename, "size": f.size} for f in files],
     }
 
@@ -198,19 +219,109 @@ def change_status(db: Session, *, user_id: str, task_id: str, action: str, comme
     note = comment.strip()
     if action == "reject" and not note:
         raise PlatformTaskError("Укажите причину отклонения")
+    now = datetime.now(timezone.utc)
     task.status = "done" if action == "done" else "rejected"
     task.status_comment = note
-    task.status_at = datetime.now(timezone.utc)
+    task.status_at = now
+    task.accepted_at = None
+    # Приёмка — задача постановщику на остаток дня. Не принял до 23:59 — уходит на доработку.
+    task.review_due_at = end_of_day(now)
     db.commit()
     verb = "исполнил" if action == "done" else "отклонил"
     _notify(
         db,
         sender_id=user_id,
         recipient_id=task.author_user_id,
-        title=f"{task.assignee_fio} {verb} задачу",
-        body=task.description[:400] + (f"\nКомментарий: {note}" if note else ""),
+        title=f"Примите задачу: {task.assignee_fio} {verb}",
+        body=(
+            task.description[:400]
+            + (f"\nКомментарий: {note}" if note else "")
+            + f"\nПринять до {_moscow(task.review_due_at)}, иначе задача вернётся на доработку."
+        ),
     )
     return task_out(task, _files_by_task(db, [task.id]).get(task.id, []), user_id=user_id)
+
+
+def _to_rework(task: PlatformTask, *, comment: str, now: datetime) -> None:
+    """Вернуть задачу исполнителю с тем же сроком."""
+    task.status = "open"
+    task.status_comment = comment
+    task.status_at = now
+    task.review_due_at = None
+    task.accepted_at = None
+    task.rework_count = int(task.rework_count or 0) + 1
+    # Новый круг работы: просрочку по этому сроку сообщаем заново.
+    task.overdue_notified_at = None
+
+
+def review_task(db: Session, *, user_id: str, task_id: str, action: str, comment: str = "") -> dict[str, Any]:
+    """Постановщик принимает результат либо возвращает задачу на доработку."""
+    task = _get(db, task_id, user_id)
+    if task.author_user_id != user_id:
+        raise PlatformTaskError("Принять результат или вернуть на доработку может только постановщик", 403)
+    if not awaiting_review(task):
+        raise PlatformTaskError("Задача не на приёмке")
+    if action not in {"accept", "rework"}:
+        raise PlatformTaskError("Действие: accept | rework")
+    note = comment.strip()
+    now = datetime.now(timezone.utc)
+    if action == "accept":
+        task.accepted_at = now
+        task.review_due_at = None
+        if note:
+            task.status_comment = (task.status_comment + f"\nПриёмка: {note}").strip()
+        title = f"{task.author_fio} принял задачу"
+        body = task.description[:400] + (f"\nКомментарий: {note}" if note else "")
+    else:
+        if not note:
+            raise PlatformTaskError("Напишите, что доработать")
+        _to_rework(task, comment=f"На доработку: {note}", now=now)
+        title = f"{task.author_fio} вернул задачу на доработку"
+        body = f"{task.description[:400]}\nЧто доработать: {note}\nСрок тот же: {_moscow(task.due_at)}."
+    db.commit()
+    _notify(db, sender_id=user_id, recipient_id=task.assignee_user_id, title=title, body=body)
+    return task_out(task, _files_by_task(db, [task.id]).get(task.id, []), user_id=user_id)
+
+
+def return_unreviewed(db: Session) -> int:
+    """Постановщик не принял результат до конца дня — задача уходит на доработку с тем же сроком."""
+    now = datetime.now(timezone.utc)
+    rows = list(
+        db.execute(
+            select(PlatformTask)
+            .where(
+                PlatformTask.status.in_(("done", "rejected")),
+                PlatformTask.accepted_at.is_(None),
+                PlatformTask.review_due_at.is_not(None),
+                PlatformTask.review_due_at < now,
+            )
+            .limit(200)
+        ).scalars()
+    )
+    for task in rows:
+        _to_rework(task, comment="Возврат на доработку: постановщик не принял результат до конца дня", now=now)
+    if rows:
+        db.commit()
+    for task in rows:
+        body = (
+            f"{task.description[:400]}\nПостановщик не принял результат до конца дня. "
+            f"Срок тот же: {_moscow(task.due_at)}."
+        )
+        _notify(
+            db,
+            sender_id=task.author_user_id,
+            recipient_id=task.assignee_user_id,
+            title=f"Задача вернулась на доработку: {task.author_fio}",
+            body=body,
+        )
+        _notify(
+            db,
+            sender_id=task.assignee_user_id,
+            recipient_id=task.author_user_id,
+            title=f"Приёмка просрочена: задача снова у {task.assignee_fio}",
+            body=body,
+        )
+    return len(rows)
 
 
 _SAFE_NAME = re.compile(r"[^\w.\-() ]+", re.UNICODE)

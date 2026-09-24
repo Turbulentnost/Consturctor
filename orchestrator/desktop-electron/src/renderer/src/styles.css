@@ -201,21 +201,27 @@ input {
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  height: 34px;
+  gap: 10px;
+  min-height: 40px;
   width: 100%;
   border-radius: 5px;
   border: none;
-  padding: 0 10px;
+  padding: 4px 10px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
+  line-height: 1.15;
   text-align: left;
   box-sizing: border-box;
   transition:
     background 0.12s ease,
     color 0.12s ease;
+}
+.nav-label {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.15;
 }
 .nav-item .nav-icon {
   width: 20px;
@@ -666,7 +672,8 @@ input {
 }
 .app-root.shell-today .nav-item {
   border-radius: 14px;
-  padding: 0 16px;
+  min-height: 40px;
+  padding: 4px 16px;
   background: transparent;
   color: #4d5b6b;
 }
@@ -1297,6 +1304,11 @@ input {
   font-size: 13px;
   color: var(--main-text);
   cursor: pointer;
+}
+.fio-option-muted {
+  cursor: default;
+  color: var(--content-muted, #8a919c);
+  font-size: 12px;
 }
 .fio-option-avatar {
   width: 28px;
@@ -3340,6 +3352,23 @@ input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.cal-event.has-protocol .cal-event-title {
+  padding-right: 16px;
+}
+.cal-event-doc {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #1565c0;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 3px;
+  pointer-events: none;
 }
 .cal-slot-menu {
   position: fixed;
@@ -12536,9 +12565,150 @@ button.spec-v04-tile {
 .spec-detail-actions .spec-btn-outline-block,
 .spec-detail-actions .spec-btn-launch-block,
 .spec-detail-actions .btn-primary,
-.spec-detail-actions .btn-ghost {
+.spec-detail-actions .btn-ghost,
+.spec-detail-actions .btn-light {
   width: 100%;
   flex: 0 0 auto;
+}
+.meeting-protocol-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(16, 20, 26, 0.03);
+  border: 1px solid rgba(16, 20, 26, 0.08);
+  font-size: 12px;
+}
+.meeting-protocol-progress-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.meeting-protocol-label {
+  flex: 0 0 64px;
+  color: var(--content-muted);
+  font-weight: 600;
+}
+.meeting-protocol-steps {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--content-muted);
+}
+.meeting-protocol-steps li.is-done {
+  color: #2e9a6f;
+}
+.meeting-protocol-steps li.is-error {
+  color: #c62828;
+}
+.meeting-protocol-error {
+  margin: 0;
+  color: #c62828;
+  font-size: 12px;
+}
+.meeting-protocol-hint {
+  margin: 4px 0 0;
+  color: #1565c0;
+  font-size: 12px;
+}
+.meeting-protocol-themes {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.meeting-protocol-themes button {
+  width: 100%;
+  text-align: left;
+  background: #f4f7fb;
+  border: 1px solid #d5e2f0;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #10141a;
+}
+.meeting-protocol-hitl {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(16, 20, 26, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.meeting-protocol-hitl p {
+  margin: 0;
+}
+.meeting-protocol-hitl-intent {
+  color: var(--content-muted);
+  font-size: 11px;
+}
+.meeting-protocol-hitl-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.meeting-protocol-hitl-actions .btn-primary,
+.meeting-protocol-hitl-actions .btn-ghost {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.meeting-report-overlay .meeting-report-dialog {
+  width: min(920px, 94vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+.meeting-report-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.meeting-report-toolbar .modal-title {
+  margin: 0;
+}
+.meeting-report-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.meeting-report-body {
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 200px;
+  max-height: calc(90vh - 120px);
+  padding: 12px 14px;
+  border: 1px solid rgba(16, 20, 26, 0.1);
+  border-radius: 10px;
+  background: #fff;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.meeting-report-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 12px;
+}
+.meeting-report-body th,
+.meeting-report-body td {
+  border: 1px solid #c8d0dc;
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.meeting-report-body th {
+  background: #e8edf4;
+}
+.meeting-report-error {
+  margin: 0;
+  color: #c62828;
+  font-size: 13px;
 }
 .spec-detail-card > .spec-btn-launch,
 .spec-detail-card > .spec-btn-launch-block {
@@ -13166,6 +13336,64 @@ button.spec-v04-tile {
   gap: 14px;
   padding-bottom: 8px;
 }
+.set-general-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+.set-general-grid .set-widgets-card {
+  grid-column: 1 / -1;
+}
+@media (max-width: 960px) {
+  .set-general-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.set-widget-grid-9 {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0 0 14px;
+}
+.set-widget-toggle {
+  min-height: 44px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(107, 115, 128, 0.45);
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  cursor: pointer;
+  text-align: center;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.set-widget-toggle:hover {
+  border-color: rgba(21, 101, 192, 0.4);
+  color: #1565c0;
+}
+.set-widget-toggle.is-on {
+  border-color: #1565c0;
+  background: #1565c0;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(13, 59, 115, 0.18);
+}
+.set-widget-toggle.is-on:hover {
+  background: #1256a8;
+  border-color: #1256a8;
+  color: #fff;
+}
+@media (max-width: 1100px) {
+  .set-widget-grid-9 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
 .set-body-notify {
   padding-bottom: 72px;
 }
@@ -13239,6 +13467,15 @@ button.spec-v04-tile {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 8px 16px;
+}
+.set-widget-list--row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 22px;
+}
+.set-widget-list--row > li {
+  flex: 0 0 auto;
 }
 .set-widget-row {
   display: flex;

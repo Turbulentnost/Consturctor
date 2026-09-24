@@ -42,6 +42,12 @@ const api = {
     token?: string | null
   }): Promise<{ ok: boolean; dataUrl?: string; error?: string }> =>
     ipcRenderer.invoke('api:fetchDataUrl', opts),
+  fetchBinary: (opts: {
+    url: string
+    token?: string | null
+    maxBytes?: number
+  }): Promise<{ ok: boolean; base64?: string; contentType?: string; size?: number; error?: string }> =>
+    ipcRenderer.invoke('api:fetchBinary', opts),
   fetchFilePreview: (opts: {
     url: string
     fileName?: string
@@ -94,6 +100,8 @@ const api = {
   }): Promise<string[]> => ipcRenderer.invoke('dialog:openFile', options),
   openPath: (filePath: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('shell:openPath', filePath),
+  focusOutlook: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('shell:focusOutlook'),
   printToPdf: (opts: {
     html?: string
     landscape?: boolean

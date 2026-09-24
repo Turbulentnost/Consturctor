@@ -153,7 +153,7 @@ export function TaskSourceActionsPanel({
     )
   }
 
-  const turboButtons = turboActionButtons()
+  const turboButtons = turboActionButtons({ taskUid: ctx.taskUid })
   return (
     <div className="task-source-actions">
       <h4 className="task-source-actions-title">Действия TurboProject</h4>

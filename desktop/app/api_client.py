@@ -15,6 +15,12 @@ import httpx
 from app.config import backend_url
 
 
+def _http_client(**kwargs) -> httpx.Client:
+    # WinINET/system proxy answers 503 for localhost; Constructor backend is always LAN.
+    kwargs.setdefault("trust_env", False)
+    return httpx.Client(**kwargs)
+
+
 class ApiError(Exception):
     def __init__(self, message: str, status_code: int | None = None) -> None:
         super().__init__(message)
@@ -438,6 +444,7 @@ class WorkflowFileItem:
 class WorkflowFiles:
     user_files: list[WorkflowFileItem] = field(default_factory=list)
     agent_files: list[WorkflowFileItem] = field(default_factory=list)
+    run_attachments: list[WorkflowFileItem] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -906,9 +913,13 @@ def _parse_workflow_file_item(raw: object) -> WorkflowFileItem:
 def _parse_workflow_files(data: dict) -> WorkflowFiles:
     user_raw = data.get("user_files") if isinstance(data.get("user_files"), list) else []
     agent_raw = data.get("agent_files") if isinstance(data.get("agent_files"), list) else []
+    run_raw = (
+        data.get("run_attachments") if isinstance(data.get("run_attachments"), list) else []
+    )
     return WorkflowFiles(
         user_files=[_parse_workflow_file_item(item) for item in user_raw],
         agent_files=[_parse_workflow_file_item(item) for item in agent_raw],
+        run_attachments=[_parse_workflow_file_item(item) for item in run_raw],
     )
 
 
@@ -1010,7 +1021,7 @@ class ApiClient:
         else:
             url = f"{self.base_url}{path_or_url}"
         try:
-            with httpx.Client(timeout=self._timeout) as client:
+            with _http_client(timeout=self._timeout) as client:
                 response = client.get(url, headers=self._headers())
         except httpx.ConnectError as exc:
             raise ApiError(
@@ -1038,7 +1049,7 @@ class ApiClient:
             ".gif": "image/gif",
         }.get(path.suffix.lower(), "application/octet-stream")
         try:
-            with httpx.Client(timeout=self._timeout) as client:
+            with _http_client(timeout=self._timeout) as client:
                 with path.open("rb") as fh:
                     response = client.post(
                         url,
@@ -1071,7 +1082,7 @@ class ApiClient:
             ".txt": "text/plain",
         }.get(path.suffix.lower(), "application/octet-stream")
         try:
-            with httpx.Client(timeout=max(self._timeout, 240.0)) as client:
+            with _http_client(timeout=max(self._timeout, 240.0)) as client:
                 with path.open("rb") as fh:
                     response = client.post(
                         url,
@@ -1139,7 +1150,7 @@ class ApiClient:
                     handle = path.open("rb")
                     handles.append(handle)
                     files.append(("files", (path.name, handle, "application/octet-stream")))
-            with httpx.Client(timeout=None) as client:
+            with _http_client(timeout=None) as client:
                 with client.stream(
                     "POST",
                     url,
@@ -1269,7 +1280,7 @@ class ApiClient:
         data = self._request(
             "PATCH",
             f"/api/v1/regulations/{regulation_id}/role-matches/{run_id}/{match_id}",
-            json={"status": status},
+            json={"status": status, "runId": run_id, "regulationId": regulation_id},
             timeout=max(self._timeout, 60.0),
         )
         return self._parse_role_matches(data)
@@ -1722,7 +1733,7 @@ class ApiClient:
                 name = "notes.txt" if temp_notes and path == temp_notes else path.name
                 files.append(("files", (name, fh, "application/octet-stream")))
             data_form = {"notes": notes or ""}
-            with httpx.Client(timeout=max(self._timeout, 180.0)) as client:
+            with _http_client(timeout=max(self._timeout, 180.0)) as client:
                 response = client.post(
                     url,
                     headers=self._headers(),
@@ -1944,7 +1955,7 @@ class ApiClient:
                 "answers": _json.dumps(answers or {}, ensure_ascii=False),
                 "file_question_ids": _json.dumps(qids[: len(paths)], ensure_ascii=False),
             }
-            with httpx.Client(timeout=max(self._timeout, 900.0)) as client:
+            with _http_client(timeout=max(self._timeout, 900.0)) as client:
                 response = client.post(
                     url,
                     headers=self._headers(),
@@ -2130,7 +2141,7 @@ class ApiClient:
         final_result: dict | None = None
         run_id = ""
         try:
-            with httpx.Client(timeout=None) as client:
+            with _http_client(timeout=None) as client:
                 with client.stream(
                     "POST",
                     url,
@@ -2442,7 +2453,7 @@ class ApiClient:
         final_result: dict | None = None
         run_id = ""
         try:
-            with httpx.Client(timeout=None) as client:
+            with _http_client(timeout=None) as client:
                 with client.stream(
                     "POST",
                     url,
@@ -2547,7 +2558,7 @@ class ApiClient:
         try:
             for attempt in range(3):
                 try:
-                    with httpx.Client(timeout=None) as client:
+                    with _http_client(timeout=None) as client:
                         with client.stream(
                             method,
                             url,
@@ -2627,7 +2638,7 @@ class ApiClient:
         dest = DESKTOP_ROOT / "data" / "outputs" / workflow_id
         dest.mkdir(parents=True, exist_ok=True)
         try:
-            with httpx.Client(timeout=300.0) as client:
+            with _http_client(timeout=300.0) as client:
                 response = client.post(url, headers=self._headers(), json={})
         except httpx.ConnectError as exc:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
@@ -2726,7 +2737,7 @@ class ApiClient:
                 fh = local.open("rb")
                 handles.append(fh)
                 files.append(("files", (local.name, fh, "application/octet-stream")))
-            with httpx.Client(timeout=max(self._timeout, 180.0)) as client:
+            with _http_client(timeout=max(self._timeout, 180.0)) as client:
                 response = client.post(url, headers=self._headers(), files=files, data=data or None)
         except httpx.ConnectError as exc:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
@@ -2760,7 +2771,7 @@ class ApiClient:
         dest = Path(destination)
         url = f"{self.base_url}/api/v1/workflows/{workflow_id}/files/{file_id}/download"
         try:
-            with httpx.Client(timeout=300.0) as client:
+            with _http_client(timeout=300.0) as client:
                 response = client.get(url, headers=self._headers())
         except httpx.ConnectError as exc:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
@@ -2959,9 +2970,10 @@ class ApiClient:
     ):
         url = f"{self.base_url}{path}"
         last_connect: httpx.ConnectError | None = None
+        response: httpx.Response | None = None
         for attempt in range(3):
             try:
-                with httpx.Client(timeout=timeout or self._timeout) as client:
+                with _http_client(timeout=timeout or self._timeout) as client:
                     response = client.request(
                         method,
                         url,
@@ -2970,7 +2982,6 @@ class ApiClient:
                         headers=self._headers(),
                     )
                 last_connect = None
-                break
             except httpx.ConnectError as exc:
                 last_connect = exc
                 if attempt == 2:
@@ -2978,17 +2989,28 @@ class ApiClient:
                         f"Не удалось подключиться к backend ({self.base_url})"
                     ) from exc
                 time.sleep(0.4 * (attempt + 1))
+                continue
             except httpx.TimeoutException as exc:
                 raise ApiError("Превышено время ожидания ответа backend") from exc
             except httpx.HTTPError as exc:
                 raise ApiError(f"Ошибка сети: {exc}") from exc
-        if last_connect is not None:
+            if (
+                response.status_code in {502, 503}
+                and method.upper() in {"GET", "HEAD"}
+                and attempt < 2
+            ):
+                time.sleep(0.6 * (attempt + 1))
+                continue
+            break
+        if response is None:
             raise ApiError(
                 f"Не удалось подключиться к backend ({self.base_url})"
             ) from last_connect
 
         if response.status_code >= 400:
             detail = _extract_detail(response)
+            if response.status_code in {502, 503} and path not in detail:
+                detail = f"{detail} [{method} {path}]"
             raise ApiError(detail, status_code=response.status_code)
 
         if not response.content:
@@ -3328,6 +3350,13 @@ def _extract_detail(response: httpx.Response) -> str:
             return body
     if response.status_code == 401:
         return "Неверный логин или пароль"
+    if response.status_code == 503:
+        return (
+            "Сервис временно недоступен (503). "
+            "Подождите минуту и нажмите «Запустить агента»."
+        )
+    if response.status_code == 502:
+        return "Сервис не ответил (502). Повторите запуск."
     return f"Ошибка сервера ({response.status_code})"
 
 

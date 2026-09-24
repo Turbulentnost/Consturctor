@@ -23,7 +23,38 @@
   box-shadow: inset 3px 0 0 #90a4ae;
 }
 
-.spec-v04-table tr.ptask-row.selected > td {
+/* Задача на приёмке у постановщика: срок — конец дня. */
+.spec-v04-table tr.ptask-row.ptask-review > td {
+  background: rgba(21, 101, 192, 0.08);
+}
+
+.spec-v04-table tr.ptask-row.ptask-review > td:first-child {
+  box-shadow: inset 3px 0 0 #1565c0;
+}
+
+/* Строка задачи из 1С («мои» и «от меня») по важности документооборота. */
+.spec-v04-table tr.onec-row.prio-high > td {
+  background: rgba(211, 47, 47, 0.07);
+}
+
+.spec-v04-table tr.onec-row.prio-high > td:first-child {
+  box-shadow: inset 3px 0 0 #d32f2f;
+}
+
+.spec-v04-table tr.onec-row.prio-normal > td {
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.spec-v04-table tr.onec-row.prio-normal > td:first-child {
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+
+.spec-v04-table tr.onec-row.prio-low > td:first-child {
+  box-shadow: inset 3px 0 0 #90a4ae;
+}
+
+.spec-v04-table tr.ptask-row.selected > td,
+.spec-v04-table tr.onec-row.selected > td {
   background: rgba(21, 101, 192, 0.1);
 }
 
@@ -50,6 +81,10 @@
 
 .today-mini-table tr.today-tr-ptask.prio-low td:first-child {
   box-shadow: inset 3px 0 0 #90a4ae;
+}
+
+.today-mini-table tr.today-tr-ptask.ptask-review td:first-child {
+  box-shadow: inset 3px 0 0 #1565c0;
 }
 
 .ptask-detail.prio-high {
@@ -120,4 +155,11 @@
   margin: 8px 0 0;
   font-size: 12px;
   color: #9b1c1c;
+}
+
+.ptask-detail-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #0d3b73;
 }

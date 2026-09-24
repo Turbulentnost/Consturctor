@@ -38,7 +38,12 @@ import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
 import { TodayFullPlanModal } from './TodayFullPlanModal'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
-import { isPlatformTaskForDay, isPlatformTaskFromMe, isPlatformTaskMine } from '../../workplace/platformTasks'
+import {
+  isPlatformTaskForDay,
+  isPlatformTaskFromMe,
+  isPlatformTaskMine,
+  needsPlatformReview
+} from '../../workplace/platformTasks'
 import './platformTasks.css'
 
 function TodayCellText({ text }: { text: string }): React.JSX.Element {
@@ -233,6 +238,8 @@ export function TodayGridTab({
     const platformRows = data.platformTasks.filter((row) => {
       const task = row.platform
       if (!task || !isPlatformTaskForDay(task, periodDay)) return false
+      // Приёмка — работа постановщика на сегодня, показываем в любом режиме.
+      if (needsPlatformReview(task)) return true
       return onecFromMe ? isPlatformTaskFromMe(task) : isPlatformTaskMine(task)
     })
     const onecRows = data.erpTasks.filter((row) => {
@@ -403,7 +410,7 @@ export function TodayGridTab({
           rowTones={taskRows.map((row) => todayRowTone(row.status, row.deadline, row.urgent))}
           rowClassNames={taskRows.map((row) =>
             row.platform
-              ? `today-tr-ptask prio-${row.platform.priority}`
+              ? `today-tr-ptask prio-${row.platform.priority}${row.platform.awaitingReview ? ' ptask-review' : ''}`
               : isNewOneCTask(data.newOneCTaskKeys, row)
                 ? 'today-tr-new-onec'
                 : undefined

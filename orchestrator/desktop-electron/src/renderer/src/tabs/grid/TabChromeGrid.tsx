@@ -302,8 +302,12 @@ export function TabChromeGrid({
     const node = canvasRef.current
     if (!node) return
     const measure = (): void => {
-      const height = Math.max(node.clientHeight, 200)
+      if (!node.isConnected) return
+      // Hidden / collapsed canvases (tab not visible, zero box) must not bin widgets.
+      if (node.offsetParent === null && node.getClientRects().length === 0) return
+      const height = node.clientHeight
       const width = node.clientWidth
+      if (height < 8 || width < 8) return
       const next = computeTabChromeMetrics(height, width, usedRows, metricsOptions)
       setMetrics((prev) =>
         prev.rowHeight === next.rowHeight &&

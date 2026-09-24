@@ -16,7 +16,7 @@ export function isLoopback(url: string): boolean {
 
 export async function pingHealth(
   baseUrl: string,
-  timeoutMs = 1500,
+  timeoutMs = 4000,
   opts?: { erp?: boolean }
 ): Promise<boolean> {
   const suffix = opts?.erp ? '/health' : '/health/live'

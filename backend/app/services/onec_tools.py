@@ -48,6 +48,16 @@ from app.services.erp_assignments import (
     stub_assignments as _stub_erp_assignments,
     stub_assignments_write as _stub_erp_assignments_write,
 )
+from app.services.erp_incoming import (
+    IncomingCorrespondenceError,
+    handle_incoming_correspondence as _erp_incoming_correspondence,
+    handle_incoming_correspondence_write as _erp_incoming_correspondence_write,
+    stub_incoming_correspondence as _stub_erp_incoming_correspondence,
+    stub_incoming_correspondence_write as _stub_erp_incoming_correspondence_write,
+)
+from app.services.incoming_suggest import (
+    handle_incoming_suggest as _erp_incoming_suggest,
+)
 from app.services.onec_artifacts import (
     ArtifactError,
     handle_download_artifact as _download_artifact,
@@ -78,6 +88,11 @@ from app.services.odata_local_catalog import (
     load_snapshot,
     snapshot_available,
     snapshot_meta,
+)
+from app.services.meeting_protocol_write import (
+    ProtocolWriteError,
+    handle_protocol_write as _meeting_protocol_write,
+    stub_protocol_write as _stub_meeting_protocol_write,
 )
 from app.services.meeting_protocols import (
     PROTOCOL_ENTITY,
@@ -170,6 +185,9 @@ ONEC_TOOLS = frozenset(
         "onec.erp_subordinate_tasks",
         "onec.erp_assignments",
         "onec.erp_assignments_write",
+        "onec.incoming_correspondence",
+        "onec.incoming_correspondence_write",
+        "onec.incoming_suggest",
         "onec.download_artifact",
         "onec.erp_write_probe",
         "onec.docflow_tasks",
@@ -182,6 +200,7 @@ ONEC_TOOLS = frozenset(
         "onec.docflow_protocols",
         "onec.docflow_protocol_card",
         "onec.meeting_protocols",
+        "onec.meeting_protocol_write",
     }
 )
 ONEC_ODATA_WRITE_TOOLS = frozenset(
@@ -192,7 +211,13 @@ ONEC_ODATA_WRITE_TOOLS = frozenset(
     }
 )
 ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset(
-    {"onec.erp_assignments_write", "onec.docflow_task_action", "onec.docflow_create"}
+    {
+        "onec.erp_assignments_write",
+        "onec.incoming_correspondence_write",
+        "onec.docflow_task_action",
+        "onec.docflow_create",
+        "onec.meeting_protocol_write",
+    }
 )
 _ERP_TASK_TOOLS = frozenset(
     {
@@ -207,6 +232,7 @@ _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
     "onec.docflow_task_action",
     "onec.docflow_create",
     "onec.erp_write_probe",
+    "onec.meeting_protocol_write",
 }
 _ACCESS_TOOLS = frozenset(
     {
@@ -357,7 +383,13 @@ def invoke_onec(
         return result
     except OnecToolError:
         raise
-    except (ErpTaskError, AssignmentError, ArtifactError) as exc:
+    except (
+        ErpTaskError,
+        AssignmentError,
+        IncomingCorrespondenceError,
+        ArtifactError,
+        ProtocolWriteError,
+    ) as exc:
         raise OnecToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise OnecToolError(str(exc)) from exc
@@ -472,9 +504,13 @@ def _is_tabular_document_entity(entity: str) -> bool:
             return False
     except Exception:  # noqa: BLE001
         pass
-    # Document_<Main>_<TabularSection>
+    # Document_<Main>_<TabularSection>. Приставка подсистемы (ТД_, РН_) частью имени
+    # документа не считается: иначе Document_ТД_Приказ выглядел бы как табличная часть.
     tail = cleaned[len("Document_") :]
-    return "_" in tail and tail.count("_") >= 1
+    head, _, rest = tail.partition("_")
+    if rest and len(head) <= 4 and head.isupper():
+        tail = rest
+    return "_" in tail
 
 
 def _ensure_odata_query(
@@ -855,7 +891,10 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
                 odata_path,
                 **{"$filter": quote(" and ".join(filters), safe="=,'")},
             )
-        if (
+        orderby = str(args.get("orderby") or args.get("order_by") or args.get("$orderby") or "").strip()
+        if orderby and "$orderby" not in odata_path.lower():
+            odata_path = _append_odata_query(odata_path, **{"$orderby": quote(orderby, safe=",")})
+        elif (
             (number or extra_filter)
             and entity.startswith("Document_")
             and not _is_tabular_document_entity(entity)
@@ -893,6 +932,9 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
                     "top",
                     "skip",
                     "filter",
+                    "orderby",
+                    "order_by",
+                    "$orderby",
                     "ref_key",
                     "Ref_Key",
                     "number",
@@ -1533,6 +1575,10 @@ STUB_HANDLERS = {
     "onec.erp_subordinate_tasks": _stub_erp_subordinate_tasks,
     "onec.erp_assignments": _stub_erp_assignments,
     "onec.erp_assignments_write": _stub_erp_assignments_write,
+    "onec.incoming_correspondence": _stub_erp_incoming_correspondence,
+    "onec.incoming_correspondence_write": _stub_erp_incoming_correspondence_write,
+    # Подсказка считается по локальным данным data/pochta — не требует OData.
+    "onec.incoming_suggest": _erp_incoming_suggest,
     "onec.download_artifact": _stub_download_artifact,
     "onec.erp_write_probe": _stub_erp_write_probe,
     "onec.docflow_tasks": _stub_docflow_tasks,
@@ -1545,6 +1591,7 @@ STUB_HANDLERS = {
     "onec.docflow_protocols": _docflow_protocols,
     "onec.docflow_protocol_card": _docflow_protocol_card,
     "onec.meeting_protocols": _stub_meeting_protocols,
+    "onec.meeting_protocol_write": _stub_meeting_protocol_write,
 }
 
 REAL_HANDLERS = {
@@ -1560,6 +1607,9 @@ REAL_HANDLERS = {
     "onec.erp_subordinate_tasks": _erp_subordinate_tasks,
     "onec.erp_assignments": _erp_assignments,
     "onec.erp_assignments_write": _erp_assignments_write,
+    "onec.incoming_correspondence": _erp_incoming_correspondence,
+    "onec.incoming_correspondence_write": _erp_incoming_correspondence_write,
+    "onec.incoming_suggest": _erp_incoming_suggest,
     "onec.download_artifact": _download_artifact,
     "onec.erp_write_probe": _erp_write_probe,
     "onec.docflow_tasks": _docflow_tasks,
@@ -1572,4 +1622,5 @@ REAL_HANDLERS = {
     "onec.docflow_protocols": _docflow_protocols,
     "onec.docflow_protocol_card": _docflow_protocol_card,
     "onec.meeting_protocols": _list_meeting_protocols,
+    "onec.meeting_protocol_write": _meeting_protocol_write,
 }

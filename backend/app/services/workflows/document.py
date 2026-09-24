@@ -33,7 +33,27 @@ TEXT_SUFFIXES = {
 DOC_SUFFIXES = {".pdf", ".docx", ".doc"}
 SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm", ".xls"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
-SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOC_SUFFIXES | SPREADSHEET_SUFFIXES | IMAGE_SUFFIXES
+# Медиа хранится как есть: текст из него не извлекается (расшифровку делает
+# audio.transcribe). Без этого байты декодируются как latin-1 и NUL (0x00)
+# роняет вставку в текстовые поля PostgreSQL.
+MEDIA_SUFFIXES = {
+    ".wav",
+    ".mp3",
+    ".m4a",
+    ".aac",
+    ".ogg",
+    ".opus",
+    ".flac",
+    ".wma",
+    ".amr",
+    ".webm",
+    ".mp4",
+    ".mkv",
+    ".mov",
+}
+SUPPORTED_SUFFIXES = (
+    TEXT_SUFFIXES | DOC_SUFFIXES | SPREADSHEET_SUFFIXES | IMAGE_SUFFIXES | MEDIA_SUFFIXES
+)
 MAX_IMAGES = 5
 MAX_IMAGE_BYTES = 15 * 1024 * 1024
 MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -59,6 +79,14 @@ def load_attachment_bytes(name: str, raw: bytes, *, ocr: bool = True) -> dict:
     file_name = Path(name).name or "file"
     if not raw:
         raise DocumentError("Файл пустой.")
+    if suffix in MEDIA_SUFFIXES:
+        return {
+            "name": file_name,
+            "text": f"Прикреплён медиафайл {file_name} ({len(raw)} байт).",
+            "kind": "audio",
+            "mime_type": mimetypes.guess_type(name)[0] or "application/octet-stream",
+            "data_b64": "",
+        }
     if suffix not in SUPPORTED_SUFFIXES:
         text = _read_text_bytes(raw)
         if text.strip():

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
 import { resolveLayoutOverlaps } from './gridReflow'
 
@@ -11,7 +11,7 @@ export const KPI_TAB_GRID_ROWS = 6
 /** Реестр поручений: рабочее поле 8×6 (col×row). */
 export const REGISTRY_TAB_GRID_COLS = 8
 export const REGISTRY_TAB_GRID_ROWS = 6
-/** Библиотека агентов: 8×8, низ 2×8 — «Ваши добавленные». */
+/** Библиотека агентов: 8×8, низ 2×8 — «Мои агенты». */
 export const AGENT_LIBRARY_TAB_GRID_COLS = 8
 export const AGENT_LIBRARY_TAB_GRID_ROWS = 8
 
@@ -490,6 +490,8 @@ export function useTabChromeLayout(
   const widgetIds = useMemo(() => defaults.map((item) => item.i), [defaults])
   const [persist, setPersist] = useState(() => readPersist(tabId, userId, defaults, widgetIds))
   const [editMode, setEditMode] = useState(false)
+  const persistRef = useRef(persist)
+  persistRef.current = persist
 
   useEffect(() => {
     setPersist(readPersist(tabId, userId, defaults, widgetIds))
@@ -565,20 +567,25 @@ export function useTabChromeLayout(
     (containerHeight: number, containerWidth: number) => {
       if (editMode) return
       if (tabId === 'kpi') return
+      // Read layout/meta from a ref so this callback identity stays stable.
+      // Recreating it after every bin flip re-fires ResizeObserver effects.
+      const { layout, meta: prevMeta } = persistRef.current
       const fit = viewportFitCells(containerHeight, containerWidth, grid)
-      const overflow = new Set(pickOverflowWidgetIds(persist.layout, persist.meta, fit.rows, fit.cols))
+      const overflow = new Set(pickOverflowWidgetIds(layout, prevMeta, fit.rows, fit.cols))
       let changed = false
-      const meta = { ...persist.meta }
+      const meta = { ...prevMeta }
       for (const id of widgetIds) {
+        if (!overflow.has(id)) continue
         const current = meta[id] || { visible: true, color: '', locked: false, binned: false }
-        const shouldBin = overflow.has(id)
-        if (Boolean(current.binned) === shouldBin) continue
-        meta[id] = { ...current, binned: shouldBin }
+        if (current.binned) continue
+        meta[id] = { ...current, binned: true }
         changed = true
       }
-      if (changed) save({ layout: persist.layout, meta })
+      // Never auto-unbin: putting widgets back changes canvas size and restarts
+      // the overflow loop (Maximum update depth). Restore only via basket UI.
+      if (changed) save({ layout, meta })
     },
-    [editMode, grid, persist.layout, persist.meta, save, tabId, widgetIds]
+    [editMode, grid, save, tabId, widgetIds]
   )
 
   const basketIds = useMemo(

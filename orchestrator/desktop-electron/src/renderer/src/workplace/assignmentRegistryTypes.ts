@@ -30,7 +30,7 @@ export type AssignmentRegistryRow = {
   lines: AssignmentRegistryLine[]
 }
 
-export type AssignmentRegistryTileId = 'done' | 'overdue' | 'due_soon' | 'ai'
+export type AssignmentRegistryTileId = 'done' | 'overdue' | 'due_soon' | 'report' | 'ai'
 
 export type AssignmentRegistryColumnId =
   | 'date'

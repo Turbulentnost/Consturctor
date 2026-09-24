@@ -40,10 +40,12 @@ export function FioSuggest({
 }: FioSuggestProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<DirectoryUser[]>([])
+  const [loading, setLoading] = useState(false)
   const [avatars, setAvatars] = useState<Record<string, string>>({})
   const [highlight, setHighlight] = useState(-1)
   const wrapRef = useRef<HTMLDivElement>(null)
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const querySeq = useRef(0)
 
   useEffect(() => {
     function onDocClick(e: MouseEvent): void {
@@ -92,6 +94,8 @@ export function FioSuggest({
   function query(search: string): void {
     if (debounce.current) clearTimeout(debounce.current)
     debounce.current = setTimeout(async () => {
+      const seq = ++querySeq.current
+      setLoading(true)
       let results: DirectoryUser[] = []
       const onLoginScreen = publicOnly || !api.getToken()
       try {
@@ -126,9 +130,11 @@ export function FioSuggest({
       } catch {
         results = []
       }
+      if (seq !== querySeq.current) return
       setItems(results.slice(0, 20))
       setHighlight(-1)
-    }, 180)
+      setLoading(false)
+    }, 120)
   }
 
   function handleFocus(): void {
@@ -171,7 +177,7 @@ export function FioSuggest({
     }
   }
 
-  const showPopup = open && items.length > 0
+  const showPopup = open && (items.length > 0 || loading)
 
   return (
     <div className={showPopup ? 'fio-suggest open' : 'fio-suggest'} ref={wrapRef}>
@@ -186,6 +192,9 @@ export function FioSuggest({
       />
       {showPopup && (
         <div className={variant === 'dark' ? 'fio-popup dark' : 'fio-popup'}>
+          {loading && !items.length ? (
+            <div className="fio-option fio-option-muted">Загружаем список из 1С…</div>
+          ) : null}
           {items.map((user, index) => {
             const key = userKey(user)
             const avatar = avatars[key]

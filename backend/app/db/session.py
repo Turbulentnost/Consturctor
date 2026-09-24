@@ -209,6 +209,24 @@ def _ensure_columns() -> None:
                 """
             )
         ).fetchall()
+        ptask_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'platform_tasks'
+                """
+            )
+        ).fetchall()
+        ptask_cols = {str(r[0]) for r in ptask_rows}
+        if ptask_cols and "review_due_at" not in ptask_cols:
+            conn.execute(text("ALTER TABLE platform_tasks ADD COLUMN review_due_at TIMESTAMPTZ NULL"))
+        if ptask_cols and "accepted_at" not in ptask_cols:
+            conn.execute(text("ALTER TABLE platform_tasks ADD COLUMN accepted_at TIMESTAMPTZ NULL"))
+        if ptask_cols and "rework_count" not in ptask_cols:
+            conn.execute(
+                text("ALTER TABLE platform_tasks ADD COLUMN rework_count INTEGER NOT NULL DEFAULT 0")
+            )
         creation_cols = {str(r[0]) for r in creation_rows}
         if creation_cols and "interview_json" not in creation_cols:
             conn.execute(

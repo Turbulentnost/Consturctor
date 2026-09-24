@@ -69,6 +69,7 @@ def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
         "target_id": str(row.get("target_id") or "").strip(),
         "step": step,
         "task_name": name,
+        "importance": str(row.get("importance") or "").strip(),
         "kind": docflow_task_kind(step, name),
         "on_behalf_of": str(row.get("on_behalf_of") or "").strip(),
     }

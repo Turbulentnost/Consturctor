@@ -11,6 +11,7 @@ import {
   SpecTableTabs
 } from '../../workplace/specV04Components'
 import { type SpecProcessRow, type SpecTaskRow } from '../../workplace/specV04DemoData'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
 import { WorkplaceProgressSection } from '../../workplace/WorkplaceProgressSection'
 import { taskActionContextFromProcessRow } from '../../workplace/taskSourceKind'
 import {
@@ -22,6 +23,7 @@ import {
 } from '../../workplace/useSpecV04Data'
 import { isDeadProcessSource } from '../../workplace/tileFilters'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { usePageSearch } from '../../layout/pageSearchContext'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions'
@@ -67,6 +69,7 @@ function ProcessDetail({
   meetingDone?: boolean
   onToggleMeetingDone?: () => void
 }): React.JSX.Element {
+  const title = decodeMimeHeader(row.name)
   const openId =
     row.id.startsWith('erp:') || row.id.startsWith('mail:') || row.id.startsWith('meet:') || row.id.startsWith('proj:')
       ? ''
@@ -117,7 +120,7 @@ function ProcessDetail({
     <div className="spec-detail-card">
       <header className="spec-detail-head">
         <div>
-          <h2>{row.name}</h2>
+          <h2>{title}</h2>
           <span className="wp-code">{row.code}</span>
         </div>
         <button type="button" className="spec-detail-menu" aria-label="Действия">
@@ -178,7 +181,7 @@ function ProcessDetail({
       ) : null}
       {detailTab === 'reg' ? (
         <div className="spec-detail-pane">
-          <p className="spec-v04-muted">Регламент для «{row.name}».</p>
+          <p className="spec-v04-muted">Регламент для «{title}».</p>
         </div>
       ) : null}
       {detailTab === 'files' ? (
@@ -191,7 +194,7 @@ function ProcessDetail({
           <div className="spec-detail-pane-head">
             <p className="spec-v04-muted">История запусков агента.</p>
             {openId && onOpenRun ? (
-              <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId, row.name)}>
+              <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId, title)}>
                 Открыть страницу истории
               </button>
             ) : null}
@@ -216,7 +219,7 @@ function ProcessDetail({
                     {run.triggerReason ? <div className="history-summary">{run.triggerReason}</div> : null}
                   </div>
                   {onOpenRun ? (
-                    <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId || row.id, row.name, run.runId)}>
+                    <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId || row.id, title, run.runId)}>
                       Открыть
                     </button>
                   ) : null}
@@ -238,10 +241,10 @@ function ProcessDetail({
         ) : null}
         {openId ? (
           <>
-            <button type="button" className="spec-btn-outline spec-btn-outline-block" onClick={() => onOpen?.(openId, row.name)}>
+            <button type="button" className="spec-btn-outline spec-btn-outline-block" onClick={() => onOpen?.(openId, title)}>
               Открыть процесс
             </button>
-            <button type="button" className="spec-btn-launch spec-btn-launch-block" onClick={() => onOpen?.(openId, row.name)}>
+            <button type="button" className="spec-btn-launch spec-btn-launch-block" onClick={() => onOpen?.(openId, title)}>
               <span>Запустить исполнение</span>
             </button>
           </>
@@ -268,7 +271,7 @@ export function ProcessesGridTab({
   const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const meetingCompletion = useMeetingCompletion()
   const [tab, setTab] = useState(navProcessTab || 'all')
-  const [query, setQuery] = useState('')
+  const { query, setQuery } = usePageSearch()
   const [barType, setBarType] = useState('')
   const [barStatus, setBarStatus] = useState('')
   const [barSource, setBarSource] = useState('')
@@ -286,7 +289,7 @@ export function ProcessesGridTab({
       if (barStatus && row.status !== barStatus) return false
       if (barSource && row.source !== barSource) return false
       if (barProject && row.project !== barProject) return false
-      if (q && !`${row.name} ${row.code} ${row.type} ${row.source} ${row.project}`.toLowerCase().includes(q)) {
+      if (q && !`${decodeMimeHeader(row.name)} ${row.code} ${row.type} ${row.source} ${row.project}`.toLowerCase().includes(q)) {
         return false
       }
       return true
@@ -313,7 +316,7 @@ export function ProcessesGridTab({
   const linkedTurboProject = useMemo(() => {
     if (!selected?.id.startsWith('proj:')) return null
     const projectId = selected.id.slice(5)
-    return data.projects.find((project) => project.id === projectId) ?? null
+    return (data.projects ?? []).find((project) => project.id === projectId) ?? null
   }, [selected?.id, data.projects])
 
   const tabs = useMemo(
@@ -444,7 +447,7 @@ export function ProcessesGridTab({
                   onClick={() => setSelectedId(row.id)}
                 >
                   <td>
-                    <strong>{row.name}</strong>
+                    <strong>{decodeMimeHeader(row.name)}</strong>
                     <div className="wp-code">{row.code}</div>
                   </td>
                   <td>
@@ -478,7 +481,7 @@ export function ProcessesGridTab({
                             !row.id.startsWith('mail:') &&
                             !row.id.startsWith('proj:')
                           ) {
-                            onOpenRun(row.id, row.name)
+                            onOpenRun(row.id, decodeMimeHeader(row.name))
                           }
                         }}
                       >

@@ -112,7 +112,9 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_regulation_sdk_prompt,
     build_sdk_prompt,
 )
-from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
+from app.sdk_agent.tool_adapter import ASK_QUESTION_SPEC, sdk_tool_specs  # noqa: E402
+
+READINESS_SDK_TOOLS = (dict(ASK_QUESTION_SPEC),)
 
 # HITL classification replicated from app.tools.hitl.needs_confirmation.
 # We do NOT import that module because it pulls in PySide6/Qt at import time,
@@ -2019,18 +2021,22 @@ def _upload_run_attachments(
     workflow_id: str,
     file_paths: list[str],
     run_id: str = "",
-) -> bool:
-    """Upload files as temporary per-run attachments (not permanent knowledge)."""
+) -> list[Any]:
+    """Upload files as temporary per-run attachments (not permanent knowledge).
+
+    Returns the stored attachment records (with server file ids) so the agent
+    prompt can name the file_id tools like audio.transcribe require.
+    """
     allowed = [str(path) for path in file_paths if Path(str(path)).is_file()]
     if not (workflow_id.strip() and run_id.strip() and allowed):
-        return False
+        return []
     try:
-        api.register_run_attachments(workflow_id, run_id, allowed)
+        stored = api.register_run_attachments(workflow_id, run_id, allowed)
         _emit_files_updated(workflow_id, run_id)
-        return True
+        return list(getattr(stored, "run_attachments", []) or [])
     except Exception as exc:  # noqa: BLE001
         log("run attachment upload failed: " + _ascii(repr(exc)))
-        return False
+        return []
 
 
 def _persist_run_attachment(
@@ -2048,8 +2054,8 @@ def _persist_run_attachment(
     Only the explicit keepKnowledgeFile tool writes permanent knowledge.
     """
     copied = _copy_attachments(run_cwd, file_paths)
-    _upload_run_attachments(api, workflow_id, file_paths, run_id=run_id)
-    return copied
+    stored = _upload_run_attachments(api, workflow_id, file_paths, run_id=run_id)
+    return _pair_attachments(copied, stored)
 
 
 def _persist_knowledge_files(
@@ -2145,14 +2151,31 @@ def _write_text(cwd: str, relative: str, text: str) -> str:
     return relative.replace("\\", "/")
 
 
-def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> None:
-    regulation = api.get_regulation(draft.regulation_id)
+def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> bool:
     suggestions = list(draft.agent_suggestions or [])
-    by_block = {item.fragment_id: item for item in regulation.fragments}
+    fragments: list[Any] = []
+    file_name = "Регламент"
+    regulation_id = str(getattr(draft, "regulation_id", "") or "").strip()
+    if regulation_id:
+        try:
+            regulation = api.get_regulation(regulation_id)
+        except ApiError as exc:
+            if exc.status_code not in {404, 502, 503}:
+                raise
+            regulation = None
+        if regulation is not None:
+            fragments = list(regulation.fragments or [])
+            file_name = str(getattr(regulation, "file_name", "") or file_name)
+    by_block = {item.fragment_id: item for item in fragments}
 
     _write_text(cwd, "AGENTS.md", READINESS_AGENTS_MD)
-    regulation_lines = [f"# {regulation.file_name}", ""]
-    for fragment in regulation.fragments:
+    regulation_lines = [f"# {file_name}", ""]
+    if not fragments:
+        regulation_lines.append(
+            "Полный текст регламента сейчас недоступен. "
+            "Опирайся на блоки из materials/functions.md и не вызывай внешние системы."
+        )
+    for fragment in fragments:
         text = (fragment.text or "").strip()
         if not text:
             continue
@@ -2193,14 +2216,21 @@ def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> None:
         (previous or "Ответов пользователя пока нет.") + "\n",
     )
     _write_text(cwd, "materials/manifest.json", json.dumps({"files": []}, ensure_ascii=False, indent=2) + "\n")
+    return bool(previous)
 
 
-def _build_readiness_prompt() -> str:
+def _build_readiness_prompt(*, has_answers: bool = False) -> str:
+    extra = (
+        " В materials/answers.md уже есть ответы пользователя — не спрашивай то же самое."
+        if has_answers
+        else ""
+    )
     return (
         "Прочитай AGENTS.md и все файлы в materials. "
         "Закрой через askQuestion пробелы логики по каждому функциональному блоку. "
         "В каждом askQuestion передай 2-6 конкретных вариантов в options. "
         "Когда все пробелы закрыты, верни JSON readiness и остановись."
+        + extra
     )
 
 
@@ -2556,7 +2586,12 @@ class Sidecar:
             )
         except ApiError as exc:
             self._finish_active_history(active, "Cursor SDK не отвечает")
-            emit({"type": "error", "runId": active.run_id, "message": str(exc.message)})
+            message = str(exc.message or exc)
+            if exc.status_code in {502, 503}:
+                backend = str(getattr(self._api, "base_url", "") or "").rstrip("/")
+                if backend and backend not in message:
+                    message = f"{message} ({backend})"
+            emit({"type": "error", "runId": active.run_id, "message": message})
         except Exception as exc:  # noqa: BLE001
             if kind == "regulation_creation" and active.stop.is_set():
                 emit(
@@ -2760,17 +2795,18 @@ class Sidecar:
         draft = self._api.get_agent_draft(draft_id)
         run_cwd = bridge.workspace_cwd(f"draft-{draft_id}")
         active.run_cwd = run_cwd
-        _prepare_readiness_workspace(self._api, draft, run_cwd)
+        has_answers = _prepare_readiness_workspace(self._api, draft, run_cwd)
         events: list[dict[str, Any]] = []
         result = bridge.run(
-            prompt=_build_readiness_prompt(),
+            prompt=_build_readiness_prompt(has_answers=has_answers),
             workflow_id=f"draft-{draft_id}",
             cwd=run_cwd,
             mode="design",
+            tools=[dict(item) for item in READINESS_SDK_TOOLS],
             on_event=self._forward_events(active, events),
             on_question=active.gate.ask_question,
             should_stop=active.stop.is_set,
-            confirm_writes=True,
+            confirm_writes=False,
         )
         answer = str(result.get("answer") or "").strip()
         updated = self._api.finish_sdk_readiness(draft_id, answer=answer, events=events)
@@ -3883,14 +3919,50 @@ def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[
         marker.write_text(digest, encoding="utf-8")
 
 
-def _attachments_note(relative_paths: list[str]) -> str:
-    if not relative_paths:
+def _pair_attachments(relative_paths: list[str], stored: list[Any]) -> list[dict[str, str]]:
+    """Join workspace copies with the server records by filename order.
+
+    Upload keeps the source order and skips missing files the same way the copy
+    does, so the i-th stored record matches the i-th copied path.
+    """
+    paired: list[dict[str, str]] = []
+    for index, path in enumerate(relative_paths):
+        item = stored[index] if index < len(stored) else None
+        paired.append(
+            {
+                "path": path,
+                "file_id": str(getattr(item, "id", "") or ""),
+                "filename": str(getattr(item, "filename", "") or Path(path).name),
+            }
+        )
+    return paired
+
+
+def _attachments_note(attachments: list[Any]) -> str:
+    if not attachments:
         return ""
-    listing = ", ".join(relative_paths)
-    return (
-        "Прикреплённые файлы (прочитай их из рабочей области): "
-        + listing
-    )
+    lines: list[str] = []
+    for entry in attachments:
+        if isinstance(entry, str):
+            lines.append(f"- {entry}")
+            continue
+        path = str(entry.get("path") or "")
+        file_id = str(entry.get("file_id") or "")
+        filename = str(entry.get("filename") or Path(path).name)
+        if file_id:
+            lines.append(f"- file_id={file_id} · {filename} · {path}")
+        else:
+            lines.append(f"- {path}")
+    has_ids = any("file_id=" in line for line in lines)
+    hint = ""
+    if has_ids:
+        hint = (
+            "\nАудио/видео-вложение расшифровывай инструментом audio.transcribe, "
+            'передав file_id: {"name": "audio.transcribe", "arguments": {"file_id": "…"}}. '
+            "Он вернёт сегменты с таймкодами start/end, полный текст и длительность. "
+            "Подтверждение человека для него не нужно."
+        )
+    return "Прикреплённые файлы этого запуска:\n" + "\n".join(lines) + hint
 
 
 def main() -> None:

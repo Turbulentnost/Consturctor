@@ -33,19 +33,21 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  height: 100%;
+  height: auto;
+  max-height: 100%;
+  overflow: auto;
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
-  grid-template-rows: repeat(8, minmax(0, 1fr));
+  grid-auto-rows: auto;
+  align-content: start;
   gap: 5px;
 }
 
-/* Карточка расширения: 2×2 ячейки сетки — кнопки на всю ширину рамки. */
+/* Карточка расширения: 2 колонки сетки, высота по содержимому с потолком. */
 .extensions-hub-card {
-  grid-row: span 2;
   grid-column: span 2;
   min-width: 0;
-  min-height: 0;
+  max-height: 280px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -107,12 +109,12 @@
   color: var(--content-muted);
   font-size: 12px;
   line-height: 1.45;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
   width: 100%;
   max-width: 100%;
+  max-height: 7.25em;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 
 .extensions-hub-locked {
@@ -665,6 +667,73 @@
 
 .registry-td--clamp {
   vertical-align: top;
+}
+
+.registry-report {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 4px 16px;
+  overflow: auto;
+}
+
+.registry-report-section-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.registry-report-card {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #d7dde7);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.registry-report-card.tone-overdue { background: rgba(198, 40, 40, 0.08); }
+.registry-report-card.tone-due_soon { background: rgba(230, 167, 0, 0.14); }
+.registry-report-card.tone-done { background: rgba(46, 154, 111, 0.1); }
+.registry-report-card.is-selected { outline: 2px solid rgba(21, 101, 192, 0.55); }
+
+.registry-report-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.registry-report-card-head span {
+  color: var(--muted, #5a6472);
+  font-size: 12px;
+}
+
+.registry-report-measures-title {
+  margin: 8px 0 4px;
+  font-size: 12px;
+}
+
+.registry-report-measures {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.registry-report-measure-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.registry-report-measure-meta {
+  margin: 2px 0 8px;
+  color: var(--muted, #5a6472);
+  font-size: 12px;
+}
+
+.registry-report-empty {
+  margin: 0;
+  color: var(--muted, #5a6472);
+  font-style: italic;
 }
 
 .registry-tr.is-clickable {
@@ -1260,17 +1329,7 @@
 }
 
 .nav-item-extensions-hub {
-  margin-top: 6px;
   font-weight: 600;
-}
-
-.nav-item-extension-module {
-  border-left: 3px solid rgba(21, 101, 192, 0.45);
-  padding-left: 5px;
-}
-
-.sidebar.light .nav-item-extension-module {
-  border-left-color: rgba(21, 101, 192, 0.35);
 }
 
 /* —— Библиотека агентов: две панели, без конфликта с wp-card / 8×8 сеткой —— */
@@ -1357,7 +1416,7 @@
   max-height: calc(min(38vh, 380px) - 52px);
 }
 
-.agent-library-cards {
+.agent-library-page .agent-library-cards {
   display: grid;
   gap: 12px;
   width: 100%;
@@ -1365,11 +1424,11 @@
   grid-auto-rows: auto;
 }
 
-.agent-library-cards--catalog {
+.agent-library-page .agent-library-cards--catalog {
   grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
 }
 
-.agent-library-cards--adopted {
+.agent-library-page .agent-library-cards--adopted {
   grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
 }
 

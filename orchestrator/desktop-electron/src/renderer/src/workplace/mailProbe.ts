@@ -11,10 +11,21 @@ import {
 import {
   dayKeyLocal,
   ensureOutlookMailRange,
+  formatMailTime,
   outlookMailWeekRange,
   resolveOutlookMailFetchRange,
   skipOutlookCom
 } from '../utils/outlookMail'
+
+function withFormattedMailTime(row: SpecMailRow): SpecMailRow {
+  const raw = row.receivedAt || row.time
+  return {
+    ...row,
+    receivedAt: row.receivedAt || (raw && !/^\d{2}\.\d{2}\.\d{2} \d{2}:\d{2}$/.test(raw) ? raw : undefined),
+    time: formatMailTime(raw),
+    receivedLabel: row.receivedLabel ? formatMailTime(row.receivedLabel) : formatMailTime(raw)
+  }
+}
 
 export type MailPrimary = 'imap' | 'outlook'
 
@@ -166,7 +177,7 @@ export function attachOutlookEntryIds(
       message_id: row.messageId,
       from: row.sender,
       subject: row.subject,
-      date: row.time
+      date: row.receivedAt || row.time
     })
     const entryId = keys.map((key) => byKey.get(key)).find(Boolean)
     return entryId ? { ...row, entryId } : row
@@ -385,7 +396,7 @@ export async function loadOrchestratorMail(
       : comError || (outlookMailbox ? `Outlook: ${outlookMailbox}` : 'outlook_mail')
 
   return {
-    rows,
+    rows: rows.map(withFormattedMailTime),
     sourceLabel,
     primary: probe.primary,
     imapPrimary: probe.imapPrimary,

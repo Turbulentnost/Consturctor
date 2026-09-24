@@ -9,42 +9,120 @@
   grid-column: 1 / 9;
   grid-row: 2 / -1;
   min-height: 0;
+  grid-template-rows: auto 40px minmax(0, 1fr);
 }
 
-.orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip {
+.orch-grid-registry .tab-chrome-filters-bar {
+  height: 40px;
+  max-height: 40px;
+  min-height: 40px;
+  overflow: hidden;
+}
+
+.orch-grid-registry .tab-chrome-filters-wrap {
+  height: 40px;
+  max-height: 40px;
+  flex-wrap: nowrap;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 8px;
+  gap: 8px;
+  box-sizing: border-box;
+}
+
+.orch-grid-registry .tab-chrome-filters-wrap > .registry-filter-panel {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  order: 0;
+}
+
+.orch-grid-registry .tab-chrome-filters-wrap > .tab-chrome-filters-extra {
+  order: 1;
+  flex: 0 0 auto;
+  margin-left: 0;
+}
+
+.orch-grid-registry .tab-chrome-filters-wrap > .tab-chrome-toolbar {
+  order: 2;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.orch-grid-registry .tab-chrome-shell[data-widget-id='filters'] {
+  min-height: 40px;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-panel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  min-width: 0;
+  width: 100%;
+  height: 40px;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip,
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-one-row {
   flex: 1 1 auto;
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   width: 100%;
-  height: 100%;
+  height: 32px;
+  min-height: 32px;
   margin: 0;
-  padding: 2px 8px;
+  padding: 0 4px;
   box-sizing: border-box;
-  border-radius: 10px;
-  background: var(--card, #fff);
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-column-filters-inline {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-column-filter {
+  flex: 1 1 0;
+  min-width: 96px;
+  max-width: 168px;
+  height: 28px;
+  font-size: 11px;
+  padding-left: 6px;
+  padding-right: 4px;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip .registry-date-filters {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip .registry-filter-row-count {
   flex: 0 0 auto;
   margin-left: 0;
+  white-space: nowrap;
+  font-size: 11px;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip-spacer {
-  flex: 1 1 auto;
-  min-width: 8px;
+  flex: 1 1 8px;
+  min-width: 4px;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip .spec-filter-reset {
   flex: 0 0 auto;
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-date-field {
@@ -52,11 +130,18 @@
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .kpi-day-picker-btn {
-  min-width: 88px;
-  font-size: 12px;
+  min-width: 82px;
+  font-size: 11px;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-date-filters .today-link-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-create-open-btn,
+.orch-grid-registry .tab-chrome-filters-bar .registry-report-filter-btn {
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -64,6 +149,10 @@
 .orch-grid-registry .tab-chrome-filters-bar .spec-filter-reset {
   flex-shrink: 0;
   white-space: nowrap;
+}
+
+.orch-grid-registry .tab-chrome-filters-bar .registry-filter-toolbar-actions {
+  flex-shrink: 0;
 }
 
 .orch-grid-registry .tab-chrome-canvas[data-grid-cols='8'] {
@@ -125,7 +214,6 @@
   border-radius: inherit;
 }
 
-/* Кнопки в шапке карточки поручения (печать + закрыть) */
 .registry-detail-head-actions {
   display: flex;
   align-items: center;

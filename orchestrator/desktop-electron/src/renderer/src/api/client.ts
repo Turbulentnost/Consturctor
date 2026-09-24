@@ -1185,6 +1185,9 @@ export function suggestionsFromRoleMatch(roleMatch: RoleMatchResult): AgentSugge
 
 export type UnauthorizedHandler = (message: string, status: number) => void
 
+const FIO_SUGGEST_CACHE_MS = 120_000
+const fioSuggestCache = new Map<string, { at: number; items: string[] }>()
+
 export class ApiClient {
   private token: string | null = null
   private unauthorizedHandler: UnauthorizedHandler | null = null
@@ -1256,17 +1259,24 @@ export class ApiClient {
   }
 
   async searchUsers(search = '', limit?: number): Promise<string[]> {
+    const key = `${search.trim().toLowerCase()}|${limit ?? ''}`
+    const cached = fioSuggestCache.get(key)
+    if (cached && Date.now() - cached.at < FIO_SUGGEST_CACHE_MS) {
+      return cached.items
+    }
     try {
       const params: Record<string, string> = {}
       if (search.trim()) params.search = search
       if (limit) params.limit = String(limit)
       const data = await this.request<{ items?: unknown[] }>('GET', '/api/v1/auth/users', {
         params: Object.keys(params).length ? params : undefined,
-        timeoutMs: limit ? 120_000 : undefined
+        timeoutMs: limit ? 120_000 : 25_000
       })
-      return (data.items ?? []).map((x) => String(x))
+      const items = (data.items ?? []).map((x) => String(x))
+      fioSuggestCache.set(key, { at: Date.now(), items })
+      return items
     } catch {
-      return []
+      return cached?.items ?? []
     }
   }
 
@@ -1431,7 +1441,7 @@ export class ApiClient {
     adopted: Record<string, unknown>[]
   }> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/agents/library', {
-      timeoutMs: 25_000
+      timeoutMs: 12_000
     })
     const catalog = Array.isArray(data.catalog) ? (data.catalog as Record<string, unknown>[]) : []
     const adopted = Array.isArray(data.adopted) ? (data.adopted as Record<string, unknown>[]) : []
@@ -1950,9 +1960,22 @@ export class ApiClient {
     const userFiles = (data.user_files as Record<string, unknown>[]) ?? []
     const agentFiles = (data.agent_files as Record<string, unknown>[]) ?? []
     const runAttachments = (data.run_attachments as Record<string, unknown>[]) ?? []
-    return [...userFiles, ...agentFiles, ...runAttachments].map((item) =>
-      parsePlatformFile({ ...item, workflow_id: workflowId })
-    )
+    // Tag bucket when API omits source so callers can filter agent_files vs user uploads.
+    return [
+      ...userFiles.map((item) =>
+        parsePlatformFile({ ...item, workflow_id: workflowId, source: item.source ?? 'user' })
+      ),
+      ...agentFiles.map((item) =>
+        parsePlatformFile({ ...item, workflow_id: workflowId, source: item.source ?? 'agent' })
+      ),
+      ...runAttachments.map((item) =>
+        parsePlatformFile({
+          ...item,
+          workflow_id: workflowId,
+          source: item.source ?? 'attachment'
+        })
+      )
+    ]
   }
 
   async uploadWorkflowFiles(workflowId: string, filePaths: string[]): Promise<WorkflowFileItem[]> {
@@ -2105,7 +2128,7 @@ export class ApiClient {
 
   async setPlatformTaskStatus(
     taskId: string,
-    action: 'done' | 'reject',
+    action: 'done' | 'reject' | 'accept' | 'rework',
     comment = ''
   ): Promise<import('../workplace/platformTasks').PlatformTask> {
     const data = await this.request<Record<string, unknown>>(
