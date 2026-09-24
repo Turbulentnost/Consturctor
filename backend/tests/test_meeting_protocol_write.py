@@ -126,14 +126,16 @@ def test_tabular_sections_map_to_1c_fields():
     assert decisions[0]["ДокументОснование_Type"] == "StandardODATA.Undefined"
     assert decisions[1]["ДатаОкончания"] == "2026-09-24T23:59:59"
 
-    tasks = body["ПеременныеЗадачиПротокола"]
+    assert "ПеременныеЗадачиПротокола" not in body
+    tasks = body["ПостоянныеЗадачиПротокола"]
     assert tasks[0]["Задача"].startswith("Проверить в outlook")
-    assert tasks[0]["Ответственный_Key"] == PERSONS["Жалыбин Максим Дмитриевич"]
+    assert tasks[0]["Ответственный"] == "Жалыбин Максим Дмитриевич"
+    assert "Ответственный_Key" not in tasks[0]
     assert tasks[0]["Автор_Key"] == USERS["Соломичева Светлана Викторовна"]["ref_key"]
     assert tasks[0]["ДатаПостановкиЗадачи"] == "2026-09-21T00:00:00"
     assert tasks[0]["ДатаФактическогоИсполнения"] == "2026-09-24T23:59:59"
     assert tasks[1]["Приоритет"] == "Высокий"
-    assert "Ответственный_Key" not in tasks[1]  # Комаркова не найдена
+    assert "Комаркова" in tasks[1]["Ответственный"]  # не найдена в 1С — ФИО как есть
 
     assert meta["tasks_count"] == 2 and meta["agenda_count"] == 2 and meta["decisions_count"] == 2
 
@@ -288,6 +290,18 @@ def test_read_protocol_form_maps_guids_to_names(monkeypatch):
     assert "outlook:AAMkAGI2" in form["comment"]
 
 
+def test_read_protocol_form_prefers_assigned_tasks_part(monkeypatch):
+    card = _card(
+        ПостоянныеЗадачиПротокола=[
+            {"LineNumber": "1", "Задача": "Поставленная задача", "Ответственный": "Давлетов Руслан Игоревич"}
+        ]
+    )
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get(card))
+    tasks = mpw.read_protocol_form(PROTOCOL_KEY)["form"]["tasks"]
+    assert [task["text"] for task in tasks] == ["Поставленная задача"]
+    assert tasks[0]["executor"] == "Давлетов Руслан Игоревич"
+
+
 def test_read_protocol_form_posted_is_not_editable(monkeypatch):
     monkeypatch.setattr(mpw, "_odata_get", _fake_get(_card(Posted=True, Статус="Проведён")))
     result = mpw.read_protocol_form(PROTOCOL_KEY)
@@ -306,7 +320,9 @@ def test_update_patches_draft_and_keeps_outlook_marker(monkeypatch):
     for field in ("ДатаСоздания", "Posted", "DeletionMark", "Статус", "Подготовил_Key"):
         assert field not in body
     assert body["ПовесткаСовещания"][0]["Вопрос"] == "Статус ИИ-агентов"
-    assert len(body["Решения"]) == 2 and len(body["ПеременныеЗадачиПротокола"]) == 2
+    assert len(body["Решения"]) == 2 and len(body["ПостоянныеЗадачиПротокола"]) == 2
+    # old protocol had tasks in «Задачи для контроля» — update moves them out
+    assert body["ПеременныеЗадачиПротокола"] == []
     assert body["Комментарий"].startswith("Правки вручную")
     assert "outlook:AAMkAGI2" in body["Комментарий"]
     assert result["updated"] is True and result["number"] == "ДР__062_О_426"
