@@ -39,7 +39,7 @@ def score_protocols(_metric: PositionKpiMetric, ctx: SourceBundle) -> tuple[dict
 
 
 def score_instructions(_metric: PositionKpiMetric, ctx: SourceBundle) -> tuple[dict[str, Any], str]:
-    from kpi.instruction_tracker import compute_report, evidence_line
+    from kpi.instruction_tracker import compute_report
 
     report = compute_report(
         as_of=ctx.as_of,
@@ -48,7 +48,82 @@ def score_instructions(_metric: PositionKpiMetric, ctx: SourceBundle) -> tuple[d
         cards=ctx.cards,
         protocols=ctx.protocols,
     )
-    return report, evidence_line(report)
+    return report, ""
+
+
+def score_assistant_meetings(
+    _metric: PositionKpiMetric, ctx: SourceBundle
+) -> tuple[dict[str, Any], str]:
+    from kpi.sources.assistant_meetings import compute_meetings_schedule_kpi, format_plan_fact_report
+
+    report = compute_meetings_schedule_kpi(
+        ctx,
+        as_of=ctx.as_of,
+        date_from=ctx.date_from,
+        date_to=ctx.date_to,
+    )
+    text = format_plan_fact_report(report).rsplit("\n", 1)[-1]
+    return report, text
+
+
+def score_assistant_dpi(
+    _metric: PositionKpiMetric, ctx: SourceBundle
+) -> tuple[dict[str, Any], str]:
+    from kpi.sources.assistant_dpi import compute_dpi_appointment_kpi, format_report
+
+    report = compute_dpi_appointment_kpi(
+        ctx,
+        as_of=ctx.as_of,
+        date_from=ctx.date_from,
+        date_to=ctx.date_to,
+    )
+    text = format_report(report).rsplit("\n", 1)[-1]
+    return report, text
+
+
+def score_assistant_orders(
+    _metric: PositionKpiMetric, ctx: SourceBundle
+) -> tuple[dict[str, Any], str]:
+    from kpi.sources.assistant_orders import compute_orders_registration_kpi, format_report
+
+    report = compute_orders_registration_kpi(
+        ctx,
+        as_of=ctx.as_of,
+        date_from=ctx.date_from,
+        date_to=ctx.date_to,
+    )
+    text = format_report(report).rsplit("\n", 1)[-1]
+    return report, text
+
+
+def score_assistant_unplanned(
+    _metric: PositionKpiMetric, ctx: SourceBundle
+) -> tuple[dict[str, Any], str]:
+    from kpi.sources.assistant_unplanned import compute_unplanned_meetings_kpi, format_report
+
+    report = compute_unplanned_meetings_kpi(
+        ctx,
+        as_of=ctx.as_of,
+        date_from=ctx.date_from,
+        date_to=ctx.date_to,
+    )
+    text = format_report(report).rsplit("\n", 1)[-1]
+    return report, text
+
+
+def score_assistant_tasks(
+    _metric: PositionKpiMetric, ctx: SourceBundle
+) -> tuple[dict[str, Any], str]:
+    from kpi.sources.assistant_tasks import compute_individual_tasks_kpi, format_report
+
+    report = compute_individual_tasks_kpi(
+        ctx,
+        as_of=ctx.as_of,
+        date_from=ctx.date_from,
+        date_to=ctx.date_to,
+    )
+    text = format_report(report).rsplit("\n", 1)[-1]
+    return report, text
 
 
 def score_quality(_metric: PositionKpiMetric, ctx: SourceBundle) -> tuple[dict[str, Any], str]:
@@ -71,6 +146,11 @@ SCORERS: dict[str, Scorer] = {
     "kpi.sources.sd_rk_protocols": score_protocols,
     "kpi.sources.sd_rk_instructions": score_instructions,
     "kpi.sources.sd_rk_quality": score_quality,
+    "kpi.sources.assistant_meetings": score_assistant_meetings,
+    "kpi.sources.assistant_dpi": score_assistant_dpi,
+    "kpi.sources.assistant_orders": score_assistant_orders,
+    "kpi.sources.assistant_unplanned": score_assistant_unplanned,
+    "kpi.sources.assistant_tasks": score_assistant_tasks,
 }
 
 _ALLOWED_PREFIXES = ("kpi.sources.", "kpi.generated.")

@@ -814,7 +814,10 @@ class CursorSdkBridge:
         raw_bytes = len(raw.encode("utf-8", errors="replace"))
         if result.get("externalized") and isinstance(result.get("result_file"), str):
             return result
-        if not self._should_externalize_result(result, raw_bytes):
+        journal_extract = tool in {"onec.erp_assignments", "onec.meeting_protocols"} and not result.get(
+            "error"
+        )
+        if not journal_extract and not self._should_externalize_result(result, raw_bytes):
             return result
         base = Path(cwd).resolve()
         out_dir = base / "tool_results"
@@ -827,13 +830,20 @@ class CursorSdkBridge:
             return result
         target.write_text(raw, encoding="utf-8")
         rel_path = target.relative_to(base).as_posix()
+        next_step = EXTERNALIZED_NEXT_STEP
+        if tool in {"onec.erp_assignments", "onec.meeting_protocols"}:
+            next_step = (
+                "Не читай result_file и не открывай tool_results. "
+                "После обеих выборок один раз вызови excel.write_action_tracker "
+                "с filename=ActionTracker.xlsx. Строки не передавай: инструмент запишет все карточки сам."
+            )
         return {
             "summary": self._result_summary(result),
             "tool": tool,
             "result_file": rel_path,
             "result_bytes": raw_bytes,
             "externalized": True,
-            "next_step": EXTERNALIZED_NEXT_STEP,
+            "next_step": next_step,
         }
 
     @staticmethod

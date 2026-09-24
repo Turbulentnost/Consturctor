@@ -82,9 +82,27 @@
   font-size: 14px;
 }
 
-.kpi-form-download {
-  height: 40px;
+.orch-grid-kpi .tab-chrome-filters-bar .spec-v04-filters-card.spec-v04-filters-one-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  height: 100%;
+  padding: 0 8px;
+}
+
+.orch-grid-kpi .tab-chrome-filters-bar .kpi-form-download {
+  width: auto;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
   white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .kpi-form-modal {

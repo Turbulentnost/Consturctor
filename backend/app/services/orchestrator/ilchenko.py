@@ -181,19 +181,18 @@ def ilchenko_tiles(*, now: datetime | None = None) -> list[dict[str, Any]]:
                     "в течение пяти рабочих дней. Цель 95 процентов. Норму не пересчитываем."
                 ),
                 fact_explanation=(
-                    "Берём заседания СД и РК за 90 дней, с окончания которых прошло "
-                    "не меньше пяти рабочих дней. Протокол ищем в файлах агентов и в 1С. "
-                    "Своевременный — если файл или документ появился не позже пяти рабочих дней. "
-                    "Если таких заседаний нет, факт не показываем."
+                    "Берём заседания СД и РК только текущего месяца, у которых уже наступил "
+                    "срок пакета T−2. Протокол ищем в 1С. Своевременный — если документ "
+                    "появился не позже T+2 рабочих дня. Пока срок не вышел, просрочки нет."
                 ),
                 score_explanation=(
                     "Оценка совпадает с фактом. Зелёный — не ниже 95 процентов, "
                     "жёлтый — не ниже 85, иначе красный."
                 ),
                 system=(
-                    "window=90d. Eligible = SD/RK meetings ended >= 5 business days ago. "
-                    "on_time = protocol artifact/document within 5 business days. "
-                    "fact = on_time / eligible * 100. score = fact. Do not change plan."
+                    "window=current month. Eligible = SD/RK meetings with package deadline T-2 reached. "
+                    "on_time = protocol within T+2 workdays, or T+2 still ahead. "
+                    "fact = on_time / eligible * 100. score = gate 95. Do not change plan."
                 ),
                 how="Outlook past meetings + agent protocol files + 1C documents.",
                 when="раз в сутки",

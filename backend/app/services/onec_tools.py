@@ -313,6 +313,10 @@ def invoke_onec(
         if access is not None and tool == "onec.odata_get" and isinstance(result, dict):
             from app.services.onec_access import OnecAccessDenied, filter_odata_result
 
+            # The PSD series is the board journal. Row confidentiality keeps only
+            # cards where the operator is named (2 of 100) and drops the rest.
+            if _is_psd_series_list(args):
+                return result
             try:
                 return filter_odata_result(result, access, _entity_from_args(args))
             except OnecAccessDenied as exc:
@@ -324,6 +328,21 @@ def invoke_onec(
         raise OnecToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise OnecToolError(str(exc)) from exc
+
+
+def _is_psd_series_list(args: dict[str, Any]) -> bool:
+    """Full PSD protocol list, not one card. Those rows are the Action Tracker source."""
+    from urllib.parse import unquote
+
+    path = unquote(str(args.get("path") or ""))
+    entity = _entity_from_args(args)
+    head = path.split("?", 1)[0]
+    if "Document_ТД_Протокол" not in head and entity != "Document_ТД_Протокол":
+        return False
+    if "(guid'" in head.casefold():
+        return False
+    folded = path.casefold()
+    return "startswith(number,'псд')" in folded or 'startswith(number,"псд")' in folded
 
 
 def _next_stub_id() -> int:
@@ -850,6 +869,7 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
                     "Ref_Key",
                     "number",
                     "Number",
+                    "resolve_navigation",
                 }
             },
         }
@@ -860,7 +880,10 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
     tabular_parts: dict[str, list[dict[str, Any]]] = {}
     nav_suffix = cleaned_path.split(")", 1)[-1] if ")" in cleaned_path else ""
     is_navigation = keyed and nav_suffix.startswith("/")
-    if value and not is_navigation:
+    resolve_navigation = args.get("resolve_navigation", True)
+    if isinstance(resolve_navigation, str):
+        resolve_navigation = resolve_navigation.strip().casefold() not in {"0", "false", "no"}
+    if value and not is_navigation and resolve_navigation:
         nav_budget = 6 if entity == "Document_ТД_Поручения" else 2
         for row in value[:10]:
             _resolve_navigation_names(row, args, budget=nav_budget)

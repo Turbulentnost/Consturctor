@@ -22,10 +22,15 @@ TIMEOUT_SEC = 1800
 RUN_MESSAGE = (
     "Сними все поручения АСТ00 заказчика Амураль Игорь Борисович — все статусы, "
     "не только открытые и просроченные. Сними протоколы только с пометкой ПСД "
-    "(номер ПСД_*). Запиши обе выборки в Action Tracker. "
-    "Повтори проверенную цепочку. Запись в 1С не делай."
+    "(номер ПСД_*). Затем один раз вызови excel.write_action_tracker "
+    "с filename=ActionTracker.xlsx. Строки не передавай и JSON выборок не читай: "
+    "инструмент сам запишет все карточки. Запись в 1С не делай."
 )
-EXCEL_WRITE = {"excel.create_workbook", "excel.edit_workbook"}
+EXCEL_WRITE = {
+    "excel.create_workbook",
+    "excel.edit_workbook",
+    "excel.write_action_tracker",
+}
 ONEC_WRITE = {
     "onec.erp_assignments_write",
     "onec.odata_post",

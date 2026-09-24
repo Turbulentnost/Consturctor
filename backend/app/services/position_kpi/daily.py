@@ -126,13 +126,14 @@ class SourceBundle:
         try:
             from app.services.onec_tools import _fetch_odata_list
 
-            raw = _fetch_odata_list(
-                {
-                    "entity": entity,
-                    "filter": str(extra.get("filter") or ""),
-                    "top": int(extra.get("top") or 200),
-                }
-            )
+            payload: dict[str, Any] = {
+                "entity": entity,
+                "filter": str(extra.get("filter") or ""),
+                "top": int(extra.get("top") or 200),
+            }
+            if extra.get("skip") is not None:
+                payload["skip"] = int(extra["skip"])
+            raw = _fetch_odata_list(payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning("position kpi odata %s failed: %s", entity, exc)
             return []
@@ -151,6 +152,16 @@ class SourceBundle:
             logger.warning("position kpi file %s failed: %s", path, exc)
             return []
 
+    def load_docflow(self, extra: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            from kpi.sources.assistant_tasks import fetch_rows
+
+            performer = str(extra.get("performer") or "").strip()
+            return fetch_rows(self.date_from, self.date_to, performer=performer)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("position kpi docflow cache failed: %s", exc)
+            return []
+
     def load_for(self, extra: dict[str, Any] | None) -> list[dict[str, Any]]:
         data = extra if isinstance(extra, dict) else {}
         preset = data.get("rows")
@@ -167,6 +178,8 @@ class SourceBundle:
             return self.load_odata(data)
         if loader == "files":
             return self.load_files(data)
+        if loader == "docflow":
+            return self.load_docflow(data)
         if data.get("entity"):
             return self.load_odata(data)
         if data.get("file") or data.get("path"):
@@ -308,6 +321,7 @@ def _payload(
         "period_to": date_to.isoformat(),
         "as_of": as_of.isoformat(),
         "computed_at": computed_at.isoformat(),
+        "calc_version": CALC_VERSION,
         "tiles": tiles,
     }
 
@@ -381,8 +395,13 @@ def _latest_cache_row(
     ).scalar_one_or_none()
 
 
-def _from_cache(row: PositionKpiDailyFact, *, stale: bool) -> dict[str, Any]:
+CALC_VERSION = 3
+
+
+def _from_cache(row: PositionKpiDailyFact, *, stale: bool) -> dict[str, Any] | None:
     payload = dict(row.payload) if isinstance(row.payload, dict) else {}
+    if payload.get("calc_version") != CALC_VERSION:
+        return None
     return {**payload, "cached": True, "stale": stale}
 
 
@@ -409,7 +428,9 @@ def read_position_kpi_snapshot(
         period_to=date_to,
     )
     if cached is not None and isinstance(cached.payload, dict):
-        return _from_cache(cached, stale=False)
+        current = _from_cache(cached, stale=False)
+        if current is not None:
+            return current
     latest = _latest_cache_row(
         db,
         profile_id=profile.id,
@@ -417,7 +438,9 @@ def read_position_kpi_snapshot(
         period_to=date_to,
     )
     if latest is not None and isinstance(latest.payload, dict):
-        return _from_cache(latest, stale=latest.day != as_of)
+        current = _from_cache(latest, stale=latest.day != as_of)
+        if current is not None:
+            return current
     return None
 
 
@@ -446,7 +469,9 @@ def get_or_compute_position_kpi(
             period_to=date_to,
         )
         if cached is not None and isinstance(cached.payload, dict):
-            return _from_cache(cached, stale=False)
+            current = _from_cache(cached, stale=False)
+            if current is not None:
+                return current
         if allow_stale:
             latest = _latest_cache_row(
                 db,
@@ -455,7 +480,9 @@ def get_or_compute_position_kpi(
                 period_to=date_to,
             )
             if latest is not None and isinstance(latest.payload, dict):
-                return _from_cache(latest, stale=latest.day != as_of)
+                current = _from_cache(latest, stale=latest.day != as_of)
+                if current is not None:
+                    return current
 
     ctx = SourceBundle(as_of=as_of, date_from=date_from, date_to=date_to)
     tiles = _compute_tiles(db, profile, ctx)

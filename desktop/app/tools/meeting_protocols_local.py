@@ -11,6 +11,8 @@ from typing import Any
 from urllib.parse import quote
 
 PROTOCOL_ENTITY = "Document_ТД_Протокол"
+THEME_ENTITY = "Catalog_ТД_ТемыСовещаний"
+_EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 
 PROTOCOL_TABULAR_SECTIONS: tuple[tuple[str, str], ...] = (
     ("Решения", "Document_ТД_Протокол_Решения"),
@@ -148,15 +150,25 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
 
 
 _PAGE_SIZE = 100
-_FULL_SERIES_CAP = 2000
+# Raw PSD documents exceed 1700; several documents can share one number.
+_FULL_SERIES_CAP = 5000
 
 
-def build_protocol_list_path(*, odata_filter: str, limit: int, skip: int = 0) -> str:
+def build_protocol_list_path(
+    *,
+    odata_filter: str,
+    limit: int,
+    skip: int = 0,
+    orderby: str = "Date desc",
+    expand: bool = True,
+) -> str:
     filt = quote(odata_filter, safe="=,'")
     skip_q = f"&$skip={int(skip)}" if skip else ""
+    order = quote(orderby, safe="")
+    expand_q = "&$expand=ТемаСовещания" if expand else ""
     return (
         f"{PROTOCOL_ENTITY}?$format=json&$top={limit}"
-        f"{skip_q}&$filter={filt}&$orderby=Date%20desc&$expand=ТемаСовещания"
+        f"{skip_q}&$filter={filt}&$orderby={order}{expand_q}"
     )
 
 
@@ -212,16 +224,43 @@ def normalize_protocol_row(row: dict[str, Any], *, kind: str) -> dict[str, Any]:
     }
 
 
+def _latest_document_per_number(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """1C stores several documents under one PSD number. Keep the latest date."""
+    best: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        number = str(row.get("Number") or "").strip()
+        if not number:
+            continue
+        previous = best.get(number)
+        if previous is None or str(row.get("Date") or "") >= str(previous.get("Date") or ""):
+            best[number] = row
+    return [best[number] for number in sorted(best)]
+
+
 def _fetch_protocol_page(
     *,
     odata_filter: str,
     limit: int,
     skip: int = 0,
+    orderby: str = "Date desc",
+    expand: bool = True,
+    resolve_navigation: bool | None = None,
 ) -> dict[str, Any]:
     from app.tools.onec_odata_invoke import fetch_odata_list
 
-    path = build_protocol_list_path(odata_filter=odata_filter, limit=limit, skip=skip)
-    return fetch_odata_list(entity=PROTOCOL_ENTITY, path=path, top=limit)
+    path = build_protocol_list_path(
+        odata_filter=odata_filter,
+        limit=limit,
+        skip=skip,
+        orderby=orderby,
+        expand=expand,
+    )
+    return fetch_odata_list(
+        entity=PROTOCOL_ENTITY,
+        path=path,
+        top=limit,
+        resolve_navigation=resolve_navigation,
+    )
 
 
 def _page_protocol_rows(
@@ -233,10 +272,22 @@ def _page_protocol_rows(
     rows: list[dict[str, Any]] = []
     raw: dict[str, Any] = {}
     skip = 0
+    # 1C sometimes answers the first page with a couple of rows and still has the rest.
+    short_retries = 0
     while len(rows) < cap:
         take = min(page_size, cap - len(rows))
-        raw = _fetch_protocol_page(odata_filter=odata_filter, limit=take, skip=skip)
+        raw = _fetch_protocol_page(
+            odata_filter=odata_filter,
+            limit=take,
+            skip=skip,
+            orderby="Ref_Key asc",
+            expand=False,
+            resolve_navigation=False,
+        )
         batch = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
+        if skip == 0 and batch and len(batch) < take and short_retries < 2:
+            short_retries += 1
+            continue
         rows.extend(batch)
         if len(batch) < take:
             return rows, raw, False
@@ -287,6 +338,52 @@ def _attach_protocol_sections(protocol: dict[str, Any]) -> None:
         protocol["sections_path_prefix"] = f"{PROTOCOL_ENTITY}(guid'{ref_key}')/"
 
 
+def _theme_key(row: dict[str, Any]) -> str:
+    key = str(row.get("ТемаСовещания_Key") or "").strip()
+    if not key or key == _EMPTY_GUID:
+        return ""
+    return key
+
+
+def _attach_meeting_topics(rows: list[dict[str, Any]]) -> None:
+    """Full PSD pages omit $expand: with it 1C returns a short page and the scan stops."""
+    needed = {_theme_key(row) for row in rows}
+    needed.discard("")
+    if not needed:
+        return
+    from app.tools.onec_odata_invoke import fetch_odata_list
+
+    found: dict[str, str] = {}
+    skip = 0
+    page_size = 200
+    while needed - set(found) and skip < 5000:
+        path = (
+            f"{THEME_ENTITY}?$format=json&$top={page_size}&$skip={skip}"
+            "&$select=Ref_Key,Description&$orderby=Ref_Key"
+        )
+        try:
+            raw = fetch_odata_list(
+                entity=THEME_ENTITY,
+                path=path,
+                top=page_size,
+                resolve_navigation=False,
+            )
+        except RuntimeError:
+            return
+        batch = [item for item in (raw.get("value") or []) if isinstance(item, dict)]
+        for item in batch:
+            key = str(item.get("Ref_Key") or "").strip()
+            if key in needed:
+                found[key] = str(item.get("Description") or "").strip()
+        if len(batch) < page_size:
+            break
+        skip += len(batch)
+    for row in rows:
+        title = found.get(_theme_key(row)) or ""
+        if title and not _topic_from_row(row):
+            row["ТемаСовещания"] = {"Description": title}
+
+
 def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
     kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or ""))
     psd_only = psd_mark_requested(args)
@@ -305,6 +402,8 @@ def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
                 page_size=_PAGE_SIZE,
                 cap=_FULL_SERIES_CAP,
             )
+            rows = _latest_document_per_number(rows)
+            _attach_meeting_topics(rows)
             filter_note = ""
             raw = {**raw, "value": rows}
         else:

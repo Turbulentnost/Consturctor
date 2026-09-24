@@ -703,6 +703,99 @@ def _dump_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in raw if isinstance(row, dict)]
 
 
+def read_cached_dump_rows() -> tuple[list[dict[str, Any]], bool]:
+    """Задачи из уже записанного кэша документооборота. Сеть не вызываем.
+
+    Второй флаг — есть ли в кэше выполненные задачи, а не только открытые.
+    """
+    directory = _cache_dir()
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    includes_completed = False
+    for path in sorted(directory.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        payload = data.get("payload") if isinstance(data, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        batch = _dump_rows(payload)
+        if payload.get("only_open") is False or any(row.get("executed") for row in batch):
+            includes_completed = True
+        for row in batch:
+            key = str(row.get("id") or row.get("number") or "").strip()
+            if not key:
+                key = f"row-{len(order)}"
+            previous = merged.get(key)
+            if previous is None:
+                order.append(key)
+                merged[key] = dict(row)
+                continue
+            if row.get("executed") and not previous.get("executed"):
+                merged[key] = dict(row)
+    return [merged[key] for key in order], includes_completed
+
+
+def fetch_performer_period_rows(
+    performer: str,
+    date_from: date,
+    date_to: date,
+    *,
+    force_refresh: bool = False,
+) -> list[dict[str, Any]]:
+    """Задачи исполнителя за период, включая выполненные. Ответ кладём в тот же кэш."""
+    name = str(performer or "").strip()
+    if not name:
+        return []
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+    config = load_config()
+    key = (
+        f"period|{config.soap_url()}|{date_from.isoformat()}|{date_to.isoformat()}|"
+        f"{normalize_person(name)}|executed"
+    )
+    lock = _lock_for(key)
+    with lock:
+        if not force_refresh:
+            hit = _cache_entry(key)
+            if hit:
+                fetched_at, payload = hit
+                if time.time() - fetched_at < _cache_ttl_sec():
+                    return [dict(row) for row in _dump_rows(payload)]
+        user = find_user(config, name)
+        since = datetime.combine(date_from, datetime.min.time())
+        finish = datetime.combine(date_to, datetime.max.time()).replace(microsecond=0)
+        timeout = min(max(float(config.timeout), 30.0), 90.0)
+        listed = list_open_tasks(
+            config,
+            since,
+            timeout=timeout,
+            only_open=False,
+            user=user,
+            limit=0,
+            filter_mode="performer",
+        )
+        kept: list[dict[str, Any]] = []
+        for row in listed:
+            began = parse_soap_datetime(str(row.get("begin") or ""))
+            if began is None or began > finish:
+                continue
+            if not person_matches(str(row.get("performer") or ""), name):
+                continue
+            kept.append(dict(row))
+        _store_cache(
+            key,
+            {
+                "endpoint": config.soap_url(),
+                "only_open": False,
+                "count": len(kept),
+                "rows": kept,
+            },
+        )
+        return kept
+
+
 def slice_dump_for_user(
     dump: dict[str, Any],
     user_fio: str,

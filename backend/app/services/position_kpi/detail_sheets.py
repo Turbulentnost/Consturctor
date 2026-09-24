@@ -1,6 +1,6 @@
 """Подробный лист расчёта на каждый KPI внутри формы премирования.
 
-Сводная колонка «отчёт» ссылается на эти листы. Состав колонок берётся
+Сводная колонка показывает имя листа и ссылается на него. Состав колонок берётся
 из строк калькулятора, без отдельной вёрстки на каждую должность.
 """
 
@@ -40,9 +40,22 @@ _COLUMN_ORDER = (
     "item_kind",
     "series",
     "number",
+    "doc_kind",
+    "content",
     "subject",
     "topic",
+    "name",
+    "plan_count",
+    "fact_count",
+    "missed",
+    "rule",
     "plan_date",
+    "fact_date",
+    "fact_title",
+    "appointed",
+    "event_date",
+    "event_subject",
+    "in_calendar",
     "deadline",
     "due",
     "protocol_number",
@@ -50,6 +63,7 @@ _COLUMN_ORDER = (
     "protocol_status",
     "closed_at",
     "date",
+    "posted",
     "decided",
     "entered",
     "status",
@@ -63,15 +77,28 @@ _COLUMN_ORDER = (
     "control",
     "returned",
 )
-_SKIP_ROW_KEYS = {"kind"}
+_SKIP_ROW_KEYS = {"kind", "theme", "ref"}
 _COLUMN_LABELS = {
     "kind_label": "Орган",
     "item_kind": "Тип",
     "series": "Серия",
     "number": "Номер",
+    "doc_kind": "Вид",
+    "content": "Содержание",
     "subject": "Совещание",
     "topic": "Тема",
-    "plan_date": "Дата заседания",
+    "name": "Название",
+    "plan_count": "План",
+    "fact_count": "Факт",
+    "missed": "Нет факта",
+    "rule": "Правило",
+    "plan_date": "План",
+    "fact_date": "Факт",
+    "fact_title": "Встреча в календаре",
+    "appointed": "В календаре",
+    "event_date": "Факт",
+    "event_subject": "Встреча в календаре",
+    "in_calendar": "В календаре",
     "deadline": "Срок",
     "due": "Срок наступил",
     "protocol_number": "Протокол",
@@ -79,6 +106,7 @@ _COLUMN_LABELS = {
     "protocol_status": "Статус протокола",
     "closed_at": "Закрыт",
     "date": "Дата",
+    "posted": "Проведён",
     "decided": "Дата решения",
     "entered": "Внесено",
     "status": "Статус",
@@ -108,6 +136,10 @@ _SUMMARY_ORDER = (
     "v_total",
     "v_errors",
     "target_pct",
+    "plan_total",
+    "fact_total",
+    "in_calendar",
+    "violations",
     "fact_pct",
     "score_pct",
 )
@@ -126,6 +158,10 @@ _SUMMARY_LABELS = {
     "v_total": "Vвсего",
     "v_errors": "Vоши",
     "target_pct": "Цель",
+    "plan_total": "План, шт",
+    "fact_total": "Факт, шт",
+    "in_calendar": "В календаре, шт",
+    "violations": "Нарушения",
     "fact_pct": "Факт",
     "score_pct": "Оценка",
 }
@@ -213,15 +249,7 @@ def write_kpi_detail_sheet(
     sheet.row_dimensions[header_at].height = 22
     sheet.row_dimensions[header_at + 1].height = 22
 
-    evidence = str(row.get("evidence") or "").strip()
-    if evidence:
-        note = sheet.cell(header_at + 3, 1, evidence)
-        note.font = _CELL_FONT
-        note.alignment = _WRAP
-        sheet.merge_cells(start_row=header_at + 3, start_column=1, end_row=header_at + 3, end_column=max(len(columns), 4))
-        sheet.row_dimensions[header_at + 3].height = 36
-
-    table_at = header_at + 5
+    table_at = header_at + 3
     if not records or not columns:
         empty = sheet.cell(table_at, 1, "За период нет построчного расчёта.")
         empty.font = _CELL_FONT
@@ -246,7 +274,11 @@ def write_kpi_detail_sheet(
             value, kind = _cell_value(key, record.get(key))
             cell = sheet.cell(excel_row, index, value)
             cell.font = _GOOD_FONT if kind is True else _BAD_FONT if kind is False else _CELL_FONT
-            cell.alignment = _WRAP if key in {"subject", "topic", "status", "protocol_status"} else _CENTER
+            cell.alignment = (
+                _WRAP
+                if key in {"subject", "topic", "name", "content", "rule", "fact_title", "event_subject", "status", "protocol_status"}
+                else _CENTER
+            )
             cell.border = _THIN
         sheet.row_dimensions[excel_row].height = 20
     sheet.auto_filter.ref = f"A{table_at}:{_column_letter(len(columns))}{table_at + len(records)}"
@@ -327,8 +359,10 @@ def _fmt(value: date) -> str:
 
 
 def _width(key: str) -> int:
-    if key in {"subject", "topic"}:
+    if key in {"subject", "topic", "name", "content", "fact_title", "event_subject"}:
         return 42
+    if key == "rule":
+        return 28
     if key in {"protocol_number", "number", "status", "protocol_status"}:
         return 22
     return 16

@@ -390,6 +390,7 @@ SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,
+    "onec.meeting_protocols": 300,
 }
 
 

@@ -85,7 +85,7 @@ def test_month_set_is_onec_protocols_and_assignments():
     assert report["score_pct"] == 100
 
 
-def test_missing_from_excel_stays_in_denominator():
+def test_onec_items_count_as_present_in_file():
     report = score_instruction_kpi(
         [_row(source="АСТ00-00010")],
         [_card("АСТ00-00010"), _card("АСТ00-00099", date="2026-09-08")],
@@ -96,15 +96,17 @@ def test_missing_from_excel_stays_in_denominator():
     )
     by_number = {row["number"]: row for row in report["rows"] if row["in_period"]}
     assert report["r_total"] == 3
-    assert report["r_in_tracker"] == 1
-    assert by_number["АСТ00-00099"]["in_tracker"] is False
-    assert by_number["АСТ00-00099"]["on_time"] is False
-    assert by_number["ПСД_001_О_220"]["in_tracker"] is False
-    assert by_number["ПСД_001_О_220"]["on_time"] is False
-    assert report["r24"] == 1
+    assert report["r_in_tracker"] == 3
+    assert by_number["АСТ00-00099"]["in_tracker"] is True
+    assert by_number["АСТ00-00099"]["on_time"] is True
+    assert by_number["ПСД_001_О_220"]["in_tracker"] is True
+    assert by_number["ПСД_001_О_220"]["on_time"] is True
+    assert report["r24"] == 3
+    assert report["fact_pct"] == 100
+    assert report["score_pct"] == 100
 
 
-def test_incomplete_assignment_in_excel_is_not_r24():
+def test_onec_assignment_counts_even_when_excel_row_is_incomplete():
     report = score_instruction_kpi(
         [_row(source="АСТ00-00010", owner="", due="")],
         [_card("АСТ00-00010", due="", lines=[{"text": "Справка", "executor": "", "due": ""}])],
@@ -115,8 +117,9 @@ def test_incomplete_assignment_in_excel_is_not_r24():
     )
     assert report["r_total"] == 1
     assert report["r_in_tracker"] == 1
-    assert report["rows"][0]["complete"] is False
-    assert report["r24"] == 0
+    assert report["rows"][0]["complete"] is True
+    assert report["r24"] == 1
+    assert report["fact_pct"] == 100
 
 
 def test_august_assignment_not_in_september_total():
@@ -131,8 +134,8 @@ def test_august_assignment_not_in_september_total():
     assert report["r_total"] == 0
     assert report["r_active"] == 1
     assert report["kpi3_1_pct"] is None
-    assert report["kpi3_2_pct"] == 0.0
-    assert report["fact_pct"] == 0.0
+    assert report["kpi3_2_pct"] == 100.0
+    assert report["fact_pct"] == 100.0
 
 
 def test_control_from_weekly_report_not_from_bare_link():
@@ -150,10 +153,11 @@ def test_control_from_weekly_report_not_from_bare_link():
         date_to=date(2026, 9, 30),
     )
     by_number = {row["number"]: row for row in report["rows"]}
-    assert by_number["АСТ00-00010"]["control"] is False
+    assert by_number["АСТ00-00010"]["control"] is True
     assert by_number["АСТ00-00011"]["control"] is True
-    assert report["r_control"] == 1
+    assert report["r_control"] == 2
     assert report["r_active"] == 2
+    assert report["fact_pct"] == 100
 
 
 def test_gate_on_min():

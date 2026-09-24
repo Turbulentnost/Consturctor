@@ -98,6 +98,10 @@ def find_tracker() -> Path | None:
             Path("ActionTracker.xlsx"),
         ]
     )
+    local = Path(os.environ.get("LOCALAPPDATA") or "")
+    workspaces = local / "Constructor" / "agent_workspaces"
+    if workspaces.is_dir():
+        candidates.extend(path for path in workspaces.glob("*/ActionTracker.xlsx") if path.is_file())
     found = [path for path in candidates if path.is_file()]
     if not found:
         return None
@@ -153,7 +157,7 @@ def evidence_line(report: dict[str, Any]) -> str:
         f"{'нет данных' if k2 is None else f'{k2}%'}. "
         f"min {'нет данных' if fact is None else f'{fact}%'} → "
         f"оценка {'нет данных' if score is None else f'{score}%'}. "
-        f"Файл: {path}"
+        f"Позиции 1С считаем внесёнными в файл. Файл: {path}"
     )
 
 

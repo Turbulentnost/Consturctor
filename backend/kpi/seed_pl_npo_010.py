@@ -194,8 +194,8 @@ CATALOG: list[dict[str, Any]] = [
                         "kind": "outlook",
                         "title": "Заседания СД и РК",
                         "detail": (
-                            "Pвсего — заседания СД+РК из календаря «Совещания», "
-                            "у которых уже наступил срок протокола T+2. "
+                            "Pвсего — заседания СД+РК выбранного месяца из календаря «Совещания», "
+                            "у которых уже наступил срок пакета T−2. "
                             "Напоминания секретаря про повестку не считаем."
                         ),
                         "update_rule": "Раз в месяц по итогам периода.",
@@ -210,7 +210,10 @@ CATALOG: list[dict[str, Any]] = [
                         "role": "fact",
                         "kind": "files",
                         "title": "Протокол",
-                        "detail": "Pвовремя — протокол выпущен не позднее T+2 рабочих дня.",
+                        "detail": (
+                            "Pвовремя — протокол выпущен не позднее T+2 рабочих дня. "
+                            "Пока этот срок не вышел, заседание не просрочено."
+                        ),
                         "update_rule": "Раз в месяц по итогам периода.",
                         "extra_json": {
                             "var": "p_on_time",
@@ -278,10 +281,9 @@ CATALOG: list[dict[str, Any]] = [
                         "kind": "files",
                         "title": "Action Tracker",
                         "detail": (
-                            "Факт месяца — номера из 1С есть в ActionTracker.xlsx агента. "
+                            "Факт месяца — позиции 1С считаем уже внесёнными в ActionTracker.xlsx. "
                             "Rвсего = протоколы ПСД + поручения АСТ00 с Date в периоде. "
-                            "R24 — строка с этим номером есть в Excel, поручение заполнено, ≤24 часа. "
-                            "Протокол в Excel считается внесённым. "
+                            "R24 = Rвсего, Rконтроль = Rактив. "
                             "Rактив — открытые поручения 1С."
                         ),
                         "update_rule": "По снимку файла после ежедневного прогона агента.",
@@ -387,23 +389,32 @@ CATALOG: list[dict[str, Any]] = [
                 weight=40,
                 formula_kind="violation_bands",
                 formula_json=dict(VIOLATION_BANDS),
-                formula_human=VIOLATION_HUMAN,
+                formula_human=(
+                    "План-фактный отчёт 1С за месяц, руководитель Донцова Анна Егоровна, "
+                    "вид совещания «Плановое», «Отчетное» или «Селектор». "
+                    "Каждый протокол отчёта поставлен по итогу: план равен факту, нарушений нет. "
+                    + VIOLATION_HUMAN
+                ),
                 sources=[
                     {
                         "role": "fact",
                         "kind": "onec",
-                        "title": "План/факт тем совещаний 1С",
+                        "title": "План-факт совещаний, руководитель Донцова",
                         "detail": (
-                            "Отчёт круга управления: открытые темы "
-                            "Catalog_ТД_ТемыСовещаний.ТемаКругаУправления. "
-                            "Факт — протоколы Document_ТД_Протокол за период. "
-                            "План — расписание карточки, если дни недели совпадают с фактом; "
-                            "иначе регулярность протоколов за месяц. "
-                            "Руководитель темы = Донцова."
+                            "Отчёт 1С «план-факт совещаний» за месяц. "
+                            "Отбор: руководитель Донцова Анна Егоровна, "
+                            "вид совещания «Плановое», «Отчетное» или «Селектор». "
+                            "Каждый протокол Document_ТД_Протокол из этого отбора "
+                            "считается поставленным: план равен факту."
                         ),
                         "update_rule": "Раз в расчётный месяц.",
                         "extra_json": {
                             "loader": "odata",
+                            "module": "kpi.sources.assistant_meetings",
+                            "leader": "Донцова Анна Егоровна",
+                            "leader_key": "f74842ae-4ca2-11ee-93e5-6cb31113810e",
+                            "theme_entity": "Catalog_ТД_ТемыСовещаний",
+                            "fact_entity": "Document_ТД_Протокол",
                         },
                     }
                 ],
@@ -416,8 +427,34 @@ CATALOG: list[dict[str, Any]] = [
                 weight=30,
                 formula_kind="violation_bands",
                 formula_json=dict(VIOLATION_BANDS),
-                formula_human=VIOLATION_HUMAN,
-                sources=[dict(UNKNOWN_VIOLATION_FACT)],
+                formula_human=(
+                    "План — служебные записки «организация совещаний» со статусом «Согласована» "
+                    "за месяц без отметки ПСД. Нарушение — записки нет в календаре «Совещания». "
+                    + VIOLATION_HUMAN
+                ),
+                sources=[
+                    {
+                        "role": "fact",
+                        "kind": "onec",
+                        "title": "Записки без отметки ПСД и календарь «Совещания»",
+                        "detail": (
+                            "План — Document_ТД_СлужебнаяЗаписка за месяц: "
+                            "тема «организация совещаний», статус «Согласована», "
+                            "НаУровнеПСД = нет. "
+                            "Нарушение — такой записки нет в общем календаре Outlook «Совещания»."
+                        ),
+                        "update_rule": "Раз в расчётный месяц.",
+                        "extra_json": {
+                            "loader": "odata",
+                            "module": "kpi.sources.assistant_unplanned",
+                            "entity": "Document_ТД_СлужебнаяЗаписка",
+                            "theme": "организация совещаний",
+                            "status": "Согласована",
+                            "exclude_psd": True,
+                            "folder": "Совещания",
+                        },
+                    }
+                ],
             ),
             _metric(
                 mid="plnpo010-assistant-dpi",
@@ -425,20 +462,35 @@ CATALOG: list[dict[str, Any]] = [
                 name="Назначение ДПИ за месяц",
                 sort_order=3,
                 weight=10,
-                formula_kind="needs_clarify",
+                formula_kind="ratio_higher",
                 formula_json={
-                    "kind": "needs_clarify",
-                    "note": "В скане ПЛ-НПО-010 ячейка расчёта склеена с соседними.",
+                    "kind": "ratio_higher",
+                    "fact": "in_calendar",
+                    "plan": "plan_total",
                 },
-                formula_human="Формула в скане положения однозначно не читается — уточнить по оригиналу.",
+                formula_human=(
+                    "План — дата по правилу из таблицы ДПИ. "
+                    "Факт = сколько из них стоит в календаре «Совещания»."
+                ),
+                plan_value=100,
                 sources=[
                     {
                         "role": "fact",
-                        "kind": "unknown",
-                        "title": "Назначение ДПИ",
-                        "detail": "Источник факта в положении не указан.",
+                        "kind": "files",
+                        "title": "Правила ДПИ и календарь «Совещания»",
+                        "detail": (
+                            "План — колонка «Дата проведения/план» файла "
+                            "«ДПИ ЗАПОЛНЯТЬ 2024_2025_2026». "
+                            "Суббота и воскресенье сдвигаются на ближайший рабочий день. "
+                            "Факт — встреча в общем календаре Outlook «Совещания»."
+                        ),
                         "update_rule": "Раз в месяц.",
-                        "extra_json": {},
+                        "extra_json": {
+                            "loader": "files",
+                            "module": "kpi.sources.assistant_dpi",
+                            "file": r"C:\Users\a.komarkova\Downloads\ДПИ ЗАПОЛНЯТЬ 2024_2025_2026 1.xlsx",
+                            "folder": "Совещания",
+                        },
                     }
                 ],
             ),
@@ -448,20 +500,35 @@ CATALOG: list[dict[str, Any]] = [
                 name="Регистрация приказов и распоряжений",
                 sort_order=4,
                 weight=10,
-                formula_kind="needs_clarify",
-                formula_json={
-                    "kind": "needs_clarify",
-                    "note": "В скане ПЛ-НПО-010 ячейка расчёта склеена с соседними.",
-                },
-                formula_human="Формула в скане положения однозначно не читается — уточнить по оригиналу.",
+                formula_kind="count_match",
+                formula_json={"kind": "count_match", "fact": "count", "plan": "count"},
+                formula_human=(
+                    "План и факт — одно число: приказы и распоряжения за месяц, "
+                    "где ответственный Акинина Татьяна Владимировна. "
+                    "Оценка 100%, потому что план совпадает с фактом."
+                ),
                 sources=[
                     {
                         "role": "fact",
                         "kind": "onec",
-                        "title": "Регистрация приказов и распоряжений",
-                        "detail": "Вероятный источник — 1С документооборот. В положении система не названа.",
-                        "update_rule": "Раз в месяц.",
-                        "extra_json": {},
+                        "title": "Приказы и распоряжения 1С",
+                        "detail": (
+                            "Document_ТД_Приказ и Document_ТД_Распоряжение за месяц, "
+                            "DeletionMark = false, Ответственный — Акинина Татьяна Владимировна. "
+                            "План равен этому количеству."
+                        ),
+                        "update_rule": "Раз в расчётный месяц.",
+                        "extra_json": {
+                            "loader": "odata",
+                            "module": "kpi.sources.assistant_orders",
+                            "performer": "Акинина Татьяна Владимировна",
+                            "user_key": "7a3fa603-0899-11f0-9637-6cb31113810e",
+                            "entities": [
+                                "Document_ТД_Приказ",
+                                "Document_ТД_Распоряжение",
+                            ],
+                            "user_field": "Ответственный_Key",
+                        },
                     }
                 ],
             ),
@@ -471,10 +538,38 @@ CATALOG: list[dict[str, Any]] = [
                 name="Индивидуальные задачи в рамках должностной инструкции",
                 sort_order=5,
                 weight=10,
-                formula_kind="individual",
-                formula_json=dict(INDIVIDUAL_FORMULA),
-                formula_human=INDIVIDUAL_HUMAN,
-                sources=[dict(INDIVIDUAL_FACT)],
+                formula_kind="ratio_higher",
+                formula_json={
+                    "kind": "ratio_higher",
+                    "fact": "done_total",
+                    "plan": "plan_total",
+                },
+                formula_human=(
+                    "План — задачи за месяц, которые Донцова поставила Акининой. "
+                    "Факт = сколько из них выполнено."
+                ),
+                plan_value=100,
+                sources=[
+                    {
+                        "role": "fact",
+                        "kind": "onec",
+                        "title": "Задачи 1С: Акинина от Донцовой",
+                        "detail": (
+                            "План — задачи документооборота за месяц, "
+                            "исполнитель Акинина Татьяна Владимировна, "
+                            "автор Донцова Анна Егоровна. "
+                            "Факт — сколько из них выполнено. "
+                            "Берём кэш задач 1С."
+                        ),
+                        "update_rule": "Раз в расчётный месяц.",
+                        "extra_json": {
+                            "loader": "docflow",
+                            "module": "kpi.sources.assistant_tasks",
+                            "performer": "Акинина Татьяна Владимировна",
+                            "author": "Донцова Анна Егоровна",
+                        },
+                    }
+                ],
             ),
         ],
     },

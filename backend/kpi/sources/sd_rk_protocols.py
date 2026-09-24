@@ -2,6 +2,9 @@
 
 ПЛ-НПО-010: факт = Pвовремя / Pвсего, протокол не позднее T+2 рабочих дня,
 цель ≥ 95%, иначе оценка = факт / 95%.
+Срез — только выбранный период (текущий месяц). В знаменатель входят
+заседания этого периода, у которых уже наступил срок пакета T−2.
+Пока T+2 не вышел, протокол не просрочен.
 """
 
 from __future__ import annotations
@@ -181,19 +184,25 @@ def score_protocol_kpi(
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> dict[str, Any]:
+    catalog = protocols_from_rows(protocols)
     meetings = meetings_from_events(events)
+    plan_source = "outlook"
+    if not meetings:
+        meetings = _meetings_from_protocols(catalog)
+        plan_source = "protocols"
     if date_from is not None:
         meetings = [row for row in meetings if row["plan_date"] >= date_from]
     if date_to is not None:
         meetings = [row for row in meetings if row["plan_date"] <= date_to]
-    catalog = protocols_from_rows(protocols)
     used: set[int] = set()
     rows: list[dict[str, Any]] = []
     for meeting in meetings:
         hit = _match_protocol(meeting, catalog, used)
-        due = meeting["deadline"] <= as_of
+        due = sub_workdays(meeting["plan_date"], 2) <= as_of
         issued = bool(hit and hit["issued"])
-        on_time = bool(due and issued and hit is not None and hit["date"] <= meeting["deadline"])
+        issued_on_time = bool(issued and hit is not None and hit["date"] <= meeting["deadline"])
+        within = meeting["deadline"] > as_of
+        on_time = bool(due and (issued_on_time or within))
         rows.append(
             {
                 "kind": meeting["kind"],
@@ -222,8 +231,30 @@ def score_protocol_kpi(
         "score_pct": score_pct,
         "weight": WEIGHT,
         "contrib_pct": round(score_pct * WEIGHT / 100.0, 1) if score_pct is not None else None,
+        "plan_source": plan_source,
         "rows": rows,
     }
+
+
+def _meetings_from_protocols(catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Календарь пуст: дата протокола СД/РК и есть дата заседания."""
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in catalog:
+        key = (item["kind"], item["date"].isoformat())
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "kind": item["kind"],
+                "subject": item["topic"],
+                "plan_date": item["date"],
+                "deadline": protocol_deadline(item["date"]),
+            }
+        )
+    rows.sort(key=lambda item: (item["plan_date"], item["kind"]))
+    return rows
 
 
 def format_report(report: dict[str, Any]) -> str:
@@ -234,6 +265,8 @@ def format_report(report: dict[str, Any]) -> str:
     for row in report.get("rows") or []:
         if not row.get("due"):
             mark = "ждёт"
+        elif row.get("on_time") and not row.get("issued"):
+            mark = "срок"
         elif row.get("on_time"):
             mark = "да"
         else:
@@ -250,5 +283,8 @@ def format_report(report: dict[str, Any]) -> str:
     score = report.get("score_pct")
     fact_text = "нет данных" if fact is None else f"{fact}%"
     score_text = "нет данных" if score is None else f"{score}%"
-    lines.append(f"Pвовремя / Pвсего = {on_time}/{total}  факт {fact_text}  оценка {score_text}")
+    source = ""
+    if report.get("plan_source") == "protocols":
+        source = "  план — протоколы 1С, календарь пуст"
+    lines.append(f"Pвовремя / Pвсего = {on_time}/{total}  факт {fact_text}  оценка {score_text}{source}")
     return "\n".join(lines)

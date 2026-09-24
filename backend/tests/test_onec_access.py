@@ -210,3 +210,36 @@ def test_invoke_onec_real_get_denies_without_actor(monkeypatch: pytest.MonkeyPat
     )
     with pytest.raises(OnecToolError, match="Доступ запрещен"):
         invoke_onec("onec.odata_get", {"entity": "Document_ЗаказКлиента"})
+
+
+def test_psd_series_list_is_not_cut_by_row_confidentiality(monkeypatch: pytest.MonkeyPatch) -> None:
+    from urllib.parse import quote
+
+    rows = [
+        {"Ref_Key": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Number": "ПСД_001_О_001"},
+        {"Ref_Key": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Number": "ПСД_066_В_001"},
+    ]
+
+    monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: True)
+    monkeypatch.setattr("app.services.onec_tools._erp_sql_ready", lambda: False)
+    monkeypatch.setattr("app.services.docflow_tasks.docflow_configured", lambda: False)
+    monkeypatch.setattr("app.services.docflow_tasks.docflow_url_ready", lambda: False)
+    monkeypatch.setattr(
+        "app.services.onec_tools.REAL_HANDLERS",
+        {"onec.odata_get": lambda _args: {"value": list(rows), "count": len(rows)}},
+    )
+    monkeypatch.setattr(
+        "app.services.onec_tools._enforce_actor_access",
+        lambda *_args, **_kwargs: OnecAccessProfile(user_ref="u", fio="Ильченко", privileged=False),
+    )
+    path = (
+        "Document_ТД_Протокол?$top=100&$filter="
+        + quote("DeletionMark eq false and startswith(Number,'ПСД')", safe="=,'")
+    )
+    result = invoke_onec(
+        "onec.odata_get",
+        {"entity": "Document_ТД_Протокол", "path": path},
+        actor_user_id="user",
+        actor_fio="Ильченко",
+    )
+    assert [row["Number"] for row in result["value"]] == ["ПСД_001_О_001", "ПСД_066_В_001"]
