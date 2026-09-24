@@ -24,6 +24,7 @@ import { DocflowAssignmentsPanel } from './DocflowAssignmentsPanel'
 import { DocflowMemosPanel } from './DocflowMemosPanel'
 import { DocflowOrdersPanel } from './DocflowOrdersPanel'
 import { DocflowProtocolsPanel } from './DocflowProtocolsPanel'
+import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 import './docflowGrid.css'
 
 const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; tone: string }[] = [
@@ -54,6 +55,39 @@ const SUBTITLES: Record<JournalId, string> = {
 
 function cell(value: string): string {
   return value.trim() || '—'
+}
+
+function correspondenceSearchText(row: CorrespondenceRow): string {
+  return [
+    formatCorrespondenceDate(row.date),
+    row.number,
+    row.organization,
+    row.emailFrom,
+    row.emailTo,
+    row.partner,
+    row.addressee,
+    row.department,
+    row.incomingNumber,
+    row.direction,
+    row.comment
+  ].join(' ')
+}
+
+function correspondenceSortValue(row: CorrespondenceRow, key: string): string {
+  const map: Record<string, string> = {
+    date: row.date,
+    number: row.number,
+    organization: row.organization,
+    emailFrom: row.emailFrom,
+    emailTo: row.emailTo,
+    partner: row.partner,
+    addressee: row.addressee,
+    department: row.department,
+    incomingNumber: row.incomingNumber,
+    direction: row.direction,
+    comment: row.comment
+  }
+  return map[key] ?? ''
 }
 
 function CorrespondenceCard({ row }: { row: CorrespondenceRow }): React.JSX.Element {
@@ -125,7 +159,13 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
     }
   }, [user, journal, kind])
 
-  const rows = useMemo(() => correspondenceInPeriod(cachedRows, from, to), [cachedRows, from, to])
+  const periodRows = useMemo(() => correspondenceInPeriod(cachedRows, from, to), [cachedRows, from, to])
+  const table = useDocflowTable(periodRows, {
+    text: correspondenceSearchText,
+    value: correspondenceSortValue,
+    initialSort: { key: 'date', dir: 'desc' }
+  })
+  const rows = table.rows
   const selected = rows.find((row) => (row.id || `${row.number}-${row.date}`) === selectedId) || null
 
   return (
@@ -214,11 +254,23 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
               </div>
               <div className="docflow-split">
                 <div className="docflow-table-card wp-card">
+                  <div className="docflow-order-filters">
+                    <DocflowSearch
+                      value={table.query}
+                      onChange={table.setQuery}
+                      placeholder="Номер, организация, тема, email…"
+                      found={rows.length}
+                      total={periodRows.length}
+                    />
+                    <span>{`${rows.length} из ${periodRows.length}`}</span>
+                  </div>
                   {loading ? <p className="docflow-status">Загружаем из 1С…</p> : null}
                   {error && !loading ? <p className="docflow-status docflow-status-error">{error}</p> : null}
                   {!loading && !error && !rows.length ? (
                     <p className="docflow-status">
-                      Нет {kind === 'incoming' ? 'входящей' : 'исходящей'} корреспонденции за выбранный период
+                      {table.query.trim()
+                        ? 'Ничего не найдено по этим словам'
+                        : `Нет ${kind === 'incoming' ? 'входящей' : 'исходящей'} корреспонденции за выбранный период`}
                     </p>
                   ) : null}
                   {rows.length ? (
@@ -226,25 +278,50 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
                       <table className="spec-v04-table docflow-table">
                         <thead>
                           <tr>
-                            <th>Дата</th>
-                            <th>Номер</th>
-                            <th>Организация</th>
-                            <th>Email отправителя</th>
+                            <SortTh label="Дата" sortKey="date" sort={table.sort} onSort={table.toggleSort} />
+                            <SortTh label="Номер" sortKey="number" sort={table.sort} onSort={table.toggleSort} />
+                            <SortTh
+                              label="Организация"
+                              sortKey="organization"
+                              sort={table.sort}
+                              onSort={table.toggleSort}
+                            />
+                            <SortTh
+                              label="Email отправителя"
+                              sortKey="emailFrom"
+                              sort={table.sort}
+                              onSort={table.toggleSort}
+                            />
                             {kind === 'incoming' ? (
                               <>
-                                <th>Партнёр</th>
-                                <th>Кому</th>
-                                <th>Подразделение</th>
+                                <SortTh label="Партнёр" sortKey="partner" sort={table.sort} onSort={table.toggleSort} />
+                                <SortTh label="Кому" sortKey="addressee" sort={table.sort} onSort={table.toggleSort} />
+                                <SortTh
+                                  label="Подразделение"
+                                  sortKey="department"
+                                  sort={table.sort}
+                                  onSort={table.toggleSort}
+                                />
                               </>
                             ) : (
                               <>
-                                <th>Email получателя</th>
-                                <th>Партнёр</th>
-                                <th>Номер входящий</th>
+                                <SortTh
+                                  label="Email получателя"
+                                  sortKey="emailTo"
+                                  sort={table.sort}
+                                  onSort={table.toggleSort}
+                                />
+                                <SortTh label="Партнёр" sortKey="partner" sort={table.sort} onSort={table.toggleSort} />
+                                <SortTh
+                                  label="Номер входящий"
+                                  sortKey="incomingNumber"
+                                  sort={table.sort}
+                                  onSort={table.toggleSort}
+                                />
                               </>
                             )}
-                            <th>Направление</th>
-                            <th>Комментарий</th>
+                            <SortTh label="Направление" sortKey="direction" sort={table.sort} onSort={table.toggleSort} />
+                            <SortTh label="Комментарий" sortKey="comment" sort={table.sort} onSort={table.toggleSort} />
                           </tr>
                         </thead>
                         <tbody>

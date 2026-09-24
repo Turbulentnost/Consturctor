@@ -178,6 +178,87 @@
   font-size: 14px;
 }
 
+.kpi-form-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.kpi-form-toolbar .spec-v04-muted {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kpi-form-download {
+  height: 40px;
+  white-space: nowrap;
+}
+
+.kpi-form-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.kpi-form-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(16, 24, 32, 0.45);
+}
+
+.kpi-form-modal-card {
+  position: relative;
+  width: min(520px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
+}
+
+.kpi-form-modal-card h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.kpi-form-modal-lead,
+.kpi-form-modal-position {
+  margin: 0;
+  color: var(--content-muted, #5c6b66);
+  font-size: 14px;
+}
+
+.kpi-form-modal-error {
+  margin: 0;
+  color: #a32020;
+  font-size: 14px;
+}
+
+.kpi-form-person {
+  width: 100%;
+}
+
+.kpi-form-person .fio-suggest,
+.kpi-form-person .fio-suggest input {
+  width: 100%;
+  min-width: 0;
+}
+
+.kpi-form-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .orch-grid-kpi .orch-slot-filters {
   display: flex;
   flex-direction: column;

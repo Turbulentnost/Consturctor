@@ -2355,6 +2355,36 @@ export class ApiClient {
     return parsePositionKpiMetric(data ?? {})
   }
 
+  async getPositionKpiSubject(fio: string): Promise<{ fio: string; position: string }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/subject', {
+      params: { fio: fio.trim() },
+      timeoutMs: 30_000
+    })
+    return {
+      fio: String(data?.fio || fio).trim(),
+      position: String(data?.position || '').trim()
+    }
+  }
+
+  /** Форма премирования «Индивидуальные целевые показатели» (xlsx) за месяц периода. */
+  async downloadPositionKpiForm(
+    fio: string,
+    from = '',
+    to = ''
+  ): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
+    const params = new URLSearchParams()
+    if (fio.trim()) params.set('fio', fio.trim())
+    if (from) params.set('from', from)
+    if (to) params.set('to', to)
+    const surname = fio.trim().split(/\s+/)[0] || 'сотрудник'
+    const stamp = (from || '').slice(0, 7) || 'period'
+    return window.api.download({
+      url: `/api/v1/position-kpi/bonus-form?${params.toString()}`,
+      defaultName: `ИЦПП_${surname}_${stamp}.xlsx`,
+      token: this.resolveToken()
+    })
+  }
+
   async startPositionKpiBuild(position = ''): Promise<PositionKpiBuildSession> {
     const data = await this.request<Record<string, unknown>>('POST', '/api/v1/position-kpi/builds', {
       body: { position },

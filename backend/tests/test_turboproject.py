@@ -183,7 +183,8 @@ def test_payload_turbo_credentials_from_name_mail_slug() -> None:
     assert creds == ("m.zhalybin@turbo-don.ru", "secret")
 
 
-def test_resolve_turbo_credentials_skips_settings_for_other_employee(monkeypatch) -> None:
+def test_resolve_turbo_credentials_uses_service_account_for_any_employee(monkeypatch) -> None:
+    # Индекс проектов одинаков для любой учётки, портфель фильтруется по ФИО у нас.
     monkeypatch.setattr("app.services.turboproject.settings.my_name", "Жалыбин Максим")
     monkeypatch.setattr("app.services.turboproject.settings.my_name_mail", "m.zhalybin")
     monkeypatch.setattr("app.services.turboproject.settings.my_password", "secret")
@@ -194,10 +195,17 @@ def test_resolve_turbo_credentials_skips_settings_for_other_employee(monkeypatch
         "app.services.turboproject.discover_name_mail_slug",
         lambda *_a, **_k: "",
     )
-    with pytest.raises(TurboProjectError, match="Ильченко"):
-        _resolve_turbo_credentials(
-            {"employee": "Ильченко Екатерина Александровна", "password": "1c-pwd"}
-        )
+    assert _resolve_turbo_credentials(
+        {"employee": "Ильченко Екатерина Александровна", "password": "1c-pwd"}
+    ) == ("m.zhalybin@turbo-don.ru", "secret")
+
+
+def test_resolve_turbo_credentials_without_any_account(monkeypatch) -> None:
+    for name in ("my_name", "my_name_mail", "my_password", "turboproject_password", "turboproject_email", "erp_login"):
+        monkeypatch.setattr(f"app.services.turboproject.settings.{name}", "")
+    monkeypatch.setattr("app.services.turboproject.discover_name_mail_slug", lambda *_a, **_k: "")
+    with pytest.raises(TurboProjectError, match="нет учётных данных"):
+        _resolve_turbo_credentials({"employee": "Ильченко Екатерина Александровна", "password": "1c-pwd"})
 
 
 def test_resolve_turbo_credentials_discovers_slug_from_session_password(monkeypatch) -> None:

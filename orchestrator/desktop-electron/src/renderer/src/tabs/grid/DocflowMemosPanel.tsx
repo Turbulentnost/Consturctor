@@ -3,9 +3,35 @@ import { CheckCircle2, Circle, Clock3, Lock, User, Users } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import { loadMemoCard, loadMemoPage, type MemoCard, type MemoRow } from '../../workplace/fetchDocflowMemos'
+import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 
 function cell(value: string): string {
   return value.trim() || '—'
+}
+
+function memoSearchText(row: MemoRow): string {
+  return [
+    formatCorrespondenceDate(row.date),
+    row.number,
+    row.subject,
+    row.fromWhom,
+    row.department,
+    row.status,
+    ...row.assignees
+  ].join(' ')
+}
+
+function memoSortValue(row: MemoRow, key: string): string {
+  const map: Record<string, string> = {
+    date: row.date,
+    number: row.number,
+    subject: row.subject,
+    assignees: row.assignees.join(', '),
+    fromWhom: row.fromWhom,
+    due: row.due,
+    status: row.status || (row.approved ? 'Согласована' : 'Не согласована')
+  }
+  return map[key] ?? ''
 }
 
 function dateOrDash(value: string): string {
@@ -172,13 +198,19 @@ export function DocflowMemosPanel({
     const names = new Set(rows.map((row) => row.fromWhom).filter(Boolean))
     return [...names].sort((left, right) => left.localeCompare(right, 'ru'))
   }, [rows])
-  const visible = useMemo(
+  const listed = useMemo(
     () =>
       rows.filter(
         (row) => (!assignee || row.assignees.includes(assignee)) && (!author || row.fromWhom === author)
       ),
     [rows, assignee, author]
   )
+  const table = useDocflowTable(listed, {
+    text: memoSearchText,
+    value: memoSortValue,
+    initialSort: { key: 'date', dir: 'desc' }
+  })
+  const visible = table.rows
 
   const onScroll = (): void => {
     const node = scrollRef.current
@@ -219,6 +251,13 @@ export function DocflowMemosPanel({
     <div className="docflow-split">
       <div className="docflow-table-card wp-card">
         <div className="docflow-order-filters">
+          <DocflowSearch
+            value={table.query}
+            onChange={table.setQuery}
+            placeholder="Номер, тема, кому, от кого…"
+            found={visible.length}
+            total={listed.length}
+          />
           <label>
             <Users size={14} aria-hidden />
             Кому
@@ -268,13 +307,13 @@ export function DocflowMemosPanel({
             <table className="spec-v04-table docflow-table">
               <thead>
                 <tr>
-                  <th>Дата</th>
-                  <th>Номер</th>
-                  <th>Тема</th>
-                  <th>Кому</th>
-                  <th>От кого</th>
-                  <th>Срок</th>
-                  <th>Статус</th>
+                  <SortTh label="Дата" sortKey="date" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Номер" sortKey="number" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Тема" sortKey="subject" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Кому" sortKey="assignees" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="От кого" sortKey="fromWhom" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Срок" sortKey="due" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Статус" sortKey="status" sort={table.sort} onSort={table.toggleSort} />
                 </tr>
               </thead>
               <tbody>

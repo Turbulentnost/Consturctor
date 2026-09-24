@@ -21,6 +21,7 @@ import {
   type AssignmentRow,
   type AssignmentStatus
 } from '../../workplace/fetchDocflowAssignments'
+import { SortTh, useDocflowTable } from './docflowTableTools'
 
 const FALLBACK_STATUSES: AssignmentStatus[] = [
   { code: 'Создано', label: 'Создано' },
@@ -43,6 +44,39 @@ function day(value: string): string {
 function namesText(names: string[]): string {
   if (!names.length) return '—'
   return names.length > 2 ? `${names.slice(0, 2).join(', ')} и ещё ${names.length - 2}` : names.join(', ')
+}
+
+function assignmentSearchText(row: AssignmentRow): string {
+  return [
+    day(row.date),
+    row.number,
+    row.topic,
+    row.basis,
+    row.head,
+    row.organization,
+    row.reporter,
+    row.status,
+    row.priority,
+    ...row.executors,
+    ...row.lines.map((line) => line.text)
+  ].join(' ')
+}
+
+function assignmentSortValue(row: AssignmentRow, key: string): string | number {
+  if (key === 'priority') {
+    const rank = PRIORITY_ORDER.indexOf(row.priority)
+    return rank < 0 ? PRIORITY_ORDER.length : rank
+  }
+  const map: Record<string, string> = {
+    date: row.date,
+    number: row.number,
+    topic: row.topic,
+    head: row.head,
+    executors: row.executors.join(', '),
+    due: row.due,
+    status: row.status
+  }
+  return map[key] ?? ''
 }
 
 function optionsOf(rows: AssignmentRow[], pick: (row: AssignmentRow) => string[]): string[] {
@@ -305,22 +339,27 @@ export function DocflowAssignmentsPanel({
     return PRIORITY_ORDER.filter((item) => found.has(item))
   }, [rows])
 
-  const visible = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    return rows.filter((row) => {
-      if (head && row.head !== head) return false
-      if (executor && !row.executors.includes(executor)) return false
-      if (organization && row.organization !== organization) return false
-      if (reporter && row.reporter !== reporter) return false
-      if (priority && !row.lines.some((line) => line.priority === priority)) return false
-      if (overdueOnly && !(row.open && row.overdue)) return false
-      if (needle) {
-        const blob = [row.number, row.topic, row.basis, ...row.lines.map((line) => line.text)].join(' ').toLowerCase()
-        if (!blob.includes(needle)) return false
-      }
-      return true
-    })
-  }, [rows, head, executor, organization, reporter, priority, overdueOnly, query])
+  // Поиск по словам и сортировка колонок — в useDocflowTable ниже.
+  const listed = useMemo(
+    () =>
+      rows.filter((row) => {
+        if (head && row.head !== head) return false
+        if (executor && !row.executors.includes(executor)) return false
+        if (organization && row.organization !== organization) return false
+        if (reporter && row.reporter !== reporter) return false
+        if (priority && !row.lines.some((line) => line.priority === priority)) return false
+        if (overdueOnly && !(row.open && row.overdue)) return false
+        return true
+      }),
+    [rows, head, executor, organization, reporter, priority, overdueOnly]
+  )
+  const table = useDocflowTable(listed, {
+    text: assignmentSearchText,
+    value: assignmentSortValue,
+    initialSort: { key: 'date', dir: 'desc' },
+    query
+  })
+  const visible = table.rows
 
   const filtered = Boolean(head || executor || organization || reporter || priority || overdueOnly || query.trim())
 
@@ -380,6 +419,11 @@ export function DocflowAssignmentsPanel({
               placeholder="Номер, о чём, мероприятие…"
               onChange={(event) => setQuery(event.target.value)}
             />
+            {query.trim() ? (
+              <span className="docflow-search-count">
+                {visible.length} из {listed.length}
+              </span>
+            ) : null}
           </label>
           <FilterSelect
             icon={<Circle size={13} aria-hidden />}
@@ -423,14 +467,14 @@ export function DocflowAssignmentsPanel({
             <table className="spec-v04-table docflow-table">
               <thead>
                 <tr>
-                  <th>Дата</th>
-                  <th>Номер</th>
-                  <th>О чём</th>
-                  <th>Руководитель</th>
-                  <th>Исполнители</th>
-                  <th>Срок</th>
-                  <th>Приоритет</th>
-                  <th>Статус</th>
+                  <SortTh label="Дата" sortKey="date" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Номер" sortKey="number" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="О чём" sortKey="topic" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Руководитель" sortKey="head" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Исполнители" sortKey="executors" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Срок" sortKey="due" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Приоритет" sortKey="priority" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Статус" sortKey="status" sort={table.sort} onSort={table.toggleSort} />
                 </tr>
               </thead>
               <tbody>

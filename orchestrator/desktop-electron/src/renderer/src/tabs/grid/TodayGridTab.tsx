@@ -36,6 +36,7 @@ import {
 } from '../../workplace/tileFilters'
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
 import { TodayFullPlanModal } from './TodayFullPlanModal'
+import { TodayTaskDetailModal, type TodayTaskDetailRow } from './TodayTaskDetailModal'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
 import {
@@ -110,6 +111,7 @@ function MiniTableCard({
   rows,
   rowTones,
   rowClassNames,
+  onRowClick,
   loading,
   error,
   emptyText,
@@ -124,6 +126,8 @@ function MiniTableCard({
   rowTones?: TodayRowTone[]
   /** Дополнительные классы строк (по индексам rows). */
   rowClassNames?: (string | undefined)[]
+  /** Клик по строке: открыть карточку записи. */
+  onRowClick?: (index: number) => void
   loading?: boolean
   /** Shown above the table (KPI/banner), never as a fake data row. */
   error?: string
@@ -153,11 +157,30 @@ function MiniTableCard({
     }
     return rows.map((cells, index) => {
       const tone = rowTones?.[index]
-      const className = [tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : '', rowClassNames?.[index] || '']
+      const className = [
+        tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : '',
+        rowClassNames?.[index] || '',
+        onRowClick ? 'today-tr-clickable' : ''
+      ]
         .filter(Boolean)
         .join(' ')
       return (
-        <tr key={index} className={className || undefined}>
+        <tr
+          key={index}
+          className={className || undefined}
+          tabIndex={onRowClick ? 0 : undefined}
+          onClick={onRowClick ? () => onRowClick(index) : undefined}
+          onKeyDown={
+            onRowClick
+              ? (event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onRowClick(index)
+                  }
+                }
+              : undefined
+          }
+        >
           {cells.map((cell, cellIndex) => (
             <td key={cellIndex}>{cell}</td>
           ))}
@@ -214,6 +237,7 @@ export function TodayGridTab({
   const { data, tiles } = useTodayKpiData(user, periodDay)
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const [fullPlanOpen, setFullPlanOpen] = useState(false)
+  const [taskDetail, setTaskDetail] = useState<TodayTaskDetailRow | null>(null)
   const [kpiTiles, setKpiTiles] = useState(EMPTY_TODAY_KPI_TILE)
   const onecFromMe = kpiTiles.onecFromMe
   const outlookFromMe = kpiTiles.outlookFromMe
@@ -351,6 +375,10 @@ export function TodayGridTab({
             compactRows={mailRows}
             loading={outlookMail.loading}
             error={outlookMail.error}
+            fromMe={outlookFromMe}
+            onToggleFromMe={(next) =>
+              setKpiTiles((current) => ({ ...current, outlookFromMe: next, activeIds: ['outlook'] }))
+            }
           />
         </TodayWindow>
       ),
@@ -415,6 +443,7 @@ export function TodayGridTab({
                 ? 'today-tr-new-onec'
                 : undefined
           )}
+          onRowClick={(index) => setTaskDetail(taskRows[index] || null)}
           rows={taskRows.map((row) =>
             onecFromMe
               ? [
@@ -479,6 +508,7 @@ export function TodayGridTab({
           }
           columns={['Задача', 'Срок', 'Статус']}
           rowTones={projectRows.map((row) => todayRowTone(row.status, row.deadline))}
+          onRowClick={(index) => setTaskDetail(projectRows[index] || null)}
           rows={projectRows.map((row) => [
             <TodayCellText key={`${row.id}-t`} text={row.title} />,
             <TodayCellText key={`${row.id}-d`} text={row.deadline} />,
@@ -662,6 +692,11 @@ export function TodayGridTab({
         onClose={() => setOnecDialogOpen(false)}
         user={user}
         errorHint={data.erpError || data.error}
+      />
+      <TodayTaskDetailModal
+        row={taskDetail}
+        onClose={() => setTaskDetail(null)}
+        onAskOrchestrator={onAskOrchestrator}
       />
       <TodayFullPlanModal
         open={fullPlanOpen}

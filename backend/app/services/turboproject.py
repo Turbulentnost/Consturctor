@@ -183,40 +183,30 @@ def _payload_employee_fio(payload: dict[str, Any]) -> str:
     return str(payload.get("employee") or payload.get("fio") or "").strip()
 
 
-def _settings_identity_fio() -> str:
-    return (settings.my_name or settings.erp_login or "").strip()
-
-
-def _turbo_settings_match_employee(payload: dict[str, Any]) -> bool:
-    employee = _payload_employee_fio(payload).casefold()
-    settings_fio = _settings_identity_fio().casefold()
-    if not settings_fio:
-        return not employee
-    if not employee:
-        return True
-    return employee == settings_fio
-
-
 def _resolve_turbo_credentials(args: dict[str, Any] | None) -> tuple[str, str]:
+    """Учётка для входа в API. Проекты сотрудника фильтруются у нас, не в TurboProject.
+
+    Порядок: логин сотрудника из сессии → учётка из backend/.env → подбор
+    латинского логина по ФИО и паролю 1С. Индекс /api/projects/files одинаков
+    для любой учётки, поэтому служебная подходит для любого сотрудника.
+    """
     payload = args if isinstance(args, dict) else {}
     explicit = _payload_turbo_credentials(payload)
-    fallback = (
-        _settings_turbo_credentials() if _turbo_settings_match_employee(payload) else None
-    )
+    settings_creds = _settings_turbo_credentials()
     settings_turbo_password = (
         settings.turboproject_password or settings.my_password or ""
     ).strip()
 
     if explicit:
-        email, session_password = explicit
-        if fallback and settings_turbo_password:
-            fb_email, fb_password = fallback
+        email, _session_password = explicit
+        if settings_creds and settings_turbo_password:
+            fb_email, fb_password = settings_creds
             if fb_email.casefold() == email.casefold():
                 return fb_email, fb_password
         return explicit
 
-    if fallback:
-        return fallback
+    if settings_creds:
+        return settings_creds
 
     employee = _payload_employee_fio(payload)
     session_password = str(
@@ -227,16 +217,10 @@ def _resolve_turbo_credentials(args: dict[str, Any] | None) -> tuple[str, str]:
         if slug:
             return _turbo_email_from_slug(slug), session_password
 
-    if employee:
-        raise TurboProjectError(
-            f"TurboProject: для «{employee}» нужен латинский логин "
-            "(nameMail → *@turbo-don.ru) и пароль API TurboProject. "
-            "Задайте MY_NAME, MY_NAME_MAIL и MY_PASSWORD в backend/.env для этого ФИО "
-            "или войдите через gateway с nameMail из 1С."
-        )
     raise TurboProjectError(
-        "TurboProject: нет учётных данных "
-        "(email/password или name_mail из сессии; иначе TURBOPROJECT_EMAIL/MY_NAME_MAIL и PASSWORD)"
+        "TurboProject: нет учётных данных API. Задайте TURBOPROJECT_EMAIL и "
+        "TURBOPROJECT_PASSWORD в backend/.env либо войдите с латинским логином 1С "
+        "(nameMail → *@turbo-don.ru) и паролем TurboProject."
     )
 
 
@@ -1345,7 +1329,7 @@ def get_user_portfolio(args: dict[str, Any] | None = None) -> dict[str, Any]:
             f"Логин TurboProject {turbo_login or '(не задан)'}: индекс /api/projects/files "
             f"({total_projects} файлов, {with_1c_count} с 1С) не содержит ролей для ФИО «{employee}». "
             "Это фильтр по руководитель/куратор/заказчик/зам в 1С, не список задач исполнителя. "
-            "Проверьте MY_NAME (ФИО) и MY_NAME_MAIL/TURBOPROJECT_EMAIL (латинский логин API)."
+            "Проверьте, что ФИО в проектах 1С записано так же, как в учётной записи."
         )
     return result
 

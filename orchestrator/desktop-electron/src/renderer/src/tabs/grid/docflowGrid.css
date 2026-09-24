@@ -479,6 +479,66 @@
   color: #102033;
 }
 
+.docflow-search-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #6b7a90;
+  white-space: nowrap;
+}
+
+/* Заголовок с сортировкой: стрелка вниз, по клику — порядок колонки. */
+.docflow-table-card .docflow-table thead th.docflow-th-sort {
+  padding: 0;
+}
+
+.docflow-sort-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.docflow-sort-btn:hover {
+  color: #1565c0;
+}
+
+.docflow-sort-btn > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.docflow-sort-ico {
+  flex: 0 0 auto;
+  opacity: 0.35;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.docflow-sort-btn:hover .docflow-sort-ico {
+  opacity: 0.7;
+}
+
+.docflow-sort-ico.is-active {
+  opacity: 1;
+  color: #1565c0;
+}
+
+.docflow-sort-ico.is-asc {
+  transform: rotate(180deg);
+}
+
+.docflow-table-card .docflow-table thead th.docflow-th-sort.is-active {
+  color: #1565c0;
+  background: #eef4fd;
+}
+
 .docflow-check {
   cursor: pointer;
   user-select: none;

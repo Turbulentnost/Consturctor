@@ -20,6 +20,7 @@ import {
   type OrderKind,
   type OrderRow
 } from '../../workplace/fetchDocflowCorrespondence'
+import { SortTh, useDocflowTable } from './docflowTableTools'
 
 const KINDS: { id: '' | OrderKind; title: string }[] = [
   { id: '', title: 'Все' },
@@ -43,6 +44,34 @@ const SHEET_LIMIT = 5
 
 function cell(value: string): string {
   return value.trim() || '—'
+}
+
+function orderSearchText(row: OrderRow): string {
+  return [
+    formatCorrespondenceDate(row.date),
+    row.number,
+    row.kindLabel,
+    row.subject,
+    row.organization,
+    row.responsible,
+    row.access,
+    row.status,
+    row.content
+  ].join(' ')
+}
+
+function orderSortValue(row: OrderRow, key: string): string {
+  const map: Record<string, string> = {
+    date: row.date,
+    number: row.number,
+    kind: row.kindLabel,
+    subject: row.subject,
+    organization: row.organization,
+    responsible: row.responsible,
+    access: row.access,
+    status: row.status || (row.posted ? 'Проведён' : '')
+  }
+  return map[key] ?? ''
 }
 
 function optionsOf(rows: OrderRow[], pick: (row: OrderRow) => string): string[] {
@@ -169,20 +198,18 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
   const responsibles = useMemo(() => optionsOf(byKind, (row) => row.responsible), [byKind])
   const organizations = useMemo(() => optionsOf(byKind, (row) => row.organization), [byKind])
 
-  const listed = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    return byKind.filter((row) => {
-      if (status && row.status !== status) return false
-      if (access && row.access !== access) return false
-      if (responsible && row.responsible !== responsible) return false
-      if (organization && row.organization !== organization) return false
-      if (needle) {
-        const blob = `${row.number} ${row.subject} ${row.content}`.toLowerCase()
-        if (!blob.includes(needle)) return false
-      }
-      return true
-    })
-  }, [byKind, status, access, responsible, organization, query])
+  // Поиск по словам делает useDocflowTable ниже — здесь только выпадающие фильтры.
+  const listed = useMemo(
+    () =>
+      byKind.filter((row) => {
+        if (status && row.status !== status) return false
+        if (access && row.access !== access) return false
+        if (responsible && row.responsible !== responsible) return false
+        if (organization && row.organization !== organization) return false
+        return true
+      }),
+    [byKind, status, access, responsible, organization]
+  )
 
   const approvers = useMemo(() => {
     const names = new Set<string>()
@@ -195,13 +222,20 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
     return [...names].sort((left, right) => left.localeCompare(right, 'ru'))
   }, [listed, sheets])
 
-  const visible = useMemo(
+  const byApprover = useMemo(
     () =>
       approver
         ? listed.filter((row) => (sheets[row.id]?.items || []).some((item) => item.name.trim() === approver))
         : listed,
     [listed, approver, sheets]
   )
+  const table = useDocflowTable(byApprover, {
+    text: orderSearchText,
+    value: orderSortValue,
+    initialSort: { key: 'date', dir: 'desc' },
+    query
+  })
+  const visible = table.rows
 
   const selected = visible.find((row) => row.id === selectedId) || listed.find((row) => row.id === selectedId) || null
   const selectedSheet = selected ? sheets[selected.id] : undefined
@@ -266,6 +300,11 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
               placeholder="Номер, тема, содержание…"
               onChange={(event) => setQuery(event.target.value)}
             />
+            {query.trim() ? (
+              <span className="docflow-search-count">
+                {visible.length} из {byApprover.length}
+              </span>
+            ) : null}
           </label>
           <label>
             <CalendarRange size={13} aria-hidden />
@@ -329,14 +368,14 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
             <table className="spec-v04-table docflow-table">
               <thead>
                 <tr>
-                  <th>Дата</th>
-                  <th>Номер</th>
-                  <th>Вид</th>
-                  <th>Тема</th>
-                  <th>Организация</th>
-                  <th>Ответственный</th>
-                  <th>Гриф</th>
-                  <th>Статус</th>
+                  <SortTh label="Дата" sortKey="date" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Номер" sortKey="number" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Вид" sortKey="kind" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Тема" sortKey="subject" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Организация" sortKey="organization" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Ответственный" sortKey="responsible" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Гриф" sortKey="access" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Статус" sortKey="status" sort={table.sort} onSort={table.toggleSort} />
                 </tr>
               </thead>
               <tbody>

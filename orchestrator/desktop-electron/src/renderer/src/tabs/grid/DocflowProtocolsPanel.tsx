@@ -28,6 +28,7 @@ import {
   type ProtocolPlanRow,
   type ProtocolRow
 } from '../../workplace/fetchDocflowProtocols'
+import { SortTh, useDocflowTable } from './docflowTableTools'
 
 const FALLBACK_STATUSES: ProtocolOption[] = [
   { code: 'Подготовлен', label: 'Подготовлен' },
@@ -51,6 +52,39 @@ function day(value: string): string {
 
 function onlyDay(value: string): string {
   return value ? formatCorrespondenceDate(value).slice(0, 10) : '—'
+}
+
+function protocolSearchText(row: ProtocolRow): string {
+  return [
+    row.date,
+    row.time,
+    row.number,
+    row.topic,
+    row.kind,
+    row.head,
+    row.room,
+    row.department,
+    row.project,
+    row.preparedBy,
+    row.status,
+    row.comment,
+    ...row.participants
+  ].join(' ')
+}
+
+function protocolSortValue(row: ProtocolRow, key: string): string {
+  const map: Record<string, string> = {
+    date: row.date,
+    time: row.time,
+    number: row.number,
+    topic: row.topic,
+    kind: row.kind,
+    head: row.head,
+    participants: row.participants.join(', '),
+    room: row.room,
+    status: row.status
+  }
+  return map[key] ?? ''
 }
 
 function optionsOf(rows: ProtocolRow[], pick: (row: ProtocolRow) => string[]): { value: string; label: string }[] {
@@ -381,23 +415,28 @@ export function DocflowProtocolsPanel({
   const projects = useMemo(() => optionsOf(rows, (row) => [row.project]), [rows])
   const participants = useMemo(() => optionsOf(rows, (row) => row.participants), [rows])
 
-  const visible = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    return rows.filter((row) => {
-      if (topic && row.topic !== topic) return false
-      if (head && row.head !== head) return false
-      if (department && row.department !== department) return false
-      if (room && row.room !== room) return false
-      if (preparedBy && row.preparedBy !== preparedBy) return false
-      if (project && row.project !== project) return false
-      if (participant && !row.participants.includes(participant)) return false
-      if (needle) {
-        const blob = [row.number, row.topic, row.comment, row.head, ...row.participants].join(' ').toLowerCase()
-        if (!blob.includes(needle)) return false
-      }
-      return true
-    })
-  }, [rows, topic, head, department, room, preparedBy, project, participant, query])
+  // Поиск по словам и сортировка колонок — в useDocflowTable ниже.
+  const listed = useMemo(
+    () =>
+      rows.filter((row) => {
+        if (topic && row.topic !== topic) return false
+        if (head && row.head !== head) return false
+        if (department && row.department !== department) return false
+        if (room && row.room !== room) return false
+        if (preparedBy && row.preparedBy !== preparedBy) return false
+        if (project && row.project !== project) return false
+        if (participant && !row.participants.includes(participant)) return false
+        return true
+      }),
+    [rows, topic, head, department, room, preparedBy, project, participant]
+  )
+  const table = useDocflowTable(listed, {
+    text: protocolSearchText,
+    value: protocolSortValue,
+    initialSort: { key: 'date', dir: 'desc' },
+    query
+  })
+  const visible = table.rows
 
   const filtered = Boolean(topic || head || department || room || preparedBy || project || participant || query.trim())
 
@@ -457,6 +496,11 @@ export function DocflowProtocolsPanel({
               placeholder="Номер, тема, участник…"
               onChange={(event) => setQuery(event.target.value)}
             />
+            {query.trim() ? (
+              <span className="docflow-search-count">
+                {visible.length} из {listed.length}
+              </span>
+            ) : null}
           </label>
           <FilterSelect
             icon={<Circle size={13} aria-hidden />}
@@ -513,15 +557,15 @@ export function DocflowProtocolsPanel({
             <table className="spec-v04-table docflow-table">
               <thead>
                 <tr>
-                  <th>Дата</th>
-                  <th>Время</th>
-                  <th>Номер</th>
-                  <th>Тема</th>
-                  <th>Вид</th>
-                  <th>Руководитель</th>
-                  <th>Участники</th>
-                  <th>Место</th>
-                  <th>Статус</th>
+                  <SortTh label="Дата" sortKey="date" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Время" sortKey="time" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Номер" sortKey="number" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Тема" sortKey="topic" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Вид" sortKey="kind" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Руководитель" sortKey="head" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Участники" sortKey="participants" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Место" sortKey="room" sort={table.sort} onSort={table.toggleSort} />
+                  <SortTh label="Статус" sortKey="status" sort={table.sort} onSort={table.toggleSort} />
                 </tr>
               </thead>
               <tbody>

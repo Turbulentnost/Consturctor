@@ -179,6 +179,39 @@ function rowsFromResult(result: unknown): Record<string, unknown>[] {
   return []
 }
 
+const PAGE_SIZE = 200
+/** Сколько страниц журнала тянем за раз. Свежие сверху — этого хватает на месяцы. */
+const PAGE_COUNT = 3
+
+/** Страница журнала 1С: сначала с expand, при отказе — без него. */
+async function loadJournalPage(
+  user: UserProfile | null,
+  base: Record<string, unknown>,
+  skip: number
+): Promise<{ rows: Record<string, unknown>[]; error: string }> {
+  const args = onecGatewayInvokeArgs(user, { ...base, top: PAGE_SIZE, skip, orderby: 'Date desc' })
+  let res = await api.invokeServerTool('onec.odata_get', args, 180_000)
+  if (!res.ok && /expand/i.test(res.error || '')) {
+    const { expand: _expand, ...rest } = args
+    void _expand
+    res = await api.invokeServerTool('onec.odata_get', rest, 180_000)
+  }
+  if (!res.ok) return { rows: [], error: res.error || '' }
+  return { rows: rowsFromResult(res.result), error: '' }
+}
+
+/** Страницы журнала параллельно: последовательный обход занимал минуты. */
+async function loadJournalPages(
+  user: UserProfile | null,
+  base: Record<string, unknown>
+): Promise<{ rows: Record<string, unknown>[]; error: string }> {
+  const skips = Array.from({ length: PAGE_COUNT }, (_, index) => index * PAGE_SIZE)
+  const pages = await Promise.all(skips.map((skip) => loadJournalPage(user, base, skip)))
+  const rows = pages.flatMap((page) => page.rows)
+  const error = rows.length ? '' : pages.map((page) => page.error).find(Boolean) || ''
+  return { rows, error }
+}
+
 async function loadFromOneC(
   user: UserProfile | null,
   kind: CorrespondenceKind
@@ -188,24 +221,19 @@ async function loadFromOneC(
     kind === 'incoming'
       ? 'Организация,Контрагент,КомуПодразделениеСсылка'
       : 'Организация,Контрагент,Партнер'
-  const args = onecGatewayInvokeArgs(user, {
+  const page = await loadJournalPages(user, {
     entity,
-    top: 200,
     filter: 'DeletionMark eq false',
     expand
   })
-  let res = await api.invokeServerTool('onec.odata_get', args, 180_000)
-  if (!res.ok && /expand/i.test(res.error || '')) {
-    const { expand: _expand, ...rest } = args
-    void _expand
-    res = await api.invokeServerTool('onec.odata_get', rest, 180_000)
+  if (!page.rows.length && page.error) {
+    return { rows: [], error: page.error || 'Не удалось прочитать корреспонденцию из 1С' }
   }
-  if (!res.ok) {
-    return { rows: [], error: res.error || 'Не удалось прочитать корреспонденцию из 1С' }
-  }
-  const rows = rowsFromResult(res.result)
+  const seen = new Set<string>()
+  const rows = page.rows
     .map((row) => mapRow(row, kind))
     .filter((row) => row.date || row.number || row.comment)
+    .filter((row) => (seen.has(row.id) ? false : seen.add(row.id) !== undefined))
   rows.sort((left, right) => right.date.localeCompare(left.date))
   return { rows, error: '' }
 }
@@ -240,10 +268,6 @@ export function correspondenceInPeriod<T extends { date: string }>(rows: T[], fr
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false
     return day >= from && day <= to
   })
-}
-
-function odataServerFailed(error: string): boolean {
-  return /HTTP 5\d\d|502|503|timeout|timed out|expand/i.test(error)
 }
 
 export type OrderKind = 'order' | 'directive'
@@ -302,65 +326,22 @@ function mapOrder(row: Record<string, unknown>, kind: OrderKind, kindLabel: stri
   }
 }
 
-const ORDER_PAGE = 200
-const ORDER_MAX_ROWS = 5000
-
-async function loadOrderPage(
-  user: UserProfile | null,
-  spec: (typeof ORDER_ENTITIES)[number],
-  skip: number
-): Promise<{ rows: Record<string, unknown>[]; error: string }> {
-  const attempts: Record<string, unknown>[] = [
-    {
-      entity: spec.entity,
-      top: ORDER_PAGE,
-      skip,
-      filter: 'DeletionMark eq false',
-      expand: 'Организация,Ответственный,ГрифДоступа'
-    },
-    {
-      entity: spec.entity,
-      top: ORDER_PAGE,
-      skip,
-      filter: 'DeletionMark eq false'
-    }
-  ]
-  let lastError = ''
-  for (const extra of attempts) {
-    const res = await api.invokeServerTool('onec.odata_get', onecGatewayInvokeArgs(user, extra), 180_000)
-    if (res.ok) return { rows: rowsFromResult(res.result), error: '' }
-    lastError = res.error || ''
-    if (!odataServerFailed(lastError) && !/expand/i.test(lastError)) break
-  }
-  return { rows: [], error: lastError }
-}
-
 async function loadOrderEntity(
   user: UserProfile | null,
   spec: (typeof ORDER_ENTITIES)[number]
 ): Promise<{ rows: OrderRow[]; error: string }> {
-  const collected: OrderRow[] = []
+  const page = await loadJournalPages(user, {
+    entity: spec.entity,
+    filter: 'DeletionMark eq false',
+    expand: 'Организация,Ответственный,ГрифДоступа'
+  })
   const seen = new Set<string>()
-  let lastError = ''
-  for (let skip = 0; skip < ORDER_MAX_ROWS; skip += ORDER_PAGE) {
-    const page = await loadOrderPage(user, spec, skip)
-    if (page.error && !page.rows.length) {
-      lastError = page.error
-      break
-    }
-    const mapped = page.rows
-      .map((row) => mapOrder(row, spec.kind, spec.label))
-      .filter((row) => row.date || row.number || row.subject)
-    for (const row of mapped) {
-      if (!seen.has(row.id)) {
-        seen.add(row.id)
-        collected.push(row)
-      }
-    }
-    if (page.rows.length < ORDER_PAGE) break
-  }
-  if (!collected.length && lastError) {
-    return { rows: [], error: `${spec.label}: ${lastError}` }
+  const collected = page.rows
+    .map((row) => mapOrder(row, spec.kind, spec.label))
+    .filter((row) => row.date || row.number || row.subject)
+    .filter((row) => (seen.has(row.id) ? false : seen.add(row.id) !== undefined))
+  if (!collected.length && page.error) {
+    return { rows: [], error: `${spec.label}: ${page.error}` }
   }
   return { rows: collected, error: '' }
 }
