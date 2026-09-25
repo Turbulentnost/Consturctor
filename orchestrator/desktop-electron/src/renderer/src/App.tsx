@@ -915,6 +915,8 @@ function AppShell(): React.JSX.Element {
               {extensionTab.renderTab({
                 user: activeUser,
                 onAskOrchestrator: askOrchestratorFromTab,
+                onRunAgent: (workflowId, title, message) =>
+                  setView({ kind: 'agentrun', workflowId, title, autoStart: false, initialMessage: message }),
                 onNavigate: (pageKey) => {
                   setLastTab(pageKey)
                   setView({ kind: 'tab', key: pageKey })

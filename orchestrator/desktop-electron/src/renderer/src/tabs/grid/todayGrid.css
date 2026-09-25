@@ -671,40 +671,34 @@
   white-space: nowrap;
 }
 
-.today-from-me-toggle {
-  display: inline-grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  align-items: center;
-  column-gap: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.2;
+.today-widget-choice {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.today-widget-choice button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: #fff;
   color: var(--content-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
   cursor: pointer;
-  user-select: none;
-  max-width: min(100%, 168px);
-}
-
-.today-from-me-toggle input {
-  margin: 0;
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  accent-color: #1565c0;
-}
-
-.today-from-me-toggle-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.today-from-me-toggle:has(input:checked) {
+.today-widget-choice button:hover {
   color: #1565c0;
+  border-color: #1565c0;
 }
 
-.today-from-me-toggle:has(input:checked) .today-from-me-toggle-label {
-  font-weight: 500;
+.today-widget-choice button.is-active {
+  color: #1565c0;
+  border-color: #1565c0;
+  background: #e8f1fb;
 }
 
 .today-refresh-btn {
@@ -2091,6 +2085,10 @@
   align-items: center;
   gap: 8px;
   color: #0078d4;
+}
+
+.today-outlook-folder-row .today-widget-choice {
+  margin-left: auto;
 }
 
 .today-outlook-folder {

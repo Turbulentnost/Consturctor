@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, defer
 
 from app.models.workflow import Workflow, WorkflowFile
 from app.schemas.workflow import (
@@ -33,6 +34,26 @@ SCOPE_RUN_OUTPUT = "run_output"
 SCOPE_RUN_ATTACHMENT = "run_attachment"
 ORIGIN_KEEP_KNOWLEDGE = "keep_knowledge"
 ORIGIN_RUN_ATTACHMENT = "run_attachment"
+
+# File lists must not select content: one agent can hold hundreds of MB of audio,
+# and a single result that large fails in libpq with "out of memory for query result".
+_LISTING_COLUMNS = (
+    WorkflowFile.id,
+    WorkflowFile.workflow_id,
+    WorkflowFile.run_id,
+    WorkflowFile.source,
+    WorkflowFile.scope,
+    WorkflowFile.origin,
+    WorkflowFile.filename,
+    WorkflowFile.mime_type,
+    WorkflowFile.kind,
+    WorkflowFile.size,
+    WorkflowFile.sha256,
+    WorkflowFile.summary,
+    func.substr(WorkflowFile.extracted_text, 1, PREVIEW_CHARS).label("extracted_text"),
+    WorkflowFile.created_at,
+    WorkflowFile.updated_at,
+)
 
 
 class WorkflowFileError(Exception):
@@ -291,7 +312,7 @@ def list_workflow_files(
     run_id: str = "",
 ) -> WorkflowFilesResponse:
     rows = (
-        db.query(WorkflowFile)
+        db.query(*_LISTING_COLUMNS)
         .filter(WorkflowFile.workflow_id == row.id)
         .order_by(WorkflowFile.created_at.asc(), WorkflowFile.filename.asc())
         .all()
@@ -345,7 +366,7 @@ def delete_workflow_file(db: Session, *, row: Workflow, file_id: str) -> None:
 
 def attachment_meta_for_workflow(db: Session, row: Workflow) -> list[AttachmentMetaSchema]:
     rows = (
-        db.query(WorkflowFile)
+        db.query(*_LISTING_COLUMNS)
         .filter(
             WorkflowFile.workflow_id == row.id,
             WorkflowFile.source == SOURCE_USER,
@@ -375,6 +396,7 @@ def attachment_meta_for_workflow(db: Session, row: Workflow) -> list[AttachmentM
 def payload_attachments_for_workflow(db: Session, row: Workflow) -> list[dict[str, Any]]:
     rows = (
         db.query(WorkflowFile)
+        .options(defer(WorkflowFile.content))
         .filter(
             WorkflowFile.workflow_id == row.id,
             WorkflowFile.source == SOURCE_USER,
@@ -421,7 +443,7 @@ def _refresh_workflow_document_from_files(db: Session, row: Workflow) -> None:
     row.attachments_meta = [item.model_dump() for item in attachment_meta_for_workflow(db, row)]
 
 
-def _to_file_schema(item: WorkflowFile) -> WorkflowFileSchema:
+def _to_file_schema(item: Any) -> WorkflowFileSchema:
     return WorkflowFileSchema(
         id=item.id,
         workflow_id=item.workflow_id,

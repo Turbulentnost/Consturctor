@@ -262,24 +262,34 @@ class CursorSdkBridge:
                 run_params = [dict(item) for item in REGULATION_SDK_MODEL_PARAMS]
             else:
                 run_params = []
-            self._send(
-                process,
-                {
-                    "type": "run",
-                    "id": run_id,
-                    "prompt": prompt,
-                    "model": run_model,
-                    "modelParams": run_params,
-                    "cwd": run_cwd,
-                    "mode": "interview" if interview else "design" if mode == "design" else "run",
-                    "writeDocument": bool(write_document),
-                    "useTools": bool(use_tools or write_document),
-                    "tools": sdk_tool_specs() if tools is None else tools,
-                    "resumeAgentId": agent_id or None,
-                    "workflowId": workflow_id,
-                    "restrictBuiltins": bool(restrict_builtins),
-                },
-            )
+            try:
+                self._send(
+                    process,
+                    {
+                        "type": "run",
+                        "id": run_id,
+                        "prompt": prompt,
+                        "model": run_model,
+                        "modelParams": run_params,
+                        "cwd": run_cwd,
+                        "mode": "interview" if interview else "design" if mode == "design" else "run",
+                        "writeDocument": bool(write_document),
+                        "useTools": bool(use_tools or write_document),
+                        "tools": sdk_tool_specs() if tools is None else tools,
+                        "resumeAgentId": agent_id or None,
+                        "workflowId": workflow_id,
+                        "restrictBuiltins": bool(restrict_builtins),
+                    },
+                )
+            except CursorSdkError as exc:
+                # The runner died before reading the task; its stderr holds the reason.
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                stderr_thread.join(timeout=2)
+                err = "\n".join(stderr_lines[-20:]).strip()
+                raise CursorSdkError(err or str(exc)) from exc
             assert process.stdout is not None
             # "assistant" events are raw stream deltas of one message: join them
             # as-is (no strip / separators) or words get split in half.
@@ -465,8 +475,11 @@ class CursorSdkBridge:
         if process.stdin is None:
             raise CursorSdkError("Cursor SDK runner stdin закрыт")
         with self._stdin_lock:
-            process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            process.stdin.flush()
+            try:
+                process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                process.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                raise CursorSdkError(f"Cursor SDK runner завершился: {exc}") from exc
 
     def _reap_tool_workers(self) -> None:
         with self._workers_lock:

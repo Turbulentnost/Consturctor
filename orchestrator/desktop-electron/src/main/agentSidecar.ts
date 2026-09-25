@@ -375,7 +375,9 @@ export class AgentSidecar {
     this.isReady = false
     this.stdoutBuffer = ''
     child.stdout.setEncoding('utf-8')
-    child.stdout.on('data', (chunk: string) => this.onStdout(chunk))
+    child.stdout.on('data', (chunk: string) => {
+      if (this.child === child) this.onStdout(chunk)
+    })
     child.stderr.setEncoding('utf-8')
     child.stderr.on('data', (chunk: string) => {
       const text = String(chunk).trim()
@@ -400,6 +402,9 @@ export class AgentSidecar {
       } catch {
         /* already closed */
       }
+      // A child replaced by hardRestartSidecar exits late: it must not clear the
+      // new child or spawn another one, or commands (HITL) go to the wrong process.
+      if (this.child !== child) return
       this.child = null
       this.isReady = false
       if (this.stopping) return

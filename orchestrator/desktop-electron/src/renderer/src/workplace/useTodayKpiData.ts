@@ -38,15 +38,17 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState, periodDay = new Da
   const launches = summarizeDayLaunches(data.boardEvents || [], data.boardAgents || [], periodDay)
   const erpFio = data.erpFio
 
-  const onecToMe = data.erpTasks.filter((task) => isDocflowToMe(task)).length
+  const onecMine = data.erpTasks.filter((task) => isDocflowToMe(task))
+  const onecToMe = onecMine.length
   const onecFromMe = data.erpTasks.filter((task) => isDocflowFromMe(task, erpFio)).length
-  const onecDone = data.erpTasks.filter((task) => task.status === 'Выполнена').length
+  const onecDone = onecMine.filter((task) => task.status === 'Выполнена').length
 
   const turboMine = data.turboTasks.filter((task) => isTurboTaskToMe(task)).length
   const turboMgr = data.turboTasks.filter((task) => isTurboTaskAsManager(task)).length
 
-  const dayTotal = data.erpTaskCount + launches.slotCount
-  const dayDone = onecDone + launches.slotDone
+  // Задачи только «мне». Регламент — один процесс за день, не каждый повторный запуск.
+  const dayTotal = onecToMe + launches.agentIds.length
+  const dayDone = onecDone + launches.agentDoneIds.length
   const dayPct = loading ? undefined : pct(dayDone, dayTotal || 1)
 
   const regTotal = launches.agentIds.length
@@ -62,8 +64,9 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState, periodDay = new Da
       id: 'day',
       label: 'Выполнение дня',
       value: dash(loading, factPlan(dayDone, dayTotal)),
-      hint: loading ? 'загрузка…' : dayTotal ? '1С + регламент' : 'нет задач',
-      tooltip: 'Сводка: выполненные задачи 1С и регламентные запуски агентов за выбранный день',
+      hint: loading ? 'загрузка…' : dayTotal ? 'мне + регламент' : 'нет задач',
+      tooltip:
+        'Задачи 1С, где вы исполнитель, плюс регламентные процессы за день. Поручения, поставленные не вам, не входят. Один процесс считается один раз, даже если за день запускался несколько раз.',
       tone: 'orange',
       progress: dayPct,
       ring: true
@@ -83,7 +86,7 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState, periodDay = new Da
       label: '1С от меня',
       value: countText(loading, onecFromMe),
       hint: loading ? '…' : 'автор',
-      tooltip: 'Поручения и задачи, где вы автор. Клик — переключатель «Задачи от меня»',
+      tooltip: 'Поручения, где вы автор, а не исполнитель. Клик — кнопка «От меня» в виджете задач',
       tone: 'lilac'
     },
     {
@@ -107,8 +110,9 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState, periodDay = new Da
       id: 'reg',
       label: 'Регламент',
       value: dash(loading, factPlan(regDone, regTotal)),
-      hint: loading ? '…' : regTotal ? 'агенты' : 'Constructor',
-      tooltip: 'Запуски регламентных агентов за день',
+      hint: loading ? '…' : regTotal ? 'процессы' : 'Constructor',
+      tooltip:
+        'Регламентные процессы за день: один процесс — одна задача, повторные запуски в тот же день не суммируются',
       tone: 'green',
       progress: loading ? undefined : pct(regDone, regTotal || 1),
       ring: true

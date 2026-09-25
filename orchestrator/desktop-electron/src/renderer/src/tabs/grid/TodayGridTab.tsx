@@ -12,7 +12,6 @@ import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
 import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecSessionHints'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import { erpActorFio } from '../../workplace/userContext'
-import { isOutlookMailFromMe } from '../../workplace/specV04Mappers'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
 import { parseMeetingTime } from '../../utils/outlookMeetings'
 import { sameDay } from '../../utils/calendar'
@@ -30,6 +29,28 @@ import {
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
+
+function TodayWidgetChoice({
+  options
+}: {
+  options: { id: string; label: string; active: boolean; onClick: () => void }[]
+}): React.JSX.Element {
+  return (
+    <div className="today-widget-choice" role="group">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          className={option.active ? 'is-active' : ''}
+          aria-pressed={option.active}
+          onClick={option.onClick}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 function TodayCellText({ text }: { text: string }): React.JSX.Element {
   return (
@@ -183,11 +204,6 @@ export function TodayGridTab({
   const projectTasks = useTodayProjectTasks(periodDay, data)
   const erpFio = erpActorFio(user)
 
-  const mailRows = useMemo(() => {
-    return outlookMail.rows.filter((row) =>
-      outlookFromMe ? isOutlookMailFromMe(row) : !isOutlookMailFromMe(row)
-    )
-  }, [outlookFromMe, outlookMail.rows])
   const projectRows = useMemo(() => {
     return projectTasks.rows.filter((row) =>
       projectAsManager ? isTurboTaskAsManager(row) : isTurboTaskToMe(row)
@@ -294,9 +310,16 @@ export function TodayGridTab({
         <TodayWindow>
           <TodayOutlookMailPanel
             rows={outlookMail.rows}
-            compactRows={mailRows}
+            fromMe={outlookFromMe}
             loading={outlookMail.loading}
             error={outlookMail.error}
+            onFromMeChange={(value) =>
+              setKpiTiles((current) => ({
+                ...current,
+                outlookFromMe: value,
+                activeIds: ['outlook']
+              }))
+            }
           />
         </TodayWindow>
       ),
@@ -309,20 +332,32 @@ export function TodayGridTab({
           }
           headerAction={
             <>
-              <label className="today-from-me-toggle">
-                <input
-                  type="checkbox"
-                  checked={onecFromMe}
-                  onChange={(event) =>
-                    setKpiTiles((current) => ({
-                      ...current,
-                      onecFromMe: event.target.checked,
-                      activeIds: ['onec']
-                    }))
+              <TodayWidgetChoice
+                options={[
+                  {
+                    id: 'to-me',
+                    label: 'Мне',
+                    active: !onecFromMe,
+                    onClick: () =>
+                      setKpiTiles((current) => ({
+                        ...current,
+                        onecFromMe: false,
+                        activeIds: ['onec']
+                      }))
+                  },
+                  {
+                    id: 'from-me',
+                    label: 'От меня',
+                    active: onecFromMe,
+                    onClick: () =>
+                      setKpiTiles((current) => ({
+                        ...current,
+                        onecFromMe: true,
+                        activeIds: ['onec']
+                      }))
                   }
-                />
-                <span className="today-from-me-toggle-label">Задачи от меня</span>
-              </label>
+                ]}
+              />
               <button
                 type="button"
                 className="today-refresh-btn"
@@ -382,20 +417,32 @@ export function TodayGridTab({
           title="Проектные задачи"
           tableClassName="today-mini-table-tasks"
           headerAction={
-            <label className="today-from-me-toggle">
-              <input
-                type="checkbox"
-                checked={projectAsManager}
-                onChange={(event) =>
-                  setKpiTiles((current) => ({
-                    ...current,
-                    projectAsManager: event.target.checked,
-                    activeIds: ['projects']
-                  }))
+            <TodayWidgetChoice
+              options={[
+                {
+                  id: 'to-me',
+                  label: 'Мне',
+                  active: !projectAsManager,
+                  onClick: () =>
+                    setKpiTiles((current) => ({
+                      ...current,
+                      projectAsManager: false,
+                      activeIds: ['projects']
+                    }))
+                },
+                {
+                  id: 'manager',
+                  label: 'Руководитель',
+                  active: projectAsManager,
+                  onClick: () =>
+                    setKpiTiles((current) => ({
+                      ...current,
+                      projectAsManager: true,
+                      activeIds: ['projects']
+                    }))
                 }
-              />
-              <span className="today-from-me-toggle-label">Как руководитель</span>
-            </label>
+              ]}
+            />
           }
           loading={projectTasks.loading}
           error={projectTasks.error || undefined}
@@ -524,7 +571,6 @@ export function TodayGridTab({
       preparedDecisions.error,
       preparedDecisions.items,
       preparedDecisions.loading,
-      mailRows,
       projectRows,
       meetingRows,
       onOpenDecisions,

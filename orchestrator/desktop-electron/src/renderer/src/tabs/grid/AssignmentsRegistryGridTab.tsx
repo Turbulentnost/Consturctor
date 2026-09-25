@@ -26,12 +26,15 @@ import { AssignmentsRegistryReportTable, AssignmentsRegistryTable } from './Assi
 import { AssignmentsRegistryDetailPanel } from './AssignmentsRegistryDetailPanel'
 import { AssignmentsRegistryCreateDialog } from './AssignmentsRegistryCreateDialog'
 import { useRuns } from '../../store/runs'
-import { personalAgentWorkflowId } from '../../workplace/personalAgent'
+import {
+  buildClosureCheckMessage,
+  CLOSURE_AGENT_TITLE,
+  findClosureAgentWorkflowId,
+  resolveClosureAgentWorkflowId
+} from '../../workplace/assignmentClosureAgent'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import './extensionsGrid.css'
 import './registryGrid.css'
-
-export const ASSIGNMENTS_REGISTRY_AI_CONTEXT = 'Расширение «Реестр поручений»'
 
 const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon', 'report'])
 
@@ -76,9 +79,6 @@ function registryRowSearchValues(row: AssignmentRegistryRow): string[] {
     ...row.lines.flatMap((line) => [line.text, line.executor, line.priority, line.due])
   ]
 }
-
-const AI_REVIEW_PROMPT =
-  'Проверь все незакрытые поручения в журнале АСТ00 за выбранный период: для каждого открытого поручения проверь наличие артефактов (файлов через onec.erp_assignments action=files) и оцени, есть ли реальные основания для закрытия. Сформируй список сомнительных и готовых к закрытию с кратким обоснованием.'
 
 function isoDate(d: Date): string {
   const y = d.getFullYear()
@@ -135,10 +135,10 @@ function buildRegistryTiles(
 
 export function AssignmentsRegistryGridTab({
   user,
-  onAskOrchestrator
+  onRunAgent
 }: {
   user: UserProfile
-  onAskOrchestrator: (message: string, appContext: string) => void
+  onRunAgent: (workflowId: string, title: string, message: string) => void
 }): React.JSX.Element {
   const allowed = canUseExtension(user, 'assignments_registry')
   const storagePrefix = `orch-registry:${user.id || 'default'}`
@@ -249,9 +249,22 @@ export function AssignmentsRegistryGridTab({
   }
   const runs = useRuns()
 
-  const personalId = personalAgentWorkflowId(user.id || '')
-  const aiRun = runs.entries[personalId]
-  const aiBusy = Boolean(aiRun?.state?.running)
+  const [closureAgentId, setClosureAgentId] = useState('')
+  const [aiStarting, setAiStarting] = useState(false)
+  const [aiError, setAiError] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    void findClosureAgentWorkflowId()
+      .then((id) => {
+        if (!cancelled && id) setClosureAgentId(id)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  const aiRun = closureAgentId ? runs.entries[closureAgentId] : undefined
+  const aiBusy = aiStarting || Boolean(aiRun?.state?.running)
   const aiHint = aiBusy ? 'Идёт проверка…' : 'Запустить'
 
   const tiles = useMemo(() => buildRegistryTiles(rowsHydrated, aiHint), [rowsHydrated, aiHint])
@@ -319,9 +332,26 @@ export function AssignmentsRegistryGridTab({
     return `${filteredRows.length} поручений`
   }, [filteredRows.length, firstRowReady, loadingMore])
 
+  const startClosureCheck = async (): Promise<void> => {
+    if (aiStarting) return
+    setAiStarting(true)
+    setAiError('')
+    try {
+      const workflowId = closureAgentId || (await resolveClosureAgentWorkflowId())
+      setClosureAgentId(workflowId)
+      // A live run opens its feed; the run page does not start a second one.
+      const message = runs.entries[workflowId]?.state?.running ? '' : buildClosureCheckMessage(dateFrom, dateTo)
+      onRunAgent(workflowId, CLOSURE_AGENT_TITLE, message)
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Не удалось запустить проверку поручений')
+    } finally {
+      setAiStarting(false)
+    }
+  }
+
   const onTileSelect = (id: string): void => {
     if (id === 'ai') {
-      onAskOrchestrator(AI_REVIEW_PROMPT, ASSIGNMENTS_REGISTRY_AI_CONTEXT)
+      void startClosureCheck()
       return
     }
     changeTileFilter(tileFilter === id ? 'all' : (id as AssignmentRegistryTileId))
@@ -598,6 +628,7 @@ export function AssignmentsRegistryGridTab({
           <div className="wp-card registry-table-card registry-widget-fill">
             {error ? <p className="registry-table-error">{error}</p> : null}
             {printError ? <p className="registry-table-error">{printError}</p> : null}
+            {aiError ? <p className="registry-table-error">{aiError}</p> : null}
             {createNotice ? <p className="registry-table-hint registry-table-success">{createNotice}</p> : null}
             {refreshing && rows.length && !loadingMore ? (
               <p className="registry-table-hint">Обновление данных…</p>
