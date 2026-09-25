@@ -55,7 +55,7 @@ export function OrchestratorPage({ user }: OrchestratorPageProps): React.JSX.Ele
       return next
     } catch (err) {
       if (!aliveRef.current) return null
-      if (hasPositionKpi(user.id, user.fio)) {
+      if (hasPositionKpi(user.position)) {
         const fallback = ilchenkoOrchestratorFallback(user)
         setSnap(fallback)
         setError('')

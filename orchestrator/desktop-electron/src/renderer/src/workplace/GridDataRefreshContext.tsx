@@ -14,6 +14,8 @@ type GridDataRefreshContextValue = {
   /** Монотонный счётчик: интервал TTL, смена пользователя, кнопка обновить. */
   generation: number
   forceRefresh: () => void
+  /** Перечитать источники без обхода кеша SOAP (после записи в 1С). */
+  softRefresh: () => void
   /** True once after the user clicked refresh (bypass SOAP cache). */
   takeHardRefresh: () => boolean
 }
@@ -68,9 +70,10 @@ export function GridDataRefreshProvider({
     () => ({
       generation,
       forceRefresh,
+      softRefresh: bump,
       takeHardRefresh
     }),
-    [generation, forceRefresh, takeHardRefresh]
+    [generation, forceRefresh, bump, takeHardRefresh]
   )
 
   return <GridDataRefreshContext.Provider value={value}>{children}</GridDataRefreshContext.Provider>

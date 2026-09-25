@@ -94,11 +94,6 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "query": _prop("string", "Текст поиска в теме или отправителе"),
                     "user": _prop("string", "Ящик. Пусто — ящик сессии"),
                     "limit": _prop("integer", "Сколько писем вернуть", default=50),
-                    "since": _prop("string", "С даты YYYY-MM-DD (SINCE), синонимы date/date_from"),
-                    "before": _prop("string", "До даты YYYY-MM-DD не включая (BEFORE=date+1)"),
-                    "date": _prop("string", "День YYYY-MM-DD — то же что since"),
-                    "date_from": _prop("string", "Синоним since"),
-                    "date_to": _prop("string", "Синоним before, день включительно"),
                 },
             },
         },
@@ -228,6 +223,7 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "Логика списка как в форме 1С: РК — номера с префиксом «РК», "
                 "СД — «ПСД» (основной), также «СПГ»/«СД». По умолчанию — черновики на проверку "
                 "(Posted=false или Статус=«Подготовлен»). "
+                "psd_mark=true — только пометка ПСД (номер ПСД*), все статусы, включая закрытые. "
                 "meeting_kind: rk или sd. date или date_from/date_to — период."
             ),
             "execution": "server",
@@ -246,6 +242,14 @@ def _raw_tools() -> list[dict[str, Any]]:
                         "boolean",
                         "Только на проверку (Posted=false или Подготовлен). По умолчанию true",
                         default=True,
+                    ),
+                    "psd_mark": _prop(
+                        "boolean",
+                        "Только протоколы с пометкой ПСД (номер начинается с ПСД)",
+                    ),
+                    "include_closed": _prop(
+                        "boolean",
+                        "Включать закрытые. Для psd_mark по умолчанию true",
                     ),
                     "max_results": _prop("integer", "Максимум протоколов, не больше 100"),
                 },
@@ -419,9 +423,11 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "Это и есть проверка поручений: агент сам читает журнал, "
                 "задачи 1С «Проверить поручение» нет. "
                 "Заказчик в 1С — реквизит Руководитель, не текущий пользователь. "
-                "action=list: открытые + за сегодня, фильтр customer=ФИО. "
+                "action=list: по умолчанию открытые + за сегодня, фильтр customer=ФИО. "
+                "include_all=true — все статусы, без отсечения «только открытые/сегодня». "
                 "action=get: карточка по number (АСТ00-00093) со строками и файлами. "
                 "action=files / download / tasks / protocols. "
+                "action=protocols + psd_mark=true — только протоколы с номером ПСД*. "
                 "Содержимое файла: onec.download_artifact с file_id из action=files. "
                 "Не выдумывай ACT латиницей — номер кириллический АСТ. "
                 "Сервер, OData."
@@ -442,10 +448,18 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "date_from": _prop("string", "YYYY-MM-DD"),
                     "date_to": _prop("string", "YYYY-MM-DD"),
                     "only_open": _prop("boolean", "Только статусы Создано/ВРаботе"),
+                    "include_all": _prop(
+                        "boolean",
+                        "Все поручения, без фильтра открытые/сегодня",
+                    ),
                     "include_last_day": _prop(
                         "boolean",
                         "По умолчанию открытые плюс все за сегодня",
                         default=True,
+                    ),
+                    "psd_mark": _prop(
+                        "boolean",
+                        "Для action=protocols: только номера, которые начинаются с ПСД",
                     ),
                     "include_files": _prop("boolean", "Для list сразу вернуть файлы", default=False),
                     "file_id": _prop("string", "GUID вложения для action=download"),
@@ -485,10 +499,10 @@ def _raw_tools() -> list[dict[str, Any]]:
             "description": (
                 "Скачать приложенный файл 1С по GUID из вкладки «Файлы». "
                 "file_id бери из onec.erp_assignments action=files (ref_key файла). "
-                "Ищет Catalog_ТД_ПорученияПрисоединенныеФайлы и "
-                "Catalog_ТД_ПротоколПрисоединенныеФайлы. "
-                "Байты: OData Base64, том на диске, hs/dtw/files или UNC. "
-                "В ответе filename, saved_path и content_base64. Сервер, только чтение."
+                "Байты только через HTTP hs/dtw/files, без OData. "
+                "В ответе filename, saved_path и content_base64. Сервер, только чтение. "
+                "Дальше: Word/PDF/картинки — office.read_file, Excel — excel.read_workbook. "
+                "Встроенный Read по saved_path не вызывай."
             ),
             "execution": "server",
             "input_schema": {
@@ -814,14 +828,15 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "query": _prop("string", "Подстрока в теме или отправителе, не список людей"),
             "max_results": _prop("integer", "Максимум писем"),
         }),
-        ("outlook.read_calendar", "Встречи Outlook за период. Без дат — год вперёд, так не делай на планёрке. Утро: date=сегодня. Вечер: date=завтра. people[] — календари этих сотрудников. Без people — свой. В ответе events, calendars и free_slots.", {
+        ("outlook.read_calendar", "Встречи Outlook за период. Без дат — год вперёд, так не делай на планёрке. Утро: date=сегодня. Вечер: date=завтра. Контроль календаря ПСД: folder=Совещания, people=[Амураль Игорь Борисович] — общий ящик, фильтр по участнику. Без people — свой. В ответе events, calendars и free_slots.", {
             "date": _prop("string", "Один день YYYY-MM-DD"),
             "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
             "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
             "days_forward": _prop("integer", "Сколько дней вперёд от сегодня, если дат нет. По умолчанию 365"),
             "max_results": _prop("integer", "Максимум событий, до 500"),
             "include_body": _prop("boolean", "Включить body_preview. По умолчанию false"),
-            "people": _prop("array", "ФИО или почта сотрудников, чьи календари прочитать"),
+            "people": _prop("array", "ФИО участников: ящик Совещания, затем фильтр"),
+            "folder": _prop("string", "Имя календаря. Для ПСД — Совещания"),
         }),
         ("calendar.show_meetings", "Показать итоговый план совещаний карточкой для доклада: полная тема, участники, кто кого замещает. mark=cancel/red - красным отменить, mark=add/green - зелёным поставить, mark=keep - уже стоит. Утро / контроль календаря ПСД: после карточки сегодняшних встреч сразу WORK_RESULT, create_event не вызывай. Вечер: сначала карточка сдвигов, outlook.create_event только после HITL. Инструмент только визуализирует и ничего не пишет в Outlook.", {
             "meetings": _prop("array", "Список: title, start, end, mark, reason, organizer, attendees[], substitutes[] (кто замещает кого)"),
@@ -967,6 +982,19 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "sheet": _prop("string", "Имя листа. Пусто — первый"),
             "max_rows": _prop("integer", "Максимум строк"),
         }),
+        (
+            "office.read_file",
+            "Текст из Word (.docx) и PDF с текстовым слоем. "
+            "Скан или картинку передаёт в зрение модели Cursor SDK. "
+            "filename или saved_path после onec.download_artifact. "
+            "Не вызывай встроенные Read/Grep для этих файлов. Excel — excel.read_workbook.",
+            {
+                "filename": _prop("string", "Имя, путь в папке агента или saved_path из onec.download_artifact"),
+                "path": _prop("string", "То же, что filename"),
+                "max_chars": _prop("integer", "Обрезать текст"),
+                "max_pages": _prop("integer", "Для PDF: сколько страниц с начала"),
+            },
+        ),
         ("excel.create_workbook", "Создать или перезаписать .xlsx в папке агента. Если файл уже есть — перезапишет, отдельный overwrite не нужен.", {
             "filename": _prop("string", "Имя файла, например report.xlsx"),
             "headers": _prop("array", "Заголовки колонок", items={"type": "string"}),
@@ -985,12 +1013,12 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "command": _prop("string", "Команда PowerShell без выхода из папки агента"),
             "timeout_seconds": _prop("integer", "Таймаут выполнения"),
         }),
-        ("code.write_python", "Сохранить .py в папку code агента.", {
+        ("code.write_python", "Сохранить .py в папку code. Для KPI: generated/<slug>.py и tests/test_<slug>.py в корне workspace.", {
             "code": _prop("string", "Текст программы Python"),
-            "filename": _prop("string", "Имя файла, например script.py"),
+            "filename": _prop("string", "script.py, generated/<slug>.py или tests/test_<slug>.py"),
         }),
-        ("code.run_python", "Запустить .py из папки агента.", {
-            "filename": _prop("string", "Имя файла из папки code"),
+        ("code.run_python", "Запустить .py из папки агента. tests/test_<slug>.py гоняется через pytest.", {
+            "filename": _prop("string", "Файл из code/ или tests/test_<slug>.py"),
             "code": _prop("string", "Либо сам код, если файла ещё нет"),
             "timeout_seconds": _prop("integer", "Таймаут выполнения"),
         }),
@@ -1300,6 +1328,7 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "browser.scroll": ("web", "web_page", "execute", [], [], "none"),
     "excel.list_files": ("desktop", "file", "list", [], ["files"], "none"),
     "excel.read_workbook": ("desktop", "spreadsheet", "read", ["filename"], ["rows"], "count"),
+    "office.read_file": ("desktop", "document", "read", ["filename"], ["text", "vision_pages"], "none"),
     "excel.create_workbook": ("desktop", "spreadsheet", "export", ["filename"], ["file"], "none"),
     "excel.edit_workbook": ("desktop", "spreadsheet", "update", ["filename"], ["file"], "none"),
     "workspace.powershell_run": ("desktop", "shell", "execute", ["command"], ["text"], "none"),

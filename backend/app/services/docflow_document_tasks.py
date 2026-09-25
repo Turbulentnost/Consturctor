@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from app.services.erp_task_odata_scan import row_matches_user_ref
 from app.services.erp_tasks import from_1c_datetime, task_is_late
+from app.tools.onec.dok_soap import importance_level
 
 _ODATA_ENTITY = "Task_ЗадачаИсполнителя"
 _USER_CATALOG = "Catalog_Пользователи"
@@ -149,6 +150,9 @@ def map_document_executor_row(row: dict[str, Any], *, fio: str) -> dict[str, Any
         str(row.get("Описание") or row.get("Комментарий") or row.get("comment") or "").split()
     )
     approval = str(row.get("СостояниеБизнесПроцесса") or row.get("step") or "").strip()
+    importance = importance_level(
+        str(row.get("Важность") or row.get("importance") or row.get("ВажностьNavigationLink") or "")
+    )
 
     return {
         "number": str(row.get("Number") or row.get("number") or row.get("id") or "").strip(),
@@ -163,6 +167,7 @@ def map_document_executor_row(row: dict[str, Any], *, fio: str) -> dict[str, Any
         "approval": approval or ("завершена" if done else "не согласовано"),
         "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "performer": executor_from_row(row) or fio,
+        "importance": importance,
         "source": "документооборот",
     }
 

@@ -1,12 +1,20 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.models.user import AppUser
 from app.models.workflow import Workflow
-from app.services.orchestrator.ilchenko import ILCHENKO_SUMMARY, is_ilchenko, ilchenko_tiles
+from app.services.orchestrator import facts as orch_facts
+from app.services.orchestrator.ilchenko import (
+    ILCHENKO_SUMMARY,
+    PSD_POSITION_NAME,
+    has_locked_position_kpi,
+    is_ilchenko,
+    ilchenko_tiles,
+)
 from app.services.orchestrator.service import (
     OrchestratorError,
     agent_fingerprint,
@@ -18,6 +26,20 @@ from app.services.orchestrator.service import (
     orch_calc_task_id,
     save_formed,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_instruction_module(monkeypatch) -> None:
+    monkeypatch.setattr(
+        orch_facts,
+        "_instruction_tile_update",
+        lambda: {
+            "id": "instructions",
+            "fact": {"value": None, "unit": "%"},
+            "score_percent": None,
+            "evidence": "test stub",
+        },
+    )
 
 
 def _session() -> Session:
@@ -81,6 +103,39 @@ def test_is_ilchenko_by_id_and_fio() -> None:
     assert is_ilchenko(user_id="A2DCC949FEDEC70D40318ABA83C618F4")
     assert is_ilchenko(fio="Ильченко Екатерина Александровна")
     assert not is_ilchenko(user_id="other", fio="Анна Де Армас")
+    assert has_locked_position_kpi(position=PSD_POSITION_NAME)
+    assert has_locked_position_kpi(position="  помощник  председателя совета директоров  ")
+    assert not has_locked_position_kpi(position="Офис-менеджер")
+    assert not has_locked_position_kpi()
+
+
+def test_locked_kpi_follows_position_not_person() -> None:
+    db = _session()
+    ilchenko_id = "A2DCC949FEDEC70D40318ABA83C618F4"
+    _user(db, ilchenko_id, "Ильченко Екатерина Александровна", position="Офис-менеджер")
+    other = get_orchestrator(
+        db,
+        user_id=ilchenko_id,
+        fio="Ильченко Екатерина Александровна",
+        position="Офис-менеджер",
+    )
+    assert other.locked is False
+    assert other.tiles == []
+
+    _user(db, "user-psd", "Петров Петр", position=PSD_POSITION_NAME)
+    locked = get_orchestrator(
+        db,
+        user_id="user-psd",
+        fio="Петров Петр",
+        position=PSD_POSITION_NAME,
+    )
+    assert locked.locked is True
+    assert [tile.id for tile in locked.tiles] == [
+        "package_on_time",
+        "protocol_on_time",
+        "instructions",
+        "quality",
+    ]
 
 
 def test_ilchenko_seed_has_four_locked_tiles() -> None:
@@ -104,16 +159,26 @@ def test_ilchenko_seed_has_four_locked_tiles() -> None:
 def test_get_seeds_ilchenko_and_never_needs_form() -> None:
     db = _session()
     user_id = "A2DCC949FEDEC70D40318ABA83C618F4"
-    _user(db, user_id, "Ильченко Екатерина Александровна")
+    _user(db, user_id, "Ильченко Екатерина Александровна", position=PSD_POSITION_NAME)
     _workflow(db, user_id, "wf-1", "Ревизионная комиссия")
-    first = get_orchestrator(db, user_id=user_id, fio="Ильченко Екатерина Александровна")
+    first = get_orchestrator(
+        db,
+        user_id=user_id,
+        fio="Ильченко Екатерина Александровна",
+        position=PSD_POSITION_NAME,
+    )
     assert first.locked is True
     assert first.needs_form is False
     assert len(first.tiles) == 4
     assert first.summary == ILCHENKO_SUMMARY
     assert first.needs_calc is False
     _workflow(db, user_id, "wf-2", "Новый агент")
-    second = get_orchestrator(db, user_id=user_id, fio="Ильченко Екатерина Александровна")
+    second = get_orchestrator(
+        db,
+        user_id=user_id,
+        fio="Ильченко Екатерина Александровна",
+        position=PSD_POSITION_NAME,
+    )
     assert second.needs_form is False
     assert [tile.id for tile in second.tiles] == [tile.id for tile in first.tiles]
 
@@ -121,11 +186,22 @@ def test_get_seeds_ilchenko_and_never_needs_form() -> None:
 def test_ilchenko_save_formed_rejected() -> None:
     db = _session()
     user_id = "user-ilchenko"
-    _user(db, user_id, "Ильченко Екатерина Александровна")
+    _user(db, user_id, "Ильченко Екатерина Александровна", position=PSD_POSITION_NAME)
     _workflow(db, user_id, "wf-1", "Агент")
-    get_orchestrator(db, user_id=user_id, fio="Ильченко Екатерина Александровна")
+    get_orchestrator(
+        db,
+        user_id=user_id,
+        fio="Ильченко Екатерина Александровна",
+        position=PSD_POSITION_NAME,
+    )
     try:
-        save_formed(db, user_id=user_id, tiles=_sample_tiles(), fio="Ильченко Екатерина Александровна")
+        save_formed(
+            db,
+            user_id=user_id,
+            tiles=_sample_tiles(),
+            fio="Ильченко Екатерина Александровна",
+            position=PSD_POSITION_NAME,
+        )
         raise AssertionError("expected OrchestratorError")
     except OrchestratorError as exc:
         assert exc.status_code == 409

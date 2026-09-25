@@ -7,13 +7,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 from contextvars import ContextVar
+from datetime import datetime
 from typing import Any
 
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 _request_auth: ContextVar[tuple[str, str] | None] = ContextVar("_dok_http_request_auth", default=None)
 
@@ -106,6 +111,70 @@ def _http_get_json(url: str, *, auth: tuple[str, str], params: dict[str, Any] | 
         snippet = response.text[:200].strip()
         raise RuntimeError(f"HTTP {response.status_code}: {snippet or response.reason_phrase}")
     return response.json()
+
+
+# Платформенный идентификатор типа «Структура» для ЗначениеВСтрокуВнутр / ЗначениеИзСтрокиВнутр.
+_STRUCTURE_TYPE_ID = "4238019d-7e49-4fc9-91db-b6b951d5cf8e"
+
+
+def internal_due_structure(due: datetime) -> str:
+    """Тело TaskPatch: Новый Структура("СрокИсполнения", КонецДня(дата))."""
+    stamp = due.strftime("%Y%m%d%H%M%S")
+    return (
+        '{"#",'
+        + _STRUCTURE_TYPE_ID
+        + ',{1,{{"S","СрокИсполнения"},{"D",'
+        + stamp
+        + "}}}}"
+    )
+
+
+def end_of_day(day: datetime) -> datetime:
+    return day.replace(hour=23, minute=59, second=59, microsecond=0)
+
+
+def result_description(response_text: str) -> str:
+    """ОписаниеРезультата из ответа dterp (внутреннее представление структуры)."""
+    match = re.search(r'"ОписаниеРезультата"\}\s*,\s*\{"S","([^"]*)"', response_text or "")
+    return match.group(1).strip() if match else ""
+
+
+def patch_task_deadline(process_uid: str, due: datetime, *, method: str = "PATCH") -> str:
+    """TaskPatch?UID= — перенос срока исполнения задачи в базе ДО (только PATCH)."""
+    auth = _resolve_auth()
+    base = dok_http_base_url()
+    uid = (process_uid or "").strip()
+    if not base:
+        raise RuntimeError("HTTP документооборота не настроен (DOK_HTTP_*)")
+    if not auth:
+        raise RuntimeError("Нужны учётные данные сеанса 1С для базы документооборота")
+    if not uid:
+        raise RuntimeError("Не указан UID процесса")
+    url = f"{base}/TaskPatch"
+    body = internal_due_structure(end_of_day(due))
+    headers = {"Content-Type": "text/plain;charset=UTF-8", "Accept": "*/*"}
+    timeout = max(15.0, float(settings.odata_timeout_sec or 60))
+    with httpx.Client(timeout=timeout, auth=auth) as client:
+        response = client.request(
+            method.upper(),
+            url,
+            params={"UID": uid},
+            content=body.encode("utf-8"),
+            headers=headers,
+        )
+    text = (response.text or "").strip()
+    logger.info(
+        "TaskPatch %s UID=%s HTTP %s body=%s",
+        method.upper(),
+        uid,
+        response.status_code,
+        text[:500].replace("\n", " ") or "<empty>",
+    )
+    if response.status_code in {401, 403}:
+        raise RuntimeError(f"HTTP {response.status_code}: документооборот отклонил учётку")
+    if response.status_code >= 400:
+        raise RuntimeError(f"HTTP {response.status_code}: {text[:200] or response.reason_phrase}")
+    return text
 
 
 def _http_post_json(url: str, *, auth: tuple[str, str], body: dict[str, Any]) -> Any:

@@ -397,17 +397,23 @@ export function TodayFiltersBar({
 export function TodayPlanPanel({
   periodDay,
   userId,
-  fio
+  fio,
+  compact = true,
+  onOpenFullPlan
 }: {
   periodDay: Date
   userId: string
   fio: string
+  compact?: boolean
+  onOpenFullPlan?: () => void
 }): React.JSX.Element {
   const plan = useTodayPlanTimeline(periodDay, { userId, fio })
   const [selectedBlock, setSelectedBlock] = useState<TodayPlanBlock | null>(null)
 
   return (
-    <section className="wp-card today-plan-card today-plan-tz">
+    <section
+      className={`wp-card today-plan-card today-plan-tz${compact ? ' today-plan-tz--compact' : ''}`}
+    >
       <header className="today-plan-head">
         <div className="today-plan-head-main">
           <span className="today-plan-head-icon">
@@ -422,7 +428,11 @@ export function TodayPlanPanel({
             {plan.loading ? <p className="today-plan-head-note">Загружаем календарь…</p> : null}
           </div>
         </div>
-        <button type="button" className="today-plan-open">
+        <button
+          type="button"
+          className="today-plan-open"
+          onClick={onOpenFullPlan}
+        >
           Открыть полный план →
         </button>
       </header>
@@ -435,7 +445,7 @@ export function TodayPlanPanel({
         </div>
         <div className="today-plan-lanes">
           <div className="today-plan-lane">
-            <span className="today-plan-lane-label">Совещания</span>
+            {compact ? null : <span className="today-plan-lane-label">Совещания</span>}
             <PlanTrack
               blocks={plan.meetingBlocks}
               lunchBlock={plan.lunchBlock}
@@ -443,14 +453,16 @@ export function TodayPlanPanel({
               onSelectBlock={setSelectedBlock}
             />
           </div>
-          <div className="today-plan-lane">
-            <span className="today-plan-lane-label">ИИ-агенты</span>
-            <PlanTrack
-              blocks={plan.aiBlocks}
-              laneClass="today-plan-track-ai"
-              onSelectBlock={setSelectedBlock}
-            />
-          </div>
+          {compact ? null : (
+            <div className="today-plan-lane">
+              <span className="today-plan-lane-label">ИИ-агенты</span>
+              <PlanTrack
+                blocks={plan.aiBlocks}
+                laneClass="today-plan-track-ai"
+                onSelectBlock={setSelectedBlock}
+              />
+            </div>
+          )}
         </div>
       </div>
       {selectedBlock ? (

@@ -6,6 +6,11 @@ const rendererPort = Number(process.env.ORCH_VITE_PORT || 5174)
 
 export default defineConfig({
   main: {
+    resolve: {
+      alias: {
+        '@shared': resolve(__dirname, 'src/shared')
+      }
+    },
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/main/index.ts') }
@@ -23,7 +28,8 @@ export default defineConfig({
     root: resolve(__dirname, 'src/renderer'),
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src/renderer/src')
+        '@': resolve(__dirname, 'src/renderer/src'),
+        '@shared': resolve(__dirname, 'src/shared')
       }
     },
     server: {

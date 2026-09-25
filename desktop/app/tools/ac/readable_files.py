@@ -48,6 +48,18 @@ def is_allowed_external(path: Path) -> bool:
     return cache == resolved or cache in resolved.parents
 
 
+def first_document_in(folder: Path) -> Path | None:
+    """Если передали папку — взять первый PDF/Word/картинку внутри."""
+    if not folder.is_dir():
+        return None
+    docs = [
+        path
+        for path in sorted(folder.iterdir())
+        if path.is_file() and path.suffix.lower() in READABLE_SUFFIXES
+    ]
+    return docs[0] if docs else None
+
+
 def resolve_readable_path(workspace: AgentWorkspace, filename: object) -> Path:
     raw = str(filename or "").strip()
     if not raw:
@@ -60,10 +72,19 @@ def resolve_readable_path(workspace: AgentWorkspace, filename: object) -> Path:
             "Вне рабочей папки можно читать только файлы из "
             f"{artifact_cache_dir()} (saved_path после onec.download_artifact)."
         )
+    folder = workspace.directory / raw.replace("\\", "/")
+    picked = first_document_in(folder)
+    if picked is not None:
+        return picked.resolve()
     try:
-        return workspace.resolve(raw, must_exist=True)
+        path = workspace.resolve(raw, must_exist=True)
     except WorkspaceError:
         cached = artifact_cache_dir() / Path(raw).name
         if cached.is_file():
             return cached.resolve()
         raise
+    if path.is_dir():
+        nested = first_document_in(path)
+        if nested is not None:
+            return nested.resolve()
+    return path

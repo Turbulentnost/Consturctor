@@ -16,6 +16,7 @@ def extract_attachment_text(
     *,
     max_chars: int = _MAX_CHARS,
     max_pages: int = 0,
+    start_page: int = 1,
     ocr: bool = True,
 ) -> str:
     file_path = Path(path)
@@ -27,7 +28,9 @@ def extract_attachment_text(
         if suffix in _TEXT_SUFFIXES:
             text = file_path.read_text(encoding="utf-8", errors="replace")
         elif suffix == ".pdf":
-            text = _read_pdf(file_path, max_pages=max_pages, ocr=ocr)
+            text = _read_pdf(
+                file_path, max_pages=max_pages, start_page=start_page, ocr=ocr
+            )
         elif suffix == ".docx":
             text = _read_docx(file_path)
         elif suffix in {".xlsx", ".xlsm"}:
@@ -85,7 +88,9 @@ def _ocr(path: Path) -> str:
     return ocr_file(path)
 
 
-def _read_pdf(path: Path, *, max_pages: int = 0, ocr: bool = True) -> str:
+def _read_pdf(
+    path: Path, *, max_pages: int = 0, start_page: int = 1, ocr: bool = True
+) -> str:
     native = ""
     try:
         import fitz  # pymupdf
@@ -95,6 +100,10 @@ def _read_pdf(path: Path, *, max_pages: int = 0, ocr: bool = True) -> str:
         doc = fitz.open(path)
         try:
             pages = list(doc)
+            start = max(1, int(start_page or 1))
+            if start > len(pages):
+                start = 1
+            pages = pages[start - 1 :]
             if max_pages and max_pages > 0:
                 pages = pages[:max_pages]
             native = "\n\n".join((page.get_text() or "") for page in pages)

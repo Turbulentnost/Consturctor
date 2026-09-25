@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.services.local_mcp import list_tools
-from app.services.notifications.service import latest_due_by_recipient, split_latest
+from app.services.notifications.service import latest_due_by_recipient, partition_pending, split_latest
 from app.services.workflows.cursor_tools import (
     _format_tool_output,
     required_live_tools_from_plan,
@@ -19,12 +19,31 @@ def test_split_latest_keeps_only_newest() -> None:
 
 
 def test_latest_due_by_recipient_keeps_one_per_user() -> None:
-    first = SimpleNamespace(id="1", recipient_user_id="u1")
-    second = SimpleNamespace(id="2", recipient_user_id="u1")
-    other = SimpleNamespace(id="3", recipient_user_id="u2")
+    first = SimpleNamespace(id="1", recipient_user_id="u1", title="Прочее")
+    second = SimpleNamespace(id="2", recipient_user_id="u1", title="Ещё")
+    other = SimpleNamespace(id="3", recipient_user_id="u2", title="Чужое")
     older, latest = latest_due_by_recipient([first, other, second])
     assert [item.id for item in older] == ["1"]
     assert {item.id for item in latest} == {"2", "3"}
+
+
+def test_partition_pending_keeps_all_run_notices() -> None:
+    start = SimpleNamespace(id="1", title="Запуск начался")
+    wait = SimpleNamespace(id="2", title="Агент ожидает подтверждения")
+    finish = SimpleNamespace(id="3", title="Запуск закончен")
+    extra = SimpleNamespace(id="4", title="Чат")
+    older, deliver = partition_pending([start, extra, wait, finish])
+    assert [item.id for item in older] == []
+    assert [item.id for item in deliver] == ["1", "2", "3", "4"]
+
+
+def test_latest_due_keeps_run_notices_and_latest_other() -> None:
+    start = SimpleNamespace(id="1", recipient_user_id="u1", title="Запуск начался")
+    chat_old = SimpleNamespace(id="2", recipient_user_id="u1", title="Старый чат")
+    chat_new = SimpleNamespace(id="3", recipient_user_id="u1", title="Новый чат")
+    older, deliver = latest_due_by_recipient([start, chat_old, chat_new])
+    assert [item.id for item in older] == ["2"]
+    assert [item.id for item in deliver] == ["1", "3"]
 
 
 def test_notify_send_is_server_tool() -> None:

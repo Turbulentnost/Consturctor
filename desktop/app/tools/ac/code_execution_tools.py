@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -40,6 +42,8 @@ DEFAULT_TIMEOUT_SECONDS = 180
 MAX_TIMEOUT_SECONDS = 600
 MAX_OUTPUT_CHARS = 20_000
 SUMMARY_CHARS = 2_000
+FAILURE_TAIL_CHARS = 8_000
+_KPI_SLUG = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 def _summarize(text: str, max_chars: int = SUMMARY_CHARS) -> str:
@@ -84,6 +88,76 @@ def _agent_python_env() -> dict[str, str]:
     return env
 
 
+def _script_failure_message(exit_code: int | None, stdout: str, stderr: str) -> str:
+    blob = "\n".join(part for part in ((stdout or "").strip(), (stderr or "").strip()) if part)
+    if len(blob) > FAILURE_TAIL_CHARS:
+        blob = blob[-FAILURE_TAIL_CHARS:]
+    detail = f"\n{blob}" if blob else ""
+    if "No module named pytest" in blob:
+        return (
+            f"Python-скрипт завершился с кодом {exit_code}.{detail}\n"
+            "В этом интерпретаторе нет pytest. Модуль не переписывай и пакеты не ставь."
+        )
+    return (
+        f"Python-скрипт завершился с кодом {exit_code}.{detail}\n"
+        "Перепиши код (code.write_python) и запусти снова."
+    )
+
+
+def _imports_pytest(command: list[str]) -> bool:
+    try:
+        completed = subprocess.run(
+            [*command, "-c", "import pytest"],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+_PYTEST_PREFIX: list[str] | None = None
+
+
+def pytest_command_prefix() -> list[str]:
+    """Python that can run pytest. The sidecar interpreter often cannot."""
+    global _PYTEST_PREFIX
+    if _PYTEST_PREFIX:
+        return list(_PYTEST_PREFIX)
+    candidates: list[list[str]] = []
+    own = _python_command_prefix()
+    if own:
+        candidates.append(own)
+    if sys.executable:
+        exe = Path(sys.executable)
+        sibling = exe.parent.parent / "Python313" / "python.exe"
+        if sibling.is_file() and sibling.resolve() != exe.resolve():
+            candidates.append([str(sibling)])
+    launcher = shutil.which("py")
+    if launcher and "windowsapps" not in launcher.casefold():
+        candidates.append([launcher, "-3.13"])
+        candidates.append([launcher, "-3"])
+    chosen = list(own or [sys.executable])
+    for command in candidates:
+        if _imports_pytest(command):
+            chosen = list(command)
+            break
+    _PYTEST_PREFIX = chosen
+    return list(chosen)
+
+
+def _pytest_command(prefix: list[str], target: Path) -> list[str]:
+    command = pytest_command_prefix() or list(prefix)
+    if not getattr(sys, "frozen", False):
+        if "-u" not in command:
+            command.append("-u")
+        if "-X" not in command:
+            command.extend(["-X", "utf8"])
+    command.extend(["-m", "pytest", str(target), "-q", "--tb=short"])
+    return command
+
+
 def _python_run_command(prefix: list[str], target: Path, args: list[str]) -> list[str]:
     """Build argv: unbuffered UTF-8 CPython, or the frozen runner as-is.
 
@@ -110,16 +184,119 @@ def _code_dir(workspace: AgentWorkspace) -> Path:
     return code_dir
 
 
+def _normalize_code_name(filename: object) -> str:
+    name = str(filename or DEFAULT_SCRIPT_NAME).strip().replace("\\", "/") or DEFAULT_SCRIPT_NAME
+    while name.startswith("./"):
+        name = name[2:]
+    return name.lstrip("/")
+
+
+def _kpi_slug_ok(stem: str) -> bool:
+    return bool(_KPI_SLUG.match(stem))
+
+
+def _resolve_kpi_module_file(workspace: AgentWorkspace, name: str) -> Path | None:
+    """generated/<slug>.py и tests/test_<slug>.py — в корне workspace, не в code/."""
+    relative = name[len(CODE_SUBDIR) + 1 :] if name.startswith(f"{CODE_SUBDIR}/") else name
+    parts = tuple(part for part in relative.split("/") if part)
+    if any(part in {".", ".."} for part in parts):
+        raise WorkspaceError("Путь скрипта выходит за пределы рабочей папки агента")
+    if len(parts) != 2:
+        return None
+    folder, filename = parts
+    if not filename.endswith(".py"):
+        raise WorkspaceError("Разрешены только .py файлы")
+    stem = filename[: -len(".py")]
+    if folder == "generated":
+        if stem in {"__init__"} or stem.startswith("test_") or not _kpi_slug_ok(stem):
+            raise WorkspaceError("Модуль KPI: generated/<slug>.py, slug из латиницы в нижнем регистре")
+    elif folder == "tests":
+        if not stem.startswith("test_") or not _kpi_slug_ok(stem[len("test_") :]):
+            raise WorkspaceError("Тест KPI: tests/test_<slug>.py")
+    else:
+        return None
+    root = workspace.directory.resolve()
+    candidate = (root / folder / filename).resolve()
+    if root != candidate and root not in candidate.parents:
+        raise WorkspaceError("Путь скрипта выходит за пределы рабочей папки агента")
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    init = root / "generated" / "__init__.py"
+    if not init.exists():
+        init.parent.mkdir(parents=True, exist_ok=True)
+        init.write_text('"""KPI modules for this build."""\n', encoding="utf-8")
+    return candidate
+
+
 def _resolve_code_file(workspace: AgentWorkspace, filename: object) -> Path:
-    """Вернуть безопасный путь .py внутри подпапки code (защита от traversal)."""
-    name = str(filename or DEFAULT_SCRIPT_NAME).strip() or DEFAULT_SCRIPT_NAME
+    """Путь .py: KPI-модули в generated/ и tests/, остальное только в code/."""
+    name = _normalize_code_name(filename)
+    if ".." in name.split("/"):
+        raise WorkspaceError("Путь скрипта выходит за пределы рабочей папки агента")
+    kpi_file = _resolve_kpi_module_file(workspace, name)
+    if kpi_file is not None:
+        return kpi_file
     code_dir = _code_dir(workspace)
-    candidate = (code_dir / name).resolve()
+    # Инструмент и так пишет в подпапку code — срезаем лишний ведущий code/,
+    # иначе получается code/code/… и запись падает на несуществующей папке.
+    relative = name
+    while relative.startswith(f"{CODE_SUBDIR}/"):
+        relative = relative[len(CODE_SUBDIR) + 1 :]
+    relative = relative.lstrip("/") or DEFAULT_SCRIPT_NAME
+    candidate = (code_dir / relative).resolve()
     if code_dir != candidate and code_dir not in candidate.parents:
         raise WorkspaceError("Путь скрипта выходит за пределы папки code агента")
     if candidate.suffix.lower() != ".py":
         raise WorkspaceError("Разрешены только .py файлы в папке code агента")
+    candidate.parent.mkdir(parents=True, exist_ok=True)
     return candidate
+
+
+def _is_kpi_test_file(workspace: AgentWorkspace, target: Path) -> bool:
+    try:
+        relative = target.resolve().relative_to(workspace.directory.resolve()).as_posix()
+    except ValueError:
+        return False
+    if not relative.startswith("tests/test_") or not relative.endswith(".py"):
+        return False
+    return "/" not in relative[len("tests/") :]
+
+
+def promote_kpi_artifacts(workspace: Path) -> None:
+    """Перенести модули, записанные в code/generated и code/tests, в корень workspace."""
+    root = Path(workspace)
+    generated = root / "generated"
+    tests = root / "tests"
+    generated.mkdir(parents=True, exist_ok=True)
+    tests.mkdir(parents=True, exist_ok=True)
+    init = generated / "__init__.py"
+    if not init.exists():
+        init.write_text('"""KPI modules for this build."""\n', encoding="utf-8")
+
+    def relocate(path: Path, dest_dir: Path, *, test: bool) -> None:
+        stem = path.stem[len("test_") :] if test else path.stem
+        if path.name == "__init__.py" or not _kpi_slug_ok(stem):
+            return
+        if test and not path.name.startswith("test_"):
+            return
+        dest = dest_dir / path.name
+        if path.resolve() == dest.resolve():
+            return
+        dest.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        path.unlink()
+
+    code_generated = root / CODE_SUBDIR / "generated"
+    code_tests = root / CODE_SUBDIR / "tests"
+    if code_generated.is_dir():
+        for path in list(code_generated.glob("*.py")):
+            if path.name.startswith("test_"):
+                relocate(path, tests, test=True)
+            else:
+                relocate(path, generated, test=False)
+    if code_tests.is_dir():
+        for path in list(code_tests.glob("test_*.py")):
+            relocate(path, tests, test=True)
+    for path in list(generated.glob("test_*.py")):
+        relocate(path, tests, test=True)
 
 
 class CodeWritePythonTool(BaseTool):
@@ -132,9 +309,10 @@ class CodeWritePythonTool(BaseTool):
                 name="code.write_python",
                 title="Написать Python-код в папку агента",
                 description=(
-                    "Сохраняет Python-код в подпапку code рабочей папки агента "
-                    "(только .py). Не запускает код — для запуска используй "
-                    "code.run_python."
+                    "Сохраняет Python-код. Обычный скрипт — в подпапку code. "
+                    "Модуль KPI — filename ровно generated/<slug>.py, тест — "
+                    "tests/test_<slug>.py: они пишутся в корень рабочей папки, не в code/. "
+                    "Не запускает код — для запуска используй code.run_python."
                 ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,
@@ -196,12 +374,12 @@ class CodeRunPythonTool(BaseTool):
                 name="code.run_python",
                 title="Запустить Python-код агента",
                 description=(
-                    "Запускает .py файл из подпапки code рабочей папки агента и "
-                    "возвращает stdout/stderr/exit_code. Можно передать inline code "
-                    "— он будет сначала сохранён, затем запущен. Рабочая директория "
-                    "процесса — папка агента, поэтому скрипт может читать выгруженные "
-                    "файлы и писать результаты. Запись и запуск в sandbox не ждут "
-                    "подтверждения в UI."
+                    "Запускает .py из подпапки code и возвращает stdout/stderr/exit_code. "
+                    "filename tests/test_<slug>.py запускает pytest этого файла. "
+                    "Можно передать inline code — он будет сначала сохранён, затем запущен. "
+                    "Рабочая директория процесса — папка агента. "
+                    "Если pytest или скрипт упал, в ответе есть traceback: поправь файл "
+                    "через code.write_python и запусти снова."
                 ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,
@@ -257,9 +435,13 @@ class CodeRunPythonTool(BaseTool):
 
         args = [str(item) for item in (input_data.get("args") or []) if str(item)]
         timeout = _timeout(input_data.get("timeout_seconds"))
+        if _is_kpi_test_file(workspace, target):
+            command = _pytest_command(command_prefix, target)
+        else:
+            command = _python_run_command(command_prefix, target, args)
         try:
             completed = run_captured(
-                _python_run_command(command_prefix, target, args),
+                command,
                 cwd=workspace.directory,
                 timeout=timeout,
                 env=_agent_python_env(),
@@ -296,10 +478,7 @@ class CodeRunPythonTool(BaseTool):
             error_message = "Python-скрипт превысил timeout."
         elif not ok:
             error_type = "SCRIPT_FAILED"
-            error_message = (
-                f"Python-скрипт завершился с кодом {exit_code}. Проанализируй "
-                "stderr, при необходимости перепиши код (code.write_python) и запусти снова."
-            )
+            error_message = _script_failure_message(exit_code, stdout, stderr)
         return ToolCallResult(
             ok=ok,
             tool_name=self.definition.name,

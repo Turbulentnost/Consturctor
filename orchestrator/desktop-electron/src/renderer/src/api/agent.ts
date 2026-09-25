@@ -53,6 +53,15 @@ export interface CalcOrchestratorCommand {
   tileIds?: string[]
 }
 
+export interface KpiModuleCommand {
+  kind: 'kpi_module'
+  id?: string
+  buildId: string
+  workflowId: string
+  prompt: string
+  filePaths?: string[]
+}
+
 export type StartCommand =
   | DesignCommand
   | ReadinessCommand
@@ -61,6 +70,7 @@ export type StartCommand =
   | CheckTriggerCommand
   | FormOrchestratorCommand
   | CalcOrchestratorCommand
+  | KpiModuleCommand
 
 function newRunId(): string {
   return `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`

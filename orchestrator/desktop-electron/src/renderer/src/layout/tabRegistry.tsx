@@ -14,6 +14,7 @@ export type WorkplaceTabKey =
   | 'tasks'
   | 'projects'
   | 'mail'
+  | 'docflow'
   | 'meetings'
   | 'decisions'
   | 'kpi'
@@ -22,6 +23,8 @@ export type WorkplaceTabKey =
   | 'extensions'
   | 'assignments_registry'
   | 'agent_library'
+  | 'task_create'
+  | 'platform_task_create'
 
 export interface TabRegistryEntry {
   title: string
@@ -62,6 +65,10 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
     subtitle: 'Ваши письма в Outlook и связанные процессы',
     headerActions: <SpecQuickLaunchButton />
   },
+  docflow: {
+    title: PAGE_LABELS.docflow,
+    subtitle: 'Корреспонденция, служебные записки, приказы, поручения и протоколы'
+  },
   meetings: {
     title: PAGE_LABELS.meetings,
     subtitle: 'Календарь, подготовка и материалы',
@@ -94,6 +101,14 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   assignments_registry: {
     title: 'Реестр поручений',
     subtitle: 'Журнал поручений АСТ00: контроль сроков, статусов и проверка закрытия через ИИ'
+  },
+  task_create: {
+    title: PAGE_LABELS.task_create,
+    subtitle: 'Запуск задачи в 1С:Документооборот'
+  },
+  platform_task_create: {
+    title: PAGE_LABELS.platform_task_create,
+    subtitle: 'Постановка задачи сотруднику внутри Оркестратора'
   },
   agent_library: {
     title: 'Библиотека агентов',

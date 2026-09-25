@@ -6,6 +6,7 @@ import { hasOutlookEntryId } from '../utils/outlookMailActions'
 import { erpActorComUsername } from './userContext'
 import { onecComInvokeArgs } from './userContext'
 import { openHttpUrl } from './workplaceNav'
+import { decodeMimeHeader } from '../utils/mimeHeader'
 
 /** Новая входящая корреспонденция — форма документа в толстом клиенте. */
 export const ONEC_INCOMING_DOC_FORM = 'Документ.ТД_ВходящаяКорреспонденция.Форма.ФормаДокумента'
@@ -55,8 +56,8 @@ export async function registerIncomingFromMail(
       {
         entry_id: entryId,
         form: ONEC_INCOMING_DOC_FORM,
-        mail_subject: detail?.subject || mail.subject,
-        mail_sender: detail?.sender || mail.sender,
+        mail_subject: decodeMimeHeader(detail?.subject || mail.subject),
+        mail_sender: decodeMimeHeader(detail?.sender || mail.sender),
         mail_received_at: receivedLabel,
         username: erpActorComUsername(user)
       },

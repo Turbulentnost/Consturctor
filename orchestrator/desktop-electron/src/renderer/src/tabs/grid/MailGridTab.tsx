@@ -10,6 +10,7 @@ import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { countMailTiles, mailMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import { mailListEmptyHint } from '../../workplace/mailProbe'
 import { formatMailTime } from '../../utils/outlookMail'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { MailDetailPanel } from './MailDetailPanel'
@@ -119,7 +120,7 @@ export function MailGridTab({
       if (barStatus && row.status !== barStatus) return false
       if (
         q &&
-        !`${row.sender} ${row.to || ''} ${row.subject} ${row.status}`.toLowerCase().includes(q)
+        !`${decodeMimeHeader(row.sender)} ${decodeMimeHeader(row.to || '')} ${decodeMimeHeader(row.subject)} ${row.status}`.toLowerCase().includes(q)
       ) {
         return false
       }
@@ -454,8 +455,10 @@ export function MailGridTab({
                       setContextMenu({ x: e.clientX, y: e.clientY, rowId: row.id })
                     }}
                   >
-                    <td>{directionTab === 'sent' ? row.to || row.sender : row.sender}</td>
-                    <td>{row.subject}</td>
+                    <td>
+                      {decodeMimeHeader(directionTab === 'sent' ? row.to || row.sender : row.sender)}
+                    </td>
+                    <td>{decodeMimeHeader(row.subject)}</td>
                     <td>{formatMailTime(row.time)}</td>
                     <td>
                       <SpecPill tone={row.priTone}>{row.priority}</SpecPill>

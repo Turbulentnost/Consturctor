@@ -392,8 +392,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             'Запуск по расписанию. Ход появится, когда локальный агент начнёт работу.'
           )
         }
-        const locallyOwned = Boolean(entry.state.activeRunId)
-        const live = inFlight && !hung && locallyOwned
+        const live = inFlight && !hung
         if (!live) {
           nextItems = settleOpenFeedTools(nextItems)
         }

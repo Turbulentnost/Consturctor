@@ -107,6 +107,13 @@ def run_orchestrator_kpi(orchestrator_id: str, tile_ids: list[str]) -> dict:
         db.close()
 
 
+@shared_task(name="app.tasks.scheduled.refresh_position_kpi_daily")
+def refresh_position_kpi_daily() -> dict:
+    from app.services.position_kpi.daily import run_daily_position_kpi_cache
+
+    return run_daily_position_kpi_cache(force=True)
+
+
 @shared_task(name="app.tasks.scheduled.calc_workflow_kpi", acks_late=True)
 def calc_workflow_kpi(workflow_id: str, tile_ids: list[str]) -> dict:
     db = SessionLocal()

@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
+    platform_task_storage_dir: Path = BACKEND_ROOT / "storage" / "platform_tasks"
 
     # IMAP (server-side tools only; desktop never executes imap.*)
     imap_host: str = ""
@@ -100,7 +101,7 @@ class Settings(BaseSettings):
     dok_http_port: int = 81
     dok_http_user: str = ""
     dok_http_password: str = ""
-    dok_http_timeout: float = 210.0
+    dok_http_timeout: float = 45.0
     dok_http_cache_ttl_sec: float = 1800.0
     dok_inbox_cache_dir: Path = BACKEND_ROOT / "storage" / "docflow_inbox"
     dok_http_base_path: str = "/doc"
@@ -128,5 +129,6 @@ settings.chat_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.platform_task_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.onec_artifact_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.dok_inbox_cache_dir.mkdir(parents=True, exist_ok=True)

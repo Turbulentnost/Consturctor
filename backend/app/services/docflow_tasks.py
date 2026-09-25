@@ -6,7 +6,7 @@ OData ``Task_ЗадачаИсполнителя`` для inbox не вызыва
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -79,7 +79,6 @@ def docflow_auth(args: dict[str, Any] | None = None) -> tuple[str, str] | None:
 
 
 def docflow_soap_ready() -> bool:
-    """SOAP host plus a service credential pair (including ODATA_*)."""
     from app.tools.onec.dok_soap import soap_configured
 
     return soap_configured()
@@ -90,7 +89,6 @@ def docflow_configured() -> bool:
 
 
 def docflow_url_ready() -> bool:
-    """SOAP is ready when host + service creds exist, or OData /doc URL is set."""
     return docflow_soap_ready() or bool(docflow_base_url())
 
 
@@ -252,7 +250,64 @@ def _list_docflow_via_soap(
     if only_open:
         tasks = [row for row in tasks if not row.get("done")]
     if limit > 0:
-        tasks = tasks[: max(1, min(int(limit), 200))]
+        tasks = tasks[: int(limit)]
+    return tasks, warning
+
+
+def _list_closed_via_soap(
+    fio: str,
+    *,
+    limit: int,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    auth_args: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    from app.tools.onec.docflow_inbox_fetch import fetch_closed_tasks_soap
+
+    start = date_from or (datetime.now() - timedelta(days=30))
+    try:
+        tasks, warning = fetch_closed_tasks_soap(
+            fio,
+            date_from=start,
+            date_to=date_to,
+            auth_args=auth_args,
+        )
+    except (RuntimeError, ValueError, OSError) as exc:
+        return [], str(exc)
+    tasks = [row for row in tasks if row.get("done")]
+    if limit > 0:
+        tasks = tasks[: int(limit)]
+    return tasks, warning
+
+
+def _fetch_closed_tasks(
+    fio: str,
+    *,
+    limit: int,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    auth_args: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """Закрытые задачи: сначала быстрый TasksII, затем SOAP с границами периода."""
+    http_tasks, http_warn = _list_docflow_via_http(
+        fio,
+        limit=limit,
+        only_open=False,
+        auth_args=auth_args,
+    )
+    done = [row for row in http_tasks if row.get("done")]
+    done = [row for row in done if _task_in_period(row, date_from, date_to)]
+    if done:
+        return done[:limit], http_warn
+    tasks, warning = _list_closed_via_soap(
+        fio,
+        limit=limit,
+        date_from=date_from,
+        date_to=date_to,
+        auth_args=auth_args,
+    )
+    if http_warn and not tasks and not warning:
+        warning = http_warn
     return tasks, warning
 
 
@@ -306,7 +361,7 @@ def list_docflow_tasks(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     only_open: bool = False,
-    limit: int = 200,
+    limit: int = 0,
     today_and_overdue: bool = False,
     force_refresh: bool = False,
     auth_args: dict[str, Any] | None = None,
@@ -393,6 +448,7 @@ def handle_docflow_tasks(
     only_open = True if include_done is None else not bool(include_done)
     if "only_open" in args:
         only_open = bool(args.get("only_open"))
+    closed_only = bool(args.get("closed_only") or args.get("closedOnly"))
     today_and_overdue = bool(args.get("today_and_overdue"))
     force_refresh = bool(args.get("force_refresh") or args.get("refresh"))
     auth_args = dict(args)
@@ -404,16 +460,28 @@ def handle_docflow_tasks(
     key = cache_key(
         fio,
         auth_args=auth_args,
-        only_open=only_open,
+        only_open=False if closed_only else only_open,
         today_and_overdue=today_and_overdue,
     )
+    if closed_only:
+        key = f"{key}|closed"
     tasks: list[dict[str, Any]] = []
     warning = ""
     if not force_refresh:
         cached = get_cached_tasks(key)
         if cached is not None:
             tasks = cached[:limit]
-    if not tasks:
+    if not tasks and closed_only:
+        tasks, warning = _fetch_closed_tasks(
+            fio,
+            limit=limit,
+            date_from=start,
+            date_to=finish,
+            auth_args=auth_args,
+        )
+        if tasks:
+            set_cached_tasks(key, tasks)
+    elif not tasks:
         tasks, warning = _fetch_docflow_tasks_merged(
             fio,
             limit=limit,
@@ -427,7 +495,9 @@ def handle_docflow_tasks(
         if tasks:
             set_cached_tasks(key, tasks)
     summary = (
-        f"Задачи документооборота на сегодня и просроченные: {len(tasks)} ({fio})"
+        f"Закрытые задачи документооборота: {len(tasks)} ({fio})"
+        if closed_only
+        else f"Задачи документооборота на сегодня и просроченные: {len(tasks)} ({fio})"
         if today_and_overdue
         else f"Задачи документооборота: {len(tasks)} ({fio})"
     )

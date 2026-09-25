@@ -7,13 +7,23 @@ from app.db.base import Base
 from app.models.agent_run import AgentRun
 from app.models.user import AppUser
 from app.models.workflow import Workflow
+from app.services.orchestrator import facts as orch_facts
 from app.services.orchestrator.facts import (
     WorkItem,
     compute_tile_updates,
     is_infra_text,
 )
-from app.services.orchestrator.ilchenko import ilchenko_tiles
+from app.services.orchestrator.ilchenko import PSD_POSITION_NAME, ilchenko_tiles
 from app.services.orchestrator.service import get_orchestrator
+
+
+def _stub_instruction_update(**_kwargs):
+    return {
+        "id": "instructions",
+        "fact": {"value": 100, "unit": "%"},
+        "score_percent": 100,
+        "evidence": "модуль kpi.instruction_tracker",
+    }
 
 
 def _session() -> Session:
@@ -22,9 +32,9 @@ def _session() -> Session:
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)()
 
 
-def _user(db: Session, user_id: str, fio: str) -> None:
+def _user(db: Session, user_id: str, fio: str, *, position: str = PSD_POSITION_NAME) -> None:
     now = datetime.now(timezone.utc)
-    db.add(AppUser(id=user_id, fio=fio, position="Помощник", created_at=now, updated_at=now))
+    db.add(AppUser(id=user_id, fio=fio, position=position, created_at=now, updated_at=now))
     db.commit()
 
 
@@ -80,7 +90,8 @@ def test_infra_text_is_ignored() -> None:
     assert not is_infra_text("Проверил СЗ и записал две встречи в календарь")
 
 
-def test_compute_updates_skips_infra_and_marks_return() -> None:
+def test_compute_updates_skips_infra_and_marks_return(monkeypatch) -> None:
+    monkeypatch.setattr(orch_facts, "_instruction_tile_update", _stub_instruction_update)
     tiles = ilchenko_tiles()
     items = [
         WorkItem(
@@ -113,12 +124,15 @@ def test_compute_updates_skips_infra_and_marks_return() -> None:
     ]
     updates = {item["id"]: item for item in compute_tile_updates(tiles, items)}
     assert updates["package_on_time"]["fact"]["value"] == 66.7
-    assert updates["quality"]["fact"]["value"] == 33.3
-    assert updates["quality"]["score_percent"] == 33.3
+    assert updates["quality"]["fact"]["value"] == 100
+    assert updates["quality"]["score_percent"] == 100
+    assert "без возвратов" in updates["quality"]["evidence"]
     assert "000013243" in updates["package_on_time"]["evidence"]
+    assert updates["instructions"]["evidence"] == "модуль kpi.instruction_tracker"
 
 
-def test_get_orchestrator_writes_facts_from_agent_runs() -> None:
+def test_get_orchestrator_writes_facts_from_agent_runs(monkeypatch) -> None:
+    monkeypatch.setattr(orch_facts, "_instruction_tile_update", _stub_instruction_update)
     db = _session()
     user_id = "A2DCC949FEDEC70D40318ABA83C618F4"
     _user(db, user_id, "Ильченко Екатерина Александровна")
@@ -148,7 +162,17 @@ def test_get_orchestrator_writes_facts_from_agent_runs() -> None:
     assert "000013233" in (snap.tiles[0].evidence or "")
 
 
-def test_no_work_runs_keeps_empty_fact() -> None:
+def test_no_work_runs_keeps_empty_fact(monkeypatch) -> None:
+    monkeypatch.setattr(
+        orch_facts,
+        "_instruction_tile_update",
+        lambda: {
+            "id": "instructions",
+            "fact": {"value": None, "unit": "%"},
+            "score_percent": None,
+            "evidence": "модуль kpi.instruction_tracker: нет данных",
+        },
+    )
     db = _session()
     user_id = "A2DCC949FEDEC70D40318ABA83C618F4"
     _user(db, user_id, "Ильченко Екатерина Александровна")

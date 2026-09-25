@@ -56,6 +56,7 @@ def sd_runtime_tools() -> list[str]:
         "onec.docflow_tasks",
         "excel.list_files",
         "excel.read_workbook",
+        "office.read_file",
         "report.build_meeting_summary",
         "report.export_document",
         "users.current",
@@ -186,9 +187,11 @@ def sd_playbook_instructions() -> str:
         "Не собирай фильтр вручную через onec.odata_get. Карточку — `onec.odata_get` по ref_key "
         "из ответа meeting_protocols.\n"
         "4. Вложения 1С: для каждой найденной карточки — `onec.list_attachments`, "
-        "затем `onec.read_attachment` для PDF/DOCX/XLSX (сканы PDF читаются через OCR).\n"
-        "5. Материалы запуска: `excel.list_files` → `excel.read_workbook` для повестки и таблицы "
-        "комплектности в materials/attachments; Word-расшифровку читай как .docx.\n"
+        "затем `onec.read_attachment` или `onec.download_artifact` + `office.read_file` "
+        "(Word/PDF/картинки; сканы — OCR). Excel — `excel.read_workbook`. "
+        "Встроенные Read и Grep для этих файлов не вызывай.\n"
+        "5. Материалы запуска: `excel.list_files` → Excel: `excel.read_workbook`; "
+        "Word/PDF/картинки: `office.read_file`.\n"
         "6. Сверь обязательный пакет п. 6.4 ПЛ-34-242:\n"
         f"{checklist}\n"
         "7. Если пункта нет — зафиксируй пробел, не выдумывай. Без Word-расшифровки "

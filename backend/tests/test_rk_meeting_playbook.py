@@ -17,6 +17,10 @@ def test_is_rk_meeting_agent() -> None:
     assert is_rk_meeting_agent("Подготовка заседаний Ревизионной комиссии")
     assert is_rk_meeting_agent("ПЛ-01-001 реестр поручений")
     assert not is_rk_meeting_agent("Подготовка заседаний Совета директоров", "ПЛ-34-242")
+    assert not is_rk_meeting_agent(
+        "Проверка артефактов и предложение поручений к закрытию",
+        r"\\192.168.1.198\Files\24.Ревизионная комиссия",
+    )
 
 
 def test_rk_weekly_schedule() -> None:
@@ -36,6 +40,7 @@ def test_infer_revision_commission_kind() -> None:
     tools = default_tools_for_kind("revision_commission")
     assert "onec.erp_tasks_current" in tools
     assert "workspace.powershell_run" in tools
+    assert "office.read_file" in tools
 
 
 def test_apply_rk_config_sets_schedule_and_tools() -> None:
@@ -70,3 +75,4 @@ def test_tools_for_published_rk_agent() -> None:
     tools = _tools_for_published_plan(plan, row)
     assert "report.build_task_report" in tools
     assert "excel.read_workbook" in tools
+    assert "office.read_file" in tools

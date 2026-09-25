@@ -14,6 +14,7 @@ import {
   type OutlookMailDetail
 } from '../../utils/outlookMailActions'
 import { fetchImapMessage, parseImapUid } from '../../utils/imapMail'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
 import {
   downloadAttachmentCopy,
   ensureAttachmentSaved,
@@ -87,8 +88,8 @@ export function MailDetailPanel({
       if (res.ok) {
         setDetail({
           entryId: '',
-          subject: res.subject || mail.subject,
-          sender: res.from || mail.sender,
+          subject: decodeMimeHeader(res.subject || mail.subject),
+          sender: decodeMimeHeader(res.from || mail.sender),
           senderEmail: (String(res.from || '').match(/[\w.+-]+@[\w.-]+\.\w+/) || [''])[0],
           body: res.body,
           bodyPreview: res.body.slice(0, 400),
@@ -111,7 +112,13 @@ export function MailDetailPanel({
     setBusy(label)
     try {
       const res = await fn()
-      if (res.ok) showNote('Готово')
+      if (res.ok) {
+        showNote(
+          label === 'open' || label === 'reply' || label === 'reply_all'
+            ? 'Открыто в Outlook'
+            : 'Готово'
+        )
+      }
       else showNote(res.error || 'Ошибка', true)
     } finally {
       setBusy('')
@@ -119,7 +126,7 @@ export function MailDetailPanel({
   }
 
   const openCreateIncoming = (): void => {
-    if (busy || !canOutlookActions) return
+    if (busy) return
     setIncomingDialogOpen(true)
   }
 
@@ -183,9 +190,9 @@ export function MailDetailPanel({
     <>
       <div className="spec-detail-card spec-mail-detail-grid wp-card">
         <header className="spec-mail-detail-grid__head">
-          <h2>{mail.subject}</h2>
+          <h2>{decodeMimeHeader(mail.subject)}</h2>
           <p className="spec-v04-muted">
-            От: {mail.sender} · {formatMailTime(mail.time)}
+            От: {decodeMimeHeader(mail.sender)} · {formatMailTime(mail.time)}
           </p>
           <div className="spec-detail-tags">
             <SpecPill tone={mail.priTone}>{mail.priority}</SpecPill>
@@ -251,7 +258,7 @@ export function MailDetailPanel({
           <button
             type="button"
             className="spec-btn-launch"
-            disabled={Boolean(busy) || !canOutlookActions}
+            disabled={Boolean(busy)}
             onClick={() => void runAction('reply', () => displayOutlookMail(mail, 'reply'))}
           >
             {busy === 'reply' ? '…' : 'Ответить'}
@@ -259,7 +266,7 @@ export function MailDetailPanel({
           <button
             type="button"
             className="spec-btn-outline"
-            disabled={Boolean(busy) || !canOutlookActions}
+            disabled={Boolean(busy)}
             onClick={() => void runAction('reply_all', () => displayOutlookMail(mail, 'reply_all'))}
           >
             {busy === 'reply_all' ? '…' : 'Ответить всем'}
@@ -267,7 +274,7 @@ export function MailDetailPanel({
           <button
             type="button"
             className="spec-btn-launch"
-            disabled={Boolean(busy) || !canOutlookActions}
+            disabled={Boolean(busy)}
             onClick={() => void runAction('open', () => displayOutlookMail(mail, 'open'))}
           >
             {busy === 'open' ? '…' : 'В Outlook'}
@@ -278,7 +285,9 @@ export function MailDetailPanel({
               className="spec-btn-outline"
               disabled={Boolean(busy)}
               onClick={() =>
-                onAskOrchestrator(`Помоги с письмом «${mail.subject}» от ${mail.sender}`)
+                onAskOrchestrator(
+                  `Помоги с письмом «${decodeMimeHeader(mail.subject)}» от ${decodeMimeHeader(mail.sender)}`
+                )
               }
             >
               Передать ИИ
@@ -290,9 +299,15 @@ export function MailDetailPanel({
             <button
               type="button"
               className="spec-btn-launch spec-mail-read-btn"
-              disabled={Boolean(busy) || !canOutlookActions}
+              disabled={Boolean(busy)}
               onClick={() =>
                 void runAction('read', async () => {
+                  if (!canOutlookActions) {
+                    return {
+                      ok: false,
+                      error: 'Это письмо из IMAP. Статус «прочитано» меняется только у письма в Outlook.'
+                    }
+                  }
                   const res = await markOutlookMailRead(mail, false)
                   if (res.ok) {
                     onPatchRow?.(mail.id, {
@@ -313,9 +328,15 @@ export function MailDetailPanel({
             <button
               type="button"
               className="spec-btn-outline spec-mail-read-btn"
-              disabled={Boolean(busy) || !canOutlookActions}
+              disabled={Boolean(busy)}
               onClick={() =>
                 void runAction('unread', async () => {
+                  if (!canOutlookActions) {
+                    return {
+                      ok: false,
+                      error: 'Это письмо из IMAP. Статус «прочитано» меняется только у письма в Outlook.'
+                    }
+                  }
                   const res = await markOutlookMailRead(mail, true)
                   if (res.ok) {
                     onPatchRow?.(mail.id, {
@@ -337,7 +358,7 @@ export function MailDetailPanel({
           <button
             type="button"
             className="spec-btn-launch spec-mail-incoming-btn"
-            disabled={Boolean(busy) || !canOutlookActions}
+            disabled={Boolean(busy)}
             title="Заполнить маршрут и создать входящую в 1С через OData (как agent-pochta)"
             onClick={openCreateIncoming}
           >

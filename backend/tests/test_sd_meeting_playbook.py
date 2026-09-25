@@ -29,6 +29,7 @@ def test_infer_board_meeting_kind() -> None:
     assert "onec.meeting_protocols" in tools
     assert "outlook.read_calendar" in tools
     assert "report.export_document" in tools
+    assert "office.read_file" in tools
 
 
 def test_resolve_workflow_routing_for_sd_plan() -> None:
@@ -55,6 +56,7 @@ def test_tools_for_published_sd_agent() -> None:
     row = Workflow(title="Подготовка заседаний Совета директоров", notes="ПЛ-34-242 v03")
     tools = _tools_for_published_plan(plan, row)
     assert "excel.read_workbook" in tools
+    assert "office.read_file" in tools
     assert "calendar.show_meetings" in tools
     assert "imap.search" not in tools
     assert "outlook.search_mail" not in sd_runtime_tools()

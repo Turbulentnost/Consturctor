@@ -62,13 +62,26 @@ def sdk_design_tool_specs() -> list[dict[str, Any]]:
     return sdk_tool_specs()
 
 
-def sdk_tool_specs() -> list[dict[str, Any]]:
-    specs: list[dict[str, Any]] = [dict(ASK_QUESTION_SPEC)]
+KPI_TOOL_NAMES = frozenset(
+    {
+        "office.read_file",
+        "code.write_python",
+        "code.run_python",
+    }
+)
+
+
+def sdk_tool_specs(
+    *, names: frozenset[str] | None = None, ask_question: bool = True
+) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = [dict(ASK_QUESTION_SPEC)] if ask_question else []
     for item in list_desktop_tools():
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "").strip()
         if not name:
+            continue
+        if names is not None and name not in names:
             continue
         schema = item.get("inputSchema")
         if not isinstance(schema, dict):
@@ -87,6 +100,28 @@ def sdk_tool_specs() -> list[dict[str, Any]]:
             spec["timeoutSeconds"] = timeout
         specs.append(spec)
     return specs
+
+
+def sdk_kpi_tool_specs(
+    *,
+    read_file: bool = True,
+    write: bool = True,
+    run: bool = True,
+    ask_question: bool = False,
+) -> list[dict[str, Any]]:
+    names = set(KPI_TOOL_NAMES)
+    if not read_file:
+        names.discard("office.read_file")
+    if not write:
+        names.discard("code.write_python")
+    if not run:
+        names.discard("code.run_python")
+    return sdk_tool_specs(names=frozenset(names), ask_question=ask_question)
+
+
+def sdk_kpi_write_tool_specs() -> list[dict[str, Any]]:
+    """Write-ход KPI: все инструменты Constructor, без askQuestion."""
+    return sdk_tool_specs(ask_question=False)
 
 
 def tool_timeout_seconds(name: str, arguments: dict[str, Any] | None = None) -> int:

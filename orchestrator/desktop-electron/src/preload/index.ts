@@ -100,6 +100,8 @@ const api = {
   }): Promise<string[]> => ipcRenderer.invoke('dialog:openFile', options),
   openPath: (filePath: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('shell:openPath', filePath),
+  focusOutlook: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('shell:focusOutlook'),
   printToPdf: (opts: {
     html?: string
     landscape?: boolean

@@ -1,5 +1,7 @@
 /** Демо-данные по макетам v0.4 до подключения Task/Project/Mail/Knowledge API. */
 
+import type { DocflowTaskKind } from './docflowTaskKind'
+
 export type SpecPillTone = 'green' | 'blue' | 'orange' | 'red' | 'purple' | 'gray' | 'yellow'
 
 export interface SpecProcessRow {
@@ -115,10 +117,17 @@ export interface SpecTaskRow {
   role?: string
   /** Turbo: мне / чужие в проектах, где я руководитель / и то и другое. */
   turboScope?: 'mine' | 'managed' | 'both'
-  sourceKind?: 'docflow' | 'turbo' | 'erp' | 'other'
+  sourceKind?: 'docflow' | 'turbo' | 'erp' | 'platform' | 'other'
+  /** Задача платформы: исходная запись (приоритет, роль, файлы, статус). */
+  platform?: import('./platformTasks').PlatformTask
   refKey?: string
   taskNumber?: string
   step?: string
+  /** Имя задачи ДО: «Исполнить задачу №7», «Ознакомиться "Приказ …"». */
+  taskName?: string
+  /** «Важность» задачи 1С: high | normal | low. Пусто, если ДО её не отдала. */
+  importance?: string
+  docflowKind?: DocflowTaskKind
   targetId?: string
   projectId?: string
   taskUid?: string

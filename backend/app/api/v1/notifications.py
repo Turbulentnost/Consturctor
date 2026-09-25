@@ -28,7 +28,7 @@ from app.services.notifications.service import (
     list_pending,
     mark_all_read,
     mark_delivered,
-    split_latest,
+    partition_pending,
     mark_read,
     payload_dict,
     unread_count,
@@ -161,17 +161,16 @@ async def notifications_ws(websocket: WebSocket, token: str = "") -> None:
     await websocket.accept()
     await hub.replace(auth.user_id, websocket, session_id=auth.session_id, client=auth.client)
     mark_online(auth.user_id, auth.session_id, client=auth.client)
-    latest = None
     with SessionLocal() as db:
         pending = list_pending(db, user_id=auth.user_id)
-        older, latest = split_latest(pending)
+        older, deliver = partition_pending(pending)
         for item in older:
             mark_delivered(db, item.id)
-    if latest is not None:
-        sent = await hub.push(auth.user_id, payload_dict(latest))
+    for item in deliver:
+        sent = await hub.push(auth.user_id, payload_dict(item))
         if sent:
             with SessionLocal() as db:
-                mark_delivered(db, latest.id)
+                mark_delivered(db, item.id)
     try:
         while True:
             await websocket.receive_text()

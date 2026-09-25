@@ -104,6 +104,7 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
           inputClassName="login-input"
           variant="dark"
           onEnter={submit}
+          publicOnly
         />
 
         <label>Пароль</label>

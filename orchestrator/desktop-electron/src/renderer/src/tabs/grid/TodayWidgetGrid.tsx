@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/legacy'
 import 'react-grid-layout/css/styles.css'
 import { mergeTodayLayout, reflowTodayLayout } from './todayLayoutCompact'
-import { TodayWidgetExpandContext } from './TodayWidgetExpandContext'
+import { TodayWidgetExpandContext, TodayWidgetRequestExpandContext } from './TodayWidgetExpandContext'
 import {
   TODAY_GRID_COLS,
   TODAY_GRID_LAYOUT_MAX_ROWS,
@@ -279,7 +279,11 @@ export function TodayWidgetGrid({
             onToggleLock={() => onToggleLock(id)}
             onExpand={() => setExpandedWidgetId(id)}
           />
-          <div className="today-widget-content">{widgets[id]}</div>
+          <div className="today-widget-content">
+            <TodayWidgetRequestExpandContext.Provider value={() => setExpandedWidgetId(id)}>
+              {widgets[id]}
+            </TodayWidgetRequestExpandContext.Provider>
+          </div>
         </div>
       </div>
     ))

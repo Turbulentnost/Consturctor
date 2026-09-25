@@ -318,8 +318,38 @@ def attach_handoff(draft: dict[str, Any]) -> dict[str, Any]:
     return {**draft, "steps": steps}
 
 
+_ASSIGNMENT_ON_EMPTY = (
+    "зафиксируй пустую выборку и не ищи задачи исполнителя, протоколы и OCR"
+)
+_ASSIGNMENT_ON_ERROR = (
+    "повтори тот же шаг журнала поручений; не переключайся на tasks, протоколы и OCR"
+)
+
+
+def normalize_assignment_steps(draft: dict[str, Any]) -> dict[str, Any]:
+    """Any agent: a поручения/АСТ00 step is the journal, not executor tasks."""
+    from app.services.workflow_tool_routing import looks_like_assignment_step, normalize_operation
+
+    steps: list[dict[str, Any]] = []
+    for step in draft.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        item = dict(step)
+        if looks_like_assignment_step(item):
+            item["entity"] = "assignment"
+            operation = normalize_operation(str(item.get("operation") or ""))
+            if operation in {"list", "search", "read"}:
+                if not str(item.get("on_empty") or "").strip():
+                    item["on_empty"] = _ASSIGNMENT_ON_EMPTY
+                if not str(item.get("on_error") or "").strip():
+                    item["on_error"] = _ASSIGNMENT_ON_ERROR
+        steps.append(item)
+    return {**draft, "steps": steps}
+
+
 def attach_tool_candidates(draft: dict[str, Any], *, allow_web: bool = False) -> dict[str, Any]:
     """Проставить каждому шагу инструменты и передачу данных между шагами."""
+    draft = normalize_assignment_steps(draft)
     draft = _ensure_calendar_list_around_create(draft)
     draft = _ensure_plan_file_for_calendar_create(draft)
     steps = list(draft.get("steps") or [])
@@ -335,6 +365,208 @@ def attach_tool_candidates(draft: dict[str, Any], *, allow_web: bool = False) ->
         )
         enriched.append({**step, "tool_candidates": candidates})
     return attach_handoff({**draft, "steps": enriched})
+
+
+_CHAIN_SKIP_TOOLS = frozenset(
+    {
+        "read",
+        "grep",
+        "glob",
+        "ls",
+        "shell",
+        "edit",
+        "delete",
+        "applyAgentDiff",
+        "code.run_python",
+        "write",
+        "askQuestion",
+    }
+)
+_CHAIN_HELPERS = frozenset({"users.current", "users.list"})
+_SECRET_ARG_KEYS = frozenset({"password", "token", "secret", "api_key", "authorization"})
+
+
+def _step_tool_names(step: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for raw in (step.get("tool"), step.get("tool_name"), *(step.get("tool_candidates") or [])):
+        name = str(raw or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _event_tool_name(event: dict[str, Any]) -> str:
+    return str(event.get("tool") or event.get("name") or "").strip()
+
+
+def _event_arguments(event: dict[str, Any]) -> dict[str, Any]:
+    for key in ("arguments", "args", "input"):
+        raw = event.get(key)
+        if isinstance(raw, dict):
+            return dict(raw)
+    return {}
+
+
+def successful_tool_calls(
+    events: list[dict[str, Any]] | None = None,
+    tools: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Successful formation calls in order, without helpers and failed retries."""
+    calls: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    failed: set[str] = set()
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        name = _event_tool_name(event)
+        if not name or name in _CHAIN_SKIP_TOOLS:
+            continue
+        kind = str(event.get("type") or "")
+        if kind == "tool_result" and event.get("ok") is False:
+            failed.add(name)
+            continue
+        if kind and kind not in {"tool_call", "tool_result"}:
+            continue
+        if name in seen or name in failed:
+            continue
+        seen.add(name)
+        calls.append({"tool": name, "arguments": _event_arguments(event)})
+    if calls:
+        return [item for item in calls if item["tool"] not in failed]
+    for raw in tools or []:
+        name = str(raw or "").strip()
+        if name and name not in _CHAIN_SKIP_TOOLS and name not in seen:
+            seen.add(name)
+            calls.append({"tool": name, "arguments": {}})
+    return calls
+
+
+def _slim_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    slim: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if value in (None, "", [], {}):
+            continue
+        if str(key).casefold() in _SECRET_ARG_KEYS:
+            continue
+        if isinstance(value, str) and len(value) > 400:
+            continue
+        slim[str(key)] = value
+    return slim
+
+
+def _call_for_step(
+    step: dict[str, Any],
+    calls: list[dict[str, Any]],
+    used: set[str],
+    ledger_entry: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    preferred: list[str] = []
+    ledger_tool = str((ledger_entry or {}).get("tool") or "").strip()
+    ledger_status = str((ledger_entry or {}).get("status") or "")
+    if ledger_tool and ledger_status in {"completed", "skipped"}:
+        preferred.append(ledger_tool)
+    preferred.extend(_step_tool_names(step))
+    for name in preferred:
+        if name in used:
+            continue
+        for call in calls:
+            if call["tool"] == name:
+                return call
+    return None
+
+
+def lock_verified_chain(
+    draft: dict[str, Any],
+    *,
+    ledger: list[dict[str, Any]] | None = None,
+    events: list[dict[str, Any]] | None = None,
+    tools: list[str] | None = None,
+) -> dict[str, Any]:
+    """Pin each step to the tool that already worked in the formation demo."""
+    calls = successful_tool_calls(events, tools)
+    used: set[str] = set()
+    by_id = {
+        str(item.get("id") or ""): item
+        for item in (ledger or [])
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    locked: list[dict[str, Any]] = []
+    for index, step in enumerate(draft.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        item = dict(step)
+        step_id = str(item.get("id") or f"s{index + 1}")
+        item["id"] = step_id
+        call = _call_for_step(item, calls, used, by_id.get(step_id))
+        if call:
+            used.add(call["tool"])
+            item["tool"] = call["tool"]
+            keep = [call["tool"]]
+            for extra in _step_tool_names(item):
+                if extra == call["tool"]:
+                    continue
+                if extra.endswith("_write") or extra == f"{call['tool']}_write":
+                    keep.append(extra)
+            item["tool_candidates"] = keep
+            slim = _slim_arguments(call.get("arguments") or {})
+            if slim:
+                item["proven_call"] = {"tool": call["tool"], "arguments": slim}
+        locked.append(item)
+    return {**draft, "steps": locked}
+
+
+def chain_tools(steps: list[dict[str, Any]] | None, extras: list[str] | None = None) -> list[str]:
+    """Runtime whitelist = locked steps, not every tool the demo happened to call."""
+    names: list[str] = []
+
+    def add(raw: object) -> None:
+        name = str(raw or "").strip()
+        if name and name not in names:
+            names.append(name)
+
+    for helper in extras or []:
+        if helper in _CHAIN_HELPERS:
+            add(helper)
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        add(step.get("tool") or step.get("tool_name"))
+        for candidate in step.get("tool_candidates") or []:
+            add(candidate)
+    return names
+
+
+def verified_chain_text(playbook_or_draft: dict[str, Any] | None) -> str:
+    """Human-readable chain for playbook, prompt and agent.md."""
+    stored = str((playbook_or_draft or {}).get("chain") or "").strip()
+    if stored:
+        return stored
+    steps = [
+        step
+        for step in ((playbook_or_draft or {}).get("steps") or [])
+        if isinstance(step, dict)
+    ]
+    if not steps:
+        return ""
+    lines = [
+        "Проверенная цепочка пробного запуска. Повтори шаги в этом порядке, теми же инструментами.",
+        "Меняй только параметры текущего запуска (даты, ФИО, период). Не составляй новый маршрут.",
+    ]
+    for index, step in enumerate(steps, start=1):
+        candidates = step.get("tool_candidates") or []
+        tool = str(step.get("tool") or (candidates[0] if candidates else "") or "").strip()
+        title = str(step.get("title") or step.get("id") or f"шаг {index}").strip()
+        lines.append(f"{index}. {title}" + (f" — {tool}" if tool else ""))
+        proven = step.get("proven_call") if isinstance(step.get("proven_call"), dict) else {}
+        args = proven.get("arguments") if isinstance(proven.get("arguments"), dict) else {}
+        if args and tool:
+            shown = ", ".join(f"{key}={value}" for key, value in list(args.items())[:8])
+            lines.append(f"   рабочий вызов: {tool}({shown})")
+        if step.get("on_empty"):
+            lines.append(f"   если пусто: {step['on_empty']}")
+        if step.get("on_error"):
+            lines.append(f"   если ошибка: {step['on_error']}")
+    return "\n".join(lines)
 
 
 def _handoff_hint(params: list[str]) -> str:

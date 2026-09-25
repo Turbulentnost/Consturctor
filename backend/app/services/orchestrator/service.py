@@ -21,7 +21,11 @@ from app.schemas.orchestrator import (
 from app.schemas.workflow import KpiTileSchema
 from app.services import agent_kpi
 from app.services.orchestrator.facts import apply_run_facts
-from app.services.orchestrator.ilchenko import ilchenko_tiles, is_ilchenko, ILCHENKO_SUMMARY
+from app.services.orchestrator.ilchenko import (
+    ILCHENKO_SUMMARY,
+    has_locked_position_kpi,
+    ilchenko_tiles,
+)
 from app.services.orchestrator.prompts import build_calc_prompt, build_form_prompt
 from app.services.triggers.service import is_workflow_paused, workflow_is_deleted
 
@@ -240,7 +244,11 @@ def to_out(
     current_fp = agent_fingerprint(briefs)
     tiles = list((row.tiles if row is not None else None) or [])
     tiles = [item for item in tiles if isinstance(item, dict)]
-    locked = bool(row.locked) if row is not None else is_ilchenko(user_id=user_id, fio=fio)
+    locked = (
+        bool(row.locked)
+        if row is not None
+        else has_locked_position_kpi(position=position)
+    )
     stored_fp = (row.source_fingerprint if row is not None else "") or ""
     has_agents = bool(briefs)
     needs_form = _needs_form(
@@ -309,13 +317,15 @@ def get_orchestrator(
         row = _get_row(db, user_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Orchestrator read failed user=%s: %s", user_id, exc)
-        if is_ilchenko(user_id=user_id, fio=fio):
+        if has_locked_position_kpi(position=position):
             ephemeral = _new_row(user_id, locked=True)
             _seed_ilchenko(ephemeral, [], now)
             _refresh_facts(db, ephemeral, user_id=user_id, now=now, persist=False, force=True)
             return to_out(ephemeral, user_id=user_id, fio=fio, position=position, briefs=[], now=now)
         return to_out(None, user_id=user_id, fio=fio, position=position, briefs=[], now=now)
-    if is_ilchenko(user_id=user_id, fio=fio) and (row is None or not (row.tiles or [])):
+    if has_locked_position_kpi(position=position) and (
+        row is None or not (row.tiles or [])
+    ):
         try:
             if row is None:
                 row = _new_row(user_id, locked=True)
@@ -354,7 +364,7 @@ def ensure_orchestrator(
     fio, position = _user_fio_position(db, user_id, fio, position)
     briefs = list_active_agent_briefs(db, user_id)
     row = _get_row(db, user_id)
-    locked_user = is_ilchenko(user_id=user_id, fio=fio)
+    locked_user = has_locked_position_kpi(position=position)
     if row is None:
         row = _new_row(user_id, locked=locked_user)
         db.add(row)
@@ -408,8 +418,8 @@ def save_formed(
 ) -> OrchestratorOut:
     now = now or _now()
     fio, position = _user_fio_position(db, user_id, fio, position)
-    if is_ilchenko(user_id=user_id, fio=fio):
-        raise OrchestratorError("Для этого пользователя набор KPI фиксирован", 409)
+    if has_locked_position_kpi(position=position):
+        raise OrchestratorError("Для этой должности набор KPI фиксирован", 409)
     briefs = list_active_agent_briefs(db, user_id)
     if not briefs:
         raise OrchestratorError("Нет активных агентов для формирования KPI", 400)
@@ -419,7 +429,7 @@ def save_formed(
         row = _new_row(user_id, locked=False)
         db.add(row)
     if row.locked:
-        raise OrchestratorError("Для этого пользователя набор KPI фиксирован", 409)
+        raise OrchestratorError("Для этой должности набор KPI фиксирован", 409)
     row.status = "ready"
     row.locked = False
     row.tiles = normalized

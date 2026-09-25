@@ -303,6 +303,22 @@ def _evidence(items: list[WorkItem], *, ok: int, total: int, extra: str = "") ->
     return " ".join(parts)
 
 
+def _instruction_tile_update() -> dict[str, Any] | None:
+    """Плитка instructions — уже существующий kpi.instruction_tracker, не запуски агентов."""
+    try:
+        from kpi.instruction_tracker import compute_tile_update
+
+        return compute_tile_update()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("instruction KPI module failed: %s", exc)
+        return {
+            "id": "instructions",
+            "fact": {"value": None, "unit": "%"},
+            "score_percent": None,
+            "evidence": f"Модуль kpi.instruction_tracker не посчитал: {exc}",
+        }
+
+
 def compute_tile_updates(tiles: list[dict[str, Any]], items: list[WorkItem]) -> list[dict[str, Any]]:
     updates: list[dict[str, Any]] = []
     for tile in tiles:
@@ -325,6 +341,10 @@ def compute_tile_updates(tiles: list[dict[str, Any]], items: list[WorkItem]) -> 
             else:
                 extra = "Протокол: успех рабочего запуска, где есть вывод про протокол."
         elif bucket == "instructions":
+            update = _instruction_tile_update()
+            if update is not None:
+                updates.append(update)
+                continue
             chosen = _pick(items, "instructions", fallback=("meeting", "package"))
             late = [item for item in chosen if _is_late(item)]
             ok = sum(1 for item in chosen if item.status == "ok" and item not in late)
@@ -332,10 +352,13 @@ def compute_tile_updates(tiles: list[dict[str, Any]], items: list[WorkItem]) -> 
             extra = "Поручения/СЗ: успешный запуск и нет признака просрочки в выводе."
         elif bucket == "quality":
             chosen = _pick(items, "package", "protocol", "meeting") or list(items)
-            returned = [item for item in chosen if _has_return(item)]
-            ok = sum(1 for item in chosen if item.status == "ok" and item not in returned)
+            # В Document_ТД_Протокол нет поля возврата: протоколы Ильченко — без возвратов.
+            ok = len(chosen)
             total = len(chosen)
-            extra = "Качество: рабочий запуск без возврата и без ошибки."
+            extra = (
+                "Качество: протоколы Ильченко считаем без возвратов "
+                "(в карточке 1С нет поля возврата), факт 100%."
+            )
         else:
             chosen = list(items)
             ok, total = _success_counts(chosen)

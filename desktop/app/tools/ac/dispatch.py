@@ -59,10 +59,10 @@ def _ensure_agent_id(arguments: dict[str, Any]) -> dict[str, Any]:
 def build_registry() -> ToolRegistry:
     registry = ToolRegistry()
     resolver = AgentWorkspaceResolver(_workspaces_root())
-    outlook_read = SubprocessComWorker()
-    # Запись в календарь — в процессе GUI: subprocess Outlook отклоняет Save («Не выполнено»).
-    outlook_write = OutlookComWorker(safe_mode=True, allow_direct_com_calls=True)
-    register_outlook_com_tools(registry, outlook_read, outlook_write)
+    # Один процесс с открытым Outlook: subprocess поднимает второй экземпляр
+    # без профиля — GetDefaultFolder даёт MAPI_E_NOT_FOUND, Save — «Не выполнено».
+    outlook_gui = OutlookComWorker(safe_mode=True, allow_direct_com_calls=True)
+    register_outlook_com_tools(registry, outlook_gui, outlook_gui)
     register_onec_readonly_tools(registry, _onec_com_worker())
     register_report_tools(registry, skip_existing=True)
     register_document_tools(registry, resolver, skip_existing=True)

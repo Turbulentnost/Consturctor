@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { ApiError, type RegulationCreationHistoryItem, type RegulationCreationSession } from '../api/types'
-import { formatRegulationMessageTime } from '../utils/regulationChat'
+import {
+  formatRegulationMessageTime,
+  visibleAssistantText,
+  visibleUserText
+} from '../utils/regulationChat'
 
 interface RegulationCreationHistoryPageProps {
   onBack: () => void
@@ -84,7 +88,7 @@ export function RegulationCreationHistoryPage({
     () => items.find((item) => item.draftId === selectedId) || null,
     [items, selectedId]
   )
-  const messages = selected?.messages.slice(-12) ?? []
+  const messages = selected?.messages ?? []
   const canOpen = Boolean(selectedId && (selectedItem?.canContinue || selectedItem?.hasResult))
 
   return (
@@ -171,13 +175,19 @@ export function RegulationCreationHistoryPage({
                 ) : (
                   messages.map((message) => {
                     const timeLabel = formatRegulationMessageTime(message.createdAt)
+                    const text =
+                      message.role === 'user'
+                        ? visibleUserText(message.content)
+                        : message.role === 'assistant'
+                          ? visibleAssistantText(message.content)
+                          : message.content
                     return (
                       <div key={message.messageId} className={`reg-history-message ${message.role}`}>
                         <div className="reg-history-message-role">
                           {roleLabel(message.role)}
                           {timeLabel ? ` · ${timeLabel}` : ''}
                         </div>
-                        <div className="reg-history-message-text">{message.content || 'Файл без текста'}</div>
+                        <div className="reg-history-message-text">{text || 'Файл без текста'}</div>
                       </div>
                     )
                   })

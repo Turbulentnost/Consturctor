@@ -504,10 +504,14 @@ def write_installer_nsh(has_companion: bool) -> None:
     print(f"nsis include companion={has_companion}", flush=True)
 
 
-def build_electron(dir_only: bool, *, constructor_only: bool = False) -> None:
+def build_electron(dir_only: bool, *, constructor_only: bool = False, backend_url: str = "") -> None:
     companion = ELECTRON_ROOT / "build" / "companion" / "Orchestrator-Setup.exe"
     write_installer_nsh(companion.is_file() and not constructor_only)
     env = build_env()
+    chosen = backend_url.strip().rstrip("/")
+    if chosen:
+        env["BACKEND_URL"] = chosen
+        env["VITE_BACKEND_URL"] = chosen
     run([tool("npm", env=env), "run", "build"], cwd=ELECTRON_ROOT, env=env)
     local_builder = ELECTRON_ROOT / "node_modules" / ".bin" / (
         "electron-builder.cmd" if os.name == "nt" else "electron-builder"
@@ -555,14 +559,14 @@ def main(argv: list[str] | None = None) -> int:
         publish_github_release(constructor_only=args.constructor_only)
         return 0
 
-    prepare_env(args.backend_url)
+    backend_url = prepare_env(args.backend_url)
     if args.with_orchestrator:
         build_orchestrator(args)
     prepare_sdk_agent(args.skip_sdk_install)
     prepare_node(args.skip_node, download_node=args.download_node)
     prepare_python(args.skip_python)
     prepare_playwright(args.skip_browsers)
-    build_electron(args.dir, constructor_only=args.constructor_only)
+    build_electron(args.dir, constructor_only=args.constructor_only, backend_url=backend_url)
     if args.publish:
         if args.dir:
             raise RuntimeError("refusing to publish a directory build; omit --dir")

@@ -94,6 +94,11 @@ function normalizeFioKey(value: string): string {
 
 const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
   {
+    needle: 'комарков',
+    position: 'Помощник руководителя',
+    department: 'Управление делами'
+  },
+  {
     needle: 'мангасарян',
     position: 'Помощник Председателя совета директоров',
     department: 'Управление делами'

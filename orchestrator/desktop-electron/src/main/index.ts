@@ -1,4 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
+import { spawn } from 'node:child_process'
 import { join, basename, dirname, extname } from 'node:path'
 
 const DESKTOP_APP_NAME = 'Orchestrator'
@@ -1326,6 +1327,18 @@ function registerMainIpcHandlers(): void {
     const win = BrowserWindow.getFocusedWindow()
     const result = await dialog.showOpenDialog(win!, options)
     return result.canceled ? [] : result.filePaths
+  })
+  ipcHandle('shell:focusOutlook', async () => {
+    if (process.platform !== 'win32') {
+      return { ok: false, error: 'Outlook открывается только в Windows' }
+    }
+    const child = spawn('cmd.exe', ['/c', 'start', '', 'outlook'], {
+      detached: true,
+      windowsHide: true,
+      stdio: 'ignore'
+    })
+    child.unref()
+    return { ok: true }
   })
   ipcHandle('shell:openPath', async (_evt, filePath: string) => {
     const target = String(filePath || '').trim()

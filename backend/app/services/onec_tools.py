@@ -22,6 +22,22 @@ from app.services.docflow_task_action import (
     handle_docflow_task_action as _docflow_task_action,
     stub_docflow_task_action as _stub_docflow_task_action,
 )
+from app.services.docflow_create import (
+    handle_docflow_create as _docflow_create,
+    stub_docflow_create as _stub_docflow_create,
+)
+from app.services.docflow_assignments import (
+    handle_docflow_assignment_card as _docflow_assignment_card,
+    handle_docflow_assignments as _docflow_assignments,
+)
+from app.services.docflow_protocols import (
+    handle_docflow_protocol_card as _docflow_protocol_card,
+    handle_docflow_protocols as _docflow_protocols,
+)
+from app.services.docflow_memos import (
+    handle_docflow_memo_card as _docflow_memo_card,
+    handle_docflow_memos as _docflow_memos,
+)
 from app.services.erp_assignments import (
     ASSIGNMENT_ENTITY,
     ASSIGNMENT_FILES_ENTITY,
@@ -176,6 +192,13 @@ ONEC_TOOLS = frozenset(
         "onec.erp_write_probe",
         "onec.docflow_tasks",
         "onec.docflow_task_action",
+        "onec.docflow_create",
+        "onec.docflow_memos",
+        "onec.docflow_memo_card",
+        "onec.docflow_assignments",
+        "onec.docflow_assignment_card",
+        "onec.docflow_protocols",
+        "onec.docflow_protocol_card",
         "onec.meeting_protocols",
         "onec.meeting_protocol_write",
     }
@@ -192,6 +215,7 @@ ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset(
         "onec.erp_assignments_write",
         "onec.incoming_correspondence_write",
         "onec.docflow_task_action",
+        "onec.docflow_create",
         "onec.meeting_protocol_write",
     }
 )
@@ -206,6 +230,7 @@ _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
     "onec.erp_tasks_odata",
     "onec.docflow_tasks",
     "onec.docflow_task_action",
+    "onec.docflow_create",
     "onec.erp_write_probe",
     "onec.meeting_protocol_write",
 }
@@ -325,6 +350,7 @@ def invoke_onec(
             **handlers,
             "onec.docflow_tasks": REAL_HANDLERS["onec.docflow_tasks"],
             "onec.docflow_task_action": REAL_HANDLERS["onec.docflow_task_action"],
+            "onec.docflow_create": REAL_HANDLERS["onec.docflow_create"],
         }
     handler = handlers.get(tool)
     if handler is None:
@@ -478,9 +504,13 @@ def _is_tabular_document_entity(entity: str) -> bool:
             return False
     except Exception:  # noqa: BLE001
         pass
-    # Document_<Main>_<TabularSection>
+    # Document_<Main>_<TabularSection>. Приставка подсистемы (ТД_, РН_) частью имени
+    # документа не считается: иначе Document_ТД_Приказ выглядел бы как табличная часть.
     tail = cleaned[len("Document_") :]
-    return "_" in tail and tail.count("_") >= 1
+    head, _, rest = tail.partition("_")
+    if rest and len(head) <= 4 and head.isupper():
+        tail = rest
+    return "_" in tail
 
 
 def _ensure_odata_query(
@@ -861,7 +891,10 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
                 odata_path,
                 **{"$filter": quote(" and ".join(filters), safe="=,'")},
             )
-        if (
+        orderby = str(args.get("orderby") or args.get("order_by") or args.get("$orderby") or "").strip()
+        if orderby and "$orderby" not in odata_path.lower():
+            odata_path = _append_odata_query(odata_path, **{"$orderby": quote(orderby, safe=",")})
+        elif (
             (number or extra_filter)
             and entity.startswith("Document_")
             and not _is_tabular_document_entity(entity)
@@ -899,6 +932,9 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
                     "top",
                     "skip",
                     "filter",
+                    "orderby",
+                    "order_by",
+                    "$orderby",
                     "ref_key",
                     "Ref_Key",
                     "number",
@@ -1547,6 +1583,13 @@ STUB_HANDLERS = {
     "onec.erp_write_probe": _stub_erp_write_probe,
     "onec.docflow_tasks": _stub_docflow_tasks,
     "onec.docflow_task_action": _stub_docflow_task_action,
+    "onec.docflow_create": _stub_docflow_create,
+    "onec.docflow_memos": _docflow_memos,
+    "onec.docflow_memo_card": _docflow_memo_card,
+    "onec.docflow_assignments": _docflow_assignments,
+    "onec.docflow_assignment_card": _docflow_assignment_card,
+    "onec.docflow_protocols": _docflow_protocols,
+    "onec.docflow_protocol_card": _docflow_protocol_card,
     "onec.meeting_protocols": _stub_meeting_protocols,
     "onec.meeting_protocol_write": _stub_meeting_protocol_write,
 }
@@ -1571,6 +1614,13 @@ REAL_HANDLERS = {
     "onec.erp_write_probe": _erp_write_probe,
     "onec.docflow_tasks": _docflow_tasks,
     "onec.docflow_task_action": _docflow_task_action,
+    "onec.docflow_create": _docflow_create,
+    "onec.docflow_memos": _docflow_memos,
+    "onec.docflow_memo_card": _docflow_memo_card,
+    "onec.docflow_assignments": _docflow_assignments,
+    "onec.docflow_assignment_card": _docflow_assignment_card,
+    "onec.docflow_protocols": _docflow_protocols,
+    "onec.docflow_protocol_card": _docflow_protocol_card,
     "onec.meeting_protocols": _list_meeting_protocols,
     "onec.meeting_protocol_write": _meeting_protocol_write,
 }

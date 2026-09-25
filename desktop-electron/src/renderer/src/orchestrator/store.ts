@@ -27,8 +27,8 @@ function parse(item: Record<string, unknown>): ProcessInstance | null {
   }
 }
 
-function seed(userId: string): ProcessInstance[] {
-  if (hasPositionKpi(userId)) return seedIlchenkoInstances()
+function seed(userId: string, position = ''): ProcessInstance[] {
+  if (hasPositionKpi(position)) return seedIlchenkoInstances()
   const now = new Date().toISOString()
   return [
     {
@@ -50,11 +50,11 @@ function seed(userId: string): ProcessInstance[] {
   ]
 }
 
-export function loadInstances(userId: string): ProcessInstance[] {
+export function loadInstances(userId: string, position = ''): ProcessInstance[] {
   try {
     const raw = localStorage.getItem(storageKey(userId))
     if (!raw) {
-      const seeded = seed(userId)
+      const seeded = seed(userId, position)
       saveInstances(userId, seeded)
       return seeded
     }
@@ -65,13 +65,13 @@ export function loadInstances(userId: string): ProcessInstance[] {
       .map(parse)
       .filter((item): item is ProcessInstance => item != null)
     if (!instances.length) {
-      const seeded = seed(userId)
+      const seeded = seed(userId, position)
       saveInstances(userId, seeded)
       return seeded
     }
     return instances
   } catch {
-    return seed(userId)
+    return seed(userId, position)
   }
 }
 

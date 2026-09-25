@@ -59,3 +59,40 @@ def test_invoke_meeting_protocols_via_odata_get() -> None:
     assert result["count"] == 1
     assert result["protocols"][0]["number"] == "ПСД_001_О_225"
     assert result["meeting_kind"] == "sd"
+
+
+def test_psd_mark_filter_keeps_closed_protocols() -> None:
+    filt = build_protocol_filter({"meeting_kind": "sd", "psd_mark": True}, kind="sd")
+    assert filt.startswith("DeletionMark eq false and startswith(Number,'ПСД')")
+    assert "СПГ" not in filt
+    assert "Posted eq false" not in filt
+    assert "Закрыт" not in filt
+
+
+def test_psd_mark_reads_every_page() -> None:
+    def row(index: int, status: str = "Закрыт") -> dict:
+        return {
+            "Ref_Key": f"{index:08d}-0000-0000-0000-000000000001",
+            "Number": f"ПСД_001_О_{index}",
+            "Date": "2024-01-01T00:00:00",
+            "Posted": True,
+            "Статус": status,
+        }
+
+    pages = [
+        {"ok": True, "result": {"value": [row(i) for i in range(100)], "summary": "page"}},
+        {"ok": True, "result": {"value": [row(200 + i) for i in range(5)], "summary": "tail"}},
+    ]
+    with patch("app.tools.runtime_api.request", side_effect=pages) as mock_request:
+        result = invoke_tool(
+            "onec.meeting_protocols",
+            {"meeting_kind": "sd", "psd_mark": True, "max_results": 100},
+        )
+
+    assert mock_request.call_count == 2
+    second_path = mock_request.call_args_list[1][1]["json"]["arguments"]["path"]
+    assert "$skip=100" in second_path
+    assert "startswith(Number,'ПСД')" in result["filter"]
+    assert result["count"] == 105
+    assert result["psd_mark"] is True
+    assert result["truncated"] is False

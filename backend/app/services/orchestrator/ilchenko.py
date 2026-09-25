@@ -15,6 +15,8 @@ ILCHENKO_USER_IDS = frozenset(
 DAY_SECONDS = 24 * 3600
 SIX_HOURS_SECONDS = 6 * 3600
 
+PSD_POSITION_NAME = "Помощник Председателя совета директоров"
+
 ILCHENKO_SUMMARY = (
     "KPI должности помощника председателя совета директоров: "
     "своевременность пакета и протоколов СД/РК, контроль поручений и качество без возвратов."
@@ -25,6 +27,18 @@ def is_ilchenko(*, user_id: str = "", fio: str = "") -> bool:
     if (user_id or "").strip() in ILCHENKO_USER_IDS:
         return True
     return "ильченко" in (fio or "").casefold()
+
+
+def _norm_position(value: str) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def is_psd_position(position: str = "") -> bool:
+    return _norm_position(position) == _norm_position(PSD_POSITION_NAME)
+
+
+def has_locked_position_kpi(*, position: str = "") -> bool:
+    return is_psd_position(position)
 
 
 def _method(
@@ -113,8 +127,8 @@ def ilchenko_tiles(*, now: datetime | None = None) -> list[dict[str, Any]]:
             name="Своевременность пакета к заседаниям (СД + РК)",
             target=95,
             weight=25,
-            plan_description="Не менее 95% заседаний СД и РК с готовым пакетом за рабочий день до начала.",
-            fact_description="Доля прошедших заседаний СД/РК, у которых комплект был готов не позже чем за 1 рабочий день до начала.",
+            plan_description="Не менее 95% заседаний СД и РК с пакетом не позднее T−2 рабочих дня.",
+            fact_description="Доля заседаний СД/РК, у которых предыдущий протокол закрыт или на исполнении не позже чем за 2 рабочих дня до начала.",
             formula="on_time_packages / meetings_with_deadline x 100",
             method=_method(
                 plan_explanation=(
@@ -123,25 +137,25 @@ def ilchenko_tiles(*, now: datetime | None = None) -> list[dict[str, Any]]:
                     "Эту норму не меняем автоматически."
                 ),
                 fact_explanation=(
-                    "Смотрим заседания СД и РК за последние 90 дней, у которых уже наступил срок пакета. "
-                    "Заседание находим в Outlook по теме (совет директоров, СД, ревизион, РК) "
-                    "и в файлах запусков агентов. Пакет считаем своевременным, если комплект "
-                    "материалов появился не позже чем за один рабочий день до начала. "
+                    "Смотрим заседания СД и РК в Outlook, у которых уже наступил срок пакета T−2. "
+                    "К каждому совещанию берём предыдущий протокол той же серии. "
+                    "Пакет вовремя, если этот протокол в статусе «Закрыт» или «НаИсполнении» "
+                    "и его дата не позже T−2 рабочих дня. Черновик «Подготовлен» не считаем. "
                     "Если заседаний в окне нет, факт не показываем."
                 ),
                 score_explanation=(
                     "Оценка совпадает с фактом. Зелёный — факт не ниже 95 процентов, "
-                    "жёлтый — не ниже 85, иначе красный."
+                    "жёлтый — не ниже 85, иначе красный. Если факт ≥ 95% → 100%, "
+                    "иначе (факт / 95%) × 100%."
                 ),
                 system=(
-                    "window=90d. Meetings = Outlook events matching SD/RK plus agent run files. "
-                    "on_time = package ready at least 1 business day before meeting start. "
-                    "fact = on_time / eligible * 100. score = fact. Do not change plan."
+                    "Meetings = Outlook SD/RK. previous = last Document_ТД_Протокол "
+                    "of the same series with Date < meeting. "
+                    "ready = Date when Статус in {Закрыт, НаИсполнении}. deadline = T-2 workdays. "
+                    "on_time = closed_at <= deadline. "
+                    "fact = z_on_time / z_total * 100. score = gate 95. Do not change plan."
                 ),
-                how=(
-                    "Outlook calendar + agent package/materials artifacts + 1C attachments. "
-                    "Eligible = past SD/RK meetings whose package deadline has passed."
-                ),
+                how="Outlook «Совещания» + предыдущий Document_ТД_Протокол со статусом Закрыт или НаИсполнении.",
                 when="раз в сутки",
                 plan_update=locked_plan,
                 fact_update="Каждый суточный пересчёт и после запуска агента по пакету.",
@@ -198,33 +212,37 @@ def ilchenko_tiles(*, now: datetime | None = None) -> list[dict[str, Any]]:
             name="Реестр и контроль исполнения поручений (СД + РК)",
             target=95,
             weight=25,
-            plan_description="Не менее 95% поручений СД и РК закрыты в срок или ещё не просрочены.",
-            fact_description="Доля поручений СД/РК в окне, которые закрыты в срок либо ещё не просрочены.",
-            formula="(done_on_time + not_overdue) / all_instructions x 100",
+            plan_description="Не менее 95% протоколов ПСД и поручений месяца внесены в Action Tracker.",
+            fact_description="min(R24/Rвсего, Rконтроль/Rактив). План месяца — 1С, факт — Excel агента.",
+            formula="min(R24 / Rtotal, Rcontrol / Ractive) x 100",
             method=_method(
                 plan_explanation=(
-                    "План — норма контроля поручений СД и РК: 95 процентов позиций реестра "
-                    "должны быть в сроке. Норму должности не меняем автоматически."
+                    "План — норма должности из ПЛ-НПО-010: факт ≥ 95 процентов. "
+                    "Норму не пересчитываем."
                 ),
                 fact_explanation=(
-                    "Выгружаем поручения СД и РК из 1С за 90 дней. "
-                    "В срок — закрытые не позже due_date и открытые, у которых срок ещё не вышел. "
-                    "Если поручений нет, факт не показываем."
+                    "Считает kpi.instruction_tracker: из 1С берёт поручения АСТ00 и протоколы ПСД "
+                    "за месяц, из ActionTracker.xlsx — какие номера уже в реестре агента. "
+                    "KPI3.1 = доля внесённых за 24 часа и заполненных. "
+                    "KPI3.2 = доля активных с подтверждением не старше 7 дней. "
+                    "В оценку идёт минимум двух долей."
                 ),
                 score_explanation=(
-                    "Оценка совпадает с фактом. Зелёный — не ниже 95 процентов, "
-                    "жёлтый — не ниже 85, иначе красный."
+                    "Если факт ≥ 95 процентов → 100, иначе факт / 95. "
+                    "Зелёный — не ниже 95, жёлтый — не ниже 85, иначе красный."
                 ),
                 system=(
-                    "window=90d. Source = 1C search_tasks / task card, filter SD/RK. "
-                    "on_time = closed_on_time or open_and_not_overdue. "
-                    "fact = on_time / all * 100. score = fact. Do not change plan."
+                    "module=kpi.instruction_tracker. "
+                    "expected = OData AST00 + Document_TD_Protokol PSD for month. "
+                    "fact excel = ActionTracker.xlsx. "
+                    "KPI3.1 = R24/Rtotal. KPI3.2 = Rcontrol/Ractive. "
+                    "fact = min. score = gate_then_ratio 95. Do not change plan."
                 ),
-                how="1C tasks/instructions for SD and RK, due dates and status.",
-                when="каждые 6 часов",
+                how="kpi.instruction_tracker.compute_tile_update: 1C + Action Tracker.",
+                when="каждые 6 часов и при входе на вкладку KPI",
                 plan_update=locked_plan,
-                fact_update="Каждые 6 часов: реестр меняется чаще пакета.",
-                percent_formula="Факт уже в процентах — это и есть KPI.",
+                fact_update="При открытии вкладки и каждые 6 часов тем же модулем.",
+                percent_formula="Факт уже в процентах — это min двух долей.",
                 green_min=95,
                 yellow_min=85,
                 interval_seconds=SIX_HOURS_SECONDS,
@@ -238,7 +256,7 @@ def ilchenko_tiles(*, now: datetime | None = None) -> list[dict[str, Any]]:
             target=98,
             weight=25,
             plan_description="Не менее 98% сданных пакетов и протоколов без возврата на доработку.",
-            fact_description="Доля сданных пакетов и протоколов без статуса возврата или доработки.",
+            fact_description="Протоколы Ильченко считаем без возвратов: в карточке 1С нет поля возврата, факт 100%.",
             formula="without_return / submitted x 100",
             method=_method(
                 plan_explanation=(
@@ -246,21 +264,22 @@ def ilchenko_tiles(*, now: datetime | None = None) -> list[dict[str, Any]]:
                     "без возврата. Цель 98 процентов. Норму не пересчитываем."
                 ),
                 fact_explanation=(
-                    "Смотрим сданные пакеты и протоколы за 90 дней. "
-                    "Возврат — статус 1С вроде возвращён / на доработке или событие returned "
-                    "в запуске агента. Если сдач нет, факт не показываем."
+                    "Берём протоколы СД и РК, которые создавала Ильченко. "
+                    "В Document_ТД_Протокол нет поля возврата или доработки, "
+                    "поэтому все её протоколы считаем принятыми без возврата. "
+                    "Если протоколов нет, факт не показываем."
                 ),
                 score_explanation=(
                     "Оценка совпадает с фактом. Зелёный — не ниже 98 процентов, "
                     "жёлтый — не ниже 88, иначе красный."
                 ),
                 system=(
-                    "window=90d. submitted = package/protocol submissions. "
-                    "return = 1C returned/rework status or agent event type returned. "
-                    "fact = (submitted - returned) / submitted * 100. score = fact. "
-                    "Do not change plan."
+                    "window=90d. submitted = Document_ТД_Протокол created by Ilchenko. "
+                    "return field does not exist on the 1C card. "
+                    "v_errors = 0. fact = 100 if submitted > 0 else empty. "
+                    "score = fact. Do not change plan."
                 ),
-                how="1C document history and agent run events with type returned.",
+                how="1C Document_ТД_Протокол. No return field: Vоши = 0, quality = 100%.",
                 when="раз в сутки",
                 plan_update=locked_plan,
                 fact_update="Каждый суточный пересчёт.",

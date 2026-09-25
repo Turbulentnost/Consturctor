@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from app.config import settings
+from app.tools.onec.dok_soap import parse_delegate_fios
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,12 @@ def cache_key(
 ) -> str:
     norm = " ".join((fio or "").split()).casefold()
     flags = f"o{int(only_open)}t{int(today_and_overdue)}"
-    return f"docflow:tasks:v1:{norm}:{_cred_fingerprint(auth_args)}:{flags}"
+    delegates = ",".join(
+        sorted(" ".join(str(name).split()).casefold() for name in parse_delegate_fios((auth_args or {}).get("delegate_fios")))
+    )
+    if delegates:
+        flags += ":d" + hashlib.sha256(delegates.encode("utf-8")).hexdigest()[:12]
+    return f"docflow:tasks:v2:{norm}:{_cred_fingerprint(auth_args)}:{flags}"
 
 
 def get_cached_tasks(key: str) -> list[dict[str, Any]] | None:

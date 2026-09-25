@@ -1,7 +1,13 @@
 from types import SimpleNamespace
 
 from app.services.agent_runtime import _playbook_plan_text
-from app.services.agent_runs import SDK_DEAD_ANSWER, effective_run_status, slim_run_events
+from app.services.agent_runs import (
+    MISSING_WORK_RESULT_ANSWER,
+    SDK_DEAD_ANSWER,
+    effective_run_status,
+    is_successful_work_answer,
+    slim_run_events,
+)
 from app.services.workflows.cursor_tools import (
     clear_tool_context,
     current_history_run_id,
@@ -158,6 +164,15 @@ def test_effective_run_status_success_needs_result() -> None:
         )
         == "ok"
     )
+    assert (
+        effective_run_status(
+            "error",
+            f"{MISSING_WORK_RESULT_ANSWER}\n\nОкно 06:55 — утреннее, до доклада 07:50",
+        )
+        == "error"
+    )
+    assert is_successful_work_answer("Агент упомянул WORK_RESULT и TESTS: PASS в ходе работы") is False
+    assert is_successful_work_answer(MISSING_WORK_RESULT_ANSWER) is False
 
 
 def test_slim_run_events_keeps_calendar_after_thinking_overflow() -> None:
@@ -185,6 +200,28 @@ def test_slim_run_events_keeps_calendar_after_thinking_overflow() -> None:
     types = [item.get("type") for item in stored]
     assert "calendar.show_meetings" in tools
     assert "work_result" in types
+
+
+def test_slim_run_events_keeps_hitl_after_thinking_overflow() -> None:
+    events = [{"type": "thinking", "text": f"step {index}"} for index in range(420)]
+    events.append(
+        {
+            "type": "hitl",
+            "tool": "excel.create_workbook",
+            "text": "Нужно подтверждение: excel.create_workbook",
+            "requestId": "req-hitl",
+            "confirm_only": True,
+            "status": "pending",
+        }
+    )
+    events.append({"type": "work_result", "text": "## WORK_RESULT\nГотово\nTESTS: PASS"})
+    stored = slim_run_events(events)
+    types = [item.get("type") for item in stored]
+    assert "hitl" in types
+    hitl = next(item for item in stored if item.get("type") == "hitl")
+    assert hitl["requestId"] == "req-hitl"
+    assert hitl["confirm_only"] is True
+    assert hitl["status"] == "pending"
 
 
 def test_slim_run_events_keeps_timing_markers() -> None:

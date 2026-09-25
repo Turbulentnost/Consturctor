@@ -98,6 +98,32 @@ def _number_prefix_filter(kind: str) -> str:
     return "(" + " or ".join(parts) + ")"
 
 
+def _arg_flag(value: Any, default: bool | None = None) -> bool | None:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "да", "истина"}:
+        return True
+    if text in {"0", "false", "no", "нет", "ложь", ""}:
+        return False
+    return default
+
+
+def psd_mark_requested(args: dict[str, Any]) -> bool:
+    for key in ("psd_mark", "psd_only", "only_psd"):
+        if key in args and _arg_flag(args.get(key)) is True:
+            return True
+    return False
+
+
+def _number_scope_filter(args: dict[str, Any], *, kind: str) -> str:
+    if psd_mark_requested(args):
+        return "startswith(Number,'ПСД')"
+    return _number_prefix_filter(kind)
+
+
 def protocol_navigation_path(ref_key: str, section: str) -> str:
     """Full OData path to a protocol tabular section, e.g. …/Решения."""
     key = (ref_key or "").strip()
@@ -110,19 +136,22 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     """Build OData $filter for Document_ТД_Протокол list selection."""
     filters: list[str] = ["DeletionMark eq false"]
     number = str(args.get("number") or args.get("Number") or "").strip()
+    psd_only = psd_mark_requested(args)
     if number:
         filters.append(f"Number eq '{_escape_odata_string(number)}'")
-    elif kind in _NUMBER_PREFIXES:
-        filters.append(_number_prefix_filter(kind))
+    elif psd_only or kind in _NUMBER_PREFIXES:
+        filters.append(_number_scope_filter(args, kind=kind))
 
     review_only = args.get("review_only")
     if review_only is None:
-        review_only = kind != "any"
-    if review_only:
+        review_only = (not psd_only) and kind != "any"
+    if _arg_flag(review_only, default=(not psd_only) and kind != "any"):
         filters.append("(Posted eq false or Статус eq 'Подготовлен')")
     else:
-        include_closed = bool(args.get("include_closed")) or kind == "any"
-        if not include_closed:
+        include_closed = args.get("include_closed")
+        if include_closed is None:
+            include_closed = psd_only or kind == "any"
+        if not _arg_flag(include_closed, default=False):
             filters.append("Статус ne 'Закрыт'")
 
     start, end = _period(args)
@@ -149,8 +178,8 @@ def _relaxed_protocol_filters(args: dict[str, Any], *, kind: str) -> list[str]:
     number = str(args.get("number") or args.get("Number") or "").strip()
     if number:
         parts.append(f"Number eq '{_escape_odata_string(number)}'")
-    elif kind in _NUMBER_PREFIXES:
-        parts.append(_number_prefix_filter(kind))
+    elif psd_mark_requested(args) or kind in _NUMBER_PREFIXES:
+        parts.append(_number_scope_filter(args, kind=kind))
     start, end = _period(args)
     if start:
         parts.append(f"Date ge {_odata_datetime(start)}")
@@ -267,6 +296,8 @@ def normalize_protocol_row(row: dict[str, Any], *, kind: str) -> dict[str, Any]:
         "ref_key": str(row.get("Ref_Key") or "").strip(),
         "number": str(row.get("Number") or "").strip(),
         "date": str(row.get("Date") or "").strip(),
+        "created_at": str(row.get("ДатаСоздания") or row.get("created_at") or "").strip(),
+        "next_meeting": str(row.get("ДатаСледующегоСовещания") or row.get("next_meeting") or "").strip(),
         "posted": posted,
         "status": status,
         "needs_review": needs_review,
@@ -350,7 +381,7 @@ def list_meeting_protocols(
     start, end = _period(args)
     review_only = args.get("review_only")
     if review_only is None:
-        review_only = kind != "any"
+        review_only = (not psd_mark_requested(args)) and kind != "any"
     result = {
         "protocols": protocols,
         "count": len(protocols),
@@ -362,6 +393,7 @@ def list_meeting_protocols(
         "path": raw.get("path"),
         "filter": odata_filter,
         "review_only": bool(review_only),
+        "psd_mark": psd_mark_requested(args),
         "date_from": start.isoformat() if start else "",
         "date_to": end.isoformat() if end else "",
         "method": "odata_meeting_protocols",

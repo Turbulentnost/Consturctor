@@ -123,6 +123,10 @@ def test_finish_local_demo_workflow_marks_playbook_verified() -> None:
     assert result.phase == "tested"
     assert result.local_run["runtime"] == "cursor-sdk"
     assert result.local_run["demo_ok"] is True
+    playbook = result.local_run["playbook"]
+    assert playbook["steps"][0]["tool"] == "turboproject.projects"
+    assert "turboproject.projects" in playbook["chain"]
+    assert playbook["tools"] == ["turboproject.projects"]
 
 
 def test_update_local_run_advances_document_phase_when_draft_ready() -> None:

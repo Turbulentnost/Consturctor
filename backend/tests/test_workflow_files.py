@@ -72,6 +72,35 @@ def test_register_agent_file_is_current_run_output() -> None:
     assert files.agent_files[0].run_id == "run-1"
 
 
+def test_register_agent_file_replaces_same_filename() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    workflow = Workflow(id="wf-1", user_id="user-1", title="Агент", phase="tested")
+    db.add(workflow)
+    db.commit()
+
+    register_agent_files(
+        db,
+        row=workflow,
+        run_id="run-1",
+        files=[("ActionTracker.md", b"old-book")],
+    )
+    db.commit()
+    register_agent_files(
+        db,
+        row=workflow,
+        run_id="run-2",
+        files=[("ActionTracker.md", b"new-book")],
+    )
+    db.commit()
+
+    files = list_workflow_files(db, row=workflow)
+    assert len(files.agent_files) == 1
+    assert files.agent_files[0].filename == "ActionTracker.md"
+    assert files.agent_files[0].run_id == "run-2"
+    assert files.agent_files[0].size == len(b"new-book")
+
+
 def test_knowledge_files_dedup_identical_content() -> None:
     db = _session()
     db.add(AppUser(id="user-1", fio="Тест"))

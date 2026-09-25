@@ -21,6 +21,14 @@ def test_build_protocol_filter_rk_review() -> None:
     assert "Статус eq 'Подготовлен'" in filt
 
 
+def test_build_protocol_filter_psd_mark_only() -> None:
+    filt = build_protocol_filter({"psd_mark": True}, kind="sd")
+    assert "startswith(Number,'ПСД')" in filt
+    assert "СПГ" not in filt
+    assert "Posted eq false" not in filt
+    assert "Статус ne 'Закрыт'" not in filt
+
+
 def test_build_protocol_filter_sd_prefixes() -> None:
     filt = build_protocol_filter({"meeting_kind": "sd", "review_only": False}, kind="sd")
     assert "startswith(Number,'ПСД')" in filt
@@ -52,6 +60,7 @@ def test_normalize_protocol_row_needs_review() -> None:
         "Ref_Key": "8003225f-ab4c-11f1-987b-6cb31113810c",
         "Number": "СПГ_076_О_169",
         "Date": "2026-09-08T09:13:49",
+        "ДатаСоздания": "2026-09-04T09:13:49",
         "Posted": False,
         "Статус": "Подготовлен",
         "ТемаСовещания": {"Description": "Совет директоров по ГК"},
@@ -59,6 +68,7 @@ def test_normalize_protocol_row_needs_review() -> None:
     }
     item = normalize_protocol_row(row, kind="sd")
     assert item["number"] == "СПГ_076_О_169"
+    assert item["created_at"] == "2026-09-04T09:13:49"
     assert item["needs_review"] is True
     assert item["meeting_topic"] == "Совет директоров по ГК"
 

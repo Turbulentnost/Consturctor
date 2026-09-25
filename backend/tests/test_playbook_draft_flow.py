@@ -15,6 +15,7 @@ from app.services.workflows.playbook_validation import (
     DraftIssue,
     attach_tool_candidates,
     issues_to_questions,
+    lock_verified_chain,
     validate_draft,
 )
 from app.services.workflows.service import (
@@ -24,6 +25,7 @@ from app.services.workflows.service import (
     _demo_validation_report,
     _merge_preserved_run_inputs,
     _needs_draft_repair,
+    _refine_playbook,
     _require_verified_playbook,
     plan_workflow,
 )
@@ -844,6 +846,122 @@ def test_refine_parser_takes_corrected_steps() -> None:
     parsed = prompts.parse_playbook_refine(text, draft=draft)
 
     assert parsed["steps"][0]["title"] == "Точный вызов onec.erp_tasks_period"
+
+
+def test_lock_verified_chain_pins_demo_tools_not_wander() -> None:
+    draft = attach_tool_candidates(
+        {
+            "steps": [
+                {
+                    "id": "s1",
+                    "title": "Журнал поручений АСТ00",
+                    "system": "onec",
+                    "entity": "task",
+                    "operation": "list",
+                },
+                {
+                    "id": "s2",
+                    "title": "Выгрузка в Excel",
+                    "system": "desktop",
+                    "entity": "spreadsheet",
+                    "operation": "export",
+                    "required_params": ["filename"],
+                },
+            ]
+        }
+    )
+    locked = lock_verified_chain(
+        draft,
+        events=[
+            {"type": "tool_result", "tool": "users.current", "ok": True},
+            {
+                "type": "tool_result",
+                "tool": "onec.erp_assignments",
+                "ok": True,
+                "arguments": {"action": "list"},
+            },
+            {"type": "tool_result", "tool": "onec.erp_tasks_current", "ok": True},
+            {
+                "type": "tool_result",
+                "tool": "excel.create_workbook",
+                "ok": True,
+                "arguments": {"filename": "out.xlsx"},
+            },
+        ],
+    )
+
+    assert locked["steps"][0]["tool"] == "onec.erp_assignments"
+    assert "onec.erp_tasks_current" not in locked["steps"][0]["tool_candidates"]
+    assert locked["steps"][1]["tool"] == "excel.create_workbook"
+    assert locked["steps"][0]["proven_call"]["arguments"]["action"] == "list"
+
+
+def test_refine_playbook_stores_chain_without_cloud_agent() -> None:
+    row = Workflow(id="w1", user_id="u1", title="Контроль")
+    draft = attach_tool_candidates(
+        {
+            "goal": "Сверка",
+            "result": "файл",
+            "steps": [
+                {
+                    "id": "s1",
+                    "title": "Журнал поручений АСТ00",
+                    "system": "onec",
+                    "entity": "assignment",
+                    "operation": "list",
+                },
+                {
+                    "id": "s2",
+                    "title": "Excel",
+                    "system": "desktop",
+                    "entity": "spreadsheet",
+                    "operation": "export",
+                    "required_params": ["filename"],
+                },
+            ],
+        }
+    )
+
+    playbook = _refine_playbook(
+        row,
+        draft=draft,
+        demo_text="готово",
+        tools=[
+            "users.current",
+            "onec.erp_assignments",
+            "onec.erp_tasks_current",
+            "excel.create_workbook",
+        ],
+        report={
+            "ledger": [
+                {"id": "s1", "status": "completed", "tool": "onec.erp_assignments"},
+                {"id": "s2", "status": "completed", "tool": "excel.create_workbook"},
+            ]
+        },
+        events=[
+            {"type": "tool_result", "tool": "onec.erp_assignments", "ok": True},
+            {"type": "tool_result", "tool": "excel.create_workbook", "ok": True},
+        ],
+    )
+
+    assert playbook["steps"][0]["tool"] == "onec.erp_assignments"
+    assert playbook["steps"][1]["tool"] == "excel.create_workbook"
+    assert "onec.erp_tasks_current" not in playbook["tools"]
+    assert "excel.create_workbook" in playbook["tools"]
+    assert "onec.erp_assignments" in playbook["chain"]
+    assert playbook["demo_ok"] is True
+
+
+def test_published_prompt_includes_verified_chain() -> None:
+    text = prompts.build_published_run_prompt(
+        instructions="делай",
+        example_run="list",
+        user_message="запусти",
+        steps=[{"id": "s1", "title": "Журнал", "tool": "onec.erp_assignments"}],
+    )
+    assert "ПРОВЕРЕННАЯ ЦЕПОЧКА" in text
+    assert "onec.erp_assignments" in text
+    assert "не набор инструментов" in text
 
 
 def test_publish_rejects_draft_playbook() -> None:

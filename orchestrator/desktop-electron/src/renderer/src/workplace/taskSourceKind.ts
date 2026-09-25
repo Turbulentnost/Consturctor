@@ -1,4 +1,5 @@
 import type { SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
+import type { DocflowTaskKind } from './docflowTaskKind'
 
 export type TaskSourceKind = 'docflow' | 'turbo' | 'erp' | 'none'
 
@@ -9,6 +10,10 @@ export type TaskActionContext = {
   refKey?: string
   taskNumber?: string
   step?: string
+  taskName?: string
+  docflowKind?: DocflowTaskKind
+  /** Роль в задаче ДО: executor | author | both. */
+  role?: string
   targetId?: string
   projectId?: string
   taskUid?: string
@@ -38,6 +43,9 @@ export function taskActionContextFromTaskRow(row: SpecTaskRow): TaskActionContex
     refKey: row.refKey,
     taskNumber: row.taskNumber,
     step: row.step,
+    taskName: row.taskName,
+    docflowKind: row.docflowKind,
+    role: row.role,
     targetId: row.targetId,
     projectId: row.projectId,
     taskUid: row.taskUid,

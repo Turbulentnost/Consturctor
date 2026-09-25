@@ -7,9 +7,10 @@ from pathlib import Path
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 PDF_SUFFIXES = {".pdf"}
-VISION_MAX_PAGES = 8
-_MAX_WIDTH = 1280
-_JPEG_QUALITY = 72
+VISION_MAX_PAGES = 16
+_MAX_WIDTH = 800
+_JPEG_QUALITY = 36
+_MAX_JPEG_BYTES = 80_000
 _SAFE_STEM = re.compile(r"[^\w\-]+", re.UNICODE)
 
 
@@ -22,6 +23,7 @@ def render_document_pages(
     dest_dir: Path,
     *,
     max_pages: int = VISION_MAX_PAGES,
+    start_page: int = 1,
 ) -> dict:
     """Вернуть JPEG-страницы: pages[{page, path, mimeType, width, height}]."""
     path = Path(source)
@@ -33,6 +35,7 @@ def render_document_pages(
         raise VisionRenderError("нет pymupdf, страницы для Cursor SDK не снять") from exc
 
     limit = max(1, min(int(max_pages or VISION_MAX_PAGES), VISION_MAX_PAGES))
+    start = max(1, int(start_page or 1))
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     stem = _safe_stem(path.name)
@@ -46,35 +49,66 @@ def render_document_pages(
         raise VisionRenderError(f"зрение SDK не умеет {suffix or 'этот тип'}")
 
     pages: list[dict] = []
+    reused_count = 0
     try:
         total = len(document)
         if total <= 0:
             raise VisionRenderError("в файле нет страниц")
+        if start > total:
+            start = 1
+        taken = 0
         for index, page in enumerate(document, start=1):
-            if index > limit:
+            if index < start:
+                continue
+            if taken >= limit:
                 break
-            pix = _page_pixmap(page)
             dest = dest_dir / f"{stem}-p{index:03d}"
-            saved, mime = _save_pixmap(pix, dest)
-            pages.append(
-                {
-                    "page": index,
-                    "path": str(saved.resolve()),
-                    "mimeType": mime,
-                    "width": int(pix.width),
-                    "height": int(pix.height),
-                }
-            )
+            reused = _reuse_page(dest)
+            if reused:
+                reused_count += 1
+                pages.append({"page": index, **reused})
+            else:
+                pix = _page_pixmap(page)
+                saved, mime = _save_pixmap(pix, dest, page=page)
+                pages.append(
+                    {
+                        "page": index,
+                        "path": str(saved.resolve()),
+                        "mimeType": mime,
+                        "width": int(pix.width),
+                        "height": int(pix.height),
+                    }
+                )
+            taken += 1
     finally:
         document.close()
 
     if not pages:
         raise VisionRenderError("страницы не сняты")
+    last = int(pages[-1]["page"])
     return {
         "pages": pages,
         "page_count": total,
-        "truncated": total > limit,
+        "start_page": start,
+        "truncated": last < total,
+        "cached": reused_count == len(pages),
     }
+
+
+def _reuse_page(dest: Path) -> dict | None:
+    for suffix, mime in ((".jpg", "image/jpeg"), (".jpeg", "image/jpeg"), (".png", "image/png")):
+        existing = dest.with_suffix(suffix)
+        if not existing.is_file():
+            continue
+        size = existing.stat().st_size
+        if 800 < size <= _MAX_JPEG_BYTES:
+            return {
+                "path": str(existing.resolve()),
+                "mimeType": mime,
+                "width": 0,
+                "height": 0,
+            }
+    return None
 
 
 def _open_image(fitz, path: Path):
@@ -84,24 +118,35 @@ def _open_image(fitz, path: Path):
         raise VisionRenderError(f"не открыть картинку: {exc}") from exc
 
 
-def _page_pixmap(page):
+def _page_pixmap(page, *, max_width: int = _MAX_WIDTH):
     import fitz
 
     width = max(float(page.rect.width), 1.0)
-    zoom = min(2.0, _MAX_WIDTH / width)
+    zoom = min(1.4, max(240, int(max_width)) / width)
     return page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
 
 
-def _save_pixmap(pix, dest: Path) -> tuple[Path, str]:
+def _save_pixmap(pix, dest: Path, page=None) -> tuple[Path, str]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     jpeg = dest.with_suffix(".jpg")
-    try:
-        pix.save(str(jpeg), jpg_quality=_JPEG_QUALITY)
+    quality = _JPEG_QUALITY
+    current = pix
+    max_width = max(int(getattr(pix, "width", 0) or _MAX_WIDTH), 240)
+    for _ in range(5):
+        try:
+            current.save(str(jpeg), jpg_quality=quality)
+            if jpeg.is_file() and jpeg.stat().st_size <= _MAX_JPEG_BYTES:
+                return jpeg, "image/jpeg"
+        except TypeError:
+            break
+        except Exception:
+            break
+        quality = max(22, quality - 6)
+        if page is not None and max_width > 560:
+            max_width = int(max_width * 0.8)
+            current = _page_pixmap(page, max_width=max_width)
+    if jpeg.is_file() and jpeg.stat().st_size > 800:
         return jpeg, "image/jpeg"
-    except TypeError:
-        pass
-    except Exception:
-        pass
     png = dest.with_suffix(".png")
     pix.save(str(png))
     return png, "image/png"

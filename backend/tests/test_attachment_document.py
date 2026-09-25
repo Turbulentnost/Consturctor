@@ -26,7 +26,7 @@ def test_load_attachment_image_uses_ocr(monkeypatch) -> None:
 def test_load_empty_pdf_ocr_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.workflows.document._read_pdf_bytes",
-        lambda raw: "",
+        lambda raw, **_kwargs: "",
     )
     monkeypatch.setattr(
         "app.services.workflows.document._ocr_visual",

@@ -1,4 +1,6 @@
-/** Inline SVG-иконки для v0.4 (без внешних ассетов). */
+import onecLogo from '../assets/fileicons/onec.png'
+
+/** Inline SVG-иконки для v0.4; логотип 1С — из fileicons. */
 
 export function SpecIconReg(): React.JSX.Element {
   return (
@@ -12,14 +14,7 @@ export function SpecIconReg(): React.JSX.Element {
 }
 
 export function SpecIconOnec(): React.JSX.Element {
-  return (
-    <svg className="spec-tile-ico" viewBox="0 0 24 24" aria-hidden>
-      <path
-        fill="currentColor"
-        d="M4 4h16v2H4V4zm0 5h10v2H4V9zm0 5h16v2H4v-2zm0 5h10v2H4v-2z"
-      />
-    </svg>
-  )
+  return <img className="spec-tile-ico spec-icon-onec" src={onecLogo} alt="" />
 }
 
 export function SpecIconProject(): React.JSX.Element {

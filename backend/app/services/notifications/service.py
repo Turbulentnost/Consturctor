@@ -108,6 +108,20 @@ def create_notification(
         raise NotificationError("Получатель не найден среди пользователей Constructor", 404)
     now = datetime.now(timezone.utc)
     send_at = _as_utc(payload.send_at) or now
+    title = payload.title.strip()
+    run_id = (payload.run_id or "").strip()
+    from app.services.sessions import FINISH_RUN_TITLE, START_RUN_TITLE
+
+    if run_id and title in {START_RUN_TITLE, FINISH_RUN_TITLE, "Начат плановый запуск"}:
+        existing = db.execute(
+            select(Notification).where(
+                Notification.recipient_user_id == recipient.id,
+                Notification.run_id == run_id,
+                Notification.title == title,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return _to_out(existing)
     row = Notification(
         id=str(uuid.uuid4()),
         sender_user_id=sender_user_id,
@@ -133,16 +147,61 @@ def split_latest(items: list) -> tuple[list, object | None]:
     return list(items[:-1]), items[-1]
 
 
+def _notification_title(item: object) -> str:
+    return str(getattr(item, "title", "") or "").strip()
+
+
+def is_run_inbox_title(title: str) -> bool:
+    from app.services.sessions import (
+        FINISH_RUN_TITLE,
+        SKIP_RUN_TITLE,
+        START_RUN_TITLE,
+        WAIT_CONFIRM_TITLE,
+    )
+
+    text = (title or "").strip()
+    return (
+        text.startswith(START_RUN_TITLE)
+        or text.startswith(FINISH_RUN_TITLE)
+        or text.startswith(WAIT_CONFIRM_TITLE)
+        or text == SKIP_RUN_TITLE
+        or text == "Начат плановый запуск"
+    )
+
+
+def partition_pending(items: list) -> tuple[list, list]:
+    """Split a backlog into (silent_ack, must_deliver).
+
+    Ordinary notices still collapse to the latest one so a reconnect does not
+    dump the whole inbox. Start / finish / wait for an agent run are never
+    dropped — Orchestrator must show each of them.
+    """
+    keep: list = []
+    rest: list = []
+    for item in items:
+        if is_run_inbox_title(_notification_title(item)):
+            keep.append(item)
+        else:
+            rest.append(item)
+    older, latest = split_latest(rest)
+    deliver = list(keep)
+    if latest is not None:
+        deliver.append(latest)
+    return older, deliver
+
+
 def latest_due_by_recipient(rows: list[Notification]) -> tuple[list[Notification], list[Notification]]:
-    """Return (older, latest-per-user) for a due-undelivered backlog."""
-    latest: dict[str, Notification] = {}
-    older: list[Notification] = []
+    """Return (older, deliver) for a due-undelivered backlog."""
+    by_user: dict[str, list[Notification]] = {}
     for row in rows:
-        previous = latest.get(row.recipient_user_id)
-        if previous is not None:
-            older.append(previous)
-        latest[row.recipient_user_id] = row
-    return older, list(latest.values())
+        by_user.setdefault(row.recipient_user_id, []).append(row)
+    older: list[Notification] = []
+    deliver: list[Notification] = []
+    for group in by_user.values():
+        drop, keep = partition_pending(group)
+        older.extend(drop)
+        deliver.extend(keep)
+    return older, deliver
 
 
 def list_pending(db: Session, *, user_id: str) -> list[NotificationOut]:

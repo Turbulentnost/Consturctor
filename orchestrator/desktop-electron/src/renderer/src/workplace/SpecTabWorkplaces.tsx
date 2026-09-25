@@ -21,6 +21,7 @@ import {
 import { ASK_CHIPS, type SpecKnowledgeRow } from './specV04DemoData'
 import { buildTaskTiles, useSpecV04Sources } from './useSpecV04Data'
 import { useTurboProjectOpenTasks } from './useTurboProjectOpenTasks'
+import { decodeMimeHeader } from '../utils/mimeHeader'
 
 function standardFilters(): React.JSX.Element {
   return (
@@ -488,9 +489,9 @@ export function MailTabWorkplace({
                     <td>
                       <input type="checkbox" onClick={(e) => e.stopPropagation()} />
                     </td>
-                    <td>{row.sender}</td>
+                    <td>{decodeMimeHeader(row.sender)}</td>
                     <td>
-                      <strong>{row.subject}</strong>
+                      <strong>{decodeMimeHeader(row.subject)}</strong>
                     </td>
                     <td>
                       <SpecPill tone={row.catTone}>{row.category}</SpecPill>

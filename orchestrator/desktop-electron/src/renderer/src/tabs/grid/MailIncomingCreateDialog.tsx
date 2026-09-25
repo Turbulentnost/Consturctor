@@ -4,6 +4,7 @@ import { X } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import type { SpecMailRow } from '../../workplace/specV04DemoData'
 import type { OutlookMailDetail } from '../../utils/outlookMailActions'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
 import {
   createIncomingFromMail,
   emptyIncomingCreateDraft,
@@ -436,7 +437,7 @@ export function MailIncomingCreateDialog({
             <section className="registry-create-section">
               <p className="modal-note">
                 Переадресация уйдёт из Outlook на {INCOMING_AI_MAILBOX}. Тема письма:{' '}
-                {mail.subject || draft.theme || 'без темы'}.
+                {decodeMimeHeader(mail.subject) || draft.theme || 'без темы'}.
               </p>
             </section>
             {error ? <p className="modal-error">{error}</p> : null}

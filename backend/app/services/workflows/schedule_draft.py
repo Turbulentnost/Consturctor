@@ -231,11 +231,13 @@ def draft_after_demo(
     work: dict[str, Any] | None = None,
     answered_scope: str = "",
 ) -> ScheduleDraftOut:
-    from app.services.workflows.prompts import title_from_materials
+    from app.services.workflows.prompts import is_placeholder_title, title_from_materials
 
-    name = str(playbook.get("name") or "").strip() or title_from_materials(
-        notes=notes, fallback=title or "ИИ-агент"
-    )
+    name = (title or "").strip()
+    if not name or is_placeholder_title(name):
+        name = str(playbook.get("name") or "").strip() or title_from_materials(
+            notes=notes, fallback=title or "ИИ-агент"
+        )
     goal = str(playbook.get("expected_result") or playbook.get("instructions") or "").strip()
     if len(goal) > 280:
         goal = goal[:280].rsplit(" ", 1)[0].strip()

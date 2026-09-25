@@ -4,6 +4,7 @@ import { invokeLocalAcTool } from '../utils/localAcTool'
 import { hasOutlookEntryId } from '../utils/outlookMailActions'
 import type { SpecMailRow } from './specV04DemoData'
 import { onecComInvokeArgs } from './userContext'
+import { decodeMimeHeader } from '../utils/mimeHeader'
 
 export type IncomingDepartmentOption = {
   code: string
@@ -262,14 +263,14 @@ export function emptyIncomingCreateDraft(
   }
 ): IncomingCreateDraft {
   // «Почта отправителя» — именно e-mail (Outlook sender — display name, не адрес).
+  const senderText = decodeMimeHeader(detail?.sender || mail?.sender || '')
   const senderEmail =
     (detail?.senderEmail || '').trim() ||
-    extractEmailAddress(detail?.sender) ||
-    extractEmailAddress(mail?.sender)
+    extractEmailAddress(senderText)
   return {
     departmentId: '',
     departmentName: '',
-    theme: (detail?.subject || mail?.subject || '').trim(),
+    theme: decodeMimeHeader(detail?.subject || mail?.subject || '').trim(),
     partner: '',
     organization: 'НП',
     payerDirection: '',
