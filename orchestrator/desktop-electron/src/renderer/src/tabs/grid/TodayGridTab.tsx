@@ -33,6 +33,12 @@ import {
   applyTodayKpiTileClick,
   EMPTY_TODAY_KPI_TILE
 } from '../../workplace/tileFilters'
+import { docflowKindActions, docflowTaskKind } from '../../workplace/docflowTaskKind'
+import { runDocflowAction } from '../../workplace/taskSourceActions'
+import { taskActionContextFromTaskRow } from '../../workplace/taskSourceKind'
+import type { DocflowUiAction } from '../../workplace/taskSourceActions'
+import type { SpecTaskRow } from '../../workplace/specV04DemoData'
+import { acceptPlatformTask, completePlatformTask } from './PlatformTaskDetail'
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
 import { TodayFullPlanModal } from './TodayFullPlanModal'
 import { TodayTaskDetailModal, type TodayTaskDetailRow } from './TodayTaskDetailModal'
@@ -234,6 +240,66 @@ function MiniTableCard({
   )
 }
 
+function todayTaskActions(row: TodayTaskDetailRow | null): { id: string; label: string }[] {
+  if (!row || /выполн|закры|заверш/i.test(row.status)) return []
+  if (row.platform) {
+    if (needsPlatformReview(row.platform)) return [{ id: 'accept', label: 'Принять' }]
+    if (isPlatformTaskMine(row.platform) && row.platform.status === 'open') {
+      return [{ id: 'done', label: 'Исполнено' }]
+    }
+    return []
+  }
+  const docflow = row.sourceKind === 'docflow' || /документооборот|1с\s*до/i.test(row.source || '')
+  if (!docflow || !isDocflowToMe(row)) return []
+  const kind = row.docflowKind ?? docflowTaskKind(row.step, row.taskName)
+  return docflowKindActions(kind).map((action) => ({ id: action.id, label: action.shortLabel }))
+}
+
+async function runTodayTaskAction(
+  user: UserProfile,
+  row: TodayTaskDetailRow,
+  actionId: string,
+  hooks: {
+    setBusy: (value: boolean) => void
+    setNote: (value: string) => void
+    onDone: () => void
+  }
+): Promise<void> {
+  const spec = docflowKindActions(row.docflowKind ?? docflowTaskKind(row.step, row.taskName)).find(
+    (item) => item.id === actionId
+  )
+  let comment = ''
+  if (spec?.needsComment) {
+    comment = window.prompt('Комментарий для 1С:Документооборот', '')?.trim() || ''
+    if (!comment) return
+  }
+  hooks.setBusy(true)
+  hooks.setNote('')
+  try {
+    if (row.platform && (actionId === 'accept' || actionId === 'done')) {
+      const message =
+        actionId === 'accept'
+          ? await acceptPlatformTask(row.platform)
+          : await completePlatformTask(row.platform)
+      hooks.setNote(message)
+      hooks.onDone()
+      return
+    }
+    const result = await runDocflowAction(
+      user,
+      taskActionContextFromTaskRow(row as SpecTaskRow),
+      actionId as DocflowUiAction,
+      comment
+    )
+    hooks.setNote(result.message)
+    if (result.ok) hooks.onDone()
+  } catch (err) {
+    hooks.setNote(err instanceof Error ? err.message : 'Документооборот не принял действие')
+  } finally {
+    hooks.setBusy(false)
+  }
+}
+
 function startOfToday(): Date {
   const d = new Date()
   return new Date(d.getFullYear(), d.getMonth(), d.getDate())
@@ -259,6 +325,8 @@ export function TodayGridTab({
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const [fullPlanOpen, setFullPlanOpen] = useState(false)
   const [taskDetail, setTaskDetail] = useState<TodayTaskDetailRow | null>(null)
+  const [taskActionBusy, setTaskActionBusy] = useState(false)
+  const [taskActionNote, setTaskActionNote] = useState('')
   const [kpiTiles, setKpiTiles] = useState(EMPTY_TODAY_KPI_TILE)
   const onecFromMe = kpiTiles.onecFromMe
   const outlookFromMe = kpiTiles.outlookFromMe
@@ -388,6 +456,7 @@ export function TodayGridTab({
         <TodayWindow>
           <TodayOutlookMailPanel
             rows={outlookMail.rows}
+            user={user}
             fromMe={outlookFromMe}
             loading={outlookMail.loading}
             error={outlookMail.error}
@@ -738,8 +807,25 @@ export function TodayGridTab({
       />
       <TodayTaskDetailModal
         row={taskDetail}
-        onClose={() => setTaskDetail(null)}
+        onClose={() => {
+          setTaskDetail(null)
+          setTaskActionNote('')
+        }}
         onAskOrchestrator={onAskOrchestrator}
+        actionBusy={taskActionBusy}
+        actionNote={taskActionNote}
+        actions={todayTaskActions(taskDetail)}
+        onAction={(actionId) => {
+          if (!taskDetail || taskActionBusy) return
+          void runTodayTaskAction(user, taskDetail, actionId, {
+            setBusy: setTaskActionBusy,
+            setNote: setTaskActionNote,
+            onDone: () => {
+              setTaskDetail(null)
+              forceRefresh()
+            }
+          })
+        }}
       />
       <TodayFullPlanModal
         open={fullPlanOpen}

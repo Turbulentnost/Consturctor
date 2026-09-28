@@ -1,5 +1,5 @@
 import { api } from '../api/client'
-import { parseMeetingTime, type MeetingEvent } from '../utils/outlookMeetings'
+import { meetingOutlookMarker, parseMeetingTime, type MeetingEvent } from '../utils/outlookMeetings'
 
 export type ProtocolQuestionDraft = {
   key: string
@@ -209,7 +209,7 @@ export function parseOnecProtocolForm(payload: unknown): OnecProtocolForm | null
 export async function fetchProtocolForm(refKey: string): Promise<{ ok: true; card: OnecProtocolForm } | { ok: false; error: string }> {
   const key = refKey.trim()
   if (!key) return { ok: false, error: 'Нет ссылки на протокол в 1С' }
-  const response = await api.invokeServerTool('onec.meeting_protocols', { meeting_kind: 'any', ref_key: key }, 60_000)
+  const response = await api.invokeServerTool('onec.meeting_protocols', { meeting_kind: 'any', ref_key: key }, 120_000)
   if (!response.ok) return { ok: false, error: response.error || 'Не удалось прочитать протокол из 1С' }
   const card = parseOnecProtocolForm(response.result)
   if (!card) return { ok: false, error: 'Протокол не найден в 1С' }
@@ -272,7 +272,7 @@ export function draftFromOnecForm(card: OnecProtocolForm): ProtocolCreateDraft {
 
 type WriteArgs = { ok: true; args: Record<string, unknown> } | { ok: false; error: string }
 
-function buildWriteArgs(draft: ProtocolCreateDraft, meetingId: string): WriteArgs {
+function buildWriteArgs(draft: ProtocolCreateDraft, meeting: MeetingEvent): WriteArgs {
   const topic = draft.topic.trim()
   const date = draft.date.trim()
   if (!topic) return { ok: false, error: 'Укажите тему совещания' }
@@ -298,7 +298,7 @@ function buildWriteArgs(draft: ProtocolCreateDraft, meetingId: string): WriteArg
     return { ok: false, error: 'Добавьте повестку, решение или задачу — пустой протокол в 1С не создаётся' }
   }
 
-  const marker = meetingId.trim() ? `outlook:${meetingId.trim()}` : ''
+  const marker = meetingOutlookMarker(meeting)
   const comment = [stripOutlookMarker(draft.comment), marker].filter(Boolean).join('\n')
 
   const args: Record<string, unknown> = {
@@ -344,9 +344,9 @@ async function invokeProtocolWrite(args: Record<string, unknown>, failMessage: s
 
 export async function createProtocolInOneC(
   draft: ProtocolCreateDraft,
-  meetingId: string
+  meeting: MeetingEvent
 ): Promise<ProtocolCreateResult> {
-  const built = buildWriteArgs(draft, meetingId)
+  const built = buildWriteArgs(draft, meeting)
   if (!built.ok) return { ok: false, error: built.error }
   return invokeProtocolWrite({ action: 'create', ...built.args }, 'Не удалось создать протокол в 1С')
 }
@@ -354,11 +354,11 @@ export async function createProtocolInOneC(
 export async function updateProtocolInOneC(
   draft: ProtocolCreateDraft,
   refKey: string,
-  meetingId: string
+  meeting: MeetingEvent
 ): Promise<ProtocolCreateResult> {
   const key = refKey.trim()
   if (!key) return { ok: false, error: 'Нет ссылки на протокол в 1С' }
-  const built = buildWriteArgs(draft, meetingId)
+  const built = buildWriteArgs(draft, meeting)
   if (!built.ok) return { ok: false, error: built.error }
   return invokeProtocolWrite({ action: 'update', ref_key: key, ...built.args }, 'Не удалось сохранить протокол в 1С')
 }

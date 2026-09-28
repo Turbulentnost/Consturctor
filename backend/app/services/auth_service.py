@@ -314,8 +314,18 @@ def _to_user_out(
         )
         out = app_users.to_user_out(app_user)
     except Exception as exc:
-        logger.exception("Failed to upsert app user id=%s", user_id)
-        raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
+        if not settings.app_db_optional:
+            logger.exception("Failed to upsert app user id=%s", user_id)
+            raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
+        logger.warning("App Postgres unavailable, user id=%s not saved: %s", user_id, exc)
+        out = app_users.to_user_out(
+            app_users.AppUser(
+                id=user_id,
+                fio=fio,
+                department=department or "",
+                position=position or "",
+            )
+        )
     if name_mail:
         return out.model_copy(update={"name_mail": name_mail})
     return out
@@ -471,10 +481,21 @@ async def list_department_names() -> list[str]:
         raise AuthError("Не удалось загрузить список отделов", status_code=503) from exc
 
 
+def _cached_app_user(user_id: str, fio_hint: str | None) -> Any:
+    try:
+        user = app_users.get_app_user(user_id)
+        if user is None and fio_hint:
+            user = app_users.find_app_user_by_fio(fio_hint)
+        return user
+    except Exception as exc:
+        if not settings.app_db_optional:
+            raise
+        logger.warning("App Postgres unavailable, profile id=%s from erp_pm: %s", user_id, exc)
+        return None
+
+
 async def get_current_user_profile(user_id: str, fio_hint: str | None = None) -> UserOut:
-    app_cached = app_users.get_app_user(user_id)
-    if app_cached is None and fio_hint:
-        app_cached = app_users.find_app_user_by_fio(fio_hint)
+    app_cached = await asyncio.to_thread(_cached_app_user, user_id, fio_hint)
     if app_cached is not None and (app_cached.fio or "").strip():
         # Desktop calls /auth/me on every open — do not reopen ODBC if login already synced Postgres.
         return app_users.to_user_out(app_cached)
@@ -493,9 +514,7 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
         erp_user = await asyncio.to_thread(find_user_by_id, user_id)
     except ErpSqlError as exc:
         logger.exception("ERP SQL error loading profile")
-        app_user = app_users.get_app_user(user_id)
-        if app_user is None and fio_hint:
-            app_user = app_users.find_app_user_by_fio(fio_hint)
+        app_user = await asyncio.to_thread(_cached_app_user, user_id, fio_hint)
         if app_user is not None:
             return app_users.to_user_out(app_user)
         raise AuthError(_erp_auth_unavailable_message(), status_code=503) from exc

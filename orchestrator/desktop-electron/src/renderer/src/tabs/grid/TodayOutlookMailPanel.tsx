@@ -3,10 +3,13 @@ import {
   Forward,
   Mail,
   Paperclip,
+  Plus,
   Reply,
   ReplyAll,
   Search
 } from 'lucide-react'
+import type { UserProfile } from '../../api/types'
+import { MailIncomingCreateDialog } from './MailIncomingCreateDialog'
 import { SpecPanel, SpecPill } from '../../workplace/specV04Components'
 import type { SpecMailRow } from '../../workplace/specV04DemoData'
 import { isOutlookMailFromMe, mailPartyLabel } from '../../workplace/specV04Mappers'
@@ -47,11 +50,13 @@ function TodayCellText({ text }: { text: string }): React.JSX.Element {
 function OutlookCommandBar({
   row,
   busy,
-  onAction
+  onAction,
+  onRegister
 }: {
   row: SpecMailRow | null
   busy: string
   onAction: (mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open') => void
+  onRegister?: () => void
 }): React.JSX.Element {
   const canAct = Boolean(row && hasOutlookEntryId(row))
   return (
@@ -92,6 +97,16 @@ function OutlookCommandBar({
         <Mail size={16} strokeWidth={2} aria-hidden />
         {busy === 'read' ? '…' : 'Прочитано'}
       </button>
+      <button
+        type="button"
+        className="today-outlook-cmd today-outlook-cmd-primary"
+        disabled={!canAct || Boolean(busy)}
+        title="Заполнить маршрут и создать входящую в 1С"
+        onClick={onRegister}
+      >
+        <Plus size={16} strokeWidth={2} aria-hidden />
+        Входящая
+      </button>
     </div>
   )
 }
@@ -100,17 +115,19 @@ function OutlookReadingPane({
   row,
   busy,
   onAction,
-  onOpenAttachment
+  onOpenAttachment,
+  onRegister
 }: {
   row: SpecMailRow
   busy: string
   onAction: (mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open') => void
   onOpenAttachment: (fileName: string, index: number) => void
+  onRegister?: () => void
 }): React.JSX.Element {
   const attachments = row.attachments || []
   return (
     <article className="today-outlook-reading">
-      <OutlookCommandBar row={row} busy={busy} onAction={onAction} />
+      <OutlookCommandBar row={row} busy={busy} onAction={onAction} onRegister={onRegister} />
       <div className="today-outlook-reading-card">
         <header className="today-outlook-reading-head">
           <div className="today-outlook-avatar" aria-hidden>
@@ -190,6 +207,7 @@ function MailDirectionChoice({
 
 export function TodayOutlookMailPanel({
   rows,
+  user,
   fromMe = false,
   loading,
   error,
@@ -198,6 +216,7 @@ export function TodayOutlookMailPanel({
   onPatchRow
 }: {
   rows: SpecMailRow[]
+  user?: UserProfile
   fromMe?: boolean
   loading?: boolean
   error?: string
@@ -215,6 +234,7 @@ export function TodayOutlookMailPanel({
   const [filter, setFilter] = useState<'all' | 'unread'>('all')
   const [busy, setBusy] = useState('')
   const [actionNote, setActionNote] = useState('')
+  const [incomingOpen, setIncomingOpen] = useState(false)
 
   const emptyText = fromMe ? 'Нет писем от вас за выбранный день' : 'Нет писем вам за выбранный день'
 
@@ -379,6 +399,7 @@ export function TodayOutlookMailPanel({
   }
 
   return (
+    <>
     <div className="today-outlook-shell">
       <div className="today-outlook-reader">
         <aside className="today-outlook-list-pane" aria-label="Список писем">
@@ -476,6 +497,7 @@ export function TodayOutlookMailPanel({
                 busy={busy}
                 onAction={(mode) => void runMailAction(mode)}
                 onOpenAttachment={(name, index) => void openAttachment(name, index)}
+                onRegister={user ? () => setIncomingOpen(true) : undefined}
               />
             </>
           ) : (
@@ -487,5 +509,19 @@ export function TodayOutlookMailPanel({
         </section>
       </div>
     </div>
+    {user && selected ? (
+      <MailIncomingCreateDialog
+        open={incomingOpen}
+        mail={selected}
+        user={user}
+        detail={null}
+        onClose={() => setIncomingOpen(false)}
+        onCreated={(message, isError) => {
+          setActionNote(message)
+          if (!isError) setIncomingOpen(false)
+        }}
+      />
+    ) : null}
+    </>
   )
 }

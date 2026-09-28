@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from app.clients.erp_sql import ErpSqlError, _connect
+from app.clients.erp_sql import ErpSqlError, _connect, _release_connection
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -310,7 +310,7 @@ def _load_access_profile_uncached(*, user_id: str = "", fio: str = "") -> OnecAc
             "Доступ запрещен: не удалось проверить права пользователя в 1С."
         ) from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def _resolve_user(cur: Any, *, user_id: str, fio: str) -> dict[str, str]:

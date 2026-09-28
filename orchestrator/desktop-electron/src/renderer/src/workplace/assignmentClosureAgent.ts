@@ -47,16 +47,27 @@ function ruDate(iso: string): string {
   return y && m && d ? `${d}.${m}.${y}` : iso
 }
 
-/** Task message for the closure check run over the registry period. */
-export function buildClosureCheckMessage(dateFrom: string, dateTo: string): string {
+/** Task message for the closure check. Selected numbers limit the check to those assignments. */
+export function buildClosureCheckMessage(
+  dateFrom: string,
+  dateTo: string,
+  numbers: string[] = []
+): string {
   const period =
     dateFrom && dateTo
       ? `за период ${ruDate(dateFrom)} — ${ruDate(dateTo)} (date_from=${dateFrom}, date_to=${dateTo})`
       : 'все открытые, без ограничения периода'
+  const picked = numbers.map((item) => item.trim()).filter(Boolean)
+  const scope = picked.length
+    ? `Только поручения с номерами: ${picked.join(', ')}.`
+    : 'Если номера не перечислены, проверь все открытые за период.'
   return [
     'Проверь незакрытые поручения журнала АСТ00 в 1С ERP к закрытию.',
     `Период: ${period}.`,
-    'По каждому открытому поручению прочитай файлы вкладки «Файлы», оцени основания для закрытия',
-    'и сохрани отчёт Word «Проверка артефактов по незакрытым поручениям АСТ00» через report.export_document.'
+    scope,
+    'По каждому поручению прочитай файлы вкладки «Файлы».',
+    'Свяжи поручение с задачами 1С:Документооборот (onec.docflow_tasks) по теме и номеру.',
+    'Если по файлам и задачам документооборота есть основания закрыть поручение, в отчёте напиши «можно закрыть» и коротко почему.',
+    'Сохрани отчёт Word «Проверка артефактов по незакрытым поручениям АСТ00» через report.export_document.'
   ].join('\n')
 }

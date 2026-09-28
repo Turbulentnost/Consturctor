@@ -12,10 +12,12 @@ import pyodbc
 
 from app.config import settings
 
-_conn_lock = threading.Lock()
-_cached_conn: pyodbc.Connection | None = None
-_cached_at = 0.0
+# SQL Server ODBC runs one statement per connection at a time (no MARS): a
+# connection is checked out by one caller until _release_connection returns it.
+_pool_lock = threading.Lock()
+_idle_conns: list[tuple[pyodbc.Connection, float]] = []
 _CONN_TTL_SEC = 300.0
+_MAX_IDLE_CONNS = 4
 
 _DEPARTMENT_JOIN_SQL = """
     LEFT JOIN dbo._Reference513 d1 WITH (NOLOCK)
@@ -281,38 +283,39 @@ def _open_connection() -> pyodbc.Connection:
     raise ErpSqlError("Failed to connect to erp_pm: no ERP_SQL_SERVER configured")
 
 
-def _invalidate_cached_connection() -> None:
-    global _cached_conn, _cached_at
-    if _cached_conn is not None:
-        try:
-            _cached_conn.close()
-        except (pyodbc.Error, OSError):
-            pass
-    _cached_conn = None
-    _cached_at = 0.0
+def _close_quietly(conn: pyodbc.Connection) -> None:
+    try:
+        conn.close()
+    except (pyodbc.Error, OSError):
+        pass
 
 
 def _connect() -> pyodbc.Connection:
-    global _cached_conn, _cached_at
-    now = time.monotonic()
-    with _conn_lock:
-        if _cached_conn is not None and now - _cached_at < _CONN_TTL_SEC:
-            try:
-                cur = _cached_conn.cursor()
-                cur.execute("SELECT 1")
-                cur.fetchone()
-                return _cached_conn
-            except (pyodbc.Error, OSError):
-                _invalidate_cached_connection()
-        conn = _open_connection()
-        _cached_conn = conn
-        _cached_at = now
-        return conn
+    while True:
+        with _pool_lock:
+            if not _idle_conns:
+                break
+            conn, released_at = _idle_conns.pop()
+        if time.monotonic() - released_at >= _CONN_TTL_SEC:
+            _close_quietly(conn)
+            continue
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            return conn
+        except (pyodbc.Error, OSError):
+            _close_quietly(conn)
+    return _open_connection()
 
 
-def _release_connection(_conn: pyodbc.Connection) -> None:
-    """Keep pooled ODBC session alive (Windows impersonation is costly)."""
-    return
+def _release_connection(conn: pyodbc.Connection) -> None:
+    """Return the ODBC session to the pool (Windows impersonation is costly)."""
+    with _pool_lock:
+        if len(_idle_conns) < _MAX_IDLE_CONNS:
+            _idle_conns.append((conn, time.monotonic()))
+            return
+    _close_quietly(conn)
 
 
 def _row_department(row) -> str:
@@ -351,11 +354,6 @@ def get_position_by_fio(fio: str) -> str:
         raise ErpSqlError(f"Failed to load position: {exc}") from exc
     finally:
         _release_connection(conn)
-
-
-def warmup() -> None:
-    """Startup check: connect once so /health erp_reachable reflects ODBC."""
-    _connect().close()
 
 
 def ping() -> bool:
@@ -849,7 +847,7 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to load org structure: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], list[ErpSubordinate]]:

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { addDays, mondayOf, type CalendarView } from '../utils/calendar'
-import type { MeetingEvent } from '../utils/outlookMeetings'
+import {
+  meetingInstanceKey,
+  meetingOutlookMarker,
+  parseMeetingTime,
+  type MeetingEvent
+} from '../utils/outlookMeetings'
+import { meetingProtocolKey } from './meetingProtocolStore'
 
 export const PROTOCOL_CREATED_EVENT = 'orch-protocol-created'
 
@@ -38,11 +44,15 @@ function readStored(userId: string): Record<string, ProtocolMark> {
   }
 }
 
-export function rememberProtocolDocument(userId: string, meetingId: string, mark: ProtocolMark): void {
-  const id = meetingId.trim()
-  if (!id) return
+export function rememberProtocolDocument(
+  userId: string,
+  meeting: MeetingEvent,
+  mark: ProtocolMark
+): void {
+  const key = meetingInstanceKey(meeting)
+  if (!key) return
   const bucket = readStored(userId)
-  bucket[id] = { number: mark.number || '', refKey: mark.refKey || '' }
+  bucket[key] = { number: mark.number || '', refKey: mark.refKey || '' }
   try {
     localStorage.setItem(storageKey(userId), JSON.stringify(bucket))
   } catch {
@@ -70,11 +80,35 @@ export function calendarQueryRange(view: CalendarView, anchor: Date): { from: st
   return { from: isoDay(addDays(first, -7)), to: isoDay(addDays(last, 7)) }
 }
 
-/** Outlook meeting ↔ Document_ТД_Протокол only by the outlook id written into the comment. */
+function protocolMeetingDay(row: OnecProtocolRow): string {
+  const fromDate = String(row.date || '').trim().slice(0, 10)
+  if (fromDate) return fromDate
+  const comment = String(row.comment || '')
+  const match = comment.match(/outlook:[^\s|]+\|(\d{4}-\d{2}-\d{2})/)
+  return match?.[1] || ''
+}
+
+/** Outlook meeting ↔ Document_ТД_Протокол by outlook marker (id + day) or legacy id + same day as protocol. */
 export function protocolMatchesMeeting(meeting: MeetingEvent, row: OnecProtocolRow): boolean {
   const id = (meeting.id || '').trim()
-  if (!id) return false
-  return String(row.comment || '').includes(`outlook:${id}`)
+  const comment = String(row.comment || '')
+  if (!id || !comment.includes('outlook:')) return false
+  const marker = meetingOutlookMarker(meeting)
+  if (marker && comment.includes(marker)) return true
+  const legacy = `outlook:${id}`
+  if (!comment.includes(legacy)) return false
+  const meetingDay = parseMeetingTime(meeting.start)
+  const protocolDay = protocolMeetingDay(row)
+  if (!protocolDay || !meetingDay) return false
+  return isoDay(meetingDay) === protocolDay
+}
+
+function storedMarkForMeeting(
+  meeting: MeetingEvent,
+  stored: Record<string, ProtocolMark>
+): ProtocolMark | undefined {
+  const key = meetingInstanceKey(meeting)
+  return stored[key] || stored[meetingProtocolKey(meeting)] || stored[(meeting.id || '').trim()]
 }
 
 function markFitsMeeting(
@@ -86,7 +120,7 @@ function markFitsMeeting(
   const row = protocols.find((item) => String(item.ref_key || '').trim() === mark.refKey)
   if (!row) return true
   const comment = String(row.comment || '')
-  if (!comment.includes('outlook:')) return true
+  if (!comment.includes('outlook:')) return false
   return protocolMatchesMeeting(meeting, row)
 }
 
@@ -98,27 +132,32 @@ export function marksForMeetings(
   const marks = new Map<string, ProtocolMark>()
   const usedRefs = new Set<string>()
   for (const meeting of meetings) {
-    const local = stored[meeting.id]
+    const instanceKey = meetingInstanceKey(meeting)
+    const local = storedMarkForMeeting(meeting, stored)
     if (local?.refKey && markFitsMeeting(meeting, local, protocols)) {
-      marks.set(meeting.id, local)
+      marks.set(instanceKey, local)
       usedRefs.add(local.refKey)
     }
   }
   for (const meeting of meetings) {
-    if (marks.has(meeting.id)) continue
+    const instanceKey = meetingInstanceKey(meeting)
+    if (marks.has(instanceKey)) continue
     const hit = protocols.find((row) => {
       const ref = String(row.ref_key || '').trim()
       return Boolean(ref) && !usedRefs.has(ref) && protocolMatchesMeeting(meeting, row)
     })
     if (!hit) {
-      const local = stored[meeting.id]
-      if (local?.number && !local.refKey) marks.set(meeting.id, local)
+      const local = storedMarkForMeeting(meeting, stored)
+      if (local?.number && !local.refKey && markFitsMeeting(meeting, local, protocols)) {
+        marks.set(instanceKey, local)
+      }
       continue
     }
     const refKey = String(hit.ref_key || '').trim()
     usedRefs.add(refKey)
-    marks.set(meeting.id, {
-      number: String(hit.number || '').trim() || stored[meeting.id]?.number || '',
+    const local = storedMarkForMeeting(meeting, stored)
+    marks.set(instanceKey, {
+      number: String(hit.number || '').trim() || local?.number || '',
       refKey
     })
   }

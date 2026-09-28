@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { FileDown, Plus, Printer } from 'lucide-react'
 import { buildRegistryReportHtml } from '../../workplace/registryPrint'
 import type { UserProfile } from '../../api/types'
@@ -252,6 +252,8 @@ export function AssignmentsRegistryGridTab({
   const [closureAgentId, setClosureAgentId] = useState('')
   const [aiStarting, setAiStarting] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [closureNotice, setClosureNotice] = useState('')
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set())
   useEffect(() => {
     let cancelled = false
     void findClosureAgentWorkflowId()
@@ -265,6 +267,16 @@ export function AssignmentsRegistryGridTab({
   }, [])
   const aiRun = closureAgentId ? runs.entries[closureAgentId] : undefined
   const aiBusy = aiStarting || Boolean(aiRun?.state?.running)
+  const aiWasRunning = useRef(false)
+  useEffect(() => {
+    const running = Boolean(aiRun?.state?.running)
+    if (aiWasRunning.current && !running) {
+      setClosureNotice(
+        'Проверка артефактов завершена. В результате агента отмечено, какие поручения можно закрыть по файлам и задачам документооборота.'
+      )
+    }
+    aiWasRunning.current = running
+  }, [aiRun?.state?.running])
   const aiHint = aiBusy ? 'Идёт проверка…' : 'Запустить'
 
   const tiles = useMemo(() => buildRegistryTiles(rowsHydrated, aiHint), [rowsHydrated, aiHint])
@@ -340,7 +352,15 @@ export function AssignmentsRegistryGridTab({
       const workflowId = closureAgentId || (await resolveClosureAgentWorkflowId())
       setClosureAgentId(workflowId)
       // A live run opens its feed; the run page does not start a second one.
-      const message = runs.entries[workflowId]?.state?.running ? '' : buildClosureCheckMessage(dateFrom, dateTo)
+      const numbers = rowsHydrated.filter((row) => checkedIds.has(row.id)).map((row) => row.number)
+      const message = runs.entries[workflowId]?.state?.running
+        ? ''
+        : buildClosureCheckMessage(dateFrom, dateTo, numbers)
+      setClosureNotice(
+        numbers.length
+          ? `Проверка запущена по ${numbers.length} поручениям. Когда агент закончит, здесь появится уведомление.`
+          : 'Проверка запущена по открытым поручениям периода. Когда агент закончит, здесь появится уведомление.'
+      )
       onRunAgent(workflowId, CLOSURE_AGENT_TITLE, message)
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Не удалось запустить проверку поручений')
@@ -471,7 +491,7 @@ export function AssignmentsRegistryGridTab({
 
   useEffect(() => {
     const refKey = selectedRow?.refKey?.trim()
-    if (!refKey) {
+    if (!selectedRow || !refKey) {
       setDetailLinesLoading(false)
       return
     }
@@ -584,6 +604,15 @@ export function AssignmentsRegistryGridTab({
               </button>
               <button
                 type="button"
+                className="today-filter-layout-btn"
+                disabled={aiBusy || checkedIds.size === 0}
+                title="Проверить артефакты и задачи документооборота по отмеченным поручениям"
+                onClick={() => void startClosureCheck()}
+              >
+                {aiBusy ? 'Проверка…' : `Проверить выбранные${checkedIds.size ? ` (${checkedIds.size})` : ''}`}
+              </button>
+              <button
+                type="button"
                 className="today-filter-layout-btn registry-create-open-btn"
                 title="Создать поручение в журнале АСТ00"
                 onClick={() => {
@@ -629,6 +658,7 @@ export function AssignmentsRegistryGridTab({
             {error ? <p className="registry-table-error">{error}</p> : null}
             {printError ? <p className="registry-table-error">{printError}</p> : null}
             {aiError ? <p className="registry-table-error">{aiError}</p> : null}
+            {closureNotice ? <p className="registry-table-hint registry-table-success">{closureNotice}</p> : null}
             {createNotice ? <p className="registry-table-hint registry-table-success">{createNotice}</p> : null}
             {refreshing && rows.length && !loadingMore ? (
               <p className="registry-table-hint">Обновление данных…</p>
@@ -651,6 +681,15 @@ export function AssignmentsRegistryGridTab({
                 loading={(!firstRowReady && !error) || (loading && !rows.length)}
                 selectedId={selectedId}
                 stateKey={tableStateKey}
+                checkedIds={checkedIds}
+                onToggleChecked={(row, checked) =>
+                  setCheckedIds((current) => {
+                    const next = new Set(current)
+                    if (checked) next.add(row.id)
+                    else next.delete(row.id)
+                    return next
+                  })
+                }
                 onSelectRow={(row) => pickRow(row)}
                 emptyText={
                   pageQuery.trim() || Object.values(columnFilters).some(Boolean)

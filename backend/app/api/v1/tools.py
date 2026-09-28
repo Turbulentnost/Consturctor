@@ -117,9 +117,8 @@ def _dispatch_server_tool(
                 actor_user_id=auth.user_id,
                 actor_fio=auth.fio or "",
             )
-    except (ImapToolError, OnecToolError, TurboProjectError, ArtifactError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except RuntimeError as exc:
+    except (ImapToolError, OnecToolError, TurboProjectError, ArtifactError, RuntimeError) as exc:
+        logger.warning("tool %s failed: %s", tool_name, exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if tool_name == "onec.download_artifact" and isinstance(result, dict):
         result = _artifact_invoke_view(result)

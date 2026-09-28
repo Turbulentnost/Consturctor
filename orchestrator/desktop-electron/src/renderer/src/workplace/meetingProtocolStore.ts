@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
 import type { RunEntry } from '../store/runs'
 import { useRuns } from '../store/runs'
-import type { MeetingEvent } from '../utils/outlookMeetings'
+import { meetingInstanceKey, type MeetingEvent } from '../utils/outlookMeetings'
 
 export type ProtocolRunStatus = 'running' | 'done' | 'error'
 
@@ -30,7 +30,7 @@ function storageKey(userId: string): string {
 }
 
 export function meetingProtocolKey(meeting: MeetingEvent): string {
-  return `${meeting.id}|${meeting.start}`
+  return meetingInstanceKey(meeting)
 }
 
 function readBucket(userId: string): ProtocolBucket {
@@ -251,10 +251,41 @@ export function useMeetingProtocol(
   const finishingOwnRun =
     Boolean(record?.runId) &&
     record?.status === 'running' &&
-    startedRunIds.current.has(record.runId) &&
+    (startedRunIds.current.has(record.runId) || Boolean(record.runId)) &&
     Boolean(sharedEntry) &&
     !sharedEntry?.state.running &&
     !sharedEntry?.state.activeRunId
+
+  // После перезапуска приложения startedRunIds пуст — снимаем залипший «running».
+  useEffect(() => {
+    if (!record || record.status !== 'running') return
+    const sharedLive =
+      Boolean(sharedEntry?.state.running) ||
+      Boolean(sharedEntry?.state.pendingHitl) ||
+      Boolean(sharedEntry?.state.pendingQuestion)
+    const oursLive = sharedLive && Boolean(runEntry)
+    if (oursLive) return
+    if (sharedEntry && (finishingOwnRun || record.runId)) {
+      const next = deriveStatus(sharedEntry, record.status)
+      const settled = next === 'running' && !sharedEntry.state.running ? 'done' : next
+      if (settled !== record.status) {
+        patchRecord({ status: settled })
+      }
+      return
+    }
+    if (!sharedLive) {
+      patchRecord({ status: 'done' })
+    }
+  }, [
+    record?.status,
+    record?.runId,
+    finishingOwnRun,
+    runEntry,
+    sharedEntry?.state.running,
+    sharedEntry?.state.pendingHitl?.requestId,
+    sharedEntry?.state.pendingQuestion?.requestId,
+    patchRecord
+  ])
 
   // Sync status / backendRunId only for the meeting that started this run.
   useEffect(() => {

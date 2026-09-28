@@ -32,7 +32,7 @@ def resolve_catalog_user_ref_key(*, user_id: str = "", fio: str = "") -> str:
     if not user_id and not fio:
         return ""
     try:
-        from app.clients.erp_sql import ErpSqlError, _connect
+        from app.clients.erp_sql import ErpSqlError, _connect, _release_connection
     except ImportError:
         return ""
     try:
@@ -50,7 +50,7 @@ def resolve_catalog_user_ref_key(*, user_id: str = "", fio: str = "") -> str:
     except Exception:  # noqa: BLE001
         return ""
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def _fetch_catalog_row(cur: Any, *, user_id: str, fio: str) -> dict[str, str] | None:

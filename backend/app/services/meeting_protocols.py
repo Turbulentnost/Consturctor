@@ -162,12 +162,44 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     return " and ".join(filters)
 
 
+# Without $select 1C returns every tabular part (with Файл_Base64Data): a month of protocols
+# exceeds the 60 s OData timeout. Nested person keys stay for the confidentiality filter.
+_PROTOCOL_LIST_SELECT = ",".join(
+    (
+        "Ref_Key",
+        "Number",
+        "Date",
+        "Posted",
+        "DeletionMark",
+        "Статус",
+        "ДатаСоздания",
+        "ДатаСледующегоСовещания",
+        "ВидСовещания",
+        "ВремяНачалаСовещания",
+        "ВремяОкончанияСовещания",
+        "КраткийСоставДокумента",
+        "Комментарий",
+        "Ответственный_Key",
+        "Руководитель_Key",
+        "Подготовил_Key",
+        "Подразделение_Key",
+        "ТемаСовещания/Description",
+        "ПрисутствующиеНаСовещании/Участник_Key",
+        "ПовесткаСовещания/Ответственный_Key",
+        "ПеременныеЗадачиПротокола/Ответственный_Key",
+        "ПеременныеЗадачиПротокола/Автор_Key",
+        "ПостоянныеЗадачиПротокола/Автор_Key",
+    )
+)
+
+
 def build_protocol_list_path(*, odata_filter: str, limit: int) -> str:
     """OData list path for Document_ТД_Протокол with topic expand."""
     filt = quote(odata_filter, safe="=,'")
     return (
         f"{PROTOCOL_ENTITY}?$format=json&$top={limit}"
         f"&$filter={filt}&$orderby=Date%20desc&$expand=ТемаСовещания"
+        f"&$select={_PROTOCOL_LIST_SELECT}"
     )
 
 

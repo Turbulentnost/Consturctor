@@ -1,8 +1,8 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Trash2, X } from 'lucide-react'
 import { api } from '../../api/client'
-import type { MeetingEvent } from '../../utils/outlookMeetings'
+import { meetingInstanceKey, type MeetingEvent } from '../../utils/outlookMeetings'
 import {
   createProtocolInOneC,
   draftFromMeeting,
@@ -79,10 +79,14 @@ export function MeetingProtocolForm({
   const [fioHints, setFioHints] = useState<string[]>([])
   const [themes, setThemes] = useState<ThemeHint[]>([])
   const readOnly = isEdit && card !== null && !card.editable
+  // Outlook polling hands a fresh `meeting` object every refresh; reloading on identity would wipe edits.
+  const meetingRef = useRef(meeting)
+  meetingRef.current = meeting
+  const meetingKey = meetingInstanceKey(meeting)
 
   useEffect(() => {
     if (!open) return
-    setDraft(draftFromMeeting(meeting, actorFio))
+    setDraft(draftFromMeeting(meetingRef.current, actorFio))
     setBusy(false)
     setError('')
     setDone(null)
@@ -108,7 +112,7 @@ export function MeetingProtocolForm({
     return () => {
       cancelled = true
     }
-  }, [open, meeting, actorFio, isEdit, refKey])
+  }, [open, meetingKey, actorFio, isEdit, refKey])
 
   useEffect(() => {
     if (!open) return
@@ -161,8 +165,8 @@ export function MeetingProtocolForm({
     setBusy(true)
     try {
       const result = isEdit
-        ? await updateProtocolInOneC(draft, card?.refKey || refKey, meeting.id)
-        : await createProtocolInOneC(draft, meeting.id)
+        ? await updateProtocolInOneC(draft, card?.refKey || refKey, meeting)
+        : await createProtocolInOneC(draft, meeting)
       if (!result.ok) {
         setError(result.error || (isEdit ? 'Не удалось сохранить протокол' : 'Не удалось создать протокол'))
         return

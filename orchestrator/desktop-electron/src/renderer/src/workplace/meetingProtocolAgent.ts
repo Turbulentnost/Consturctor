@@ -1,6 +1,5 @@
 import { api } from '../api/client'
-import type { MeetingEvent } from '../utils/outlookMeetings'
-import { formatMeetingStamp } from '../utils/outlookMeetings'
+import { formatMeetingStamp, meetingOutlookMarker, type MeetingEvent } from '../utils/outlookMeetings'
 import { adoptAgentFromLibrary, fetchAgentLibrary } from './agentLibraryApi'
 
 export const PROTOCOL_SOURCE_WORKFLOW_ID = '599eaf4e-3b0c-4a6f-a370-c719e11a44ce'
@@ -70,8 +69,8 @@ export function buildProtocolMessage(meeting: MeetingEvent, audioPath: string): 
     '',
     'Используй данные календаря для темы протокола и сопоставления говорящих.',
     'Итоговый отчёт сохрани в формате docx через report.export_document.',
-    meeting.id
-      ? `В comment протокола 1С (onec.meeting_protocol_write) отдельной строкой добавь метку outlook:${meeting.id} — по ней совещание в календаре связывается с документом.`
+    meetingOutlookMarker(meeting)
+      ? `В comment протокола 1С (onec.meeting_protocol_write) отдельной строкой добавь метку ${meetingOutlookMarker(meeting)} — по ней совещание в календаре связывается с документом (дата в метке обязательна).`
       : ''
   ]
     .filter((line, index, all) => line !== '' || index === 0 || all[index - 1] !== '')

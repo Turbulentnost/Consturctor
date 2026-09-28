@@ -126,18 +126,29 @@ def test_tabular_sections_map_to_1c_fields():
     assert decisions[0]["ДокументОснование_Type"] == "StandardODATA.Undefined"
     assert decisions[1]["ДатаОкончания"] == "2026-09-24T23:59:59"
 
-    assert "ПеременныеЗадачиПротокола" not in body
-    tasks = body["ПостоянныеЗадачиПротокола"]
+    tasks = body["ПеременныеЗадачиПротокола"]
+    standing = body["ПостоянныеЗадачиПротокола"]
+    assert len(tasks) == len(standing) == 2
     assert tasks[0]["Задача"].startswith("Проверить в outlook")
-    assert tasks[0]["Ответственный"] == "Жалыбин Максим Дмитриевич"
-    assert "Ответственный_Key" not in tasks[0]
+    assert tasks[0]["Ответственный_Key"] == PERSONS["Жалыбин Максим Дмитриевич"]
+    assert "Ответственный" not in tasks[0]
+    assert tasks[0]["Отправлена"] is False
     assert tasks[0]["Автор_Key"] == USERS["Соломичева Светлана Викторовна"]["ref_key"]
     assert tasks[0]["ДатаПостановкиЗадачи"] == "2026-09-21T00:00:00"
     assert tasks[0]["ДатаФактическогоИсполнения"] == "2026-09-24T23:59:59"
     assert tasks[1]["Приоритет"] == "Высокий"
-    assert "Комаркова" in tasks[1]["Ответственный"]  # не найдена в 1С — ФИО как есть
+    assert "Ответственный_Key" not in tasks[1]  # Комаркова не найдена в 1С — строку не пишем
 
     assert meta["tasks_count"] == 2 and meta["agenda_count"] == 2 and meta["decisions_count"] == 2
+
+
+def test_unknown_meeting_type_does_not_block_tasks():
+    args = _args()
+    args["meeting_type"] = "Планерное"
+    body, meta = mpw.build_protocol_create_body(args, actor_fio="Жалыбин Максим Дмитриевич")
+    assert body["ВидСовещания"] == "Отчетное"
+    assert any("Планерное" in item for item in meta["unresolved"])
+    assert len(body["ПеременныеЗадачиПротокола"]) == 2
 
 
 def test_unresolved_names_go_to_comment_not_error():
@@ -293,13 +304,13 @@ def test_read_protocol_form_maps_guids_to_names(monkeypatch):
 def test_read_protocol_form_prefers_assigned_tasks_part(monkeypatch):
     card = _card(
         ПостоянныеЗадачиПротокола=[
-            {"LineNumber": "1", "Задача": "Поставленная задача", "Ответственный": "Давлетов Руслан Игоревич"}
+            {"LineNumber": "1", "Задача": "Постоянная задача", "Ответственный": "Давлетов Руслан Игоревич"}
         ]
     )
     monkeypatch.setattr(mpw, "_odata_get", _fake_get(card))
     tasks = mpw.read_protocol_form(PROTOCOL_KEY)["form"]["tasks"]
-    assert [task["text"] for task in tasks] == ["Поставленная задача"]
-    assert tasks[0]["executor"] == "Давлетов Руслан Игоревич"
+    assert [task["text"] for task in tasks] == ["Сделать расчёт КПИ", "Постоянная задача"]
+    assert tasks[0]["executor"] == "Мегрелишвили Михаил Эмзарович"
 
 
 def test_read_protocol_form_posted_is_not_editable(monkeypatch):
@@ -320,9 +331,10 @@ def test_update_patches_draft_and_keeps_outlook_marker(monkeypatch):
     for field in ("ДатаСоздания", "Posted", "DeletionMark", "Статус", "Подготовил_Key"):
         assert field not in body
     assert body["ПовесткаСовещания"][0]["Вопрос"] == "Статус ИИ-агентов"
-    assert len(body["Решения"]) == 2 and len(body["ПостоянныеЗадачиПротокола"]) == 2
-    # old protocol had tasks in «Задачи для контроля» — update moves them out
-    assert body["ПеременныеЗадачиПротокола"] == []
+    assert len(body["Решения"]) == 2 and len(body["ПеременныеЗадачиПротокола"]) == 2
+    assert len(body["ПостоянныеЗадачиПротокола"]) == 2
+    assert body["ПеременныеЗадачиПротокола"][0]["Ответственный_Key"] == PERSONS["Жалыбин Максим Дмитриевич"]
+    assert body["ПостоянныеЗадачиПротокола"][0]["Ответственный"] == "Жалыбин Максим Дмитриевич"
     assert body["Комментарий"].startswith("Правки вручную")
     assert "outlook:AAMkAGI2" in body["Комментарий"]
     assert result["updated"] is True and result["number"] == "ДР__062_О_426"

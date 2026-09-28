@@ -9,6 +9,7 @@ from datetime import datetime
 from app.services.onec_access import (
     OnecAccessDenied,
     OnecAccessProfile,
+    _load_access_profile_uncached,
     _membership_expired,
     enforce_actor_access,
     filter_odata_result,
@@ -194,6 +195,60 @@ def test_invoke_onec_stub_skips_access_check(monkeypatch: pytest.MonkeyPatch) ->
         {"entity": "Document_ТД_ВходящаяКорреспонденция", "top": 1},
     )
     assert result.get("source") == "stub"
+
+
+def test_load_access_profile_does_not_close_pooled_odbc(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Conn:
+        closed = False
+
+        def cursor(self):
+            return self
+
+        def execute(self, *_a, **_k):
+            return None
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    conn = _Conn()
+    released: list[object] = []
+
+    monkeypatch.setattr("app.services.onec_access._connect", lambda: conn)
+    monkeypatch.setattr(
+        "app.services.onec_access._release_connection",
+        lambda c: released.append(c),
+    )
+    monkeypatch.setattr(
+        "app.services.onec_access._resolve_user",
+        lambda *_a, **_k: {
+            "hex": "812D001E6711250911E76250E98A8E40",
+            "fio": "Тест",
+            "dept": "",
+            "person": "",
+        },
+    )
+    monkeypatch.setattr("app.services.onec_access._principal_hexes", lambda *_a, **_k: [])
+    monkeypatch.setattr("app.services.onec_access._access_groups", lambda *_a, **_k: [])
+    monkeypatch.setattr("app.services.onec_access._profile_roles", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "app.services.onec_access._object_rights",
+        lambda *_a, **_k: (frozenset(), frozenset()),
+    )
+    monkeypatch.setattr(
+        "app.services.onec_access._rls_values",
+        lambda *_a, **_k: (frozenset(), False),
+    )
+
+    profile = _load_access_profile_uncached(fio="Тест")
+    assert profile.fio == "Тест"
+    assert conn.closed is False
+    assert released == [conn]
 
 
 def test_invoke_onec_real_get_denies_without_actor(monkeypatch: pytest.MonkeyPatch) -> None:

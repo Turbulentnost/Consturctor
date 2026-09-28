@@ -21,6 +21,11 @@ function normSearch(value: string): string {
   return (value || '').trim().toLowerCase().replace(/ё/g, 'е')
 }
 
+/** В каталоге библиотеки остаются только агенты Ильченко. */
+function isIlchenkoLibraryAgent(entry: AgentLibraryEntry): boolean {
+  return /ильченко/i.test(`${entry.ownerFio || ''} ${entry.author || ''}`)
+}
+
 function matchesSearch(entry: AgentLibraryEntry, query: string): boolean {
   if (!query) return true
   const blob = normSearch(
@@ -224,9 +229,11 @@ export function AgentLibraryGridTab({
 }): React.JSX.Element {
   const cached = getCachedAgentLibrary()
   const [catalog, setCatalog] = useState<AgentLibraryEntry[]>(() =>
-    (cached?.catalog ?? []).filter((item) => !item.alreadyAdded)
+    (cached?.catalog ?? []).filter((item) => !item.alreadyAdded && isIlchenkoLibraryAgent(item))
   )
-  const [adopted, setAdopted] = useState<AgentLibraryEntry[]>(() => cached?.adopted ?? [])
+  const [adopted, setAdopted] = useState<AgentLibraryEntry[]>(() =>
+    (cached?.adopted ?? []).filter(isIlchenkoLibraryAgent)
+  )
   const [initialLoading, setInitialLoading] = useState(() => !cached)
   const [refreshing, setRefreshing] = useState(false)
   const [busyId, setBusyId] = useState('')
@@ -239,8 +246,8 @@ export function AgentLibraryGridTab({
   const hasPaintedRef = useRef(Boolean(cached))
 
   const applySnapshot = useCallback((snap: { catalog: AgentLibraryEntry[]; adopted: AgentLibraryEntry[] }) => {
-    setCatalog(snap.catalog.filter((item) => !item.alreadyAdded))
-    setAdopted(snap.adopted)
+    setCatalog(snap.catalog.filter((item) => !item.alreadyAdded && isIlchenkoLibraryAgent(item)))
+    setAdopted(snap.adopted.filter(isIlchenkoLibraryAgent))
     hasPaintedRef.current = true
   }, [])
 

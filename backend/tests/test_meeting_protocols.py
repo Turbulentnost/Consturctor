@@ -84,6 +84,16 @@ def test_build_protocol_list_path_has_expand() -> None:
     assert "$expand=ТемаСовещания" in path
 
 
+def test_build_protocol_list_path_selects_header_and_access_keys_only() -> None:
+    from app.services.meeting_protocols import build_protocol_list_path
+
+    path = build_protocol_list_path(odata_filter="DeletionMark eq false", limit=10)
+    select = path.split("$select=", 1)[1].split("&", 1)[0].split(",")
+    assert {"Ref_Key", "Number", "Комментарий", "ТемаСовещания/Description"} <= set(select)
+    assert "ПрисутствующиеНаСовещании/Участник_Key" in select
+    assert not any("Файл" in field for field in select)
+
+
 def test_list_meeting_protocols_odata(monkeypatch) -> None:
     sample = {
         "Ref_Key": "e72f4680-aa87-11f1-987a-6cb31113810e",

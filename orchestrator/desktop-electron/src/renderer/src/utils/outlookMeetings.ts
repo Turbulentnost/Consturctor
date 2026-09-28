@@ -136,6 +136,30 @@ export function meetingInvolvesPerson(meeting: MeetingEvent, person: string): bo
   return last ? hay.includes(last) : false
 }
 
+function meetingDayKey(meeting: MeetingEvent): string {
+  const parsed = parseMeetingTime(meeting.start)
+  if (parsed) return dayKey(parsed)
+  const raw = (meeting.start || '').trim()
+  return raw.length >= 10 ? raw.slice(0, 10) : raw
+}
+
+/** One calendar occurrence (Outlook id + local day). Recurring series share id but not this key. */
+export function meetingInstanceKey(meeting: MeetingEvent): string {
+  const id = (meeting.id || '').trim()
+  const day = meetingDayKey(meeting)
+  if (id && day) return `${id}|${day}`
+  if (id) return id
+  return `${day}|${(meeting.subject || '').trim()}`
+}
+
+/** Marker in comment протокола 1С: outlook:<EntryID>|YYYY-MM-DD */
+export function meetingOutlookMarker(meeting: MeetingEvent): string {
+  const id = (meeting.id || '').trim()
+  if (!id) return ''
+  const day = meetingDayKey(meeting)
+  return day ? `outlook:${id}|${day}` : `outlook:${id}`
+}
+
 function meetingDedupeKey(meeting: MeetingEvent): string {
   const id = (meeting.id || '').trim()
   const start = (meeting.start || '').trim()
