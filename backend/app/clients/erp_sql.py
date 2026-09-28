@@ -12,10 +12,10 @@ import pyodbc
 
 from app.config import settings
 
-_conn_lock = threading.Lock()
-_cached_conn: pyodbc.Connection | None = None
-_cached_at = 0.0
+_reopen_lock = threading.Lock()
+_tls = threading.local()
 _CONN_TTL_SEC = 300.0
+_PROBE_TIMEOUT_SEC = 5
 
 _DEPARTMENT_JOIN_SQL = """
     LEFT JOIN dbo._Reference513 d1 WITH (NOLOCK)
@@ -254,6 +254,14 @@ def _build_connection_string(*, server: str | None = None) -> str:
     return ";".join(parts) + ";"
 
 
+def _query_timeout() -> int:
+    """Верхняя граница для любого запроса: без неё зависший сокет держит поток вечно."""
+    try:
+        return max(60, int(settings.erp_sql_timeout or 45))
+    except (TypeError, ValueError):
+        return 60
+
+
 def _connect_once(server: str, timeout: int) -> pyodbc.Connection:
     global _preferred_sql_server
     conn_str = _build_connection_string(server=server)
@@ -262,6 +270,10 @@ def _connect_once(server: str, timeout: int) -> pyodbc.Connection:
             conn = pyodbc.connect(conn_str, autocommit=True, timeout=timeout)
     else:
         conn = pyodbc.connect(conn_str, autocommit=True, timeout=timeout)
+    try:
+        conn.timeout = _query_timeout()
+    except (pyodbc.Error, OSError):
+        pass
     _preferred_sql_server = server.strip()
     return conn
 
@@ -281,33 +293,66 @@ def _open_connection() -> pyodbc.Connection:
     raise ErpSqlError("Failed to connect to erp_pm: no ERP_SQL_SERVER configured")
 
 
+def _close_quietly(conn: pyodbc.Connection | None) -> None:
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except (pyodbc.Error, OSError):
+        pass
+
+
 def _invalidate_cached_connection() -> None:
-    global _cached_conn, _cached_at
-    if _cached_conn is not None:
-        try:
-            _cached_conn.close()
-        except (pyodbc.Error, OSError):
-            pass
-    _cached_conn = None
-    _cached_at = 0.0
+    """Закрыть соединение текущего потока (следующий вызов откроет новое)."""
+    conn = getattr(_tls, "conn", None)
+    _tls.conn = None
+    _tls.at = 0.0
+    _close_quietly(conn)
+
+
+def _probe_connection(conn: pyodbc.Connection) -> bool:
+    """Живо ли соединение. Короткий query timeout: мёртвый сокет не должен вешать SQL."""
+    previous: int | None = None
+    try:
+        previous = conn.timeout
+        conn.timeout = _PROBE_TIMEOUT_SEC
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        return True
+    except (pyodbc.Error, OSError):
+        return False
+    finally:
+        if previous is not None:
+            try:
+                conn.timeout = previous
+            except (pyodbc.Error, OSError):
+                pass
 
 
 def _connect() -> pyodbc.Connection:
-    global _cached_conn, _cached_at
-    now = time.monotonic()
-    with _conn_lock:
-        if _cached_conn is not None and now - _cached_at < _CONN_TTL_SEC:
-            try:
-                cur = _cached_conn.cursor()
-                cur.execute("SELECT 1")
-                cur.fetchone()
-                return _cached_conn
-            except (pyodbc.Error, OSError):
-                _invalidate_cached_connection()
-        conn = _open_connection()
-        _cached_conn = conn
-        _cached_at = now
-        return conn
+    """Соединение с erp_pm — своё на поток.
+
+    Одно общее на процесс давало «connection is busy» / «cursor's connection was
+    closed» при параллельных запросах, а переоткрытие под глобальным локом вешало
+    SQL всему процессу, если ODBC-логин зависал.
+    """
+    conn = getattr(_tls, "conn", None)
+    if conn is not None:
+        fresh_enough = time.monotonic() - getattr(_tls, "at", 0.0) < _CONN_TTL_SEC
+        if fresh_enough and _probe_connection(conn):
+            return conn
+        _invalidate_cached_connection()
+    # Логины под impersonation дорогие — открываем по одному, но ждём ограниченно.
+    if not _reopen_lock.acquire(timeout=_login_timeout() + 5):
+        raise ErpSqlError("ERP SQL занят открытием соединения, повторите запрос")
+    try:
+        fresh = _open_connection()
+    finally:
+        _reopen_lock.release()
+    _tls.conn = fresh
+    _tls.at = time.monotonic()
+    return fresh
 
 
 def _release_connection(_conn: pyodbc.Connection) -> None:
@@ -351,11 +396,6 @@ def get_position_by_fio(fio: str) -> str:
         raise ErpSqlError(f"Failed to load position: {exc}") from exc
     finally:
         _release_connection(conn)
-
-
-def warmup() -> None:
-    """Startup check: connect once so /health erp_reachable reflects ODBC."""
-    _connect().close()
 
 
 def ping() -> bool:
