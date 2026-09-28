@@ -159,6 +159,44 @@ def test_unresolved_names_go_to_comment_not_error():
     assert "Не сопоставлено с 1С" in body["Комментарий"]
 
 
+def test_outlook_room_alias_resolves_to_catalog_name(monkeypatch):
+    queries: list[str] = []
+    original = mpw.resolve_ref
+
+    def fake_resolve(entity, query):
+        if entity == mpw.ROOM_ENTITY:
+            queries.append(query)
+            return "84107ae4-e273-11ec-88d8-ac1f6b05524d"
+        return original(entity, query)
+
+    monkeypatch.setattr(mpw, "resolve_ref", fake_resolve)
+    args = _args()
+    args["room"] = "Кабинент  СР"
+    body, meta = mpw.build_protocol_create_body(args, actor_fio="Жалыбин Максим Дмитриевич")
+    assert queries == ["Служба развития"]
+    assert body["Кабинет_Key"] == "84107ae4-e273-11ec-88d8-ac1f6b05524d"
+    assert not any("кабинет" in item for item in meta["unresolved"])
+
+
+def test_resave_replaces_previous_unresolved_note():
+    args = _args()
+    args["comment"] = "Сформировано ИИ-агентом\nНе сопоставлено с 1С: кабинет «Кабинент СР»"
+    body, _meta = mpw.build_protocol_create_body(args, actor_fio="Жалыбин Максим Дмитриевич")
+    assert "Кабинент СР" not in body["Комментарий"]
+    assert body["Комментарий"].count("Не сопоставлено с 1С") == 1
+
+
+def test_resave_strips_note_from_flattened_comment_keeping_outlook_marker():
+    args = _args()
+    args["comment"] = (
+        "Сформировано ИИ-агентом по аудиозаписи 09.48_.m4a "
+        "Не сопоставлено с 1С: кабинет «Кабинент СР» outlook:AAMk|2026-09-28"
+    )
+    body, _meta = mpw.build_protocol_create_body(args, actor_fio="Жалыбин Максим Дмитриевич")
+    assert "Кабинент СР" not in body["Комментарий"]
+    assert "09.48_.m4a outlook:AAMk|2026-09-28" in body["Комментарий"]
+
+
 def test_leader_falls_back_to_session_without_theme():
     args = _args()
     args["topic"] = "Совещание без темы в справочнике"

@@ -29,6 +29,8 @@ export type ProtocolCreateDraft = {
   timeStart: string
   timeEnd: string
   room: string
+  /** Catalog_CRM_Помещения Ref_Key; empty — backend resolves `room` by name. */
+  roomKey: string
   nextMeetingDate: string
   leader: string
   responsible: string
@@ -80,6 +82,17 @@ function personName(value: string): string {
   return text
 }
 
+/** Outlook «Место» (lower-case) → помещение 1С; keep in sync with _ROOM_ALIASES in meeting_protocol_write.py. */
+const MEETING_ROOM_ALIASES: Record<string, string> = {
+  'кабинет ср': 'Служба развития',
+  'кабинент ср': 'Служба развития'
+}
+
+function roomFromLocation(location: string): string {
+  const text = location.trim().replace(/\s+/g, ' ')
+  return MEETING_ROOM_ALIASES[text.toLowerCase()] || text
+}
+
 export function draftFromMeeting(meeting: MeetingEvent, actorFio: string): ProtocolCreateDraft {
   const organizer = personName(meeting.organizer)
   return {
@@ -88,7 +101,8 @@ export function draftFromMeeting(meeting: MeetingEvent, actorFio: string): Proto
     date: dateInput(meeting.start),
     timeStart: timeInput(meeting.start),
     timeEnd: timeInput(meeting.end),
-    room: (meeting.location || '').trim(),
+    room: roomFromLocation(meeting.location || ''),
+    roomKey: '',
     nextMeetingDate: '',
     leader: organizer || actorFio.trim(),
     responsible: '',
@@ -131,6 +145,7 @@ export type OnecProtocolForm = {
     time_start: string
     time_end: string
     room: string
+    room_key: string
     next_meeting_date: string
     leader: string
     responsible: string
@@ -180,6 +195,7 @@ export function parseOnecProtocolForm(payload: unknown): OnecProtocolForm | null
       time_start: str(form.time_start),
       time_end: str(form.time_end),
       room: str(form.room),
+      room_key: str(form.room_key),
       next_meeting_date: str(form.next_meeting_date),
       leader: str(form.leader),
       responsible: str(form.responsible),
@@ -216,11 +232,12 @@ export async function fetchProtocolForm(refKey: string): Promise<{ ok: true; car
   return { ok: true, card }
 }
 
-/** Strip the Outlook link marker so it is not shown / duplicated in the editable comment. */
+/** Strip the Outlook link marker and the backend «Не сопоставлено» note (both rewritten on save). */
 export function stripOutlookMarker(comment: string): string {
   return comment
     .split(/\r?\n/)
-    .filter((line) => !/^\s*outlook:\S+\s*$/.test(line))
+    .map((line) => line.replace(/\s*Не сопоставлено с 1С:.*?(?=\s*outlook:|$)/, ''))
+    .filter((line) => line.trim() && !/^\s*outlook:\S+\s*$/.test(line))
     .join('\n')
     .replace(/\s*outlook:\S+/g, '')
     .trim()
@@ -251,6 +268,7 @@ export function draftFromOnecForm(card: OnecProtocolForm): ProtocolCreateDraft {
     timeStart: form.time_start,
     timeEnd: form.time_end,
     room: form.room,
+    roomKey: form.room_key,
     nextMeetingDate: form.next_meeting_date,
     leader: form.leader,
     responsible: form.responsible,
@@ -315,7 +333,8 @@ function buildWriteArgs(draft: ProtocolCreateDraft, meeting: MeetingEvent): Writ
   if (draft.themeKey.trim()) args.theme_key = draft.themeKey.trim()
   if (draft.timeStart.trim()) args.time_start = draft.timeStart.trim()
   if (draft.timeEnd.trim()) args.time_end = draft.timeEnd.trim()
-  if (draft.room.trim()) args.room = draft.room.trim()
+  if (draft.roomKey.trim()) args.room_key = draft.roomKey.trim()
+  else if (draft.room.trim()) args.room = draft.room.trim()
   if (draft.nextMeetingDate.trim()) args.next_meeting_date = draft.nextMeetingDate.trim()
   if (draft.leader.trim()) args.leader = draft.leader.trim()
   if (draft.responsible.trim()) args.responsible = draft.responsible.trim()
@@ -364,6 +383,44 @@ export async function updateProtocolInOneC(
 }
 
 export type ThemeHint = { key: string; title: string }
+
+export type MeetingRoom = { key: string; name: string }
+
+let meetingRoomsCache: Promise<MeetingRoom[]> | null = null
+
+/** Catalog_CRM_Помещения — выбор кабинета в форме протокола. */
+export function listMeetingRooms(): Promise<MeetingRoom[]> {
+  if (meetingRoomsCache) return meetingRoomsCache
+  const pending = api
+    .invokeServerTool(
+      'onec.odata_get',
+      {
+        entity: 'Catalog_CRM_Помещения',
+        filter: 'DeletionMark eq false',
+        select: 'Ref_Key,Description',
+        top: 500
+      },
+      60_000
+    )
+    .then((response) => {
+      if (!response.ok || !response.result || typeof response.result !== 'object') return []
+      const root = response.result as Record<string, unknown>
+      const nested = root.data && typeof root.data === 'object' ? (root.data as Record<string, unknown>) : root
+      const rows = (Array.isArray(nested.value) ? nested.value : Array.isArray(root.value) ? root.value : []) as Record<
+        string,
+        unknown
+      >[]
+      return rows
+        .map((row) => ({ key: String(row.Ref_Key || '').trim(), name: String(row.Description || '').trim() }))
+        .filter((room) => room.key && room.name)
+        .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+    })
+  meetingRoomsCache = pending
+  void pending.then((names) => {
+    if (!names.length && meetingRoomsCache === pending) meetingRoomsCache = null
+  })
+  return pending
+}
 
 export async function searchMeetingThemes(query: string): Promise<ThemeHint[]> {
   const text = query.trim().replace(/'/g, "''")

@@ -8,14 +8,18 @@ import {
   draftFromMeeting,
   draftFromOnecForm,
   fetchProtocolForm,
+  listMeetingRooms,
   newProtocolRowKey,
   searchMeetingThemes,
   updateProtocolInOneC,
+  type MeetingRoom,
   type OnecProtocolForm,
   type ProtocolCreateDraft,
   type ProtocolCreateResult,
   type ThemeHint
 } from '../../workplace/meetingProtocolCreate'
+
+const MISSING_ROOM = '__missing_room__'
 
 function FioField({
   label,
@@ -78,6 +82,7 @@ export function MeetingProtocolForm({
   const [done, setDone] = useState<ProtocolCreateResult | null>(null)
   const [fioHints, setFioHints] = useState<string[]>([])
   const [themes, setThemes] = useState<ThemeHint[]>([])
+  const [rooms, setRooms] = useState<MeetingRoom[]>([])
   const readOnly = isEdit && card !== null && !card.editable
   // Outlook polling hands a fresh `meeting` object every refresh; reloading on identity would wipe edits.
   const meetingRef = useRef(meeting)
@@ -120,10 +125,20 @@ export function MeetingProtocolForm({
     void api.searchUsers('').then((items) => {
       if (!cancelled) setFioHints(items.slice(0, 200))
     })
+    void listMeetingRooms().then((items) => {
+      if (!cancelled) setRooms(items)
+    })
     return () => {
       cancelled = true
     }
   }, [open])
+
+  useEffect(() => {
+    const name = draft.room.trim().toLowerCase()
+    if (!open || draft.roomKey || !name || !rooms.length) return
+    const hit = rooms.find((room) => room.name.toLowerCase() === name)
+    if (hit) setDraft((current) => (current.roomKey ? current : { ...current, roomKey: hit.key, room: hit.name }))
+  }, [open, rooms, draft.room, draft.roomKey])
 
   useEffect(() => {
     if (!open || done || readOnly) return
@@ -190,6 +205,7 @@ export function MeetingProtocolForm({
       : 'Загрузка протокола из 1С…'
     : 'Черновик документа «Протокол» (статус «Подготовлен»). Номер присвоит 1С, проведёт секретарь.'
   const lock = busy || loading || readOnly
+  const roomMissing = !draft.roomKey && Boolean(draft.room.trim()) && rooms.length > 0
 
   return createPortal(
     <div className="modal-overlay registry-create-overlay" onClick={() => !busy && onClose()}>
@@ -309,13 +325,33 @@ export function MeetingProtocolForm({
               </label>
               <label className="registry-create-field">
                 <span className="modal-label">Кабинет</span>
-                <input
+                <select
                   className="onec-reconnect-input"
-                  type="text"
-                  value={draft.room}
-                  placeholder="Помещение из 1С"
-                  onChange={(event) => patch({ room: event.target.value })}
-                />
+                  value={draft.roomKey || (roomMissing ? MISSING_ROOM : '')}
+                  disabled={!rooms.length && !draft.roomKey}
+                  onChange={(event) => {
+                    const hit = rooms.find((room) => room.key === event.target.value)
+                    patch(hit ? { roomKey: hit.key, room: hit.name } : { roomKey: '', room: '' })
+                  }}
+                >
+                  <option value="">{rooms.length ? '— не указан —' : 'Загрузка помещений из 1С…'}</option>
+                  {roomMissing ? (
+                    <option value={MISSING_ROOM} disabled>
+                      «{draft.room}» — нет в 1С
+                    </option>
+                  ) : null}
+                  {draft.roomKey && !rooms.some((room) => room.key === draft.roomKey) ? (
+                    <option value={draft.roomKey}>{draft.room || 'Помещение из 1С'}</option>
+                  ) : null}
+                  {rooms.map((room) => (
+                    <option key={room.key} value={room.key}>
+                      {room.name}
+                    </option>
+                  ))}
+                </select>
+                {roomMissing ? (
+                  <span className="meeting-protocol-hint">Помещения «{draft.room}» нет в 1С — выберите кабинет из списка</span>
+                ) : null}
               </label>
               <label className="registry-create-field">
                 <span className="modal-label">Дата следующего совещания</span>

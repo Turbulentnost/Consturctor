@@ -37,6 +37,15 @@ THEME_ENTITY = "Catalog_ТД_ТемыСовещаний"
 PERSON_ENTITY = "Catalog_ФизическиеЛица"
 USER_ENTITY = "Catalog_Пользователи"
 ROOM_ENTITY = "Catalog_CRM_Помещения"
+# Outlook «Место» (lower-case) → Description in Catalog_CRM_Помещения when the names differ.
+_ROOM_ALIASES = {
+    "кабинет ср": "Служба развития",
+    "кабинент ср": "Служба развития",
+}
+# Rewritten on every save, so a re-saved protocol keeps only the current list. Older saves
+# flattened the comment to one line, so the note ends at the outlook marker, not only at \n.
+_UNRESOLVED_NOTE_PREFIX = "Не сопоставлено с 1С:"
+_UNRESOLVED_NOTE_RE = re.compile(r"[ \t]*Не сопоставлено с 1С:.*?(?=\s*outlook:|\n|$)")
 ACCESS_ENTITY = "Catalog_ТД_ГрифыДоступа"
 PROJECT_ENTITY = "Catalog_Проекты"
 DEPARTMENT_ENTITY = "Catalog_СтруктураПредприятия"
@@ -354,7 +363,7 @@ def build_protocol_create_body(
     room_key = _clean(_first(args, "room_key", "Кабинет_Key"))
     room_query = _clean(_first(args, "room", "location", "place", "Кабинет"))
     if not room_key and room_query:
-        room_key = resolve_ref(ROOM_ENTITY, room_query)
+        room_key = resolve_ref(ROOM_ENTITY, _ROOM_ALIASES.get(room_query.lower(), room_query))
         if not room_key:
             unresolved.append(f"кабинет «{room_query}»")
     if not room_key and theme and _looks_like_guid(theme.get("Кабинет_Key")):
@@ -485,9 +494,10 @@ def build_protocol_create_body(
             mirror["ДатаФактическогоИсполнения"] = due
         standing_rows.append(mirror)
 
-    comment = _clean(_first(args, "comment", "Комментарий"))
+    raw_comment = _UNRESOLVED_NOTE_RE.sub("", str(_first(args, "comment", "Комментарий") or ""))
+    comment = "\n".join(filter(None, (_clean(line) for line in raw_comment.splitlines())))
     if unresolved:
-        note = "Не сопоставлено с 1С: " + "; ".join(unresolved)
+        note = _UNRESOLVED_NOTE_PREFIX + " " + "; ".join(unresolved)
         comment = f"{comment}\n{note}".strip() if comment else note
 
     body: dict[str, Any] = {
@@ -738,6 +748,7 @@ def read_protocol_form(ref_key: str) -> dict[str, Any]:
         "time_start": _iso_clock(card.get("ВремяНачалаСовещания")),
         "time_end": _iso_clock(card.get("ВремяОкончанияСовещания")),
         "room": _description_of(ROOM_ENTITY, card.get("Кабинет_Key"), cache),
+        "room_key": str(card.get("Кабинет_Key")) if _looks_like_guid(card.get("Кабинет_Key")) else "",
         "next_meeting_date": _iso_day(card.get("ДатаСледующегоСовещания")),
         "leader": user_fio(card.get("Руководитель_Key")),
         "responsible": user_fio(card.get("Ответственный_Key")),
