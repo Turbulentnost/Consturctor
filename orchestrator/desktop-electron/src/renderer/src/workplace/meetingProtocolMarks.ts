@@ -14,6 +14,8 @@ export const PROTOCOL_CREATED_EVENT = 'orch-protocol-created'
 export type ProtocolMark = {
   number: string
   refKey: string
+  /** Picked by the user from 1С: trusted even without the outlook: marker in the comment. */
+  manual?: boolean
 }
 
 export type OnecProtocolRow = {
@@ -52,7 +54,9 @@ export function rememberProtocolDocument(
   const key = meetingInstanceKey(meeting)
   if (!key) return
   const bucket = readStored(userId)
-  bucket[key] = { number: mark.number || '', refKey: mark.refKey || '' }
+  const previous = bucket[key]
+  const manual = mark.manual ?? (previous?.manual && previous.refKey === mark.refKey)
+  bucket[key] = { number: mark.number || '', refKey: mark.refKey || '', ...(manual ? { manual: true } : {}) }
   try {
     localStorage.setItem(storageKey(userId), JSON.stringify(bucket))
   } catch {
@@ -117,6 +121,7 @@ function markFitsMeeting(
   protocols: OnecProtocolRow[]
 ): boolean {
   if (!mark?.refKey) return Boolean(mark?.number)
+  if (mark.manual) return true
   const row = protocols.find((item) => String(item.ref_key || '').trim() === mark.refKey)
   if (!row) return true
   const comment = String(row.comment || '')

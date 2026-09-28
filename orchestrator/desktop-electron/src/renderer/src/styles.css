@@ -12666,6 +12666,172 @@ button.spec-v04-tile {
   color: #5b6470;
   line-height: 1.35;
 }
+.meeting-protocol-attach {
+  width: min(560px, 94vw);
+}
+.tracked-calendars {
+  position: relative;
+  flex: 0 0 auto;
+}
+.tracked-calendars-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgba(13, 59, 115, 0.18);
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tracked-calendars-btn:hover,
+.tracked-calendars-btn.is-active {
+  border-color: #1565c0;
+  color: #1565c0;
+}
+.tracked-calendars-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  width: min(420px, 90vw);
+  padding: 12px;
+  border: 1px solid rgba(13, 59, 115, 0.14);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+}
+.tracked-calendars-note,
+.tracked-calendars-empty {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #5b6470;
+  line-height: 1.4;
+}
+.tracked-calendars-empty {
+  margin: 10px 0 0;
+}
+.tracked-calendars-form {
+  display: flex;
+  gap: 8px;
+}
+.tracked-calendars-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tracked-calendars-form button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.tracked-calendars-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tracked-calendars-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(13, 59, 115, 0.1);
+  border-radius: 8px;
+}
+.tracked-calendars-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.tracked-calendars-status {
+  grid-column: 1;
+  font-size: 11px;
+  color: #5b6470;
+}
+.tracked-calendars-status.is-ok {
+  color: #2e7d32;
+}
+.tracked-calendars-status.is-error {
+  color: #c62828;
+}
+.tracked-calendars-remove {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  display: inline-flex;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #5b6470;
+  cursor: pointer;
+}
+.tracked-calendars-remove:hover {
+  background: #fdecea;
+  color: #c62828;
+}
+.meeting-protocol-attach-search {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+.meeting-protocol-attach-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.meeting-protocol-attach-search button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.meeting-protocol-attach-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  max-height: min(50vh, 360px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.meeting-protocol-attach-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid rgba(13, 59, 115, 0.14);
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.meeting-protocol-attach-item:hover {
+  border-color: #1565c0;
+  background: #f3f8fe;
+}
+.meeting-protocol-attach-number {
+  font-weight: 700;
+  font-size: 13px;
+}
+.meeting-protocol-attach-meta {
+  justify-self: end;
+  font-size: 12px;
+  color: #5b6470;
+}
+.meeting-protocol-attach-topic {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: #334155;
+}
 .meeting-protocol-themes {
   list-style: none;
   margin: 6px 0 0;

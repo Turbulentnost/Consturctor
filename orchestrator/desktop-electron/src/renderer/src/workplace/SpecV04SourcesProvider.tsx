@@ -30,6 +30,7 @@ import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from '.
 import { useWorkplaceData } from './WorkplaceBoard'
 import { summarizeDayLaunches } from './todayKpiLaunches'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
+import { useTrackedCalendarsVersion } from '../utils/trackedCalendars'
 import {
   fetchOrchestratorCoreSources,
   loadOrchestratorErpTasks,
@@ -110,6 +111,7 @@ export function SpecV04SourcesProvider({
   const mailPeriodKey = `${mailPeriodFrom}:${mailPeriodTo}`
   const mailPeriodKeyRef = useRef('')
   const { generation, takeHardRefresh } = useGridDataRefreshContext()
+  const trackedVersion = useTrackedCalendarsVersion()
   const { agents, board, loading: agentsLoading } = useWorkplaceData({
     userId: user.id || '',
     fio: erpFio
@@ -307,7 +309,7 @@ export function SpecV04SourcesProvider({
     return () => {
       alive = false
     }
-  }, [user.id, erpFio, generation])
+  }, [user.id, erpFio, generation, trackedVersion])
 
   const regRows = useMemo(() => {
     return agents.filter((a) => !a.standalone).map(agentToProcessRow)

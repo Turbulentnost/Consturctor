@@ -422,6 +422,64 @@ export function listMeetingRooms(): Promise<MeetingRoom[]> {
   return pending
 }
 
+export type OnecProtocolHit = {
+  refKey: string
+  number: string
+  date: string
+  status: string
+  posted: boolean
+  topic: string
+}
+
+// The 1С confidentiality filter keeps a protocol only when the person keys are in the row.
+const PROTOCOL_SEARCH_SELECT = [
+  'Ref_Key',
+  'Number',
+  'Date',
+  'Статус',
+  'Posted',
+  'ТемаСовещания/Description',
+  'Ответственный_Key',
+  'Руководитель_Key',
+  'Подготовил_Key',
+  'Подразделение_Key',
+  'ПрисутствующиеНаСовещании/Участник_Key'
+].join(',')
+
+/** Document_ТД_Протокол by number: part of the number is enough («143_О_004»). */
+export async function searchOnecProtocols(
+  query: string
+): Promise<{ ok: true; hits: OnecProtocolHit[] } | { ok: false; error: string }> {
+  const text = query.trim().replace(/'/g, "''")
+  if (text.length < 3) return { ok: false, error: 'Введите хотя бы 3 символа номера' }
+  const response = await api.invokeServerTool(
+    'onec.odata_get',
+    {
+      entity: 'Document_ТД_Протокол',
+      filter: `substringof('${text}', Number) and DeletionMark eq false`,
+      select: PROTOCOL_SEARCH_SELECT,
+      expand: 'ТемаСовещания',
+      top: 20
+    },
+    150_000
+  )
+  if (!response.ok) return { ok: false, error: response.error || 'Не удалось найти протокол в 1С' }
+  const root = record(response.result)
+  const nested = root.data && typeof root.data === 'object' ? record(root.data) : root
+  const rows = list(Array.isArray(nested.value) ? nested.value : root.value)
+  const hits = rows
+    .map((row) => ({
+      refKey: str(row.Ref_Key),
+      number: str(row.Number),
+      date: str(row.Date).slice(0, 10),
+      status: str(row['Статус']),
+      posted: Boolean(row.Posted),
+      topic: str(record(row['ТемаСовещания']).Description)
+    }))
+    .filter((hit) => hit.refKey && hit.number)
+  return { ok: true, hits }
+}
+
 export async function searchMeetingThemes(query: string): Promise<ThemeHint[]> {
   const text = query.trim().replace(/'/g, "''")
   if (text.length < 3) return []

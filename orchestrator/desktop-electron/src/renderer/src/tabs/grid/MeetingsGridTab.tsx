@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { api } from '../../api/client'
 import { createPortal } from 'react-dom'
-import { Mic, PenLine } from 'lucide-react'
+import { Mic, PenLine, Search } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { toolLabel } from '../../components/agentfeed/labels'
 import { useRuns } from '../../store/runs'
@@ -27,10 +27,13 @@ import { addDays, mondayOf, type CalendarView } from '../../utils/calendar'
 import { countMeetingTiles, meetingMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import { MeetingsCalendar } from '../../components/agents/MeetingsCalendar'
 import { GridFilterBar } from './gridFilters'
+import { TrackedCalendarsControl } from './TrackedCalendarsControl'
+import { useTrackedCalendarsVersion } from '../../utils/trackedCalendars'
 import { usePageSearch } from '../../layout/pageSearchContext'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { MeetingReportModal } from './MeetingReportModal'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
+import { searchOnecProtocols, type OnecProtocolHit } from '../../workplace/meetingProtocolCreate'
 import {
   PROTOCOL_CREATED_EVENT,
   rememberProtocolDocument,
@@ -91,6 +94,7 @@ function MeetingDetailCard({
   const [formOpen, setFormOpen] = useState(false)
   const [formMode, setFormMode] = useState<'create' | 'edit'>('create')
   const [chooserOpen, setChooserOpen] = useState(false)
+  const [attachOpen, setAttachOpen] = useState(false)
 
   const attendees = (meeting.attendees || '')
     .split(/[,;]/)
@@ -239,6 +243,13 @@ function MeetingDetailCard({
     setFormOpen(true)
   }
 
+  const attachFromOnec = (hit: OnecProtocolHit): void => {
+    setAttachOpen(false)
+    setResolvedProtocolRef(hit.refKey)
+    rememberProtocolDocument(userId, meeting, { number: hit.number, refKey: hit.refKey, manual: true })
+    openForm('edit')
+  }
+
   return (
     <div className="spec-detail-card wp-card">
       <h2>{meetingField(meeting.subject)}</h2>
@@ -385,6 +396,17 @@ function MeetingDetailCard({
               {busy ? 'Запуск…' : 'Создать протокол'}
             </button>
           )}
+          {hasProtocol ? null : (
+            <button
+              type="button"
+              className="btn-light"
+              onClick={() => setAttachOpen(true)}
+              disabled={busy}
+              title="Найти готовый протокол в 1С по номеру и привязать к совещанию"
+            >
+              Подгрузить из 1С
+            </button>
+          )}
           {hasProtocol || hasDocx ? (
             <button
               type="button"
@@ -412,6 +434,8 @@ function MeetingDetailCard({
         onManual={() => openForm('create')}
       />
 
+      <ProtocolAttachDialog open={attachOpen} onClose={() => setAttachOpen(false)} onPick={attachFromOnec} />
+
       <MeetingProtocolForm
         open={formOpen}
         meeting={meeting}
@@ -435,6 +459,117 @@ function MeetingDetailCard({
         protocolRefKey={protocolRefKey}
       />
     </div>
+  )
+}
+
+function ProtocolAttachDialog({
+  open,
+  onClose,
+  onPick
+}: {
+  open: boolean
+  onClose: () => void
+  onPick: (hit: OnecProtocolHit) => void
+}): React.JSX.Element | null {
+  const titleId = useId()
+  const [query, setQuery] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [error, setError] = useState('')
+  const [hits, setHits] = useState<OnecProtocolHit[] | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setError('')
+    setHits(null)
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  if (!open) return null
+
+  const search = async (): Promise<void> => {
+    if (searching) return
+    setSearching(true)
+    setError('')
+    try {
+      const res = await searchOnecProtocols(query)
+      if (!res.ok) {
+        setError(res.error)
+        setHits(null)
+        return
+      }
+      setHits(res.hits)
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  return createPortal(
+    <div className="modal-overlay" onClick={onClose} role="presentation">
+      <div
+        className="modal-card meeting-protocol-attach"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h4 className="modal-title" id={titleId}>
+          Подгрузить протокол из 1С
+        </h4>
+        <p className="spec-v04-muted">
+          Найдите протокол по номеру — он привяжется к совещанию и откроется для изменения.
+        </p>
+        <form
+          className="meeting-protocol-attach-search"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void search()
+          }}
+        >
+          <input
+            className="onec-reconnect-input"
+            type="search"
+            autoFocus
+            value={query}
+            placeholder="Номер, например ДР__143_О_004 или 143_О_004"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <button type="submit" className="btn-primary" disabled={searching || query.trim().length < 3}>
+            <Search size={14} aria-hidden /> {searching ? 'Ищем…' : 'Найти'}
+          </button>
+        </form>
+        {error ? <p className="meeting-protocol-error">{error}</p> : null}
+        {hits && !hits.length ? (
+          <p className="spec-v04-muted">Протоколы с таким номером не найдены или у вас нет к ним доступа.</p>
+        ) : null}
+        {hits?.length ? (
+          <ul className="meeting-protocol-attach-list">
+            {hits.map((hit) => (
+              <li key={hit.refKey}>
+                <button type="button" className="meeting-protocol-attach-item" onClick={() => onPick(hit)}>
+                  <span className="meeting-protocol-attach-number">{hit.number}</span>
+                  <span className="meeting-protocol-attach-meta">
+                    {[hit.date ? hit.date.split('-').reverse().join('.') : '', hit.status || (hit.posted ? 'Проведён' : '')]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                  {hit.topic ? <span className="meeting-protocol-attach-topic">{hit.topic}</span> : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <div className="modal-actions">
+          <button type="button" className="btn-light" onClick={onClose}>
+            Отмена
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 
@@ -512,6 +647,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   const [selectedId, setSelectedId] = useState('')
   const { query, setQuery } = usePageSearch()
   const [barStatus, setBarStatus] = useState('')
+  const trackedVersion = useTrackedCalendarsVersion()
 
   const load = useCallback((force = false) => {
     setLoading(true)
@@ -528,7 +664,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
         setError(err instanceof Error ? err.message : 'Ошибка календаря')
       })
       .finally(() => setLoading(false))
-  }, [anchor, fio, view])
+  }, [anchor, fio, view, trackedVersion])
 
   useEffect(() => {
     if (!sharedMeetings.length) return
@@ -622,6 +758,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
             setView('week')
             setAnchor(new Date())
           }}
+          extra={<TrackedCalendarsControl fio={fio} />}
         />
         ),
         main: (

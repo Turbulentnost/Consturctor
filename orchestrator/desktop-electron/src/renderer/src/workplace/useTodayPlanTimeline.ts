@@ -14,6 +14,7 @@ import {
   TODAY_PLAN_PREFER_MOCKS,
   type TodayPlanBlock
 } from '../tabs/grid/todayDemoData'
+import { readTrackedCalendars, useTrackedCalendarsVersion } from '../utils/trackedCalendars'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
@@ -229,10 +230,11 @@ export function useTodayPlanTimeline(
 
   const dayKey = `${periodDay.getFullYear()}-${periodDay.getMonth()}-${periodDay.getDate()}`
   const generation = useGridRefreshGeneration()
+  const trackedVersion = useTrackedCalendarsVersion()
 
   useEffect(() => {
     let alive = true
-    const cacheKey = `today-plan-meetings:${userId}:${dayKey}`
+    const cacheKey = `today-plan-meetings:${userId}:${dayKey}:${readTrackedCalendars(fio).join('|')}`
     if (!shouldRunGridFetch(cacheKey, generation)) {
       const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
       if (cached) {
@@ -271,7 +273,7 @@ export function useTodayPlanTimeline(
     return () => {
       alive = false
     }
-  }, [dayKey, fio, generation, periodDay, userId])
+  }, [dayKey, fio, generation, periodDay, userId, trackedVersion])
 
   const stableMeetingsRef = useRef<TodayPlanBlock[]>([])
   const stableAiRef = useRef<TodayPlanBlock[]>([])

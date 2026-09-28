@@ -490,6 +490,8 @@ def _folder_matches_person(label: str, person: str) -> bool:
 def _calendar_access_hint(status: str) -> str:
     if status in {"own", "shared", "visible", "meetings"}:
         return ""
+    if status.startswith("unresolved"):
+        return "Сотрудник не найден в адресной книге Outlook. Проверьте ФИО."
     return (
         "Нет доступа к этому календарю. Нужен общий доступ в Outlook "
         "или запуск с профиля владельца."
@@ -978,6 +980,12 @@ def read_calendar(input_data: dict) -> dict:
     )
     folder_hint = _safe_str(input_data.get("folder") or input_data.get("calendar") or "").strip()
     all_visible = _truthy(input_data.get("all_visible"))
+    raw_owners = input_data.get("calendar_owners")
+    if not isinstance(raw_owners, list):
+        single = _safe_str(input_data.get("calendar_owner") or "").strip()
+        raw_owners = [single] if single else []
+    calendar_owners = list(dict.fromkeys(_safe_str(item).strip() for item in raw_owners))
+    calendar_owner = bool(calendar_owners)
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -995,7 +1003,9 @@ def read_calendar(input_data: dict) -> dict:
         events: list[dict] = []
         checked_count = 0
         calendars: list[dict] = []
-        want_meetings = _is_public_meetings_label(folder_hint) or bool(people)
+        want_meetings = not calendar_owner and (
+            _is_public_meetings_label(folder_hint) or bool(people)
+        )
         if want_meetings:
             meeting_folders = _find_public_meeting_folders(outlook, namespace, own_name)
             _log_progress(f"step=meetings_folders count={len(meeting_folders)}")
@@ -1098,7 +1108,7 @@ def read_calendar(input_data: dict) -> dict:
                     "range_start": start_at.isoformat(),
                     "range_end": end_at.isoformat(),
                 }
-        if all_visible:
+        if all_visible and not calendar_owner:
             folders = _iter_visible_calendar_folders(outlook, namespace, own_name)
             if not folders:
                 folders = [(own_name or "Календарь", _own_calendar_folder(namespace), True)]
@@ -1162,7 +1172,7 @@ def read_calendar(input_data: dict) -> dict:
                 "range_start": start_at.isoformat(),
                 "range_end": end_at.isoformat(),
             }
-        targets = people or [own_name or ""]
+        targets = calendar_owners or people or [own_name or ""]
         for person in targets:
             remaining_results = max_results - len(events)
             remaining_scan = max_scan_items - checked_count
