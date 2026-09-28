@@ -137,6 +137,215 @@
   font-size: 12px;
 }
 
+/* Письмо: вкладки «Текст» / «Вложения» (вкладка «Письма» и окно письма на «Сегодня») */
+.mail-letter {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.mail-letter-tabs {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.mail-letter-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  border-radius: 8px;
+  background: #fff;
+  color: #5b6b80;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mail-letter-tabs button:hover,
+.mail-letter-tabs button.is-active {
+  color: #1565c0;
+  border-color: #1565c0;
+}
+
+.mail-letter-tabs button.is-active {
+  background: #e8f1fb;
+}
+
+.mail-letter-body,
+.mail-letter-files {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(21, 101, 192, 0.42) transparent;
+}
+
+.mail-letter-body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #1f2937;
+}
+
+.mail-letter-body p {
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mail-letter-empty {
+  margin: 0;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.mail-letter-files-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mail-letter-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mail-letter-file {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid rgba(13, 59, 115, 0.1);
+  border-radius: 8px;
+  background: #fafbfd;
+}
+
+.mail-letter-file-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.mail-letter-file-size {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.mail-letter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  border-radius: 8px;
+  background: #fff;
+  color: #5b6b80;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mail-letter-btn:hover:not(:disabled),
+.mail-letter-btn.is-primary {
+  color: #1565c0;
+  border-color: #1565c0;
+}
+
+.mail-letter-btn.is-primary {
+  background: #e8f1fb;
+}
+
+.mail-letter-btn.is-primary:hover:not(:disabled) {
+  background: #d6e7f8;
+}
+
+.mail-letter-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.spec-mail-att-modal.mail-file-viewer {
+  width: min(1100px, 96vw);
+  height: min(90vh, 900px);
+  max-height: none;
+}
+
+.mail-file-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(13, 59, 115, 0.1);
+}
+
+.mail-file-viewer-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.mail-letter-btn.mail-file-viewer-close {
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}
+
+.mail-file-viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 12px;
+  overflow: auto;
+  background: #f5f7fa;
+}
+
+.mail-file-viewer-body .spec-mail-att-preview-embed {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  background: #fff;
+}
+
+.mail-file-viewer-body .spec-mail-att-preview-img {
+  align-self: center;
+  max-height: 100%;
+}
+
+.mail-file-viewer-body .spec-mail-att-preview-text {
+  max-height: none;
+  padding: 12px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.today-outlook-letter {
+  display: flex;
+  flex-direction: column;
+  margin-top: 16px;
+  min-height: 240px;
+}
+
 .incoming-combo {
   position: relative;
 }
