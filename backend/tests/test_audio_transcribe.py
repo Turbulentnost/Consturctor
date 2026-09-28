@@ -70,16 +70,34 @@ def test_transcribe_run_attachment_returns_segments(monkeypatch) -> None:
         "app.services.audio_transcribe._get_model", lambda: _FakeModel()
     )
 
+    import app.services.audio_transcribe as audio_mod
+
+    audio_mod._cache.clear()
     result = transcribe_run_attachment(file_id="file-1", user_id="user-1")
 
     assert result["filename"] == "meeting.m4a"
     assert result["duration_sec"] == 9.0
-    assert result["segments"] == [
-        {"start": 0.0, "end": 3.5, "text": "Добрый день, коллеги."},
-        {"start": 3.5, "end": 7.2, "text": "Начинаем совещание."},
-    ]
-    assert result["text"] == "Добрый день, коллеги.\nНачинаем совещание."
+    assert result["segment_count"] == 2
+    assert result["cached"] is False
+    assert "Добрый день" in result["preview"]
+    text = open(result["transcript_path"], encoding="utf-8").read()
+    assert "[00:00–00:03] Добрый день, коллеги." in text
+    assert "[00:03–00:07] Начинаем совещание." in text
+    assert "segments" not in result
     assert result["diarization"] == "none"
+
+    calls = {"n": 0}
+    real = audio_mod._get_model
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    monkeypatch.setattr(audio_mod, "_get_model", counting)
+    again = transcribe_run_attachment(file_id="file-1", user_id="user-1")
+    assert again["cached"] is True
+    assert again["transcript_path"] == result["transcript_path"]
+    assert calls["n"] == 0
 
 
 def test_transcribe_passes_outlook_names_as_prompt(monkeypatch) -> None:

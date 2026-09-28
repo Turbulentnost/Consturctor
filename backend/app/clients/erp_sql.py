@@ -13,8 +13,12 @@ import pyodbc
 from app.config import settings
 
 _reopen_lock = threading.Lock()
-_tls = threading.local()
+# SQL Server ODBC runs one statement per connection at a time (no MARS): a
+# connection is checked out by one caller until _release_connection returns it.
+_pool_lock = threading.Lock()
+_idle_conns: list[tuple[pyodbc.Connection, float]] = []
 _CONN_TTL_SEC = 300.0
+_MAX_IDLE_CONNS = 4
 _PROBE_TIMEOUT_SEC = 5
 
 _DEPARTMENT_JOIN_SQL = """
@@ -302,14 +306,6 @@ def _close_quietly(conn: pyodbc.Connection | None) -> None:
         pass
 
 
-def _invalidate_cached_connection() -> None:
-    """Закрыть соединение текущего потока (следующий вызов откроет новое)."""
-    conn = getattr(_tls, "conn", None)
-    _tls.conn = None
-    _tls.at = 0.0
-    _close_quietly(conn)
-
-
 def _probe_connection(conn: pyodbc.Connection) -> bool:
     """Живо ли соединение. Короткий query timeout: мёртвый сокет не должен вешать SQL."""
     previous: int | None = None
@@ -331,33 +327,37 @@ def _probe_connection(conn: pyodbc.Connection) -> bool:
 
 
 def _connect() -> pyodbc.Connection:
-    """Соединение с erp_pm — своё на поток.
+    """Своё соединение на вызов: ODBC без MARS не ведёт два запроса сразу.
 
-    Одно общее на процесс давало «connection is busy» / «cursor's connection was
-    closed» при параллельных запросах, а переоткрытие под глобальным локом вешало
-    SQL всему процессу, если ODBC-логин зависал.
+    Проба идёт вне _pool_lock. Новый логин ждёт ограниченно, чтобы зависший
+    ODBC не блокировал SQL всему процессу.
     """
-    conn = getattr(_tls, "conn", None)
-    if conn is not None:
-        fresh_enough = time.monotonic() - getattr(_tls, "at", 0.0) < _CONN_TTL_SEC
-        if fresh_enough and _probe_connection(conn):
+    while True:
+        with _pool_lock:
+            if not _idle_conns:
+                break
+            conn, released_at = _idle_conns.pop()
+        if time.monotonic() - released_at >= _CONN_TTL_SEC:
+            _close_quietly(conn)
+            continue
+        if _probe_connection(conn):
             return conn
-        _invalidate_cached_connection()
-    # Логины под impersonation дорогие — открываем по одному, но ждём ограниченно.
+        _close_quietly(conn)
     if not _reopen_lock.acquire(timeout=_login_timeout() + 5):
         raise ErpSqlError("ERP SQL занят открытием соединения, повторите запрос")
     try:
-        fresh = _open_connection()
+        return _open_connection()
     finally:
         _reopen_lock.release()
-    _tls.conn = fresh
-    _tls.at = time.monotonic()
-    return fresh
 
 
-def _release_connection(_conn: pyodbc.Connection) -> None:
-    """Keep pooled ODBC session alive (Windows impersonation is costly)."""
-    return
+def _release_connection(conn: pyodbc.Connection) -> None:
+    """Return the ODBC session to the pool (Windows impersonation is costly)."""
+    with _pool_lock:
+        if len(_idle_conns) < _MAX_IDLE_CONNS:
+            _idle_conns.append((conn, time.monotonic()))
+            return
+    _close_quietly(conn)
 
 
 def _row_department(row) -> str:
@@ -889,7 +889,7 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to load org structure: {exc}") from exc
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], list[ErpSubordinate]]:

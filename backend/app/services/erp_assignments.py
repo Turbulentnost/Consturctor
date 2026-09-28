@@ -412,7 +412,9 @@ def _user_names_erp_sql(keys: list[str]) -> dict[str, str]:
                     if guid and label:
                         names[guid] = label
         finally:
-            conn.close()
+            from app.clients.erp_sql import _release_connection
+
+            _release_connection(conn)
     except ErpSqlError:
         return {}
     return names

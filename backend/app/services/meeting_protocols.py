@@ -162,12 +162,44 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     return " and ".join(filters)
 
 
+# Without $select 1C returns every tabular part (with Файл_Base64Data): a month of protocols
+# exceeds the 60 s OData timeout. Nested person keys stay for the confidentiality filter.
+_PROTOCOL_LIST_SELECT = ",".join(
+    (
+        "Ref_Key",
+        "Number",
+        "Date",
+        "Posted",
+        "DeletionMark",
+        "Статус",
+        "ДатаСоздания",
+        "ДатаСледующегоСовещания",
+        "ВидСовещания",
+        "ВремяНачалаСовещания",
+        "ВремяОкончанияСовещания",
+        "КраткийСоставДокумента",
+        "Комментарий",
+        "Ответственный_Key",
+        "Руководитель_Key",
+        "Подготовил_Key",
+        "Подразделение_Key",
+        "ТемаСовещания/Description",
+        "ПрисутствующиеНаСовещании/Участник_Key",
+        "ПовесткаСовещания/Ответственный_Key",
+        "ПеременныеЗадачиПротокола/Ответственный_Key",
+        "ПеременныеЗадачиПротокола/Автор_Key",
+        "ПостоянныеЗадачиПротокола/Автор_Key",
+    )
+)
+
+
 def build_protocol_list_path(*, odata_filter: str, limit: int) -> str:
     """OData list path for Document_ТД_Протокол with topic expand."""
     filt = quote(odata_filter, safe="=,'")
     return (
         f"{PROTOCOL_ENTITY}?$format=json&$top={limit}"
         f"&$filter={filt}&$orderby=Date%20desc&$expand=ТемаСовещания"
+        f"&$select={_PROTOCOL_LIST_SELECT}"
     )
 
 
@@ -322,6 +354,10 @@ def list_meeting_protocols(
     from app.services.onec_access import OnecAccessDenied, filter_odata_result
     from app.services.onec_tools import OnecToolError, _fetch_odata_list
 
+    ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
+    if ref_key:
+        return _read_protocol_card(ref_key)
+
     kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or ""))
     start, end = _period(args)
     number = str(args.get("number") or args.get("Number") or "").strip()
@@ -404,6 +440,27 @@ def list_meeting_protocols(
     if raw.get("filter_relaxed"):
         result["filter_relaxed"] = True
     return result
+
+
+def _read_protocol_card(ref_key: str) -> dict[str, Any]:
+    """One protocol as an editable form (names instead of GUIDs). Read-only."""
+    from app.services.meeting_protocol_write import ProtocolWriteError, read_protocol_form
+    from app.services.onec_tools import OnecToolError
+
+    try:
+        protocol = read_protocol_form(ref_key)
+    except ProtocolWriteError as exc:
+        raise OnecToolError(str(exc)) from exc
+    return {
+        "protocol": protocol,
+        "protocols": [protocol],
+        "count": 1,
+        "source": "odata",
+        "readonly": True,
+        "entity": PROTOCOL_ENTITY,
+        "method": "odata_meeting_protocol_card",
+        "summary": f"протокол {protocol.get('number') or ref_key}: {protocol.get('status') or '—'}",
+    }
 
 
 def stub_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:

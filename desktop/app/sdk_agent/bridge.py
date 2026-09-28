@@ -306,45 +306,55 @@ class CursorSdkBridge:
                 run_params = [dict(item) for item in KPI_SDK_MODEL_PARAMS]
             else:
                 run_params = []
-            self._send(
-                process,
-                {
-                    "type": "run",
-                    "id": run_id,
-                    "prompt": prompt,
-                    "model": run_model,
-                    "modelParams": run_params,
-                    "cwd": run_cwd,
-                    "mode": (
-                        "interview"
-                        if interview
-                        else "design"
-                        if mode == "design"
-                        else "kpi"
-                        if (mode or "").strip().casefold() == "kpi"
-                        else "run"
-                    ),
-                    "writeDocument": bool(write_document),
-                    "useTools": bool(use_tools or write_document),
-                    "tools": (
-                        sdk_kpi_tool_specs()
-                        if tools is None and (mode or "").strip().casefold() == "kpi"
-                        else sdk_tool_specs()
-                        if tools is None
-                        else tools
-                    ),
-                    "resumeAgentId": agent_id or None,
-                    "workflowId": workflow_id,
-                    "restrictBuiltins": bool(restrict_builtins),
-                    "stopOnKpiList": bool(stop_on_kpi_list),
-                    "kpiAllowRead": bool(kpi_allow_read),
-                    "images": [
-                        item
-                        for item in (images or [])
-                        if isinstance(item, dict) and (item.get("path") or item.get("data"))
-                    ],
-                },
-            )
+            try:
+                self._send(
+                    process,
+                    {
+                        "type": "run",
+                        "id": run_id,
+                        "prompt": prompt,
+                        "model": run_model,
+                        "modelParams": run_params,
+                        "cwd": run_cwd,
+                        "mode": (
+                            "interview"
+                            if interview
+                            else "design"
+                            if mode == "design"
+                            else "kpi"
+                            if (mode or "").strip().casefold() == "kpi"
+                            else "run"
+                        ),
+                        "writeDocument": bool(write_document),
+                        "useTools": bool(use_tools or write_document),
+                        "tools": (
+                            sdk_kpi_tool_specs()
+                            if tools is None and (mode or "").strip().casefold() == "kpi"
+                            else sdk_tool_specs()
+                            if tools is None
+                            else tools
+                        ),
+                        "resumeAgentId": agent_id or None,
+                        "workflowId": workflow_id,
+                        "restrictBuiltins": bool(restrict_builtins),
+                        "stopOnKpiList": bool(stop_on_kpi_list),
+                        "kpiAllowRead": bool(kpi_allow_read),
+                        "images": [
+                            item
+                            for item in (images or [])
+                            if isinstance(item, dict) and (item.get("path") or item.get("data"))
+                        ],
+                    },
+                )
+            except CursorSdkError as exc:
+                # The runner died before reading the task; its stderr holds the reason.
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                stderr_thread.join(timeout=2)
+                err = "\n".join(stderr_lines[-20:]).strip()
+                raise CursorSdkError(err or str(exc)) from exc
             assert process.stdout is not None
             # "assistant" events are raw stream deltas of one message: join them
             # as-is (no strip / separators) or words get split in half.
@@ -542,8 +552,11 @@ class CursorSdkBridge:
         if process.stdin is None:
             raise CursorSdkError("Cursor SDK runner stdin закрыт")
         with self._stdin_lock:
-            process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            process.stdin.flush()
+            try:
+                process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                process.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                raise CursorSdkError(f"Cursor SDK runner завершился: {exc}") from exc
 
     def _reap_tool_workers(self) -> None:
         with self._workers_lock:
@@ -729,17 +742,21 @@ class CursorSdkBridge:
                     publish_result_files(result, tool=tool, workflow_id=workflow_id)
                 except Exception:
                     pass
-                try:
-                    self._after_tool_result(tool, result, workflow_id)
-                except Exception:
-                    pass
                 result = self._externalize_large_result(
                     tool=tool,
                     request_id=request_id,
                     result=result,
                     cwd=cwd,
                 )
+                # Unblock the SDK before uploading the file. A slow backend
+                # must not turn a finished export into "Tool result timeout".
                 box["result"] = result
+                done.set()
+                try:
+                    self._after_tool_result(tool, result, workflow_id)
+                except Exception:
+                    pass
+                return
             except Exception as exc:  # noqa: BLE001
                 box["error"] = exc
             finally:

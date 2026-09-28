@@ -203,7 +203,9 @@ export function AssignmentsRegistryTable({
   emptyText,
   selectedId,
   onSelectRow,
-  stateKey = ''
+  stateKey = '',
+  checkedIds,
+  onToggleChecked
 }: {
   rows: AssignmentRegistryRow[]
   loading?: boolean
@@ -212,6 +214,8 @@ export function AssignmentsRegistryTable({
   onSelectRow?: (row: AssignmentRegistryRow) => void
   /** Ключ sessionStorage для сохранения сортировки и скрытых столбцов. */
   stateKey?: string
+  checkedIds?: ReadonlySet<string>
+  onToggleChecked?: (row: AssignmentRegistryRow, checked: boolean) => void
 }): React.JSX.Element {
   const initial = useMemo(() => readTableState(stateKey), [stateKey])
   const [sort, setSort] = useState<SortState>(initial.sort)
@@ -280,6 +284,19 @@ export function AssignmentsRegistryTable({
       >
         <thead>
           <tr>
+            {onToggleChecked ? (
+              <th className="registry-th registry-th--check">
+                <input
+                  type="checkbox"
+                  aria-label="Выбрать все поручения на экране"
+                  checked={sortedRows.length > 0 && sortedRows.every((row) => checkedIds?.has(row.id))}
+                  onChange={(event) => {
+                    const on = event.target.checked
+                    for (const row of sortedRows) onToggleChecked(row, on)
+                  }}
+                />
+              </th>
+            ) : null}
             {ASSIGNMENT_REGISTRY_COLUMNS.map((col) => {
               if (collapsed.has(col.id)) {
                 return (
@@ -349,7 +366,7 @@ export function AssignmentsRegistryTable({
         <tbody>
           {loading && !rows.length ? (
             <tr>
-              <td colSpan={ASSIGNMENT_REGISTRY_COLUMNS.length} className="registry-table-status">
+              <td colSpan={ASSIGNMENT_REGISTRY_COLUMNS.length + (onToggleChecked ? 1 : 0)} className="registry-table-status">
                 <span className="registry-table-status-spin" aria-hidden>
                   <span className="spinner" />
                 </span>
@@ -358,7 +375,7 @@ export function AssignmentsRegistryTable({
             </tr>
           ) : !sortedRows.length ? (
             <tr>
-              <td colSpan={ASSIGNMENT_REGISTRY_COLUMNS.length} className="registry-table-status">
+              <td colSpan={ASSIGNMENT_REGISTRY_COLUMNS.length + (onToggleChecked ? 1 : 0)} className="registry-table-status">
                 {emptyText || 'Нет поручений по выбранным условиям'}
               </td>
             </tr>
@@ -377,6 +394,16 @@ export function AssignmentsRegistryTable({
                     .join(' ')}
                   onClick={() => onSelectRow?.(row)}
                 >
+                  {onToggleChecked ? (
+                    <td className="registry-td registry-td--check" onClick={(event) => event.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Выбрать поручение ${row.number}`}
+                        checked={Boolean(checkedIds?.has(row.id))}
+                        onChange={(event) => onToggleChecked(row, event.target.checked)}
+                      />
+                    </td>
+                  ) : null}
                   {ASSIGNMENT_REGISTRY_COLUMNS.map((col) => {
                     if (collapsed.has(col.id)) {
                       return <td key={col.id} className="registry-td registry-td--collapsed" />

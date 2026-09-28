@@ -24,11 +24,19 @@ function description(row: TodayTaskDetailRow): string {
 export function TodayTaskDetailModal({
   row,
   onClose,
-  onAskOrchestrator
+  onAskOrchestrator,
+  actions = [],
+  actionBusy = false,
+  actionNote = '',
+  onAction
 }: {
   row: TodayTaskDetailRow | null
   onClose: () => void
   onAskOrchestrator?: (message: string, appContext: string) => void
+  actions?: { id: string; label: string }[]
+  actionBusy?: boolean
+  actionNote?: string
+  onAction?: (actionId: string) => void
 }): React.JSX.Element | null {
   const titleId = useId()
 
@@ -109,6 +117,18 @@ export function TodayTaskDetailModal({
         </div>
 
         <div className="today-task-detail-actions">
+          {actions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className="btn-primary"
+              disabled={actionBusy}
+              onClick={() => onAction?.(action.id)}
+            >
+              {actionBusy ? 'Отправляем…' : action.label}
+            </button>
+          ))}
+          {actionNote ? <p className="spec-v04-muted">{actionNote}</p> : null}
           <button
             type="button"
             className="btn-primary"

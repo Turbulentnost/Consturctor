@@ -194,12 +194,22 @@ def list_agent_library(db: Session, *, user_id: str) -> dict:
 def _copy_files(db: Session, *, src_id: str, dst_id: str) -> int:
     count = 0
     existing = {
-        (item.filename, item.scope or "")
-        for item in db.query(WorkflowFile).filter(WorkflowFile.workflow_id == dst_id).all()
+        (filename, scope or "")
+        for filename, scope in db.query(WorkflowFile.filename, WorkflowFile.scope)
+        .filter(WorkflowFile.workflow_id == dst_id)
+        .all()
     }
-    for item in db.query(WorkflowFile).filter(WorkflowFile.workflow_id == src_id).all():
-        key = (item.filename, item.scope or "")
-        if key in existing:
+    sources = (
+        db.query(WorkflowFile.id, WorkflowFile.filename, WorkflowFile.scope)
+        .filter(WorkflowFile.workflow_id == src_id)
+        .all()
+    )
+    for file_id, filename, scope in sources:
+        if (filename, scope or "") in existing:
+            continue
+        # One row at a time: loading every blob in one result can exhaust libpq memory.
+        item = db.get(WorkflowFile, file_id)
+        if item is None:
             continue
         db.add(
             WorkflowFile(

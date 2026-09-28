@@ -2,6 +2,8 @@ import { useEffect, useId, useState } from 'react'
 import { createPortal } from 'react-dom'
 import mammoth from 'mammoth'
 import { api } from '../../api/client'
+import { fetchProtocolForm } from '../../workplace/meetingProtocolCreate'
+import { protocolPrintTitle, renderProtocolHtml } from '../../workplace/meetingProtocolPrint'
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '')
@@ -91,19 +93,24 @@ export function MeetingReportModal({
   open,
   onClose,
   reportUrl,
-  reportName
+  reportName,
+  protocolRefKey = ''
 }: {
   open: boolean
   onClose: () => void
+  /** docx from the agent run; when empty, the protocol is rendered from 1C data (protocolRefKey). */
   reportUrl: string
   reportName: string
+  protocolRefKey?: string
 }): React.JSX.Element | null {
   const titleId = useId()
   const [html, setHtml] = useState('')
+  const [onecTitle, setOnecTitle] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [printBusy, setPrintBusy] = useState(false)
   const [printError, setPrintError] = useState('')
+  const fromOnec = !reportUrl && Boolean(protocolRefKey)
 
   useEffect(() => {
     if (!open) return
@@ -115,8 +122,9 @@ export function MeetingReportModal({
   }, [open, printBusy, onClose])
 
   useEffect(() => {
-    if (!open || !reportUrl) {
+    if (!open || (!reportUrl && !protocolRefKey)) {
       setHtml('')
+      setOnecTitle('')
       setError('')
       return
     }
@@ -124,8 +132,17 @@ export function MeetingReportModal({
     setLoading(true)
     setError('')
     setHtml('')
+    setOnecTitle('')
     void (async () => {
       try {
+        if (!reportUrl) {
+          const card = await fetchProtocolForm(protocolRefKey)
+          if (cancelled) return
+          if (!card.ok) throw new Error(card.error)
+          setOnecTitle(protocolPrintTitle(card.card))
+          setHtml(renderProtocolHtml(card.card))
+          return
+        }
         const token = api.getToken()
         const buffer = await fetchReportBytes(reportUrl, token)
         if (cancelled) return
@@ -142,11 +159,13 @@ export function MeetingReportModal({
     return () => {
       cancelled = true
     }
-  }, [open, reportUrl])
+  }, [open, reportUrl, protocolRefKey])
 
   if (!open) return null
 
-  const title = (reportName || 'Протокол совещания').replace(/\.docx$/i, '')
+  const title = fromOnec
+    ? onecTitle || 'Протокол совещания'
+    : (reportName || 'Протокол совещания').replace(/\.docx$/i, '')
 
   const printPdf = async (): Promise<void> => {
     if (printBusy || !html) return
@@ -194,16 +213,18 @@ export function MeetingReportModal({
             <button type="button" className="btn-primary" onClick={() => void printPdf()} disabled={printBusy || !html || Boolean(error)}>
               {printBusy ? 'Печать…' : 'Печать в PDF'}
             </button>
-            <button type="button" className="btn-ghost" onClick={downloadDocx} disabled={!reportUrl}>
-              Скачать docx
-            </button>
+            {reportUrl ? (
+              <button type="button" className="btn-ghost" onClick={downloadDocx}>
+                Скачать docx
+              </button>
+            ) : null}
             <button type="button" className="btn-light" onClick={onClose} disabled={printBusy}>
               Закрыть
             </button>
           </div>
         </div>
         {printError ? <p className="meeting-report-error">{printError}</p> : null}
-        {loading ? <p className="spec-v04-muted">Загрузка отчёта…</p> : null}
+        {loading ? <p className="spec-v04-muted">{fromOnec ? 'Читаем протокол из 1С…' : 'Загрузка отчёта…'}</p> : null}
         {error ? <p className="meeting-report-error">{error}</p> : null}
         {!loading && !error && html ? (
           <div className="meeting-report-body" dangerouslySetInnerHTML={{ __html: html }} />

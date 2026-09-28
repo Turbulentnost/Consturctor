@@ -16,6 +16,8 @@ import {
 export type ExtensionTabContext = {
   user: UserProfile
   onAskOrchestrator: (message: string, appContext: string) => void
+  /** Open the agent run page and send the task message to that agent. */
+  onRunAgent: (workflowId: string, title: string, message: string) => void
   onNavigate: (pageKey: PageKey) => void
   onOpenPassport: (workflowId: string, title: string, tab?: PassportTab) => void
 }
@@ -48,8 +50,8 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
       'Журнал поручений АСТ00: плитки, фильтр по датам, таблица с сортировкой и проверка незакрытых поручений через ИИ-агента.',
     positionGroups: ['director_assistants'],
     canAccess: canUseAssignmentsRegistry,
-    renderTab: ({ user, onAskOrchestrator }) => (
-      <AssignmentsRegistryGridTab user={user} onAskOrchestrator={onAskOrchestrator} />
+    renderTab: ({ user, onRunAgent }) => (
+      <AssignmentsRegistryGridTab user={user} onRunAgent={onRunAgent} />
     )
   },
   {

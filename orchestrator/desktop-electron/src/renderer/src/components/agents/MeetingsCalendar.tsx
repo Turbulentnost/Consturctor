@@ -11,7 +11,12 @@ import {
   STATUS_STYLE,
   type CalendarView
 } from '../../utils/calendar'
-import { isOutlookFolderOwner, parseMeetingTime, type MeetingEvent } from '../../utils/outlookMeetings'
+import {
+  isOutlookFolderOwner,
+  meetingInstanceKey,
+  parseMeetingTime,
+  type MeetingEvent
+} from '../../utils/outlookMeetings'
 
 const HEADER = 40
 const HOUR_H = 56
@@ -273,7 +278,7 @@ function WeekGrid({ days, items, onSelect, protocolMarks }: GridProps): React.JS
               height: CARD_H
             }}
             onClick={onSelect}
-            protocolNumber={protocolMarks?.get(item.meeting.id)?.number}
+            protocolNumber={protocolMarks?.get(meetingInstanceKey(item.meeting))?.number}
           />
         ))
       })}
@@ -325,7 +330,7 @@ function MonthGrid({ anchor, items, onSelect, protocolMarks }: MonthGridProps): 
                   style={{ position: 'relative' }}
                   onClick={onSelect}
                   compact
-                  protocolNumber={protocolMarks?.get(item.meeting.id)?.number}
+                  protocolNumber={protocolMarks?.get(meetingInstanceKey(item.meeting))?.number}
                 />
               ))}
               {leftover > 0 && <div className="cal-month-more">+{leftover}</div>}

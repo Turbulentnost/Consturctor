@@ -88,8 +88,19 @@ async def lifespan(_app: FastAPI):
     )
     scheduler_tasks: list[asyncio.Task] = []
     try:
-        init_db()
-        logger.info("App Postgres schema ready")
+        db_ready = True
+        try:
+            init_db()
+            logger.info("App Postgres schema ready")
+        except Exception:
+            if not settings.app_db_optional:
+                raise
+            db_ready = False
+            logger.warning(
+                "App Postgres unavailable — starting without it (APP_DB_OPTIONAL=1): %s",
+                settings.database_url.split("@")[-1],
+                exc_info=True,
+            )
         from app.api.v1.notifications import board_live_subscriber, notification_scheduler
         from app.services.triggers.tick import tick_due_triggers
         from app.modules.chat.realtime import dispatch_event
@@ -158,14 +169,15 @@ async def lifespan(_app: FastAPI):
                     logger.exception("Position KPI daily cache tick failed")
                 await asyncio.sleep(300)
 
-        scheduler_tasks = [
-            asyncio.create_task(platform_task_scheduler()),
-            asyncio.create_task(notification_scheduler()),
-            asyncio.create_task(board_live_subscriber()),
-            asyncio.create_task(trigger_scheduler()),
-            asyncio.create_task(kpi_scheduler()),
-            asyncio.create_task(position_kpi_cache_scheduler()),
-        ]
+        if db_ready:
+            scheduler_tasks = [
+                asyncio.create_task(platform_task_scheduler()),
+                asyncio.create_task(notification_scheduler()),
+                asyncio.create_task(board_live_subscriber()),
+                asyncio.create_task(trigger_scheduler()),
+                asyncio.create_task(kpi_scheduler()),
+                asyncio.create_task(position_kpi_cache_scheduler()),
+            ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")
         raise

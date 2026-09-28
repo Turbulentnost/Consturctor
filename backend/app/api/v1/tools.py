@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -116,9 +117,8 @@ def _dispatch_server_tool(
                 actor_user_id=auth.user_id,
                 actor_fio=auth.fio or "",
             )
-    except (ImapToolError, OnecToolError, TurboProjectError, ArtifactError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except RuntimeError as exc:
+    except (ImapToolError, OnecToolError, TurboProjectError, ArtifactError, RuntimeError) as exc:
+        logger.warning("tool %s failed: %s", tool_name, exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if tool_name == "onec.download_artifact" and isinstance(result, dict):
         result = _artifact_invoke_view(result)
@@ -159,6 +159,10 @@ async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
         "mode": "real" if odata_configured() else "stub",
         "tools": sorted(ONEC_TOOLS),
     }
+
+
+# Long 1C/OData calls must not occupy the default pool: login and the FIO list use it.
+_TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-invoke")
 
 
 def _bearer_token(request: Request) -> str:
@@ -211,7 +215,13 @@ async def _invoke_with_gateway_fallback(
                 raise
 
     try:
-        return await asyncio.to_thread(_dispatch_server_tool, tool_name, arguments, auth)
+        return await asyncio.get_running_loop().run_in_executor(
+            _TOOL_EXECUTOR,
+            _dispatch_server_tool,
+            tool_name,
+            arguments,
+            auth,
+        )
     except HTTPException as exc:
         if skip_gateway_first:
             logger.warning("local tool %s failed: %s", tool_name, exc.detail)

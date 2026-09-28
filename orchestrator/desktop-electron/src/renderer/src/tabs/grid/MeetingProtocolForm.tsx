@@ -1,30 +1,40 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Trash2, X } from 'lucide-react'
 import { api } from '../../api/client'
-import type { MeetingEvent } from '../../utils/outlookMeetings'
+import { meetingInstanceKey, type MeetingEvent } from '../../utils/outlookMeetings'
 import {
   createProtocolInOneC,
   draftFromMeeting,
+  draftFromOnecForm,
+  fetchProtocolForm,
+  listMeetingRooms,
   newProtocolRowKey,
   searchMeetingThemes,
+  updateProtocolInOneC,
+  type MeetingRoom,
+  type OnecProtocolForm,
   type ProtocolCreateDraft,
   type ProtocolCreateResult,
   type ThemeHint
 } from '../../workplace/meetingProtocolCreate'
+
+const MISSING_ROOM = '__missing_room__'
 
 function FioField({
   label,
   value,
   onChange,
   listId,
-  placeholder
+  placeholder,
+  disabled
 }: {
   label: string
   value: string
   onChange: (value: string) => void
   listId: string
   placeholder?: string
+  disabled?: boolean
 }): React.JSX.Element {
   return (
     <label className="registry-create-field">
@@ -35,6 +45,7 @@ function FioField({
         list={listId}
         value={value}
         placeholder={placeholder || 'ФИО из 1С'}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
@@ -45,32 +56,68 @@ export function MeetingProtocolForm({
   open,
   meeting,
   actorFio,
+  mode = 'create',
+  refKey = '',
   onClose,
   onCreated
 }: {
   open: boolean
   meeting: MeetingEvent
   actorFio: string
+  /** create — новый черновик из данных встречи; edit — загрузить протокол refKey из 1С и сохранить (PATCH). */
+  mode?: 'create' | 'edit'
+  refKey?: string
   onClose: () => void
   onCreated: (result: ProtocolCreateResult) => void
 }): React.JSX.Element | null {
   const titleId = useId()
   const fioListId = useId()
+  const isEdit = mode === 'edit'
   const [draft, setDraft] = useState<ProtocolCreateDraft>(() => draftFromMeeting(meeting, actorFio))
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [card, setCard] = useState<OnecProtocolForm | null>(null)
   const [error, setError] = useState('')
   const [done, setDone] = useState<ProtocolCreateResult | null>(null)
   const [fioHints, setFioHints] = useState<string[]>([])
   const [themes, setThemes] = useState<ThemeHint[]>([])
+  const [rooms, setRooms] = useState<MeetingRoom[]>([])
+  const readOnly = isEdit && card !== null && !card.editable
+  // Outlook polling hands a fresh `meeting` object every refresh; reloading on identity would wipe edits.
+  const meetingRef = useRef(meeting)
+  meetingRef.current = meeting
+  const meetingKey = meetingInstanceKey(meeting)
 
   useEffect(() => {
     if (!open) return
-    setDraft(draftFromMeeting(meeting, actorFio))
+    setDraft(draftFromMeeting(meetingRef.current, actorFio))
     setBusy(false)
     setError('')
     setDone(null)
     setThemes([])
-  }, [open, meeting, actorFio])
+    setCard(null)
+    setLoadError('')
+    if (!isEdit) {
+      setLoading(false)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    void fetchProtocolForm(refKey).then((result) => {
+      if (cancelled) return
+      setLoading(false)
+      if (!result.ok) {
+        setLoadError(result.error)
+        return
+      }
+      setCard(result.card)
+      setDraft(draftFromOnecForm(result.card))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, meetingKey, actorFio, isEdit, refKey])
 
   useEffect(() => {
     if (!open) return
@@ -78,13 +125,23 @@ export function MeetingProtocolForm({
     void api.searchUsers('').then((items) => {
       if (!cancelled) setFioHints(items.slice(0, 200))
     })
+    void listMeetingRooms().then((items) => {
+      if (!cancelled) setRooms(items)
+    })
     return () => {
       cancelled = true
     }
   }, [open])
 
   useEffect(() => {
-    if (!open || done) return
+    const name = draft.room.trim().toLowerCase()
+    if (!open || draft.roomKey || !name || !rooms.length) return
+    const hit = rooms.find((room) => room.name.toLowerCase() === name)
+    if (hit) setDraft((current) => (current.roomKey ? current : { ...current, roomKey: hit.key, room: hit.name }))
+  }, [open, rooms, draft.room, draft.roomKey])
+
+  useEffect(() => {
+    if (!open || done || readOnly) return
     const query = draft.topic.trim()
     if (query.length < 3 || draft.themeKey) {
       setThemes([])
@@ -100,7 +157,7 @@ export function MeetingProtocolForm({
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [open, done, draft.topic, draft.themeKey])
+  }, [open, done, readOnly, draft.topic, draft.themeKey])
 
   useEffect(() => {
     if (!open) return
@@ -118,21 +175,37 @@ export function MeetingProtocolForm({
   }
 
   const submit = async (): Promise<void> => {
-    if (busy) return
+    if (busy || readOnly) return
     setError('')
     setBusy(true)
     try {
-      const result = await createProtocolInOneC(draft, meeting.id)
+      const result = isEdit
+        ? await updateProtocolInOneC(draft, card?.refKey || refKey, meeting)
+        : await createProtocolInOneC(draft, meeting)
       if (!result.ok) {
-        setError(result.error || 'Не удалось создать протокол')
+        setError(result.error || (isEdit ? 'Не удалось сохранить протокол' : 'Не удалось создать протокол'))
         return
       }
-      setDone(result)
-      onCreated(result)
+      const merged: ProtocolCreateResult = isEdit
+        ? { ...result, number: result.number || card?.number, refKey: result.refKey || card?.refKey || refKey }
+        : result
+      setDone(merged)
+      onCreated(merged)
     } finally {
       setBusy(false)
     }
   }
+
+  const title = isEdit ? 'Изменить протокол' : 'Протокол в 1С'
+  const subtitle = isEdit
+    ? card
+      ? readOnly
+        ? `Протокол ${card.number} проведён (статус «${card.status || 'Проведён'}») — правки только в 1С.`
+        : `Черновик ${card.number} (статус «${card.status || 'Подготовлен'}»). Разделы будут перезаписаны целиком.`
+      : 'Загрузка протокола из 1С…'
+    : 'Черновик документа «Протокол» (статус «Подготовлен»). Номер присвоит 1С, проведёт секретарь.'
+  const lock = busy || loading || readOnly
+  const roomMissing = !draft.roomKey && Boolean(draft.room.trim()) && rooms.length > 0
 
   return createPortal(
     <div className="modal-overlay registry-create-overlay" onClick={() => !busy && onClose()}>
@@ -145,20 +218,31 @@ export function MeetingProtocolForm({
         <header className="registry-create-head">
           <div className="registry-create-head-text">
             <div className="modal-title" id={titleId}>
-              Протокол в 1С
+              {title}
             </div>
-            <p className="registry-create-sub">
-              Черновик документа «Протокол» (статус «Подготовлен»). Номер присвоит 1С, проведёт секретарь.
-            </p>
+            <p className="registry-create-sub">{subtitle}</p>
           </div>
           <button type="button" className="registry-create-close" disabled={busy} onClick={onClose}>
             <X size={18} aria-hidden />
           </button>
         </header>
 
-        {done ? (
+        {loading ? (
           <div className="registry-create-body">
-            <p>{done.summary || `Создан протокол ${done.number || ''}`.trim()}</p>
+            <p className="meeting-protocol-hint">Читаем протокол из 1С…</p>
+          </div>
+        ) : loadError ? (
+          <div className="registry-create-body">
+            <p className="onec-reconnect-form-error">{loadError}</p>
+            <div className="modal-actions registry-create-foot">
+              <button type="button" className="btn-primary" onClick={onClose}>
+                Закрыть
+              </button>
+            </div>
+          </div>
+        ) : done ? (
+          <div className="registry-create-body">
+            <p>{done.summary || `${isEdit ? 'Сохранён' : 'Создан'} протокол ${done.number || ''}`.trim()}</p>
             {done.number ? (
               <p>
                 Номер: <b>{done.number}</b>
@@ -183,6 +267,7 @@ export function MeetingProtocolForm({
               ))}
             </datalist>
 
+            <fieldset className="meeting-protocol-fieldset" disabled={readOnly}>
             <section className="registry-create-section">
               <label className="registry-create-field registry-create-field--wide">
                 <span className="modal-label">Тема совещания *</span>
@@ -240,13 +325,33 @@ export function MeetingProtocolForm({
               </label>
               <label className="registry-create-field">
                 <span className="modal-label">Кабинет</span>
-                <input
+                <select
                   className="onec-reconnect-input"
-                  type="text"
-                  value={draft.room}
-                  placeholder="Помещение из 1С"
-                  onChange={(event) => patch({ room: event.target.value })}
-                />
+                  value={draft.roomKey || (roomMissing ? MISSING_ROOM : '')}
+                  disabled={!rooms.length && !draft.roomKey}
+                  onChange={(event) => {
+                    const hit = rooms.find((room) => room.key === event.target.value)
+                    patch(hit ? { roomKey: hit.key, room: hit.name } : { roomKey: '', room: '' })
+                  }}
+                >
+                  <option value="">{rooms.length ? '— не указан —' : 'Загрузка помещений из 1С…'}</option>
+                  {roomMissing ? (
+                    <option value={MISSING_ROOM} disabled>
+                      «{draft.room}» — нет в 1С
+                    </option>
+                  ) : null}
+                  {draft.roomKey && !rooms.some((room) => room.key === draft.roomKey) ? (
+                    <option value={draft.roomKey}>{draft.room || 'Помещение из 1С'}</option>
+                  ) : null}
+                  {rooms.map((room) => (
+                    <option key={room.key} value={room.key}>
+                      {room.name}
+                    </option>
+                  ))}
+                </select>
+                {roomMissing ? (
+                  <span className="meeting-protocol-hint">Помещения «{draft.room}» нет в 1С — выберите кабинет из списка</span>
+                ) : null}
               </label>
               <label className="registry-create-field">
                 <span className="modal-label">Дата следующего совещания</span>
@@ -584,16 +689,19 @@ export function MeetingProtocolForm({
                 onChange={(event) => patch({ comment: event.target.value })}
               />
             </label>
+            </fieldset>
 
             {error ? <p className="onec-reconnect-form-error">{error}</p> : null}
 
             <div className="modal-actions registry-create-foot">
               <button type="button" className="btn-light" disabled={busy} onClick={onClose}>
-                Отмена
+                {readOnly ? 'Закрыть' : 'Отмена'}
               </button>
-              <button type="button" className="btn-primary" disabled={busy} onClick={() => void submit()}>
-                {busy ? 'Создание…' : 'Создать в 1С'}
-              </button>
+              {readOnly ? null : (
+                <button type="button" className="btn-primary" disabled={lock} onClick={() => void submit()}>
+                  {busy ? (isEdit ? 'Сохранение…' : 'Создание…') : isEdit ? 'Сохранить в 1С' : 'Создать в 1С'}
+                </button>
+              )}
             </div>
           </div>
         )}

@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
 import type { RunEntry } from '../store/runs'
 import { useRuns } from '../store/runs'
-import type { MeetingEvent } from '../utils/outlookMeetings'
+import { meetingInstanceKey, type MeetingEvent } from '../utils/outlookMeetings'
 
 export type ProtocolRunStatus = 'running' | 'done' | 'error'
 
@@ -30,7 +30,7 @@ function storageKey(userId: string): string {
 }
 
 export function meetingProtocolKey(meeting: MeetingEvent): string {
-  return `${meeting.id}|${meeting.start}`
+  return meetingInstanceKey(meeting)
 }
 
 function readBucket(userId: string): ProtocolBucket {
@@ -147,6 +147,17 @@ function deriveStatus(entry: RunEntry | undefined, prev: ProtocolRunStatus): Pro
   return prev
 }
 
+/** Live agent feed is one slot per workflow. Show it only on the meeting that started it. */
+export function runBelongsToMeeting(
+  record: MeetingProtocolRecord | null,
+  entry: RunEntry | undefined
+): boolean {
+  if (!record || !entry) return false
+  const local = (record.runId || '').trim()
+  const active = (entry.state.activeRunId || '').trim()
+  return Boolean(local && active && local === active)
+}
+
 export type MeetingProtocolHook = {
   record: MeetingProtocolRecord | null
   runEntry: RunEntry | undefined
@@ -159,6 +170,7 @@ export function useMeetingProtocol(
   userId: string
 ): MeetingProtocolHook {
   const runs = useRuns()
+  const startedRunIds = useRef(new Set<string>())
   const meetingKey = meeting ? meetingProtocolKey(meeting) : ''
   const [record, setRecord] = useState<MeetingProtocolRecord | null>(() =>
     meeting ? loadMeetingProtocol(userId, meeting) : null
@@ -169,7 +181,8 @@ export function useMeetingProtocol(
   }, [meetingKey, userId, meeting])
 
   const workflowId = record?.workflowId || ''
-  const runEntry = workflowId ? runs.entries[workflowId] : undefined
+  const sharedEntry = workflowId ? runs.entries[workflowId] : undefined
+  const runEntry = runBelongsToMeeting(record, sharedEntry) ? sharedEntry : undefined
 
   const persist = useCallback(
     (next: MeetingProtocolRecord) => {
@@ -182,6 +195,8 @@ export function useMeetingProtocol(
 
   const rememberStart = useCallback(
     (next: MeetingProtocolRecord) => {
+      const runId = (next.runId || '').trim()
+      if (runId) startedRunIds.current.add(runId)
       persist(next)
     },
     [persist]
@@ -233,11 +248,51 @@ export function useMeetingProtocol(
     [patchRecord]
   )
 
-  // Sync status / backendRunId from live run store.
+  const finishingOwnRun =
+    Boolean(record?.runId) &&
+    record?.status === 'running' &&
+    (startedRunIds.current.has(record.runId) || Boolean(record.runId)) &&
+    Boolean(sharedEntry) &&
+    !sharedEntry?.state.running &&
+    !sharedEntry?.state.activeRunId
+
+  // После перезапуска приложения startedRunIds пуст — снимаем залипший «running».
   useEffect(() => {
-    if (!record || !runEntry) return
-    const nextBackend = runEntry.backendRunId || record.backendRunId
-    const nextStatus = deriveStatus(runEntry, record.status)
+    if (!record || record.status !== 'running') return
+    const sharedLive =
+      Boolean(sharedEntry?.state.running) ||
+      Boolean(sharedEntry?.state.pendingHitl) ||
+      Boolean(sharedEntry?.state.pendingQuestion)
+    const oursLive = sharedLive && Boolean(runEntry)
+    if (oursLive) return
+    if (sharedEntry && (finishingOwnRun || record.runId)) {
+      const next = deriveStatus(sharedEntry, record.status)
+      const settled = next === 'running' && !sharedEntry.state.running ? 'done' : next
+      if (settled !== record.status) {
+        patchRecord({ status: settled })
+      }
+      return
+    }
+    if (!sharedLive) {
+      patchRecord({ status: 'done' })
+    }
+  }, [
+    record?.status,
+    record?.runId,
+    finishingOwnRun,
+    runEntry,
+    sharedEntry?.state.running,
+    sharedEntry?.state.pendingHitl?.requestId,
+    sharedEntry?.state.pendingQuestion?.requestId,
+    patchRecord
+  ])
+
+  // Sync status / backendRunId only for the meeting that started this run.
+  useEffect(() => {
+    if (!record || !sharedEntry || (!runEntry && !finishingOwnRun)) return
+    const source = runEntry || sharedEntry
+    const nextBackend = source.backendRunId || record.backendRunId
+    const nextStatus = deriveStatus(source, record.status)
     if (nextBackend === record.backendRunId && nextStatus === record.status) return
     const next = {
       ...record,
@@ -255,6 +310,9 @@ export function useMeetingProtocol(
     record?.workflowId,
     record?.backendRunId,
     record?.status,
+    finishingOwnRun,
+    sharedEntry?.backendRunId,
+    sharedEntry?.state.running,
     runEntry?.backendRunId,
     runEntry?.state.running,
     runEntry?.state.error,
@@ -273,6 +331,7 @@ export function useMeetingProtocol(
       if ((event.workflowId || '').trim() !== workflowId) return
       const current = meeting ? loadMeetingProtocol(userId, meeting) : null
       if (!current?.workflowId || current.workflowId !== workflowId) return
+      if (sharedEntry && !runBelongsToMeeting(current, sharedEntry)) return
       const eventRun = String(event.runId || '').trim()
       if (eventRun) {
         const ours = [current.backendRunId, current.runId].map((v) => String(v || '').trim()).filter(Boolean)
@@ -281,7 +340,7 @@ export function useMeetingProtocol(
       }
       void refreshReportFiles(current)
     })
-  }, [workflowId, meeting, userId, refreshReportFiles])
+  }, [workflowId, meeting, userId, refreshReportFiles, sharedEntry])
 
   // Restore on mount / meeting change: status from runs + files list.
   useEffect(() => {
@@ -290,6 +349,7 @@ export function useMeetingProtocol(
     const snapshot = record
     void (async () => {
       if (cancelled) return
+      if (sharedEntry && !runBelongsToMeeting(snapshot, sharedEntry)) return
       if (runEntry) {
         const nextStatus = deriveStatus(runEntry, snapshot.status)
         const nextBackend = runEntry.backendRunId || snapshot.backendRunId

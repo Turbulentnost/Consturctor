@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+psycopg://constructor:constructor@192.168.1.157:5435/constructor"
     )
+    # Dev only: start without app Postgres (1C/erp_pm tools work, DB-backed routes fail).
+    app_db_optional: bool = False
     redis_url: str = "redis://192.168.1.157:6382/0"
     rabbitmq_url: str = "amqp://constructor:constructor@127.0.0.1:5672/"
     chat_support_user_ids: str = ""

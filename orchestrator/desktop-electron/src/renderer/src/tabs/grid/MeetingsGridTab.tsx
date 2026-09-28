@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { api } from '../../api/client'
+import { createPortal } from 'react-dom'
+import { Mic, PenLine } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { toolLabel } from '../../components/agentfeed/labels'
 import { useRuns } from '../../store/runs'
@@ -17,6 +20,7 @@ import {
   formatMeetingStamp,
   isOutlookFolderOwner,
   meetingFormatHint,
+  meetingInstanceKey,
   type MeetingEvent
 } from '../../utils/outlookMeetings'
 import { addDays, mondayOf, type CalendarView } from '../../utils/calendar'
@@ -24,13 +28,38 @@ import { countMeetingTiles, meetingMatchesTile, toggleSimpleTile } from '../../w
 import { MeetingsCalendar } from '../../components/agents/MeetingsCalendar'
 import { GridFilterBar } from './gridFilters'
 import { usePageSearch } from '../../layout/pageSearchContext'
-import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
-import { isoTimestampInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
+import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { MeetingReportModal } from './MeetingReportModal'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
-import { rememberProtocolDocument, useProtocolMarks, type ProtocolMark } from '../../workplace/meetingProtocolMarks'
+import {
+  PROTOCOL_CREATED_EVENT,
+  rememberProtocolDocument,
+  useProtocolMarks,
+  type ProtocolMark
+} from '../../workplace/meetingProtocolMarks'
 
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'wma', 'amr', 'webm', 'mp4', 'mkv']
+
+/** File browsing the agent does while drafting — not the protocol itself. */
+const NOISY_TOOLS = new Set([
+  'Read',
+  'read',
+  'Grep',
+  'grep',
+  'Glob',
+  'glob',
+  'LS',
+  'ls',
+  'Edit',
+  'edit',
+  'Write',
+  'write',
+  'Delete',
+  'Shell',
+  'shell',
+  'SemanticSearch',
+  'semSearch'
+])
 
 function meetingField(value: string | undefined): string {
   const text = (value || '').trim()
@@ -54,11 +83,14 @@ function MeetingDetailCard({
   protocol?: ProtocolMark
 }): React.JSX.Element {
   const runs = useRuns()
-  const { record, runEntry, rememberStart } = useMeetingProtocol(meeting, userId)
+  const { record, runEntry, rememberStart, patchRecord } = useMeetingProtocol(meeting, userId)
+  const [resolvedProtocolRef, setResolvedProtocolRef] = useState('')
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
   const [reportOpen, setReportOpen] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
+  const [formMode, setFormMode] = useState<'create' | 'edit'>('create')
+  const [chooserOpen, setChooserOpen] = useState(false)
 
   const attendees = (meeting.attendees || '')
     .split(/[,;]/)
@@ -66,22 +98,44 @@ function MeetingDetailCard({
     .filter(Boolean)
 
   const state = runEntry?.state
-  const isRunning =
-    record?.status === 'running' ||
-    Boolean(state?.running) ||
-    Boolean(state?.pendingHitl) ||
-    Boolean(state?.pendingQuestion)
+  const agentLiveOnThisMeeting =
+    Boolean(runEntry) &&
+    (Boolean(state?.running) || Boolean(state?.pendingHitl) || Boolean(state?.pendingQuestion))
+  const isRunning = agentLiveOnThisMeeting
 
   const toolSteps = useMemo(() => {
+    const items = (state?.items || []).filter(
+      (item): item is Extract<typeof item, { kind: 'tool' }> => item.kind === 'tool'
+    )
+    const kept = items.filter((item) => !NOISY_TOOLS.has(item.tool) || item.error)
+    const folded: { id: string; label: string; done: boolean; error: boolean; count: number }[] = []
+    for (const item of kept) {
+      const label = toolLabel(item.tool) || item.title || item.tool
+      const last = folded[folded.length - 1]
+      if (last && last.label === label && last.error === item.error) {
+        last.count += 1
+        last.done = last.done && item.done
+        last.id = item.id
+        continue
+      }
+      folded.push({ id: item.id, label, done: item.done, error: item.error, count: 1 })
+    }
+    return folded.slice(-8)
+  }, [state?.items])
+
+  const createdProtocol = useMemo(() => {
     const items = state?.items || []
-    return items
-      .filter((item): item is Extract<typeof item, { kind: 'tool' }> => item.kind === 'tool')
-      .map((item) => ({
-        id: item.id,
-        label: toolLabel(item.tool) || item.title || item.tool,
-        done: item.done,
-        error: item.error
-      }))
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index]
+      if (item.kind !== 'tool' || item.tool !== 'onec.meeting_protocol_write' || !item.done || item.error) {
+        continue
+      }
+      const result = item.result || {}
+      const number = String(result.number || '').trim()
+      const refKey = String(result.ref_key || result.erp_document_id || '').trim()
+      if (number || refKey) return { number, refKey }
+    }
+    return null
   }, [state?.items])
 
   const attachAudio = useCallback(async () => {
@@ -108,7 +162,7 @@ function MeetingDetailCard({
       rememberStart({
         workflowId,
         runId: runId || '',
-        backendRunId: runs.entries[workflowId]?.backendRunId || '',
+        backendRunId: '',
         status: 'running',
         audioPath,
         audioName: basename(audioPath),
@@ -124,7 +178,66 @@ function MeetingDetailCard({
     }
   }, [busy, isRunning, meeting, rememberStart, runs])
 
-  const canOpenReport = record?.status === 'done' && Boolean(record.reportFileId)
+  const hasDocx = Boolean(record?.reportFileId) && (record?.status === 'done' || Boolean(protocol?.number))
+  const protocolRefKey = (resolvedProtocolRef || protocol?.refKey || '').trim()
+  const hasProtocol = Boolean(protocolRefKey || protocol?.number)
+  const canOpenReport = hasDocx || Boolean(protocolRefKey)
+
+  useEffect(() => {
+    setResolvedProtocolRef('')
+  }, [meeting.id, meeting.start, protocol?.refKey, protocol?.number])
+
+  useEffect(() => {
+    const number = (protocol?.number || '').trim()
+    if ((protocol?.refKey || '').trim() || !number) return
+    let cancelled = false
+    void api
+      .invokeServerTool(
+        'onec.meeting_protocols',
+        {
+          meeting_kind: 'any',
+          number,
+          review_only: false,
+          include_closed: true,
+          max_results: 5
+        },
+        60_000
+      )
+      .then((res) => {
+        if (cancelled || !res.ok || !res.result || typeof res.result !== 'object') return
+        const rows = (res.result as { protocols?: { ref_key?: string }[] }).protocols
+        const hit = Array.isArray(rows)
+          ? rows.find((row) => String(row?.ref_key || '').trim())
+          : undefined
+        const ref = String(hit?.ref_key || '').trim()
+        if (ref) setResolvedProtocolRef(ref)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [protocol?.number, protocol?.refKey])
+
+  useEffect(() => {
+    if (!hasProtocol || agentLiveOnThisMeeting || record?.status !== 'running') return
+    patchRecord({ status: 'done' })
+  }, [hasProtocol, agentLiveOnThisMeeting, record?.status, patchRecord])
+
+  // Agent finished or wrote the protocol: remember the document and refresh calendar marks.
+  const recordStatus = record?.status
+  useEffect(() => {
+    if (createdProtocol) {
+      rememberProtocolDocument(userId, meeting, createdProtocol)
+    }
+    if (recordStatus === 'done' || createdProtocol) {
+      window.dispatchEvent(new CustomEvent(PROTOCOL_CREATED_EVENT))
+    }
+  }, [recordStatus, createdProtocol, userId, meeting.id])
+
+  const openForm = (mode: 'create' | 'edit'): void => {
+    setChooserOpen(false)
+    setFormMode(mode)
+    setFormOpen(true)
+  }
 
   return (
     <div className="spec-detail-card wp-card">
@@ -180,12 +293,19 @@ function MeetingDetailCard({
           <div className="meeting-protocol-progress-row">
             <span className="meeting-protocol-label">Статус</span>
             <span>
-              {state?.status ||
-                (record.status === 'done'
-                  ? 'Готово'
-                  : record.status === 'error'
-                    ? 'Ошибка'
-                    : 'В работе…')}
+              {isRunning
+                ? state?.status || 'В работе…'
+                : protocol?.number
+                  ? `Протокол в 1С: ${protocol.number}`
+                  : createdProtocol?.number
+                    ? `Протокол создан: ${createdProtocol.number}`
+                    : record.status === 'done'
+                      ? 'Готово'
+                      : record.status === 'error'
+                        ? 'Ошибка'
+                        : hasProtocol
+                          ? 'Готово'
+                          : 'В работе…'}
             </span>
           </div>
           {toolSteps.length ? (
@@ -193,6 +313,7 @@ function MeetingDetailCard({
               {toolSteps.map((step) => (
                 <li key={step.id} className={step.error ? 'is-error' : step.done ? 'is-done' : ''}>
                   {step.label}
+                  {step.count > 1 ? ` ×${step.count}` : ''}
                 </li>
               ))}
             </ul>
@@ -238,40 +359,70 @@ function MeetingDetailCard({
 
       {actionError ? <p className="meeting-protocol-error">{actionError}</p> : null}
 
-      <footer className="spec-detail-actions">
-        <button
-          type="button"
-          className="btn-primary"
-          onClick={() => void attachAudio()}
-          disabled={busy || isRunning}
-        >
-          {busy ? 'Запуск…' : 'Прикрепить аудио'}
-        </button>
-        <button type="button" className="btn-light" onClick={() => setFormOpen(true)}>
-          Создать протокол
-        </button>
-        <button
-          type="button"
-          className="btn-primary"
-          onClick={() => setReportOpen(true)}
-          disabled={!canOpenReport}
-        >
-          Получить отчёт
-        </button>
-      </footer>
+      {isRunning && !hasProtocol ? null : (
+        <footer className="spec-detail-actions">
+          {hasProtocol ? (
+            <button
+              type="button"
+              className="btn-light"
+              onClick={() => openForm('edit')}
+              disabled={!protocolRefKey}
+              title={
+                protocolRefKey
+                  ? 'Показать и изменить то, что заполнено в 1С'
+                  : 'Подтягиваем ссылку на документ 1С…'
+              }
+            >
+              Изменить протокол
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => setChooserOpen(true)}
+              disabled={busy}
+            >
+              {busy ? 'Запуск…' : 'Создать протокол'}
+            </button>
+          )}
+          {hasProtocol || hasDocx ? (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => setReportOpen(true)}
+              disabled={!canOpenReport}
+            >
+              Получить протокол
+            </button>
+          ) : null}
+        </footer>
+      )}
       {protocol?.number ? (
         <p className="meeting-protocol-hint">Протокол в 1С: {protocol.number}</p>
       ) : null}
+
+      <ProtocolCreateChooser
+        open={chooserOpen}
+        busy={busy}
+        onClose={() => setChooserOpen(false)}
+        onAudio={() => {
+          setChooserOpen(false)
+          void attachAudio()
+        }}
+        onManual={() => openForm('create')}
+      />
 
       <MeetingProtocolForm
         open={formOpen}
         meeting={meeting}
         actorFio={actorFio}
+        mode={formMode}
+        refKey={protocolRefKey}
         onClose={() => setFormOpen(false)}
         onCreated={(result) => {
-          rememberProtocolDocument(userId, meeting.id, {
-            number: result.number || '',
-            refKey: result.refKey || ''
+          rememberProtocolDocument(userId, meeting, {
+            number: result.number || protocol?.number || '',
+            refKey: result.refKey || protocolRefKey
           })
         }}
       />
@@ -279,19 +430,81 @@ function MeetingDetailCard({
       <MeetingReportModal
         open={reportOpen}
         onClose={() => setReportOpen(false)}
-        reportUrl={record?.reportUrl || ''}
+        reportUrl={protocolRefKey ? '' : hasDocx ? record?.reportUrl || '' : ''}
         reportName={record?.reportName || 'protocol.docx'}
+        protocolRefKey={protocolRefKey}
       />
     </div>
+  )
+}
+
+function ProtocolCreateChooser({
+  open,
+  busy,
+  onClose,
+  onAudio,
+  onManual
+}: {
+  open: boolean
+  busy: boolean
+  onClose: () => void
+  onAudio: () => void
+  onManual: () => void
+}): React.JSX.Element | null {
+  const titleId = useId()
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+  if (!open) return null
+  return createPortal(
+    <div className="modal-overlay" onClick={onClose} role="presentation">
+      <div
+        className="modal-card meeting-protocol-chooser"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h4 className="modal-title" id={titleId}>
+          Создать протокол
+        </h4>
+        <p className="spec-v04-muted">Как заполнить протокол совещания?</p>
+        <div className="meeting-protocol-chooser-options">
+          <button type="button" className="meeting-protocol-chooser-option" onClick={onAudio} disabled={busy}>
+            <Mic size={20} aria-hidden />
+            <span className="meeting-protocol-chooser-option-title">Прикрепить аудио</span>
+            <span className="meeting-protocol-chooser-option-sub">
+              Агент расшифрует запись, составит протокол и создаст черновик в 1С
+            </span>
+          </button>
+          <button type="button" className="meeting-protocol-chooser-option" onClick={onManual} disabled={busy}>
+            <PenLine size={20} aria-hidden />
+            <span className="meeting-protocol-chooser-option-title">Вручную</span>
+            <span className="meeting-protocol-chooser-option-sub">Заполнить форму протокола 1С самостоятельно</span>
+          </button>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn-light" onClick={onClose}>
+            Отмена
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 
 export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Element {
   const fio = erpActorFio(user)
   const userId = user.id || ''
-  const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
-  const [meetings, setMeetings] = useState<MeetingEvent[]>([])
-  const [loading, setLoading] = useState(true)
+  const sharedMeetings = useSpecV04Sources(user).meetings
+  const [meetings, setMeetings] = useState<MeetingEvent[]>(sharedMeetings)
+  const [loading, setLoading] = useState(sharedMeetings.length === 0)
   const [error, setError] = useState('')
   const [view, setView] = useState<CalendarView>('week')
   const [anchor, setAnchor] = useState(() => new Date())
@@ -300,29 +513,37 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   const { query, setQuery } = usePageSearch()
   const [barStatus, setBarStatus] = useState('')
 
-  const load = useCallback(() => {
+  const load = useCallback((force = false) => {
     setLoading(true)
-    void ensureOutlookMeetings(view, anchor, { owner: fio, force: true })
+    void ensureOutlookMeetings(view, anchor, { owner: fio, force })
       .then((cal) => {
-        setMeetings(cal.meetings || [])
-        setError(cal.ok ? '' : cal.error || 'Outlook недоступен')
+        if (cal.ok || cal.meetings.length) {
+          setMeetings(cal.meetings || [])
+          setError('')
+          return
+        }
+        setError(cal.error || 'Outlook недоступен')
       })
       .catch((err) => {
-        setMeetings([])
         setError(err instanceof Error ? err.message : 'Ошибка календаря')
       })
       .finally(() => setLoading(false))
   }, [anchor, fio, view])
 
   useEffect(() => {
-    load()
+    if (!sharedMeetings.length) return
+    setMeetings((current) => (current.length ? current : sharedMeetings))
+    setLoading(false)
+  }, [sharedMeetings])
+
+  useEffect(() => {
+    load(false)
   }, [load])
 
   const visibleMeetings = useMemo(() => {
     const q = query.trim().toLowerCase()
     const now = new Date()
     return meetings.filter((item) => {
-      if (!isoTimestampInWorkplacePeriod(item.start, periodFrom, periodTo)) return false
       if (!meetingMatchesTile(item, tileFilter, now)) return false
       if (barStatus === 'past' && !meetingMatchesTile(item, 'done', now)) return false
       if (barStatus === 'today' && !meetingMatchesTile(item, 'today', now)) return false
@@ -332,9 +553,12 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
       }
       return true
     })
-  }, [meetings, tileFilter, query, barStatus, periodFrom, periodTo])
+  }, [meetings, tileFilter, query, barStatus])
 
-  const selected = visibleMeetings.find((item) => item.id === (selectedId || visibleMeetings[0]?.id))
+  const defaultInstanceKey = visibleMeetings[0] ? meetingInstanceKey(visibleMeetings[0]) : ''
+  const selected = visibleMeetings.find(
+    (item) => meetingInstanceKey(item) === (selectedId || defaultInstanceKey)
+  )
   const protocolMarks = useProtocolMarks(userId, meetings, view, anchor)
 
   const tiles: SpecSummaryTile[] = useMemo(() => {
@@ -418,9 +642,9 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
               })
             }}
             onToday={() => setAnchor(new Date())}
-            onRefresh={load}
-            selectedId={selected?.id}
-            onSelectMeeting={(m) => setSelectedId(m.id)}
+            onRefresh={() => load(true)}
+            selectedId={selected ? meetingInstanceKey(selected) : ''}
+            onSelectMeeting={(m) => setSelectedId(meetingInstanceKey(m))}
             showDetailsModal={false}
             protocolMarks={protocolMarks}
           />
@@ -431,7 +655,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
             meeting={selected}
             userId={userId}
             actorFio={fio}
-            protocol={protocolMarks.get(selected.id)}
+            protocol={protocolMarks.get(meetingInstanceKey(selected))}
           />
         ) : (
           <div className="wp-card spec-v04-muted">Выберите совещание</div>
