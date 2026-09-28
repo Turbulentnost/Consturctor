@@ -564,14 +564,23 @@ def _execute_dm_once(config: DokConfig, request_xml: str, *, timeout: float) -> 
             status = getattr(response, "status", 200)
     except HTTPError as error:
         text = decode_body(error.read() or b"")
+        from app.services.upstream_error_log import record_response
+
+        record_response("POST", config.soap_url(), int(error.code), text, elapsed_sec=0.0)
         if error.code in {401, 402, 403}:
             raise RuntimeError(
                 f"HTTP {error.code}: Документооборот отклонил Basic-учётку"
             ) from error
         raise RuntimeError(f"HTTP {error.code}: {soap_fault_text(text)}") from error
     except TimeoutError as error:
+        from app.services.upstream_error_log import record_failure
+
+        record_failure("POST", config.soap_url(), error, elapsed_sec=timeout)
         raise RuntimeError(soap_timeout_message(timeout)) from error
     except URLError as error:
+        from app.services.upstream_error_log import record_failure
+
+        record_failure("POST", config.soap_url(), error, elapsed_sec=timeout)
         if _is_timeout_reason(error.reason):
             raise RuntimeError(soap_timeout_message(timeout)) from error
         raise RuntimeError(f"Нет связи с ДО: {error.reason}") from error
@@ -1295,17 +1304,29 @@ def fetch_open_dump(config: DokConfig, *, only_open: bool = True) -> dict[str, A
     started = time.perf_counter()
     timeout = max(float(config.timeout), _DEFAULT_LIST_TIMEOUT_SEC)
     logger.info("dok_soap dump start")
-    rows = list_open_tasks(
-        config,
-        None,
-        timeout=timeout,
-        only_open=only_open,
-        user=None,
-        limit=500,
-        filter_mode=None,
-        due_to=None,
-    )
-    logger.info("dok_soap dump list=%.1fs raw=%s", time.perf_counter() - started, len(rows))
+    from app.services.upstream_error_log import record
+
+    record(f"SOAP dump start timeout={int(timeout)}s {config.soap_url()}")
+    try:
+        rows = list_open_tasks(
+            config,
+            None,
+            timeout=timeout,
+            only_open=only_open,
+            user=None,
+            limit=500,
+            filter_mode=None,
+            due_to=None,
+        )
+    except Exception as exc:
+        record(
+            f"SOAP dump FAIL in {time.perf_counter() - started:.1f}s "
+            f"{type(exc).__name__}: {exc}"
+        )
+        raise
+    elapsed = time.perf_counter() - started
+    record(f"SOAP dump done in {elapsed:.1f}s raw={len(rows)}")
+    logger.info("dok_soap dump list=%.1fs raw=%s", elapsed, len(rows))
     return {
         "endpoint": config.soap_url(),
         "only_open": only_open,

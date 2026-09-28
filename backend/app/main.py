@@ -58,6 +58,9 @@ def _configure_logging() -> None:
 
 _configure_console_encoding()
 _configure_logging()
+from app.services.upstream_error_log import install_httpx_capture
+
+install_httpx_capture()
 logger = logging.getLogger(__name__)
 http_logger = logging.getLogger("app.http")
 

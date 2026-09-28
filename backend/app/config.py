@@ -107,6 +107,9 @@ class Settings(BaseSettings):
     dok_http_cache_ttl_sec: float = 1800.0
     dok_inbox_cache_dir: Path = BACKEND_ROOT / "storage" / "docflow_inbox"
     dok_http_base_path: str = "/doc"
+    # Временная запись тел HTTP 5xx от публикации 1С и TurboProject.
+    # Выключить: UPSTREAM_ERROR_LOG=0
+    upstream_error_log: bool = True
     erp_login: str = ""
     erp_password: str = ""
     # When local ODBC to erp_pm fails (dev PC without VPN), delegate login to LAN gateway.
