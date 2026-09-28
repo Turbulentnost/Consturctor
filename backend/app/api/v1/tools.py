@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -161,8 +162,28 @@ async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
     }
 
 
-# Long 1C/OData calls must not occupy the default pool: login and the FIO list use it.
-_TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-invoke")
+# Журналы 1С, полная SOAP-выгрузка задач и тяжёлый odata_get не делят одну очередь.
+# Иначе выгрузка на 3–4 минуты и таймаут приказа занимают оба потока, и служебные
+# записки не стартуют, пока клиент уже не ждёт.
+_JOURNAL_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="tool-journal")
+_BULK_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-bulk")
+_SLOW_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool-slow")
+_SLOW_TOOLS = frozenset({"onec.docflow_tasks"})
+_BULK_TOOLS = frozenset({"onec.odata_get"}) | _IMAP_TOOLS
+_READ_COALESCE = _SLOW_TOOLS | _BULK_TOOLS | frozenset(
+    {
+        "onec.docflow_memos",
+        "onec.docflow_memo_card",
+        "onec.docflow_assignments",
+        "onec.docflow_assignment_card",
+        "onec.docflow_protocols",
+        "onec.docflow_protocol_card",
+        "onec.erp_assignments",
+        "onec.incoming_correspondence",
+    }
+)
+_inflight: dict[str, asyncio.Future] = {}
+_inflight_guard = asyncio.Lock()
 
 
 def _bearer_token(request: Request) -> str:
@@ -170,6 +191,77 @@ def _bearer_token(request: Request) -> str:
     if raw.lower().startswith("bearer "):
         return raw[7:].strip()
     return ""
+
+
+def _executor_for(tool_name: str) -> ThreadPoolExecutor:
+    if tool_name in _SLOW_TOOLS:
+        return _SLOW_EXECUTOR
+    if tool_name in _BULK_TOOLS:
+        return _BULK_EXECUTOR
+    return _JOURNAL_EXECUTOR
+
+
+def _read_key(tool_name: str, arguments: dict[str, Any], auth: AuthContext) -> str:
+    payload = json.dumps(arguments or {}, sort_keys=True, ensure_ascii=False, default=str)
+    return f"{auth.user_id}\n{tool_name}\n{payload}"
+
+
+def _retrieve_future_error(future: asyncio.Future) -> None:
+    if future.cancelled() or not future.done():
+        return
+    future.exception()
+
+
+async def _run_on_lane(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+) -> dict[str, Any]:
+    return await asyncio.get_running_loop().run_in_executor(
+        _executor_for(tool_name),
+        _dispatch_server_tool,
+        tool_name,
+        arguments,
+        auth,
+    )
+
+
+async def _run_coalesced(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+) -> dict[str, Any]:
+    """Одинаковый читающий вызов одного пользователя выполняется один раз."""
+    if tool_name not in _READ_COALESCE:
+        return await _run_on_lane(tool_name, arguments, auth)
+    key = _read_key(tool_name, arguments, auth)
+    async with _inflight_guard:
+        existing = _inflight.get(key)
+        if existing is not None:
+            shared = existing
+            owner = False
+        else:
+            shared = asyncio.get_running_loop().create_future()
+            shared.add_done_callback(_retrieve_future_error)
+            _inflight[key] = shared
+            owner = True
+    if not owner:
+        result = await asyncio.shield(shared)
+        return dict(result) if isinstance(result, dict) else result
+    try:
+        result = await _run_on_lane(tool_name, arguments, auth)
+    except Exception as exc:
+        if not shared.done():
+            shared.set_exception(exc)
+        raise
+    else:
+        if not shared.done():
+            shared.set_result(result)
+        return result
+    finally:
+        async with _inflight_guard:
+            if _inflight.get(key) is shared:
+                _inflight.pop(key, None)
 
 
 async def _local_erp_reachable() -> bool:
@@ -215,13 +307,7 @@ async def _invoke_with_gateway_fallback(
                 raise
 
     try:
-        return await asyncio.get_running_loop().run_in_executor(
-            _TOOL_EXECUTOR,
-            _dispatch_server_tool,
-            tool_name,
-            arguments,
-            auth,
-        )
+        return await _run_coalesced(tool_name, arguments, auth)
     except HTTPException as exc:
         if skip_gateway_first:
             logger.warning("local tool %s failed: %s", tool_name, exc.detail)

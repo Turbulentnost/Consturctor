@@ -200,16 +200,23 @@ async function loadJournalPage(
   return { rows: rowsFromResult(res.result), error: '' }
 }
 
-/** Страницы журнала параллельно: последовательный обход занимал минуты. */
+/** Страницы по одной: три параллельных журнала по 200 строк занимали все потоки 1С и роняли соседние запросы. */
 async function loadJournalPages(
   user: UserProfile | null,
   base: Record<string, unknown>
 ): Promise<{ rows: Record<string, unknown>[]; error: string }> {
-  const skips = Array.from({ length: PAGE_COUNT }, (_, index) => index * PAGE_SIZE)
-  const pages = await Promise.all(skips.map((skip) => loadJournalPage(user, base, skip)))
-  const rows = pages.flatMap((page) => page.rows)
-  const error = rows.length ? '' : pages.map((page) => page.error).find(Boolean) || ''
-  return { rows, error }
+  const rows: Record<string, unknown>[] = []
+  let error = ''
+  for (let index = 0; index < PAGE_COUNT; index += 1) {
+    const page = await loadJournalPage(user, base, index * PAGE_SIZE)
+    if (page.rows.length) rows.push(...page.rows)
+    if (page.error && !page.rows.length) {
+      error = page.error
+      break
+    }
+    if (page.rows.length < PAGE_SIZE) break
+  }
+  return { rows, error: rows.length ? '' : error }
 }
 
 async function loadFromOneC(

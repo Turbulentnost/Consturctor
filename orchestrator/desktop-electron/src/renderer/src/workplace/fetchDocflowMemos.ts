@@ -60,6 +60,13 @@ export type MemoCard = {
 
 export const MEMO_PAGE_SIZE = 40
 
+const memoCache = new Map<string, MemoPage>()
+const memoLoads = new Map<string, Promise<MemoPage>>()
+
+function memoCacheKey(user: UserProfile | null, opts: { from: string; to: string; skip: number }): string {
+  return `${user?.id || user?.fio || 'session'}|${opts.from}|${opts.to}|${opts.skip}`
+}
+
 function str(value: unknown): string {
   return typeof value === 'string' ? value : value == null ? '' : String(value)
 }
@@ -104,6 +111,27 @@ function mapTask(raw: Record<string, unknown>): MemoTask {
 }
 
 export async function loadMemoPage(
+  user: UserProfile | null,
+  opts: { from: string; to: string; skip: number }
+): Promise<MemoPage> {
+  const key = memoCacheKey(user, opts)
+  const cached = memoCache.get(key)
+  if (cached) return cached
+  const pending = memoLoads.get(key)
+  if (pending) return pending
+  const load = loadMemoPageUncached(user, opts)
+    .then((page) => {
+      memoCache.set(key, page)
+      return page
+    })
+    .finally(() => {
+      memoLoads.delete(key)
+    })
+  memoLoads.set(key, load)
+  return load
+}
+
+async function loadMemoPageUncached(
   user: UserProfile | null,
   opts: { from: string; to: string; skip: number }
 ): Promise<MemoPage> {

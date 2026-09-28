@@ -185,6 +185,7 @@ export function DocflowMemosPanel({
     setRows([])
     setNextSkip(0)
     setHasMore(false)
+    setError('')
     setSelectedId('')
     setCard(null)
     void fetchPage(0, true)
