@@ -16,8 +16,10 @@ from app.config import settings
 # connection is checked out by one caller until _release_connection returns it.
 _pool_lock = threading.Lock()
 _idle_conns: list[tuple[pyodbc.Connection, float]] = []
+_reopen_lock = threading.Lock()
 _CONN_TTL_SEC = 300.0
 _MAX_IDLE_CONNS = 4
+_PROBE_TIMEOUT_SEC = 5
 
 _DEPARTMENT_JOIN_SQL = """
     LEFT JOIN dbo._Reference513 d1 WITH (NOLOCK)
@@ -256,6 +258,14 @@ def _build_connection_string(*, server: str | None = None) -> str:
     return ";".join(parts) + ";"
 
 
+def _query_timeout() -> int:
+    """Верхняя граница для любого запроса: без неё зависший сокет держит поток вечно."""
+    try:
+        return max(60, int(settings.erp_sql_timeout or 45))
+    except (TypeError, ValueError):
+        return 60
+
+
 def _connect_once(server: str, timeout: int) -> pyodbc.Connection:
     global _preferred_sql_server
     conn_str = _build_connection_string(server=server)
@@ -264,6 +274,10 @@ def _connect_once(server: str, timeout: int) -> pyodbc.Connection:
             conn = pyodbc.connect(conn_str, autocommit=True, timeout=timeout)
     else:
         conn = pyodbc.connect(conn_str, autocommit=True, timeout=timeout)
+    try:
+        conn.timeout = _query_timeout()
+    except (pyodbc.Error, OSError):
+        pass
     _preferred_sql_server = server.strip()
     return conn
 
@@ -283,30 +297,57 @@ def _open_connection() -> pyodbc.Connection:
     raise ErpSqlError("Failed to connect to erp_pm: no ERP_SQL_SERVER configured")
 
 
-def _close_quietly(conn: pyodbc.Connection) -> None:
+def _close_quietly(conn: pyodbc.Connection | None) -> None:
+    if conn is None:
+        return
     try:
         conn.close()
     except (pyodbc.Error, OSError):
         pass
 
 
+def _probe_connection(conn: pyodbc.Connection) -> bool:
+    """Живо ли соединение. Короткий query timeout: мёртвый сокет не должен вешать SQL."""
+    previous: int | None = None
+    try:
+        previous = conn.timeout
+        conn.timeout = _PROBE_TIMEOUT_SEC
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        return True
+    except (pyodbc.Error, OSError):
+        return False
+    finally:
+        if previous is not None:
+            try:
+                conn.timeout = previous
+            except (pyodbc.Error, OSError):
+                pass
+
+
 def _connect() -> pyodbc.Connection:
+    """Взять соединение с erp_pm из пула (вернуть через _release_connection).
+
+    Одно общее на процесс давало «connection is busy» / «cursor's connection was
+    closed» при параллельных запросах; своё на поток — долгий логин в каждом новом
+    потоке пула. Переоткрытие не держит глобальный лок бесконечно, если логин завис.
+    """
     while True:
         with _pool_lock:
             if not _idle_conns:
                 break
             conn, released_at = _idle_conns.pop()
-        if time.monotonic() - released_at >= _CONN_TTL_SEC:
-            _close_quietly(conn)
-            continue
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT 1")
-            cur.fetchone()
+        if time.monotonic() - released_at < _CONN_TTL_SEC and _probe_connection(conn):
             return conn
-        except (pyodbc.Error, OSError):
-            _close_quietly(conn)
-    return _open_connection()
+        _close_quietly(conn)
+    # Логины под impersonation дорогие — открываем по одному, но ждём ограниченно.
+    if not _reopen_lock.acquire(timeout=_login_timeout() + 5):
+        raise ErpSqlError("ERP SQL занят открытием соединения, повторите запрос")
+    try:
+        return _open_connection()
+    finally:
+        _reopen_lock.release()
 
 
 def _release_connection(conn: pyodbc.Connection) -> None:
