@@ -30,7 +30,6 @@ _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 _EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 _DEFAULT_PAGE = 40
 _MAX_PAGE = 100
-_NAME_CHUNK = 25
 _STATUSES = {
     "Создано": "Создано",
     "ВРаботе": "В работе",
@@ -101,20 +100,25 @@ def _overdue(due: str, *, open_item: bool) -> bool:
 
 
 def _resolve_users(keys: set[str]) -> None:
-    missing = sorted(key for key in keys if _GUID_RE.match(key) and key != _EMPTY_GUID and key not in _user_names)
-    for index in range(0, len(missing), _NAME_CHUNK):
-        chunk = missing[index : index + _NAME_CHUNK]
-        filt = _q(" or ".join(f"Ref_Key eq guid'{key}'" for key in chunk))
-        try:
-            data = _odata(f"Catalog_Пользователи?$format=json&$top={len(chunk)}&$filter={filt}&$select=Ref_Key,Description")
-        except DocflowAssignmentError as exc:
-            logger.warning("assignment executors lookup failed: %s", str(exc)[:200])
-            return
-        for row in data.get("value") or []:
-            if isinstance(row, dict):
-                _user_names[_text(row.get("Ref_Key"))] = _text(row.get("Description"))
-        for key in chunk:
-            _user_names.setdefault(key, "")
+    """Имена ответственных: SQL erp_pm, затем OData. Ненайденные не кэшируем — сбой 1С не должен стирать ФИО."""
+    missing = sorted(
+        key for key in keys if _GUID_RE.match(key) and key != _EMPTY_GUID and not _user_names.get(key)
+    )
+    if not missing:
+        return
+    from app.services.erp_assignments import _user_names_by_keys
+
+    try:
+        found = _user_names_by_keys(missing)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("assignment executors lookup failed: %s", str(exc)[:200])
+        return
+    for key, name in found.items():
+        if _text(name):
+            _user_names[key] = _text(name)
+    unresolved = [key for key in missing if not _user_names.get(key)]
+    if unresolved:
+        logger.warning("assignment executors unresolved: %d of %d", len(unresolved), len(missing))
 
 
 def _line_view(line: dict[str, Any], *, open_doc: bool) -> dict[str, Any]:

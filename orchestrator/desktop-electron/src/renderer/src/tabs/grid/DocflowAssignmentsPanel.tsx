@@ -197,8 +197,8 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
                 <li key={line.n} className={line.overdue ? 'is-overdue' : ''}>
                   <p>{line.text || '—'}</p>
                   <div>
-                    <span>
-                      <UserCheck size={12} aria-hidden /> {cell(line.executor)}
+                    <span className={line.executor ? '' : 'docflow-muted'} title="Ответственное лицо">
+                      <UserCheck size={12} aria-hidden /> {line.executor || 'ответственный не указан в 1С'}
                     </span>
                     <span className={line.overdue ? 'is-overdue' : ''}>срок {day(line.due)}</span>
                     <PriorityTag value={line.priority} />

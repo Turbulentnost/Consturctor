@@ -203,7 +203,8 @@ function ReportMeasures({ row }: { row: AssignmentRegistryRow }): React.JSX.Elem
             <b>{line.line || index + 1}.</b> {line.text || '—'}
           </p>
           <p className="registry-report-measure-meta">
-            Исполнитель: {line.executor || '—'} · Срок: {line.due || '—'}
+            Ответственное лицо:{' '}
+            {line.executor && line.executor !== '—' ? line.executor : 'не указано в 1С'} · Срок: {line.due || '—'}
             {line.priority && line.priority !== '—' ? ` · ${line.priority}` : ''}
           </p>
         </li>

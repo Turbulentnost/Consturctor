@@ -781,6 +781,77 @@ def _open_shared_calendar(namespace: Any, person: str) -> tuple[Any | None, str]
     return folder, "shared"
 
 
+FREE_BUSY_MINUTES = 30
+_FREE_BUSY_LABELS = {
+    "1": "Под вопросом",
+    "2": "Занят",
+    "3": "Нет на месте",
+    "4": "Работает в другом месте",
+}
+
+
+def _free_busy_events(
+    namespace: Any, person: str, start_at: datetime, end_at: datetime
+) -> list[dict] | None:
+    """Занятость из адресной книги, когда папку календаря открыть нельзя (право «Только сведения о доступности»).
+
+    None — Outlook не отдал сведения; [] — в периоде свободно.
+    """
+    try:
+        recipient = namespace.CreateRecipient(person)
+        recipient.Resolve()
+        if not bool(recipient.Resolved):
+            return None
+    except Exception as exc:
+        _log_progress(f"step=freebusy_unresolved person={person}: {exc}")
+        return None
+    step = timedelta(minutes=FREE_BUSY_MINUTES)
+    day = start_at.replace(hour=0, minute=0, second=0, microsecond=0)
+    slots: list[tuple[datetime, str]] = []
+    while day < end_at and len(slots) < 20000:
+        try:
+            raw = _safe_str(recipient.FreeBusy(day, FREE_BUSY_MINUTES, True))
+        except Exception as exc:
+            _log_progress(f"step=freebusy_failed person={person}: {exc}")
+            return None if not slots else _free_busy_blocks(slots, person, start_at, end_at)
+        if not raw:
+            break
+        slots.extend((day + step * index, char) for index, char in enumerate(raw))
+        day += step * len(raw)
+    return _free_busy_blocks(slots, person, start_at, end_at)
+
+
+def _free_busy_blocks(
+    slots: list[tuple[datetime, str]], person: str, start_at: datetime, end_at: datetime
+) -> list[dict]:
+    step = timedelta(minutes=FREE_BUSY_MINUTES)
+    blocks: list[list[Any]] = []
+    for slot_start, char in slots:
+        if char not in _FREE_BUSY_LABELS or slot_start + step <= start_at or slot_start >= end_at:
+            continue
+        if blocks and blocks[-1][2] == char and blocks[-1][1] == slot_start:
+            blocks[-1][1] = slot_start + step
+        else:
+            blocks.append([slot_start, slot_start + step, char])
+    return [
+        {
+            "entry_id": f"freebusy:{person}:{begin.isoformat()}",
+            "subject": _FREE_BUSY_LABELS[char],
+            "start": begin.isoformat(sep="T", timespec="seconds"),
+            "end": finish.isoformat(sep="T", timespec="seconds"),
+            "location": "",
+            "calendar_owner": person,
+            "own_calendar": False,
+            "organizer": "",
+            "required_attendees": "",
+            "optional_attendees": "",
+            "body_preview": "",
+            "free_busy_only": True,
+        }
+        for begin, finish, char in blocks
+    ]
+
+
 def _prepare_calendar_items(folder: Any, *, include_recurrences: bool = True) -> Any:
     items = folder.Items
     try:
@@ -1193,7 +1264,23 @@ def read_calendar(input_data: dict) -> dict:
                     f"step=resolve_calendar_done person={person} status={status} "
                     f"found={int(folder is not None)}"
                 )
+            def _try_free_busy(reason: str) -> bool:
+                if status == "own" or status.startswith("unresolved"):
+                    return False
+                blocks = _free_busy_events(namespace, owner, start_at, end_at)
+                if blocks is None:
+                    return False
+                blocks = blocks[: max(remaining_results, 0)]
+                events.extend(blocks)
+                calendars.append({"person": owner, "status": "freebusy", "count": len(blocks)})
+                _log_progress(
+                    f"step=calendar_freebusy person={owner} reason={reason} events={len(blocks)}"
+                )
+                return True
+
             if folder is None:
+                if _try_free_busy(status):
+                    continue
                 entry = {"person": owner, "status": status, "count": 0}
                 hint = _calendar_access_hint(status)
                 if hint:
@@ -1210,6 +1297,8 @@ def read_calendar(input_data: dict) -> dict:
                         "Нужен классический Outlook с загруженным почтовым профилем. "
                         f"({exc})"
                     ) from exc
+                if _try_free_busy("items"):
+                    continue
                 calendars.append(
                     {
                         "person": owner,
@@ -1250,6 +1339,8 @@ def read_calendar(input_data: dict) -> dict:
                     chunk, scanned = retry_chunk, retry_scanned
                 elif scanned == 0 and retry_scanned == 0:
                     status = "unreadable"
+                    if _try_free_busy(status):
+                        continue
             checked_count += scanned
             events.extend(chunk)
             entry = {"person": owner, "status": status, "count": len(chunk)}
