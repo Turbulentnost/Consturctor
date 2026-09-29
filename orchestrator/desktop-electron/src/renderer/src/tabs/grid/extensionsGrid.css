@@ -547,6 +547,88 @@
   color: #6b7280;
 }
 
+.registry-th--filtered .registry-th-label {
+  color: #1565c0;
+}
+
+.registry-th-filter-value {
+  display: block;
+  max-width: 100%;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 500;
+  color: #1565c0;
+}
+
+.registry-col-filter-menu {
+  position: fixed;
+  z-index: 20000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(360px, 60vh);
+  padding: 6px;
+  border: 1px solid rgba(13, 59, 115, 0.14);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+  box-sizing: border-box;
+}
+
+.registry-col-filter-search {
+  height: 28px;
+  font-size: 12px;
+}
+
+.registry-col-filter-options {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.registry-col-filter-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #1f2937;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.registry-col-filter-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.registry-col-filter-option:hover {
+  background: #e8f0fe;
+}
+
+.registry-col-filter-option.is-active {
+  color: #1565c0;
+  font-weight: 600;
+}
+
+.registry-col-filter-empty {
+  margin: 4px 8px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
 .registry-th.registry-th--collapsed,
 .registry-td.registry-td--collapsed {
   width: 28px;

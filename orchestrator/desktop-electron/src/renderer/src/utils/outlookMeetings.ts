@@ -1,4 +1,10 @@
 import { addDays, mondayOf, type CalendarView } from './calendar'
+import {
+  calendarStatusFor,
+  publishCalendarStatus,
+  readTrackedCalendars,
+  type CalendarReadStatus
+} from './trackedCalendars'
 
 export function isOutlookFolderOwner(value: string | undefined): boolean {
   const text = String(value || '').trim().toLowerCase()
@@ -241,6 +247,24 @@ function writeCache(cache: MeetingCache): void {
   }
 }
 
+/** Users whose meetings come from someone else's shared Outlook calendar instead of their own. */
+const SHARED_MEETING_CALENDARS: { surname: string; calendarOwner: string }[] = [
+  { surname: 'ильченко', calendarOwner: 'Амураль Игорь Борисович' }
+]
+
+export function sharedMeetingCalendarFor(fio: string | undefined): string {
+  const surname = String(fio || '').trim().split(/\s+/)[0]?.toLocaleLowerCase('ru') || ''
+  if (!surname) return ''
+  return SHARED_MEETING_CALENDARS.find((item) => item.surname === surname)?.calendarOwner || ''
+}
+
+type CalendarRequestResult = {
+  ok: boolean
+  meetings: MeetingEvent[]
+  error?: string
+  calendars?: CalendarReadStatus[]
+}
+
 /** Low-level: ask the local Outlook (via the agent sidecar) for meetings. */
 function requestOutlookMeetings(range: {
   dateFrom: string
@@ -248,11 +272,12 @@ function requestOutlookMeetings(range: {
   people?: string[]
   forUser?: string
   allVisible?: boolean
-}): Promise<{ ok: boolean; meetings: MeetingEvent[]; error?: string }> {
+  calendarOwners?: string[]
+}): Promise<CalendarRequestResult> {
   return new Promise((resolve) => {
     const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     let settled = false
-    const finish = (result: { ok: boolean; meetings: MeetingEvent[]; error?: string }): void => {
+    const finish = (result: CalendarRequestResult): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -273,10 +298,15 @@ function requestOutlookMeetings(range: {
             .map((item, index) => normalizeMeeting(item, index))
             .filter((item) => meetingInvolvesPerson(item, range.forUser || ''))
         )
-        finish({
-          ok: true,
-          meetings
+        const calendars = (Array.isArray(payload.calendars) ? payload.calendars : []).map((item) => {
+          const row = (item || {}) as { person?: unknown; count?: unknown; hint?: unknown }
+          return {
+            person: String(row.person || ''),
+            count: Number(row.count) || 0,
+            hint: row.hint ? String(row.hint) : undefined
+          }
         })
+        finish({ ok: true, meetings, calendars })
       } else {
         finish({
           ok: false,
@@ -291,7 +321,8 @@ function requestOutlookMeetings(range: {
       dateTo: range.dateTo,
       people: range.people,
       forUser: range.forUser,
-      allVisible: range.allVisible
+      allVisible: range.allVisible,
+      calendarOwners: range.calendarOwners
     })
   })
 }
@@ -323,20 +354,28 @@ export async function ensureOutlookMeetings(
   const toKey = dayKey(addDays(win.to, -1))
   const today = dayKey(new Date())
   const owner = (options.owner || '').trim()
+  const baseCalendar = sharedMeetingCalendarFor(owner)
+  const tracked = readTrackedCalendars(owner).filter(
+    (person) => person.toLocaleLowerCase('ru') !== baseCalendar.toLocaleLowerCase('ru')
+  )
+  const calendarOwners = baseCalendar || tracked.length ? [baseCalendar, ...tracked] : []
+  const cacheOwner = calendarOwners.length ? `${owner}@${calendarOwners.join('|')}` : owner
 
   if (!options.force) {
     const cache = readCache()
     if (
       cache &&
       cache.day === today &&
-      cache.owner === owner &&
+      cache.owner === cacheOwner &&
       cache.from <= fromKey &&
       cache.to >= toKey
     ) {
       return {
         ok: true,
         meetings: dedupeMeetingEvents(
-          cache.meetings.filter((item) => meetingInvolvesPerson(item, owner))
+          calendarOwners.length
+            ? cache.meetings
+            : cache.meetings.filter((item) => meetingInvolvesPerson(item, owner))
         ),
         error: '',
         cached: true
@@ -344,14 +383,22 @@ export async function ensureOutlookMeetings(
     }
   }
 
-  const result = await requestOutlookMeetings({
-    dateFrom: fromKey,
-    dateTo: toKey,
-    forUser: options.allVisible ? owner : undefined,
-    allVisible: Boolean(options.allVisible)
-  })
-  if (result.ok) {
-    writeCache({ day: today, from: fromKey, to: toKey, owner, meetings: result.meetings })
+  const result = await requestOutlookMeetings(
+    calendarOwners.length
+      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners }
+      : {
+          dateFrom: fromKey,
+          dateTo: toKey,
+          forUser: options.allVisible ? owner : undefined,
+          allVisible: Boolean(options.allVisible)
+        }
+  )
+  if (!result.ok) return { ...result, cached: false }
+  publishCalendarStatus(result.calendars || [])
+  const baseStatus = baseCalendar ? calendarStatusFor(baseCalendar, result.calendars || []) : undefined
+  if (baseStatus?.hint && !result.meetings.length) {
+    return { ok: false, meetings: [], error: `Календарь «${baseCalendar}»: ${baseStatus.hint}`, cached: false }
   }
+  writeCache({ day: today, from: fromKey, to: toKey, owner: cacheOwner, meetings: result.meetings })
   return { ...result, cached: false }
 }

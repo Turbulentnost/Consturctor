@@ -4,7 +4,9 @@ import type { UserProfile } from '../../api/types'
 import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
 import { TODAY_WIDGET_IDS, type TodayWidgetId } from './useTodayWidgetLayout'
+import { readTodayTileVisibility, TODAY_TILE_VISIBILITY_EVENT, type TodayTileId } from './todayWidgetSettings'
 import { TodayOutlookMailPanel } from './TodayOutlookMailPanel'
+import { TrackedCalendarsControl } from './TrackedCalendarsControl'
 import {
   NewOneCTaskMark,
   SpecAskOrchestratorBlock,
@@ -321,13 +323,29 @@ export function TodayGridTab({
 }): React.JSX.Element {
   const { forceRefresh } = useGridDataRefreshContext()
   const [periodDay, setPeriodDay] = useState(startOfToday)
-  const { data, tiles } = useTodayKpiData(user, periodDay)
+  const { data, tiles: allTiles } = useTodayKpiData(user, periodDay)
+  const [tileVisibility, setTileVisibility] = useState(() => readTodayTileVisibility(user.id || ''))
+  useEffect(() => {
+    const sync = (): void => setTileVisibility(readTodayTileVisibility(user.id || ''))
+    sync()
+    window.addEventListener(TODAY_TILE_VISIBILITY_EVENT, sync)
+    return () => window.removeEventListener(TODAY_TILE_VISIBILITY_EVENT, sync)
+  }, [user.id])
+  const tiles = useMemo(
+    () => allTiles.filter((tile) => tileVisibility[tile.id as TodayTileId] !== false),
+    [allTiles, tileVisibility]
+  )
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const [fullPlanOpen, setFullPlanOpen] = useState(false)
   const [taskDetail, setTaskDetail] = useState<TodayTaskDetailRow | null>(null)
   const [taskActionBusy, setTaskActionBusy] = useState(false)
   const [taskActionNote, setTaskActionNote] = useState('')
   const [kpiTiles, setKpiTiles] = useState(EMPTY_TODAY_KPI_TILE)
+  useEffect(() => {
+    if (kpiTiles.activeIds.some((id) => tileVisibility[id as TodayTileId] === false)) {
+      setKpiTiles(EMPTY_TODAY_KPI_TILE)
+    }
+  }, [kpiTiles.activeIds, tileVisibility])
   const onecFromMe = kpiTiles.onecFromMe
   const outlookFromMe = kpiTiles.outlookFromMe
   const projectAsManager = kpiTiles.projectAsManager
@@ -779,6 +797,7 @@ export function TodayGridTab({
           widgetEditMode={editMode}
           onWidgetEditModeChange={setEditMode}
           onResetWidgetLayout={resetLayout}
+          extra={<TrackedCalendarsControl fio={erpFio} />}
         />
       </OrchSlotFilters>
 

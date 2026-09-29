@@ -1,5 +1,6 @@
-import { useMemo, useState, type CSSProperties } from 'react'
-import { ArrowDown, ArrowUp, ChevronLeft, EyeOff } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
+import { ArrowDown, ArrowUp, Check, ChevronLeft, EyeOff, Filter } from 'lucide-react'
 import {
   ASSIGNMENT_REGISTRY_COLUMNS,
   type AssignmentRegistryColumnId,
@@ -47,6 +48,108 @@ function compareRows(
 }
 
 type SortState = { col: AssignmentRegistryColumnId; dir: SortDir } | null
+
+export type RegistryColumnFilter = {
+  value: string
+  options: { value: string; label: string }[]
+  onChange: (value: string) => void
+}
+
+function ColumnFilterMenu({
+  label,
+  filter,
+  anchor,
+  onClose
+}: {
+  label: string
+  filter: RegistryColumnFilter
+  anchor: DOMRect
+  onClose: () => void
+}): React.JSX.Element {
+  const [query, setQuery] = useState('')
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const outside = (target: EventTarget | null): boolean =>
+      !menuRef.current?.contains(target as Node)
+    const onDown = (event: MouseEvent): void => {
+      const target = event.target as Element | null
+      if (target?.closest?.('.registry-col-btn--filter')) return
+      if (outside(target)) onClose()
+    }
+    const onScroll = (event: Event): void => {
+      if (outside(event.target)) onClose()
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onClose)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onClose)
+    }
+  }, [onClose])
+
+  const needle = query.trim().toLocaleLowerCase('ru')
+  const options = needle
+    ? filter.options.filter((option) => option.label.toLocaleLowerCase('ru').includes(needle))
+    : filter.options
+  const width = 240
+  const left = Math.max(8, Math.min(anchor.left + anchor.width / 2 - width / 2, window.innerWidth - width - 8))
+  const pick = (value: string): void => {
+    filter.onChange(value)
+    onClose()
+  }
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="registry-col-filter-menu"
+      role="listbox"
+      aria-label={`Фильтр: ${label}`}
+      style={{ top: anchor.bottom + 4, left, width }}
+    >
+      {filter.options.length > 8 ? (
+        <input
+          className="wp-input registry-col-filter-search"
+          value={query}
+          placeholder="Найти…"
+          autoFocus
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      ) : null}
+      <div className="registry-col-filter-options">
+        <button
+          type="button"
+          className={`registry-col-filter-option${!filter.value ? ' is-active' : ''}`}
+          onClick={() => pick('')}
+        >
+          <span>Все</span>
+          {!filter.value ? <Check size={14} aria-hidden /> : null}
+        </button>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={`registry-col-filter-option${filter.value === option.value ? ' is-active' : ''}`}
+            title={option.label}
+            onClick={() => pick(option.value)}
+          >
+            <span>{option.label}</span>
+            {filter.value === option.value ? <Check size={14} aria-hidden /> : null}
+          </button>
+        ))}
+        {!options.length ? <p className="registry-col-filter-empty">Ничего не найдено</p> : null}
+      </div>
+    </div>,
+    document.body
+  )
+}
 
 const VALID_COLUMN_IDS = new Set(ASSIGNMENT_REGISTRY_COLUMNS.map((col) => col.id))
 
@@ -205,7 +308,8 @@ export function AssignmentsRegistryTable({
   onSelectRow,
   stateKey = '',
   checkedIds,
-  onToggleChecked
+  onToggleChecked,
+  columnFilters
 }: {
   rows: AssignmentRegistryRow[]
   loading?: boolean
@@ -216,10 +320,13 @@ export function AssignmentsRegistryTable({
   stateKey?: string
   checkedIds?: ReadonlySet<string>
   onToggleChecked?: (row: AssignmentRegistryRow, checked: boolean) => void
+  columnFilters?: Partial<Record<AssignmentRegistryColumnId, RegistryColumnFilter>>
 }): React.JSX.Element {
   const initial = useMemo(() => readTableState(stateKey), [stateKey])
   const [sort, setSort] = useState<SortState>(initial.sort)
   const [collapsed, setCollapsed] = useState<Set<AssignmentRegistryColumnId>>(initial.collapsed)
+  const [filterMenu, setFilterMenu] = useState<{ col: AssignmentRegistryColumnId; anchor: DOMRect } | null>(null)
+  const closeFilterMenu = useMemo(() => () => setFilterMenu(null), [])
 
   const sortedRows = useMemo(() => {
     if (!sort) return rows
@@ -271,8 +378,18 @@ export function AssignmentsRegistryTable({
     }
   }, [rows])
 
+  const menuFilter = filterMenu ? columnFilters?.[filterMenu.col] : undefined
+
   return (
     <div className="spec-v04-table-wrap registry-table-wrap">
+      {filterMenu && menuFilter ? (
+        <ColumnFilterMenu
+          label={ASSIGNMENT_REGISTRY_COLUMNS.find((col) => col.id === filterMenu.col)?.label || ''}
+          filter={menuFilter}
+          anchor={filterMenu.anchor}
+          onClose={closeFilterMenu}
+        />
+      ) : null}
       <table
         className="spec-v04-table registry-table"
         style={
@@ -320,14 +437,42 @@ export function AssignmentsRegistryTable({
               }
               const active = sort?.col === col.id
               const dir = active ? sort?.dir : null
+              const colFilter = columnFilters?.[col.id]
+              const filtered = Boolean(colFilter?.value)
               return (
                 <th
                   key={col.id}
-                  className={`registry-th${col.compact ? ' registry-th--compact' : ''}`}
+                  className={[
+                    'registry-th',
+                    col.compact ? 'registry-th--compact' : '',
+                    filtered ? 'registry-th--filtered' : ''
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
                   data-col={col.id}
                 >
                   <span className="registry-th-label">{col.label}</span>
+                  {filtered ? (
+                    <span className="registry-th-filter-value" title={colFilter?.value}>
+                      {colFilter?.value}
+                    </span>
+                  ) : null}
                   <div className="registry-th-tools">
+                    {colFilter ? (
+                      <button
+                        type="button"
+                        className={`registry-col-btn registry-col-btn--filter${filtered ? ' is-active' : ''}`}
+                        title={filtered ? `Фильтр: ${colFilter.value}` : 'Фильтр по столбцу'}
+                        aria-label={`Фильтр по столбцу «${col.label}»`}
+                        aria-expanded={filterMenu?.col === col.id}
+                        onClick={(event) => {
+                          const anchor = event.currentTarget.getBoundingClientRect()
+                          setFilterMenu((current) => (current?.col === col.id ? null : { col: col.id, anchor }))
+                        }}
+                      >
+                        <Filter size={11} aria-hidden />
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className={`registry-col-btn${active ? ' is-active' : ''}`}

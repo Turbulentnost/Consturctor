@@ -6,22 +6,12 @@ import { SpecPill } from '../../workplace/specV04Components'
 import { MailIncomingCreateDialog } from './MailIncomingCreateDialog'
 import {
   displayOutlookMail,
-  fetchOutlookMailDetail,
   hasOutlookEntryId,
   markOutlookMailRead,
-  saveOutlookAttachment,
-  type OutlookMailAttachment,
   type OutlookMailDetail
 } from '../../utils/outlookMailActions'
-import { fetchImapMessage, parseImapUid } from '../../utils/imapMail'
 import { decodeMimeHeader } from '../../utils/mimeHeader'
-import {
-  downloadAttachmentCopy,
-  ensureAttachmentSaved,
-  loadAttachmentPreview,
-  openAttachmentExternally
-} from '../../utils/mailAttachmentPreview'
-import { MailAttachmentsModal } from './MailAttachmentsModal'
+import { MailLetterTabs, useMailDetail } from './MailLetterTabs'
 import { formatMailTime } from '../../utils/outlookMail'
 import './mailGrid.css'
 
@@ -36,12 +26,10 @@ export function MailDetailPanel({
   onPatchRow?: (id: string, patch: Partial<SpecMailRow>) => void
   onAskOrchestrator?: (message: string) => void
 }): React.JSX.Element {
+  const loaded = useMailDetail(mail)
   const [detail, setDetail] = useState<OutlookMailDetail | null>(null)
-  const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState('')
   const [note, setNote] = useState('')
-  const [attModalOpen, setAttModalOpen] = useState(false)
-  const [attModalFocus, setAttModalFocus] = useState<number | undefined>()
   const [incomingDialogOpen, setIncomingDialogOpen] = useState(false)
 
   const showNote = useCallback((text: string, isError = false): void => {
@@ -54,58 +42,24 @@ export function MailDetailPanel({
   const canOutlookActions = hasOutlookEntryId(mail)
 
   useEffect(() => {
-    let alive = true
-    setDetail(null)
-    setLoading(true)
     setNote('')
-    const load = async (): Promise<void> => {
-      if (hasOutlookEntryId(mail)) {
-        const res = await fetchOutlookMailDetail(mail)
-        if (!alive) return
-        setLoading(false)
-        if (res.ok) {
-          setDetail(res.detail)
-          if (typeof res.detail.unread === 'boolean') {
-            onPatchRow?.(mail.id, {
-              unread: res.detail.unread,
-              status: res.detail.unread ? 'Непрочитано' : 'Прочитано',
-              stTone: res.detail.unread ? 'orange' : 'blue'
-            })
-          }
-          return
-        }
-        showNote(res.error, true)
-        return
-      }
-      const uid = parseImapUid(mail)
-      if (!uid) {
-        setLoading(false)
-        return
-      }
-      const res = await fetchImapMessage(uid)
-      if (!alive) return
-      setLoading(false)
-      if (res.ok) {
-        setDetail({
-          entryId: '',
-          subject: decodeMimeHeader(res.subject || mail.subject),
-          sender: decodeMimeHeader(res.from || mail.sender),
-          senderEmail: (String(res.from || '').match(/[\w.+-]+@[\w.-]+\.\w+/) || [''])[0],
-          body: res.body,
-          bodyPreview: res.body.slice(0, 400),
-          unread: Boolean(mail.unread),
-          attachments: []
-        })
-        return
-      }
-      showNote(res.error || 'IMAP: не удалось загрузить письмо', true)
+  }, [mail.id])
+
+  useEffect(() => {
+    setDetail(loaded.detail)
+    if (loaded.detail && hasOutlookEntryId(mail) && typeof loaded.detail.unread === 'boolean') {
+      onPatchRow?.(mail.id, {
+        unread: loaded.detail.unread,
+        status: loaded.detail.unread ? 'Непрочитано' : 'Прочитано',
+        stTone: loaded.detail.unread ? 'orange' : 'blue'
+      })
     }
-    void load()
-    return () => {
-      alive = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload only when selection changes
-  }, [mail.id, mail.entryId, mail.imapUid])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync once per loaded letter
+  }, [loaded.detail])
+
+  useEffect(() => {
+    if (loaded.error) showNote(loaded.error, true)
+  }, [loaded.error, showNote])
 
   const runAction = async (label: string, fn: () => Promise<{ ok: boolean; error?: string }>): Promise<void> => {
     if (busy) return
@@ -130,62 +84,6 @@ export function MailDetailPanel({
     setIncomingDialogOpen(true)
   }
 
-  const openInOrchestrator = (att: OutlookMailAttachment): void => {
-    setAttModalFocus(att.index)
-    setAttModalOpen(true)
-  }
-
-  const quickOpenAttachment = async (att: OutlookMailAttachment): Promise<void> => {
-    if (busy) return
-    setBusy('attachment')
-    try {
-      const saved = await ensureAttachmentSaved(mail, att)
-      if (!saved.ok) {
-        showNote(saved.error, true)
-        return
-      }
-      const preview = await loadAttachmentPreview(saved.path)
-      if (preview.kind === 'external' || preview.kind === 'too_large') {
-        const opened = await openAttachmentExternally(saved.path)
-        if (opened.ok) showNote('Открыто')
-        else showNote(opened.error || 'Ошибка', true)
-        return
-      }
-      if (preview.kind === 'error') {
-        showNote(preview.message, true)
-        return
-      }
-      setAttModalFocus(att.index)
-      setAttModalOpen(true)
-    } finally {
-      setBusy('')
-    }
-  }
-
-  const quickDownloadAttachment = async (att: OutlookMailAttachment): Promise<void> => {
-    await runAction('download', async () => {
-      const saved = await saveOutlookAttachment(mail, att.index)
-      if (!saved.ok) return { ok: false, error: saved.error }
-      const res = await downloadAttachmentCopy(saved.path, att.file_name)
-      if (res.canceled) return { ok: true }
-      return res
-    })
-  }
-
-  const bodyText =
-    detail?.body?.trim() ||
-    detail?.bodyPreview?.trim() ||
-    mail.bodyPreview?.trim() ||
-    (loading ? 'Загружаем текст…' : 'Текст письма недоступен')
-
-  const attachments: OutlookMailAttachment[] =
-    detail?.attachments?.length
-      ? detail.attachments
-      : (mail.attachmentNames || []).map((name, idx) => ({
-          index: idx + 1,
-          file_name: name
-        }))
-
   return (
     <>
       <div className="spec-detail-card spec-mail-detail-grid wp-card">
@@ -202,50 +100,7 @@ export function MailDetailPanel({
         </header>
 
         <div className="spec-mail-detail-grid__content">
-          {attachments.length ? (
-            <div className="spec-mail-detail-grid__attachments spec-mail-attachments">
-              <div className="spec-mail-att-head">
-                <h4 className="spec-detail-pane">Вложения ({attachments.length})</h4>
-                <button
-                  type="button"
-                  className="spec-btn-outline spec-mail-att-open-all"
-                  disabled={Boolean(busy)}
-                  onClick={() => {
-                    setAttModalFocus(undefined)
-                    setAttModalOpen(true)
-                  }}
-                >
-                  Все вложения
-                </button>
-              </div>
-              <ul className="spec-mail-att-compact-list">
-                {attachments.map((att) => (
-                  <li key={`${mail.id}-${att.index}`} className="spec-mail-att-compact-row">
-                    <span className="spec-mail-att-name">{att.file_name}</span>
-                    <div className="spec-mail-att-compact-actions">
-                      <button
-                        type="button"
-                        className="spec-btn-launch spec-mail-att-action-btn"
-                        disabled={Boolean(busy) || !canOutlookActions}
-                        onClick={() => void quickOpenAttachment(att)}
-                      >
-                        Открыть
-                      </button>
-                      <button
-                        type="button"
-                        className="spec-btn-outline spec-mail-att-action-btn"
-                        disabled={Boolean(busy) || !canOutlookActions}
-                        onClick={() => void quickDownloadAttachment(att)}
-                      >
-                        Скачать
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          <div className="spec-mail-detail-grid__body">{bodyText}</div>
+          <MailLetterTabs mail={mail} detail={detail} loading={loaded.loading} onToast={showNote} />
         </div>
 
         <footer className="spec-mail-detail-grid__actions">
@@ -373,14 +228,6 @@ export function MailDetailPanel({
         detail={detail}
         onClose={() => setIncomingDialogOpen(false)}
         onCreated={(message, isError) => showNote(message, Boolean(isError))}
-      />
-      <MailAttachmentsModal
-        open={attModalOpen}
-        mail={mail}
-        attachments={attachments}
-        initialIndex={attModalFocus}
-        onClose={() => setAttModalOpen(false)}
-        onToast={showNote}
       />
     </>
   )

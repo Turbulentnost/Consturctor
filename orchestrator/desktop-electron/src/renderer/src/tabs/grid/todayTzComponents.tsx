@@ -312,7 +312,8 @@ export function TodayFiltersBar({
   onReset,
   widgetEditMode = false,
   onWidgetEditModeChange,
-  onResetWidgetLayout
+  onResetWidgetLayout,
+  extra
 }: {
   periodDay: Date
   onPeriodDayChange: (day: Date) => void
@@ -320,6 +321,7 @@ export function TodayFiltersBar({
   widgetEditMode?: boolean
   onWidgetEditModeChange?: (edit: boolean) => void
   onResetWidgetLayout?: () => void
+  extra?: React.ReactNode
 }): React.JSX.Element {
   return (
     <div className="today-filters-bar wp-card">
@@ -364,6 +366,7 @@ export function TodayFiltersBar({
           <option value="">Все статусы</option>
         </select>
       </label>
+      {extra}
       {onWidgetEditModeChange ? (
         <button
           type="button"

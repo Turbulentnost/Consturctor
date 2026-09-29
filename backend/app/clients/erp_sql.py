@@ -12,11 +12,11 @@ import pyodbc
 
 from app.config import settings
 
-_reopen_lock = threading.Lock()
 # SQL Server ODBC runs one statement per connection at a time (no MARS): a
 # connection is checked out by one caller until _release_connection returns it.
 _pool_lock = threading.Lock()
 _idle_conns: list[tuple[pyodbc.Connection, float]] = []
+_reopen_lock = threading.Lock()
 _CONN_TTL_SEC = 300.0
 _MAX_IDLE_CONNS = 4
 _PROBE_TIMEOUT_SEC = 5
@@ -327,10 +327,11 @@ def _probe_connection(conn: pyodbc.Connection) -> bool:
 
 
 def _connect() -> pyodbc.Connection:
-    """Своё соединение на вызов: ODBC без MARS не ведёт два запроса сразу.
+    """Взять соединение с erp_pm из пула (вернуть через _release_connection).
 
-    Проба идёт вне _pool_lock. Новый логин ждёт ограниченно, чтобы зависший
-    ODBC не блокировал SQL всему процессу.
+    Одно общее на процесс давало «connection is busy». Проба идёт вне
+    _pool_lock. Новый логин ждёт ограниченно, чтобы зависший ODBC не
+    блокировал SQL всему процессу.
     """
     while True:
         with _pool_lock:
@@ -343,6 +344,7 @@ def _connect() -> pyodbc.Connection:
         if _probe_connection(conn):
             return conn
         _close_quietly(conn)
+    # Логины под impersonation дорогие — открываем по одному, но ждём ограниченно.
     if not _reopen_lock.acquire(timeout=_login_timeout() + 5):
         raise ErpSqlError("ERP SQL занят открытием соединения, повторите запрос")
     try:

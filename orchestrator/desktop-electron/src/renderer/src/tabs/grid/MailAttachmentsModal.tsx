@@ -12,7 +12,7 @@ import {
   type SavedAttachment
 } from '../../utils/mailAttachmentPreview'
 
-function PreviewPane({ preview }: { preview: MailAttachmentPreview | undefined }): React.JSX.Element {
+export function PreviewPane({ preview }: { preview: MailAttachmentPreview | undefined }): React.JSX.Element {
   if (!preview || preview.kind === 'idle') {
     return <p className="spec-v04-muted spec-mail-att-preview-empty">Выберите файл и нажмите «Просмотр».</p>
   }

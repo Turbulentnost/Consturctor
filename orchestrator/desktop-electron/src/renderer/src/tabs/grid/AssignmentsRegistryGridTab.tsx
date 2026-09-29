@@ -40,11 +40,11 @@ const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon', 'report'
 
 type RegistryColumnFilterKey = 'reporter' | 'secretary' | 'status' | 'manager'
 
-const REGISTRY_COLUMN_FILTERS: { id: RegistryColumnFilterKey; emptyLabel: string }[] = [
-  { id: 'reporter', emptyLabel: 'Кто доложит: все' },
-  { id: 'secretary', emptyLabel: 'Секретарь: все' },
-  { id: 'status', emptyLabel: 'Статус: все' },
-  { id: 'manager', emptyLabel: 'Руководитель: все' }
+const REGISTRY_COLUMN_FILTERS: { id: RegistryColumnFilterKey }[] = [
+  { id: 'reporter' },
+  { id: 'secretary' },
+  { id: 'status' },
+  { id: 'manager' }
 ]
 
 function emptyRegistryColumnFilters(): Record<RegistryColumnFilterKey, string> {
@@ -289,6 +289,17 @@ export function AssignmentsRegistryGridTab({
       manager: toFilterOptions(uniqueFilterValues(rowsHydrated.map((row) => row.manager)))
     }),
     [rowsHydrated]
+  )
+
+  const tableColumnFilters = Object.fromEntries(
+    REGISTRY_COLUMN_FILTERS.map(({ id }) => [
+      id,
+      {
+        value: columnFilters[id],
+        options: columnFilterOptions[id],
+        onChange: (value: string) => changeColumnFilter(id, value)
+      }
+    ])
   )
 
   const filteredRows = useMemo(() => {
@@ -623,24 +634,6 @@ export function AssignmentsRegistryGridTab({
                 <Plus size={14} aria-hidden /> Создать
               </button>
             </div>
-            <div className="registry-column-filters-inline" aria-label="Фильтры по столбцам">
-              {REGISTRY_COLUMN_FILTERS.map((field) => (
-                <select
-                  key={field.id}
-                  className="wp-select registry-column-filter"
-                  value={columnFilters[field.id]}
-                  aria-label={field.emptyLabel}
-                  onChange={(event) => changeColumnFilter(field.id, event.target.value)}
-                >
-                  <option value="">{field.emptyLabel}</option>
-                  {columnFilterOptions[field.id].map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              ))}
-            </div>
             {filterRowCountLabel ? (
               <span className="registry-filter-row-count" aria-live="polite">
                 {filterRowCountLabel}
@@ -691,6 +684,7 @@ export function AssignmentsRegistryGridTab({
                   })
                 }
                 onSelectRow={(row) => pickRow(row)}
+                columnFilters={tableColumnFilters}
                 emptyText={
                   pageQuery.trim() || Object.values(columnFilters).some(Boolean)
                     ? 'Нет поручений по фильтрам и поиску'

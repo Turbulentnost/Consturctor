@@ -4874,11 +4874,18 @@ class Sidecar:
             input_data["for_user"] = for_user
         if command.get("allVisible"):
             input_data["all_visible"] = True
+        calendar_owners = command.get("calendarOwners")
+        calendar_owner = isinstance(calendar_owners, list) and bool(calendar_owners)
+        if calendar_owner:
+            input_data["calendar_owners"] = [str(item or "").strip() for item in calendar_owners]
         days_forward = command.get("daysForward")
         if isinstance(days_forward, int) and days_forward > 0:
             input_data["days_forward"] = days_forward
         if command.get("allVisible"):
             input_data["max_scan_items"] = 2000
+        elif calendar_owner:
+            input_data["max_scan_items"] = 500 * len(calendar_owners)
+            input_data["max_results"] = 200 * len(calendar_owners)
         elif for_user:
             input_data["max_scan_items"] = 500
 

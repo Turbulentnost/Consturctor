@@ -377,12 +377,13 @@ export function useTodayWidgetLayout(userId: string): {
       setEditModeState((prev) => {
         const next = typeof value === 'function' ? value(prev) : value
         if (prev && !next) {
-          persistState({ layout: layoutRef.current, locked: lockedRef.current })
+          const saved = readPersist(userId)
+          persistState({ ...saved, layout: layoutRef.current, locked: lockedRef.current })
         }
         return next
       })
     },
-    [persistState]
+    [persistState, userId]
   )
 
   const toggleWidgetLock = useCallback(

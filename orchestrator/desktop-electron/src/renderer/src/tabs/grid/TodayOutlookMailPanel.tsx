@@ -17,12 +17,11 @@ import {
   displayOutlookMail,
   hasOutlookEntryId,
   markOutlookMailRead,
-  saveOutlookAttachment
+  type OutlookMailDetail
 } from '../../utils/outlookMailActions'
-import { openAttachmentExternally } from '../../utils/mailAttachmentPreview'
 import { decodeMimeHeader } from '../../utils/mimeHeader'
 import { useRequestTodayWidgetExpand, useTodayWidgetExpanded } from './TodayWidgetExpandContext'
-import { TodayFileIcon } from './todayFileIcon'
+import { MailLetterTabs, useMailDetail } from './MailLetterTabs'
 
 function senderInitials(name: string): string {
   const parts = name
@@ -36,7 +35,11 @@ function senderInitials(name: string): string {
 }
 
 function mailPreview(row: SpecMailRow): string {
-  return row.preview || row.body?.replace(/\s+/g, ' ').slice(0, 140) || decodeMimeHeader(row.subject)
+  return (
+    row.preview ||
+    (row.body || row.bodyPreview)?.replace(/\s+/g, ' ').slice(0, 140) ||
+    decodeMimeHeader(row.subject)
+  )
 }
 
 function TodayCellText({ text }: { text: string }): React.JSX.Element {
@@ -113,18 +116,21 @@ function OutlookCommandBar({
 
 function OutlookReadingPane({
   row,
+  detail,
+  loading,
   busy,
   onAction,
-  onOpenAttachment,
+  onToast,
   onRegister
 }: {
   row: SpecMailRow
+  detail: OutlookMailDetail | null
+  loading: boolean
   busy: string
   onAction: (mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open') => void
-  onOpenAttachment: (fileName: string, index: number) => void
+  onToast: (text: string, isError?: boolean) => void
   onRegister?: () => void
 }): React.JSX.Element {
-  const attachments = row.attachments || []
   return (
     <article className="today-outlook-reading">
       <OutlookCommandBar row={row} busy={busy} onAction={onAction} onRegister={onRegister} />
@@ -150,36 +156,8 @@ function OutlookReadingPane({
           </div>
         </header>
         <h2 className="today-outlook-subject">{decodeMimeHeader(row.subject)}</h2>
-        {attachments.length ? (
-          <div className="today-outlook-attachments-wrap">
-            <div className="today-outlook-attachments-label">
-              <Paperclip size={14} strokeWidth={2} aria-hidden />
-              Вложения ({attachments.length})
-            </div>
-            <ul className="today-outlook-attachments">
-              {attachments.map((file, index) => (
-                <li key={file.name} className="today-outlook-attachment">
-                  <button
-                    type="button"
-                    className="today-outlook-attachment-btn"
-                    disabled={Boolean(busy)}
-                    title={`Открыть ${file.name}`}
-                    onClick={() => onOpenAttachment(file.name, index + 1)}
-                  >
-                    <TodayFileIcon name={file.name} size={32} />
-                    <span>{file.name}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        <div className="today-outlook-body">
-          {row.body ? (
-            row.body.split(/\n{2,}/).map((block, index) => <p key={index}>{block}</p>)
-          ) : (
-            <p className="today-outlook-body-empty">Текст письма недоступен.</p>
-          )}
+        <div className="today-outlook-letter">
+          <MailLetterTabs mail={row} detail={detail} loading={loading} onToast={onToast} />
         </div>
       </div>
     </article>
@@ -259,6 +237,7 @@ export function TodayOutlookMailPanel({
   )
 
   const unreadCount = useMemo(() => directedRows.filter((row) => row.unread).length, [directedRows])
+  const letter = useMailDetail(expanded ? selected : null)
 
   const runMailAction = async (
     mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open'
@@ -287,25 +266,9 @@ export function TodayOutlookMailPanel({
     }
   }
 
-  const openAttachment = async (fileName: string, index: number): Promise<void> => {
-    if (!selected || busy) return
-    if (!hasOutlookEntryId(selected)) {
-      setActionNote('Вложения — только Outlook COM')
-      return
-    }
-    setBusy('attachment')
-    try {
-      const saved = await saveOutlookAttachment(selected, index)
-      if (!saved.ok) {
-        setActionNote(saved.error)
-        return
-      }
-      const opened = await openAttachmentExternally(saved.path)
-      setActionNote(opened.ok ? `Открыто: ${fileName}` : opened.error || 'Ошибка')
-    } finally {
-      setBusy('')
-      window.setTimeout(() => setActionNote(''), 4000)
-    }
+  const showNote = (text: string): void => {
+    setActionNote(text)
+    window.setTimeout(() => setActionNote(''), 4000)
   }
 
   if (!expanded) {
@@ -452,7 +415,7 @@ export function TodayOutlookMailPanel({
               <ul className="today-outlook-list-rows">
                 {visibleRows.map((row) => {
                   const active = selected?.id === row.id
-                  const hasFiles = Boolean(row.attachments?.length)
+                  const hasFiles = Boolean(row.attachments?.length || row.attachmentNames?.length)
                   return (
                     <li key={row.id}>
                       <button
@@ -494,9 +457,11 @@ export function TodayOutlookMailPanel({
               ) : null}
               <OutlookReadingPane
                 row={selected}
+                detail={letter.detail}
+                loading={letter.loading}
                 busy={busy}
                 onAction={(mode) => void runMailAction(mode)}
-                onOpenAttachment={(name, index) => void openAttachment(name, index)}
+                onToast={showNote}
                 onRegister={user ? () => setIncomingOpen(true) : undefined}
               />
             </>
@@ -514,7 +479,7 @@ export function TodayOutlookMailPanel({
         open={incomingOpen}
         mail={selected}
         user={user}
-        detail={null}
+        detail={letter.detail}
         onClose={() => setIncomingOpen(false)}
         onCreated={(message, isError) => {
           setActionNote(message)

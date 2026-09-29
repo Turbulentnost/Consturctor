@@ -56,22 +56,23 @@
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-filter-panel {
   display: flex;
+  flex: 1 0 auto;
   flex-direction: row;
   align-items: center;
-  min-width: 0;
-  width: 100%;
+  min-width: max-content;
+  width: auto;
   height: 40px;
 }
 
 .orch-grid-registry .tab-chrome-filters-bar .registry-filter-strip,
 .orch-grid-registry .tab-chrome-filters-bar .registry-filter-one-row {
-  flex: 1 1 auto;
+  flex: 1 0 auto;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
-  min-width: 0;
-  width: 100%;
+  min-width: max-content;
+  width: auto;
   height: auto;
   min-height: 32px;
   margin: 0;
