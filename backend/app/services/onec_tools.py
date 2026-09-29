@@ -38,6 +38,18 @@ from app.services.docflow_memos import (
     handle_docflow_memo_card as _docflow_memo_card,
     handle_docflow_memos as _docflow_memos,
 )
+from app.services.docflow_payment_requests import (
+    handle_docflow_payment_request_card as _docflow_payment_request_card,
+    handle_docflow_payment_requests as _docflow_payment_requests,
+)
+from app.services.docflow_forwarding import (
+    handle_docflow_forwarding as _docflow_forwarding,
+    handle_docflow_forwarding_card as _docflow_forwarding_card,
+)
+from app.services.docflow_incentive_orders import (
+    handle_docflow_incentive_order_card as _docflow_incentive_order_card,
+    handle_docflow_incentive_orders as _docflow_incentive_orders,
+)
 from app.services.erp_assignments import (
     ASSIGNMENT_ENTITY,
     ASSIGNMENT_FILES_ENTITY,
@@ -199,6 +211,12 @@ ONEC_TOOLS = frozenset(
         "onec.docflow_assignment_card",
         "onec.docflow_protocols",
         "onec.docflow_protocol_card",
+        "onec.docflow_payment_requests",
+        "onec.docflow_payment_request_card",
+        "onec.docflow_forwarding",
+        "onec.docflow_forwarding_card",
+        "onec.docflow_incentive_orders",
+        "onec.docflow_incentive_order_card",
         "onec.meeting_protocols",
         "onec.meeting_protocol_write",
     }
@@ -1590,6 +1608,12 @@ STUB_HANDLERS = {
     "onec.docflow_assignment_card": _docflow_assignment_card,
     "onec.docflow_protocols": _docflow_protocols,
     "onec.docflow_protocol_card": _docflow_protocol_card,
+    "onec.docflow_payment_requests": _docflow_payment_requests,
+    "onec.docflow_payment_request_card": _docflow_payment_request_card,
+    "onec.docflow_forwarding": _docflow_forwarding,
+    "onec.docflow_forwarding_card": _docflow_forwarding_card,
+    "onec.docflow_incentive_orders": _docflow_incentive_orders,
+    "onec.docflow_incentive_order_card": _docflow_incentive_order_card,
     "onec.meeting_protocols": _stub_meeting_protocols,
     "onec.meeting_protocol_write": _stub_meeting_protocol_write,
 }
@@ -1621,6 +1645,12 @@ REAL_HANDLERS = {
     "onec.docflow_assignment_card": _docflow_assignment_card,
     "onec.docflow_protocols": _docflow_protocols,
     "onec.docflow_protocol_card": _docflow_protocol_card,
+    "onec.docflow_payment_requests": _docflow_payment_requests,
+    "onec.docflow_payment_request_card": _docflow_payment_request_card,
+    "onec.docflow_forwarding": _docflow_forwarding,
+    "onec.docflow_forwarding_card": _docflow_forwarding_card,
+    "onec.docflow_incentive_orders": _docflow_incentive_orders,
+    "onec.docflow_incentive_order_card": _docflow_incentive_order_card,
     "onec.meeting_protocols": _list_meeting_protocols,
     "onec.meeting_protocol_write": _meeting_protocol_write,
 }

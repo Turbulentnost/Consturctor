@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlertTriangle,
   BarChart3,
   Building2,
   CheckCircle2,
@@ -12,6 +13,7 @@ import {
   ListChecks,
   Lock,
   MessagesSquare,
+  Paperclip,
   PenLine,
   Search,
   Tag,
@@ -24,9 +26,11 @@ import {
   loadProtocolCard,
   loadProtocolPage,
   type ProtocolCard,
+  type ProtocolFile,
   type ProtocolOption,
   type ProtocolPlanRow,
-  type ProtocolRow
+  type ProtocolRow,
+  type ProtocolTask
 } from '../../workplace/fetchDocflowProtocols'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 
@@ -141,6 +145,52 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
   )
 }
 
+function fileSize(size: number): string {
+  if (size <= 0) return ''
+  return size >= 1024 * 1024 ? `${(size / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(size / 1024))} КБ`
+}
+
+function FileChips({ files }: { files: ProtocolFile[] }): React.JSX.Element | null {
+  if (!files.length) return null
+  return (
+    <div className="docflow-chips docflow-files">
+      {files.map((file) => (
+        <span key={file.id} title={[file.name, fileSize(file.size)].filter(Boolean).join(' · ')}>
+          <Paperclip size={11} aria-hidden />
+          {file.name || '—'}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function TaskList({ tasks, empty }: { tasks: ProtocolTask[]; empty: string }): React.JSX.Element {
+  if (!tasks.length) return <p className="docflow-status">{empty}</p>
+  return (
+    <ol className="docflow-lines">
+      {tasks.map((task, index) => (
+        <li key={`${task.n}-${index}`} value={task.n || index + 1} className={task.overdue ? 'is-overdue' : ''}>
+          <p>{task.text || '—'}</p>
+          <div>
+            <span className={`docflow-pill ${task.overdue ? 'is-bad' : 'is-wait'}`}>
+              {task.overdue ? <AlertTriangle size={11} aria-hidden /> : <Circle size={11} aria-hidden />}
+              {task.status}
+            </span>
+            {task.responsible ? <span>{task.responsible}</span> : null}
+            {task.due ? <span className={task.overdue ? 'is-overdue' : ''}>срок {onlyDay(task.due)}</span> : null}
+            {task.setAt ? <span>поставлена {onlyDay(task.setAt)}</span> : null}
+            {task.priority ? <span>{task.priority}</span> : null}
+            {task.sent ? <span>отправлена исполнителю</span> : null}
+            {task.author ? <span>автор {task.author}</span> : null}
+          </div>
+          <FileChips files={task.files} />
+          {task.note ? <p className="docflow-muted">{task.note}</p> : null}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
 function PlanBlock({ title, rows }: { title: string; rows: ProtocolPlanRow[] }): React.JSX.Element | null {
   if (!rows.length) return null
   return (
@@ -176,8 +226,37 @@ function PlanBlock({ title, rows }: { title: string; rows: ProtocolPlanRow[] }):
   )
 }
 
+type CardTab = 'main' | 'agenda' | 'control' | 'assigned' | 'decisions' | 'attendees' | 'plan' | 'files'
+
 function ProtocolCardView({ card }: { card: ProtocolCard }): React.JSX.Element {
-  const { protocol: row, agenda, decisions, tasks, periodDone, periodPlan, planFact, stats } = card
+  const { protocol: row, agenda, decisions, controlTasks, assignedTasks, files, periodDone, periodPlan, planFact, stats } = card
+  const [tab, setTab] = useState<CardTab>('main')
+  const planRows = periodDone.length + periodPlan.length + planFact.length
+  // Разделы повторяют вкладки формы протокола в 1С; пустые не показываем, кроме задач.
+  const tabs: { id: CardTab; label: string; icon: React.ReactNode; count?: number; overdue?: number }[] = [
+    { id: 'main', label: 'Основное', icon: <ClipboardList size={12} aria-hidden /> },
+    ...(agenda.length ? [{ id: 'agenda' as CardTab, label: 'Повестка', icon: <MessagesSquare size={12} aria-hidden />, count: agenda.length }] : []),
+    {
+      id: 'control',
+      label: 'Задачи для контроля',
+      icon: <ListChecks size={12} aria-hidden />,
+      count: stats.controlTasks,
+      overdue: stats.controlOverdue
+    },
+    {
+      id: 'assigned',
+      label: 'Поставленные задачи',
+      icon: <ListChecks size={12} aria-hidden />,
+      count: stats.assignedTasks,
+      overdue: stats.assignedOverdue
+    },
+    ...(decisions.length ? [{ id: 'decisions' as CardTab, label: 'Решения', icon: <Gavel size={12} aria-hidden />, count: decisions.length }] : []),
+    ...(row.participants.length
+      ? [{ id: 'attendees' as CardTab, label: 'Присутствующие', icon: <Users size={12} aria-hidden />, count: row.participants.length }]
+      : []),
+    ...(planRows ? [{ id: 'plan' as CardTab, label: 'План-факт', icon: <BarChart3 size={12} aria-hidden />, count: planRows }] : []),
+    ...(files.length ? [{ id: 'files' as CardTab, label: 'Файлы', icon: <Paperclip size={12} aria-hidden />, count: files.length }] : [])
+  ]
   return (
     <>
       <header className="docflow-detail-head">
@@ -191,40 +270,49 @@ function ProtocolCardView({ card }: { card: ProtocolCard }): React.JSX.Element {
         <StatusPill row={row} />
       </header>
       {row.topic ? <p className="docflow-side-subject">{row.topic}</p> : null}
+      {row.secret ? (
+        <p className="docflow-secret-note">
+          <Lock size={12} aria-hidden /> Секретно: {row.access || 'ограниченный доступ'} — вы автор или ответственный
+        </p>
+      ) : null}
+      <nav className="docflow-card-tabs" aria-label="Разделы протокола">
+        {tabs.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={tab === item.id ? 'is-active' : ''}
+            onClick={() => setTab(item.id)}
+          >
+            {item.icon}
+            {item.label}
+            {item.count ? <b>{item.count}</b> : null}
+            {item.overdue ? <em title="просроченных задач">{item.overdue}</em> : null}
+          </button>
+        ))}
+      </nav>
       <div className="docflow-side-scroll">
-        <section className="docflow-card-block">
-          <h4>Основное</h4>
-          <dl className="docflow-detail-list">
-            <Fact label="Вид совещания" value={row.kind} />
-            <Fact label="Руководитель" value={row.head} />
-            <Fact label="Подразделение" value={row.department} />
-            <Fact label="Место" value={row.room} />
-            <Fact label="Подготовил" value={row.preparedBy} />
-            <Fact label="Ответственный" value={row.responsible} />
-            <Fact label="Проект" value={row.project} />
-            <Fact label="Гриф" value={row.access} />
-            <Fact label="Следующее совещание" value={row.nextMeeting ? onlyDay(row.nextMeeting) : ''} />
-            <Fact label="Задачи разосланы" value={row.tasksSent ? 'Да' : 'Нет'} />
-            <Fact label="Комментарий" value={row.comment} />
-          </dl>
-        </section>
-        {row.participants.length ? (
+        {tab === 'main' ? (
           <section className="docflow-card-block">
-            <h4>
-              <Users size={14} aria-hidden /> Участники
-              <span>{row.participants.length}</span>
-            </h4>
-            <div className="docflow-chips">
-              {row.participants.map((name) => (
-                <span key={name}>{name}</span>
-              ))}
-            </div>
+            <h4>Основное</h4>
+            <dl className="docflow-detail-list">
+              <Fact label="Вид совещания" value={row.kind} />
+              <Fact label="Руководитель" value={row.head} />
+              <Fact label="Подразделение" value={row.department} />
+              <Fact label="Место" value={row.room} />
+              <Fact label="Подготовил" value={row.preparedBy} />
+              <Fact label="Ответственный" value={row.responsible} />
+              <Fact label="Проект" value={row.project} />
+              <Fact label="Гриф" value={row.access} />
+              <Fact label="Следующее совещание" value={row.nextMeeting ? onlyDay(row.nextMeeting) : ''} />
+              <Fact label="Задачи разосланы" value={row.tasksSent ? 'Да' : 'Нет'} />
+              <Fact label="Комментарий" value={row.comment} />
+            </dl>
           </section>
         ) : null}
-        {agenda.length ? (
+        {tab === 'agenda' ? (
           <section className="docflow-card-block">
             <h4>
-              <MessagesSquare size={14} aria-hidden /> Повестка
+              <MessagesSquare size={14} aria-hidden /> Повестка совещания
               <span>{agenda.length}</span>
             </h4>
             <ol className="docflow-lines">
@@ -235,21 +323,46 @@ function ProtocolCardView({ card }: { card: ProtocolCard }): React.JSX.Element {
                     {item.responsible ? <span>{item.responsible}</span> : null}
                     {item.attachments ? <span>приложения: {item.attachments}</span> : null}
                   </div>
+                  <FileChips files={item.files} />
                 </li>
               ))}
             </ol>
           </section>
         ) : null}
-        <section className="docflow-card-block">
-          <h4>
-            <Gavel size={14} aria-hidden /> Решения
-            <span>
-              {stats.decisions
-                ? `исполнено ${stats.decisionsDone} из ${stats.decisions}${stats.decisionsCancelled ? ` · отменено ${stats.decisionsCancelled}` : ''}`
-                : 'нет'}
-            </span>
-          </h4>
-          {decisions.length ? (
+        {tab === 'control' ? (
+          <section className="docflow-card-block">
+            <h4>
+              <ListChecks size={14} aria-hidden /> Задачи для контроля
+              <span>
+                {stats.controlTasks
+                  ? `${stats.controlTasks}${stats.controlOverdue ? ` · просрочено ${stats.controlOverdue}` : ''}`
+                  : 'нет'}
+              </span>
+            </h4>
+            <TaskList tasks={controlTasks} empty="В протоколе нет задач для контроля." />
+          </section>
+        ) : null}
+        {tab === 'assigned' ? (
+          <section className="docflow-card-block">
+            <h4>
+              <ListChecks size={14} aria-hidden /> Поставленные задачи
+              <span>
+                {stats.assignedTasks
+                  ? `${stats.assignedTasks}${stats.assignedOverdue ? ` · просрочено ${stats.assignedOverdue}` : ''}`
+                  : 'нет'}
+              </span>
+            </h4>
+            <TaskList tasks={assignedTasks} empty="На совещании задачи не поставлены." />
+          </section>
+        ) : null}
+        {tab === 'decisions' ? (
+          <section className="docflow-card-block">
+            <h4>
+              <Gavel size={14} aria-hidden /> Решения
+              <span>
+                {`исполнено ${stats.decisionsDone} из ${stats.decisions}${stats.decisionsCancelled ? ` · отменено ${stats.decisionsCancelled}` : ''}`}
+              </span>
+            </h4>
             <ul className="docflow-route">
               {decisions.map((item) => (
                 <li key={item.n} className={item.doneAt && !item.cancelled ? 'is-done' : item.cancelled ? 'is-cancelled' : ''}>
@@ -283,46 +396,48 @@ function ProtocolCardView({ card }: { card: ProtocolCard }): React.JSX.Element {
                 </li>
               ))}
             </ul>
-          ) : (
-            <p className="docflow-muted">В протоколе нет решений.</p>
-          )}
-        </section>
-        {tasks.length ? (
+          </section>
+        ) : null}
+        {tab === 'attendees' ? (
           <section className="docflow-card-block">
             <h4>
-              <ListChecks size={14} aria-hidden /> Задачи протокола
-              <span>{`выполнено ${stats.tasksDone} из ${stats.tasks}`}</span>
+              <Users size={14} aria-hidden /> Присутствующие
+              <span>{row.participants.length}</span>
             </h4>
-            <ul className="docflow-route">
-              {tasks.map((task, index) => (
-                <li key={`${task.n}-${index}`} className={task.doneAt ? 'is-done' : ''}>
-                  {task.doneAt ? <CheckCircle2 size={14} aria-hidden /> : <Circle size={14} aria-hidden />}
+            <div className="docflow-chips">
+              {row.participants.map((name) => (
+                <span key={name}>{name}</span>
+              ))}
+            </div>
+          </section>
+        ) : null}
+        {tab === 'plan' ? (
+          <>
+            <PlanBlock title="План-факт" rows={planFact} />
+            <PlanBlock title="Выполнение задач за период" rows={periodDone} />
+            <PlanBlock title="План задач на период" rows={periodPlan} />
+          </>
+        ) : null}
+        {tab === 'files' ? (
+          <section className="docflow-card-block">
+            <h4>
+              <Paperclip size={14} aria-hidden /> Файлы протокола
+              <span>{files.length}</span>
+            </h4>
+            <ul className="docflow-lines">
+              {files.map((file) => (
+                <li key={file.id}>
+                  <p>{file.name || '—'}</p>
                   <div>
-                    <strong className="docflow-route-text">
-                      {task.n ? `${task.n}. ` : ''}
-                      {task.text || '—'}
-                    </strong>
-                    <span>
-                      {[
-                        task.responsible,
-                        task.setAt ? `поставлена ${onlyDay(task.setAt)}` : '',
-                        task.doneAt ? `исполнена ${onlyDay(task.doneAt)}` : '',
-                        task.priority,
-                        task.permanent ? 'постоянная' : ''
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </span>
-                    {task.note ? <em>{task.note}</em> : null}
+                    {fileSize(file.size) ? <span>{fileSize(file.size)}</span> : null}
+                    {file.created ? <span>{onlyDay(file.created)}</span> : null}
+                    {file.signed ? <span>подписан ЭП</span> : null}
                   </div>
                 </li>
               ))}
             </ul>
           </section>
         ) : null}
-        <PlanBlock title="Выполнение задач за период" rows={periodDone} />
-        <PlanBlock title="План задач на период" rows={periodPlan} />
-        <PlanBlock title="План-факт" rows={planFact} />
       </div>
     </>
   )
@@ -343,6 +458,7 @@ export function DocflowProtocolsPanel({
   const [nextSkip, setNextSkip] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [hiddenSecret, setHiddenSecret] = useState(0)
+  const [ownSecret, setOwnSecret] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [reload, setReload] = useState(0)
@@ -381,6 +497,7 @@ export function DocflowProtocolsPanel({
           return [...base, ...page.rows.filter((row) => !seen.has(row.id))]
         })
         setHiddenSecret((prev) => (reset ? page.hiddenSecret : prev + page.hiddenSecret))
+        setOwnSecret((prev) => (reset ? page.ownSecret : prev + page.ownSecret))
         if (page.statuses.length) setStatuses(page.statuses)
         if (page.kinds.length) setKinds(page.kinds)
         setNextSkip(page.nextSkip)
@@ -532,9 +649,14 @@ export function DocflowProtocolsPanel({
           ) : null}
           <span>
             {`${visible.length} из ${rows.length}${hasMore ? '+' : ''}`}
+            {ownSecret ? (
+              <em className="docflow-secret-note" title="Ваши конфиденциальные протоколы — вы автор или ответственный">
+                <Lock size={12} aria-hidden /> секретно {ownSecret}
+              </em>
+            ) : null}
             {hiddenSecret ? (
-              <em className="docflow-secret-note" title="Конфиденциальные протоколы не показываются">
-                <Lock size={12} aria-hidden /> скрыто {hiddenSecret}
+              <em className="docflow-secret-note" title="Чужие конфиденциальные протоколы не показываются">
+                скрыто {hiddenSecret}
               </em>
             ) : null}
           </span>
@@ -584,7 +706,14 @@ export function DocflowProtocolsPanel({
                   >
                     <td>{onlyDay(row.date)}</td>
                     <td>{cell(row.time)}</td>
-                    <td>{cell(row.number)}</td>
+                    <td>
+                      {cell(row.number)}
+                      {row.secret ? (
+                        <em className="docflow-secret-note" title={`Секретно: ${row.access || 'ограниченный доступ'}`}>
+                          <Lock size={12} aria-hidden /> секретно
+                        </em>
+                      ) : null}
+                    </td>
                     <td title={row.topic}>{cell(row.topic)}</td>
                     <td>{cell(row.kind)}</td>
                     <td>{cell(row.head)}</td>
@@ -615,7 +744,7 @@ export function DocflowProtocolsPanel({
             </button>
           </p>
         ) : card ? (
-          <ProtocolCardView card={card} />
+          <ProtocolCardView key={card.protocol.id} card={card} />
         ) : null}
       </aside>
     </div>

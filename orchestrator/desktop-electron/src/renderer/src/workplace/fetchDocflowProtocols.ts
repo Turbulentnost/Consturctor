@@ -2,7 +2,7 @@ import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
 import { onecGatewayInvokeArgs } from './userContext'
 
-/** Строка журнала протоколов (onec.docflow_protocols). Конфиденциальные сервер не отдаёт. */
+/** Строка журнала протоколов (onec.docflow_protocols). Конфиденциальные приходят только свои. */
 export type ProtocolRow = {
   id: string
   number: string
@@ -21,6 +21,7 @@ export type ProtocolRow = {
   room: string
   project: string
   access: string
+  secret: boolean
   nextMeeting: string
   tasksSent: boolean
   posted: boolean
@@ -35,6 +36,7 @@ export type ProtocolPage = {
   nextSkip: number
   hasMore: boolean
   hiddenSecret: number
+  ownSecret: number
   statuses: ProtocolOption[]
   kinds: ProtocolOption[]
 }
@@ -51,9 +53,34 @@ export type ProtocolPlanRow = {
   done: boolean
 }
 
+export type ProtocolFile = {
+  id: string
+  name: string
+  extension: string
+  size: number
+  created: string
+  signed: boolean
+}
+
+/** Отметки о выполнении у задач протокола в 1С нет: есть срок, из него и статус. */
+export type ProtocolTask = {
+  n: number
+  text: string
+  responsible: string
+  author: string
+  setAt: string
+  due: string
+  overdue: boolean
+  status: string
+  priority: string
+  sent: boolean
+  note: string
+  files: ProtocolFile[]
+}
+
 export type ProtocolCard = {
   protocol: ProtocolRow
-  agenda: { n: number; text: string; responsible: string; attachments: string }[]
+  agenda: { n: number; text: string; responsible: string; attachments: string; files: ProtocolFile[] }[]
   decisions: {
     n: number
     text: string
@@ -66,22 +93,22 @@ export type ProtocolCard = {
     cancelReason: string
     cancelledBy: string
   }[]
-  tasks: {
-    n: number
-    text: string
-    responsible: string
-    author: string
-    setAt: string
-    doneAt: string
-    priority: string
-    sent: boolean
-    note: string
-    permanent: boolean
-  }[]
+  controlTasks: ProtocolTask[]
+  assignedTasks: ProtocolTask[]
+  files: ProtocolFile[]
   periodDone: ProtocolPlanRow[]
   periodPlan: ProtocolPlanRow[]
   planFact: ProtocolPlanRow[]
-  stats: { decisions: number; decisionsDone: number; decisionsCancelled: number; tasks: number; tasksDone: number }
+  stats: {
+    decisions: number
+    decisionsDone: number
+    decisionsCancelled: number
+    controlTasks: number
+    controlOverdue: number
+    assignedTasks: number
+    assignedOverdue: number
+    files: number
+  }
 }
 
 export const PROTOCOL_PAGE_SIZE = 40
@@ -121,11 +148,40 @@ function mapRow(raw: Record<string, unknown>): ProtocolRow {
     room: str(raw.room),
     project: str(raw.project),
     access: str(raw.access),
+    secret: Boolean(raw.secret),
     nextMeeting: str(raw.next_meeting),
     tasksSent: Boolean(raw.tasks_sent),
     posted: Boolean(raw.posted),
     comment: str(raw.comment),
     participants: Array.isArray(raw.participants) ? raw.participants.map(str).filter(Boolean) : []
+  }
+}
+
+function mapFiles(value: unknown): ProtocolFile[] {
+  return list(value).map((item) => ({
+    id: str(item.id),
+    name: str(item.name),
+    extension: str(item.extension),
+    size: Number(item.size) || 0,
+    created: str(item.created),
+    signed: Boolean(item.signed)
+  }))
+}
+
+function mapTask(item: Record<string, unknown>): ProtocolTask {
+  return {
+    n: Number(item.n) || 0,
+    text: str(item.text),
+    responsible: str(item.responsible),
+    author: str(item.author),
+    setAt: str(item.set_at),
+    due: str(item.due),
+    overdue: Boolean(item.overdue),
+    status: str(item.status),
+    priority: str(item.priority),
+    sent: Boolean(item.sent),
+    note: str(item.note),
+    files: mapFiles(item.files)
   }
 }
 
@@ -167,6 +223,7 @@ export async function loadProtocolPage(
     nextSkip: Number(payload.next_skip) || opts.skip + rows.length,
     hasMore: Boolean(payload.has_more),
     hiddenSecret: Number(payload.hidden_secret) || 0,
+    ownSecret: Number(payload.own_secret) || 0,
     statuses: options(payload.statuses),
     kinds: options(payload.kinds)
   }
@@ -192,7 +249,8 @@ export async function loadProtocolCard(user: UserProfile | null, id: string): Pr
       n: Number(item.n) || 0,
       text: str(item.text),
       responsible: str(item.responsible),
-      attachments: str(item.attachments)
+      attachments: str(item.attachments),
+      files: mapFiles(item.files)
     })),
     decisions: list(payload.decisions).map((item) => ({
       n: Number(item.n) || 0,
@@ -206,18 +264,9 @@ export async function loadProtocolCard(user: UserProfile | null, id: string): Pr
       cancelReason: str(item.cancel_reason),
       cancelledBy: str(item.cancelled_by)
     })),
-    tasks: list(payload.tasks).map((item) => ({
-      n: Number(item.n) || 0,
-      text: str(item.text),
-      responsible: str(item.responsible),
-      author: str(item.author),
-      setAt: str(item.set_at),
-      doneAt: str(item.done_at),
-      priority: str(item.priority),
-      sent: Boolean(item.sent),
-      note: str(item.note),
-      permanent: Boolean(item.permanent)
-    })),
+    controlTasks: list(payload.control_tasks).map(mapTask),
+    assignedTasks: list(payload.assigned_tasks).map(mapTask),
+    files: mapFiles(payload.files),
     periodDone: list(payload.period_done).map(mapPlan),
     periodPlan: list(payload.period_plan).map(mapPlan),
     planFact: list(payload.plan_fact).map(mapPlan),
@@ -225,8 +274,11 @@ export async function loadProtocolCard(user: UserProfile | null, id: string): Pr
       decisions: Number(stats.decisions) || 0,
       decisionsDone: Number(stats.decisions_done) || 0,
       decisionsCancelled: Number(stats.decisions_cancelled) || 0,
-      tasks: Number(stats.tasks) || 0,
-      tasksDone: Number(stats.tasks_done) || 0
+      controlTasks: Number(stats.control_tasks) || 0,
+      controlOverdue: Number(stats.control_overdue) || 0,
+      assignedTasks: Number(stats.assigned_tasks) || 0,
+      assignedOverdue: Number(stats.assigned_overdue) || 0,
+      files: Number(stats.files) || 0
     }
   }
   cardCache.set(id, card)

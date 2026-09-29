@@ -178,6 +178,12 @@ _READ_COALESCE = _SLOW_TOOLS | _BULK_TOOLS | frozenset(
         "onec.docflow_assignment_card",
         "onec.docflow_protocols",
         "onec.docflow_protocol_card",
+        "onec.docflow_payment_requests",
+        "onec.docflow_payment_request_card",
+        "onec.docflow_forwarding",
+        "onec.docflow_forwarding_card",
+        "onec.docflow_incentive_orders",
+        "onec.docflow_incentive_order_card",
         "onec.erp_assignments",
         "onec.incoming_correspondence",
     }

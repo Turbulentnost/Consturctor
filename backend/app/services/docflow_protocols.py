@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import quote
+
+from app.services.docflow_document_tasks import fio_matches
 
 logger = logging.getLogger(__name__)
 
 ENTITY = "Document_ТД_Протокол"
+FILES_ENTITY = "Catalog_ТД_ПротоколПрисоединенныеФайлы"
 _NAVS = (
     "Подготовил",
     "ГрифДоступа",
@@ -36,6 +41,7 @@ _FIELDS = (
     "Комментарий",
 )
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_GUID_IN_TEXT_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 _SECRET_RE = re.compile(r"конфиденц|секрет|тайн|дсп|служебного пользования", re.IGNORECASE)
 _DEFAULT_PAGE = 40
@@ -44,6 +50,9 @@ _NAME_CHUNK = 25
 _PEOPLE_CATALOGS = ("Catalog_Пользователи", "Catalog_ФизическиеЛица")
 STATUSES = {"Подготовлен": "Подготовлен", "НаИсполнении": "На исполнении", "Закрыт": "Закрыт"}
 KINDS = {"Отчетное": "Отчётное", "Внеплановое": "Внеплановое", "Селекторное": "Селекторное"}
+# Признака выполнения у задач протокола в ERP нет, поэтому статусы только эти два.
+TASK_OVERDUE = "Просрочена"
+TASK_OPEN = "Поставлена"
 
 _names: dict[str, str] = {}
 
@@ -103,6 +112,19 @@ def is_secret(row: dict[str, Any]) -> bool:
     return bool(_SECRET_RE.search(_nav(row, "ГрифДоступа")))
 
 
+def _own_fios(args: dict[str, Any]) -> list[str]:
+    raw = args.get("delegate_fios")
+    delegates = raw if isinstance(raw, (list, tuple)) else str(raw or "").split(";")
+    names = [str(args.get("fio") or ""), *(str(item) for item in delegates)]
+    return [name.strip() for name in names if name.strip()]
+
+
+def is_own(row: dict[str, Any], fios: list[str]) -> bool:
+    """Свой протокол — где пользователь подготовил документ или назначен ответственным."""
+    people = [_nav(row, "Подготовил"), _nav(row, "Ответственный")]
+    return any(fio_matches(person, fio) for person in people if person for fio in fios)
+
+
 def _resolve_names(keys: set[str]) -> None:
     """Ответственные — пользователи, участники — физические лица: ищем в обоих справочниках."""
     missing = sorted(key for key in keys if _GUID_RE.match(key) and key != _EMPTY_GUID and key not in _names)
@@ -154,6 +176,7 @@ def _row_view(row: dict[str, Any]) -> dict[str, Any]:
         "room": _nav(row, "Кабинет"),
         "project": _nav(row, "Проект"),
         "access": _nav(row, "ГрифДоступа"),
+        "secret": is_secret(row),
         "next_meeting": _text(row.get("ДатаСледующегоСовещания")),
         "tasks_sent": _flag(row.get("ЗадачиРазосланы")),
         "posted": _flag(row.get("Posted")),
@@ -198,7 +221,10 @@ def list_protocols(args: dict[str, Any]) -> dict[str, Any]:
     if kind:
         filters.append(f"ВидСовещания eq '{kind}'")
     raw = [row for row in (_odata(_list_path(filters, top=top, skip=skip, with_parts=False)).get("value") or []) if isinstance(row, dict)]
-    rows = [_row_view(row) for row in raw if not is_secret(row)]
+    fios = _own_fios(args)
+    # Конфиденциальный протокол показываем только его автору или ответственному — с пометкой «секретно».
+    allowed = [row for row in raw if not is_secret(row) or is_own(row, fios)]
+    rows = [_row_view(row) for row in allowed]
     return {
         "summary": f"Протоколы: {len(rows)}",
         "rows": rows,
@@ -206,7 +232,8 @@ def list_protocols(args: dict[str, Any]) -> dict[str, Any]:
         "skip": skip,
         "next_skip": skip + len(raw),
         "has_more": len(raw) >= top,
-        "hidden_secret": len(raw) - len(rows),
+        "hidden_secret": len(raw) - len(allowed),
+        "own_secret": sum(1 for row in rows if row["secret"]),
         "statuses": [{"code": code, "label": label} for code, label in STATUSES.items()],
         "kinds": [{"code": code, "label": label} for code, label in KINDS.items()],
     }
@@ -218,6 +245,68 @@ def _date(value: Any) -> str:
 
 def _person(key: Any) -> str:
     return _names.get(_text(key), "")
+
+
+def _files(ref: str) -> dict[str, dict[str, Any]]:
+    filt = _q(f"ВладелецФайла_Key eq guid'{ref}' and DeletionMark eq false")
+    try:
+        data = _odata(
+            f"{FILES_ENTITY}?$format=json&$top=100&$filter={filt}"
+            "&$select=Ref_Key,Description,Расширение,Размер,ДатаСоздания,ПодписанЭП"
+        )
+    except DocflowProtocolError as exc:
+        logger.warning("protocol %s files failed: %s", ref, str(exc)[:200])
+        return {}
+    files: dict[str, dict[str, Any]] = {}
+    for row in data.get("value") or []:
+        if not isinstance(row, dict):
+            continue
+        key = _text(row.get("Ref_Key"))
+        if not key:
+            continue
+        extension = _text(row.get("Расширение"))
+        name = _text(row.get("Description"))
+        files[key] = {
+            "id": key,
+            "name": f"{name}.{extension}" if name and extension else name or extension,
+            "extension": extension,
+            "size": int(_text(row.get("Размер")) or 0),
+            "created": _text(row.get("ДатаСоздания")),
+            "signed": _flag(row.get("ПодписанЭП")),
+        }
+    return files
+
+
+def _file_keys(value: Any) -> list[str]:
+    """Файл строки задачи лежит списком значений XDTO со ссылками на присоединённые файлы протокола."""
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    try:
+        text = base64.b64decode(raw).decode("utf-8", "replace")
+    except (ValueError, binascii.Error):
+        return []
+    return [key for key in _GUID_IN_TEXT_RE.findall(text) if key != _EMPTY_GUID]
+
+
+def _task_view(item: dict[str, Any], *, permanent: bool, files: dict[str, dict[str, Any]], today: str) -> dict[str, Any]:
+    """ДатаФактическогоИсполнения в ERP — это срок исполнения задачи, а не отметка о выполнении."""
+    due = _date(item.get("ДатаФактическогоИсполнения"))
+    overdue = bool(due and due[:10] < today)
+    return {
+        "n": int(item.get("НомерПунктаПротокола") or item.get("LineNumber") or 0),
+        "text": _text(item.get("Задача")),
+        "responsible": _text(item.get("Ответственный")) if permanent else _person(item.get("Ответственный_Key")),
+        "author": _person(item.get("Автор_Key")),
+        "set_at": _date(item.get("ДатаПостановкиЗадачи")),
+        "due": due,
+        "overdue": overdue,
+        "status": TASK_OVERDUE if overdue else TASK_OPEN,
+        "priority": _text(item.get("Приоритет")),
+        "sent": _flag(item.get("Отправлена")),
+        "note": _text(item.get("Примечание")),
+        "files": [files[key] for key in _file_keys(item.get("Файл_Base64Data")) if key in files],
+    }
 
 
 def _plan_rows(items: list[dict[str, Any]], *, text_key: str) -> list[dict[str, Any]]:
@@ -246,8 +335,8 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
     row = found[0] if found and isinstance(found[0], dict) else {}
     if not row:
         raise DocflowProtocolError("1С не вернула протокол")
-    if is_secret(row):
-        raise DocflowProtocolError("Протокол с ограниченным грифом доступа — в Оркестраторе не показывается.")
+    if is_secret(row) and not is_own(row, _own_fios(args)):
+        raise DocflowProtocolError("Протокол с ограниченным грифом доступа — открыт только автору и ответственному.")
 
     def part(name: str) -> list[dict[str, Any]]:
         items = [item for item in (row.get(name) or []) if isinstance(item, dict)]
@@ -277,35 +366,11 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
     _resolve_names(keys)
 
     view = _row_view(row)
-    tasks = [
-        {
-            "n": int(item.get("НомерПунктаПротокола") or item.get("LineNumber") or 0),
-            "text": _text(item.get("Задача")),
-            "responsible": _person(item.get("Ответственный_Key")),
-            "author": _person(item.get("Автор_Key")),
-            "set_at": _date(item.get("ДатаПостановкиЗадачи")),
-            "done_at": _date(item.get("ДатаФактическогоИсполнения")),
-            "priority": _text(item.get("Приоритет")),
-            "sent": _flag(item.get("Отправлена")),
-            "note": _text(item.get("Примечание")),
-            "permanent": False,
-        }
-        for item in variable
-    ] + [
-        {
-            "n": int(item.get("НомерПунктаПротокола") or item.get("LineNumber") or 0),
-            "text": _text(item.get("Задача")),
-            "responsible": _text(item.get("Ответственный")),
-            "author": _person(item.get("Автор_Key")),
-            "set_at": _date(item.get("ДатаПостановкиЗадачи")),
-            "done_at": _date(item.get("ДатаФактическогоИсполнения")),
-            "priority": _text(item.get("Приоритет")),
-            "sent": False,
-            "note": _text(item.get("Примечание")),
-            "permanent": True,
-        }
-        for item in permanent
-    ]
+    files = _files(ref)
+    today = date.today().isoformat()
+    # Вкладки как в 1С: постоянные задачи — «Задачи для контроля», переменные — «Поставленные задачи».
+    control = [_task_view(item, permanent=True, files=files, today=today) for item in permanent]
+    assigned = [_task_view(item, permanent=False, files=files, today=today) for item in variable]
     decision_rows = [
         {
             "n": int(item.get("LineNumber") or 0),
@@ -332,11 +397,14 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
                 "text": _text(item.get("Вопрос")),
                 "responsible": _person(item.get("Ответственный_Key")),
                 "attachments": _text(item.get("ОтметкаОНаличииПриложений")),
+                "files": [files[key] for key in _file_keys(item.get("Файл_Base64Data")) if key in files],
             }
             for item in agenda
         ],
         "decisions": decision_rows,
-        "tasks": tasks,
+        "control_tasks": control,
+        "assigned_tasks": assigned,
+        "files": sorted(files.values(), key=lambda item: item["created"], reverse=True),
         "period_done": _plan_rows(period_done, text_key="Задача"),
         "period_plan": _plan_rows(period_plan, text_key="Задача"),
         "plan_fact": _plan_rows(plan_fact, text_key="ОтчетОВыполненнойРаботе"),
@@ -344,8 +412,11 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
             "decisions": len(decision_rows),
             "decisions_done": sum(1 for item in decision_rows if item["done_at"] and not item["cancelled"]),
             "decisions_cancelled": sum(1 for item in decision_rows if item["cancelled"]),
-            "tasks": len(tasks),
-            "tasks_done": sum(1 for item in tasks if item["done_at"]),
+            "control_tasks": len(control),
+            "control_overdue": sum(1 for item in control if item["overdue"]),
+            "assigned_tasks": len(assigned),
+            "assigned_overdue": sum(1 for item in assigned if item["overdue"]),
+            "files": len(files),
         },
         "loaded_at": datetime.now().isoformat(timespec="seconds"),
     }

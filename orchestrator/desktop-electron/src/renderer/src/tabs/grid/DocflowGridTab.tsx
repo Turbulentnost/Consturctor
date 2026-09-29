@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  Award,
   ClipboardList,
   FileText,
   Inbox,
@@ -7,6 +8,8 @@ import {
   NotebookPen,
   ScrollText,
   Send,
+  Truck,
+  Wallet,
   type LucideIcon
 } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
@@ -21,8 +24,11 @@ import {
   type CorrespondenceRow
 } from '../../workplace/fetchDocflowCorrespondence'
 import { DocflowAssignmentsPanel } from './DocflowAssignmentsPanel'
+import { DocflowIncentiveOrdersPanel } from './DocflowIncentiveOrdersPanel'
+import { DocflowForwardingPanel } from './DocflowForwardingPanel'
 import { DocflowMemosPanel } from './DocflowMemosPanel'
 import { DocflowOrdersPanel } from './DocflowOrdersPanel'
+import { DocflowPaymentRequestsPanel } from './DocflowPaymentRequestsPanel'
 import { DocflowProtocolsPanel } from './DocflowProtocolsPanel'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 import './docflowGrid.css'
@@ -31,13 +37,50 @@ const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; ton
   { id: 'correspondence', title: 'Корреспонденция', hint: 'Входящие и исходящие письма', icon: Mail, tone: 'blue' },
   { id: 'memos', title: 'Служебные записки', hint: 'Кому, от кого, срок и маршрут', icon: FileText, tone: 'green' },
   { id: 'orders', title: 'Приказы и распоряжения', hint: 'Статус, гриф и согласующие', icon: ScrollText, tone: 'purple' },
+  {
+    id: 'incentives',
+    title: 'Приказы о мерах материального стимулирования',
+    hint: 'Сотрудник, процент и основание',
+    icon: Award,
+    tone: 'purple'
+  },
   { id: 'assignments', title: 'Поручения', hint: 'Мероприятия, исполнители и сроки', icon: ClipboardList, tone: 'orange' },
-  { id: 'protocols', title: 'Протоколы', hint: 'Совещания, решения и участники', icon: NotebookPen, tone: 'teal' }
+  { id: 'protocols', title: 'Протоколы', hint: 'Совещания, решения и участники', icon: NotebookPen, tone: 'teal' },
+  {
+    id: 'payments',
+    title: 'Заявка на расходование ДС',
+    hint: 'Суммы, статусы оплаты и получатели',
+    icon: Wallet,
+    tone: 'green'
+  },
+  {
+    id: 'forwarding',
+    title: 'Поручение экспедитору',
+    hint: 'Доставка, груз и ответственные',
+    icon: Truck,
+    tone: 'blue'
+  }
 ]
 
-type JournalId = 'correspondence' | 'memos' | 'orders' | 'assignments' | 'protocols'
+type JournalId =
+  | 'correspondence'
+  | 'memos'
+  | 'orders'
+  | 'incentives'
+  | 'assignments'
+  | 'protocols'
+  | 'payments'
+  | 'forwarding'
 
-const PERIOD_JOURNALS = new Set<JournalId>(['correspondence', 'memos', 'assignments', 'protocols'])
+const PERIOD_JOURNALS = new Set<JournalId>([
+  'correspondence',
+  'memos',
+  'incentives',
+  'assignments',
+  'protocols',
+  'payments',
+  'forwarding'
+])
 
 const MAIL_VIEWS: { id: CorrespondenceKind; title: string; hint: string; icon: LucideIcon }[] = [
   { id: 'incoming', title: 'Входящая', hint: 'письма, поступившие в компанию', icon: Inbox },
@@ -48,9 +91,15 @@ const SUBTITLES: Record<JournalId, string> = {
   correspondence: '',
   memos: 'Журнал 1С без конфиденциальных записок. Прокрутите вниз — подгрузятся следующие.',
   orders: 'Документы «Приказ» и «Распоряжение» из 1С: период, статус, гриф, ответственный и лист согласования',
+  incentives:
+    'Внутренние документы Документооборота вида «Приказ о мерах материального стимулирования»: сотрудник, процент депремирования, утверждающий и невыполненная задача.',
   assignments: 'Поручения (ТД) из 1С: мероприятия, исполнители, сроки и отчёты. Прокрутите вниз — подгрузятся следующие.',
   protocols:
-    'Протоколы совещаний 1С без конфиденциальных: повестка, решения, задачи и участники. Прокрутите вниз — подгрузятся следующие.'
+    'Протоколы совещаний 1С без конфиденциальных: повестка, решения, задачи и участники. Прокрутите вниз — подгрузятся следующие.',
+  payments:
+    'Заявки на расходование ДС из 1С: статус, хозяйственная операция, сумма, получатель и расшифровка платежа. Прокрутите вниз — подгрузятся следующие.',
+  forwarding:
+    'Поручения экспедитору из 1С: тип заявки, способ доставки, груз, склад и ответственные. Прокрутите вниз — подгрузятся следующие.'
 }
 
 function cell(value: string): string {
@@ -380,10 +429,16 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
             <DocflowMemosPanel user={user} from={from} to={to} />
           ) : journal === 'orders' ? (
             <DocflowOrdersPanel user={user} />
+          ) : journal === 'incentives' ? (
+            <DocflowIncentiveOrdersPanel user={user} from={from} to={to} />
           ) : journal === 'assignments' ? (
             <DocflowAssignmentsPanel user={user} from={from} to={to} />
           ) : journal === 'protocols' ? (
             <DocflowProtocolsPanel user={user} from={from} to={to} />
+          ) : journal === 'payments' ? (
+            <DocflowPaymentRequestsPanel user={user} from={from} to={to} />
+          ) : journal === 'forwarding' ? (
+            <DocflowForwardingPanel user={user} from={from} to={to} />
           ) : (
             <div className="docflow-table-card wp-card docflow-placeholder">
               <span className={`docflow-nav-icon docflow-placeholder-icon tone-${activeJournal.tone}`} aria-hidden>
