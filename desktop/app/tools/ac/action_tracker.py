@@ -262,7 +262,7 @@ class ExcelWriteActionTrackerTool(BaseTool):
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,
                 requires_human_approval=True,
-                timeout_seconds=120,
+                timeout_seconds=300,
                 input_schema={
                     "type": "object",
                     "properties": {

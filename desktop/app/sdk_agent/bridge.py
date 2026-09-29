@@ -678,6 +678,8 @@ class CursorSdkBridge:
         box: dict[str, Any] = {"result": None, "error": None}
         tool_limit = float(tool_timeout_seconds(tool, args))
         started_at = time.monotonic()
+        # Confirmation can wait on a person. The tool budget starts after it.
+        phase: dict[str, Any] = {"invoke": False, "t0": 0.0}
 
         def work() -> None:
             try:
@@ -706,6 +708,8 @@ class CursorSdkBridge:
                     ):
                         box["result"] = self.skipped_tool_result(tool)
                         return
+                phase["t0"] = time.monotonic()
+                phase["invoke"] = True
                 result = invoke_sdk_tool(tool, args)
                 if self._is_skipped(request_id) or (
                     should_stop is not None and should_stop()
@@ -748,13 +752,19 @@ class CursorSdkBridge:
                 )
                 self._clear_active(request_id)
                 return
-            if time.monotonic() - started_at >= tool_limit:
+            if phase["invoke"]:
+                elapsed = time.monotonic() - float(phase["t0"])
+                limit = tool_limit
+            else:
+                elapsed = time.monotonic() - started_at
+                limit = max(tool_limit, 600.0)
+            if elapsed >= limit:
                 send_result(
                     {
                         "type": "tool_result",
                         "requestId": request_id,
                         "ok": False,
-                        "error": f"Инструмент {tool} не ответил за {int(tool_limit)} с",
+                        "error": f"Инструмент {tool} не ответил за {int(limit)} с",
                     }
                 )
                 self._clear_active(request_id)

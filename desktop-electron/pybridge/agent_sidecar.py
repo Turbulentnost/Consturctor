@@ -1534,18 +1534,25 @@ class HitlGate:
                 kind=self._kind,
             )
         )
-        self._append_wait_event(
-            {
-                "type": "hitl",
-                "tool": tool,
-                "title": _tool_wait_title(tool),
-                "text": f"Нужно подтверждение: {tool}",
-                "requestId": request_id,
-                "arguments": _safe_args(args),
-                "confirm_only": True,
-                "status": "pending",
-            }
-        )
+        # History flush talks to the API and must not sit in front of the
+        # approval wait: a slow PATCH was eating the tool timeout before the
+        # write started.
+        threading.Thread(
+            target=self._append_wait_event,
+            args=(
+                {
+                    "type": "hitl",
+                    "tool": tool,
+                    "title": _tool_wait_title(tool),
+                    "text": f"Нужно подтверждение: {tool}",
+                    "requestId": request_id,
+                    "arguments": _safe_args(args),
+                    "confirm_only": True,
+                    "status": "pending",
+                },
+            ),
+            daemon=True,
+        ).start()
         try:
             return box.get()
         finally:
@@ -1553,7 +1560,6 @@ class HitlGate:
                 self._hitl.pop(request_id, None)
 
     def resolve_hitl(self, request_id: str, approved: bool) -> None:
-        self._mark_wait_event(request_id, approved=approved)
         with self._lock:
             box = self._hitl.get(request_id)
         if box is not None:
@@ -1561,6 +1567,7 @@ class HitlGate:
                 box.put_nowait(approved)
             except queue.Full:
                 pass
+        self._mark_wait_event(request_id, approved=approved)
 
     def ask_question(
         self,
