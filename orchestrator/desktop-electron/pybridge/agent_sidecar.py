@@ -125,7 +125,12 @@ def _bootstrap_desktop_path() -> Path:
 DESKTOP_ROOT = _bootstrap_desktop_path()
 _AC_REGISTRY_LOGGED = False
 
-# Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
+# Importing app.config loads desktop/.env (ONEC_COM_*, CURSOR_API_KEY, ...).
+from app.envfile import load_env_file  # noqa: E402
+
+load_env_file(DESKTOP_ROOT / ".env", override=True)
+import app.config as _app_config  # noqa: E402, F401
+
 from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.orchestrator.json_blob import extract_json_object  # noqa: E402
 from app.sdk_agent.bridge import (  # noqa: E402
@@ -159,10 +164,13 @@ from app.sdk_agent.kpi_attach import (  # noqa: E402
     write_kpi_example_files,
 )
 from app.sdk_agent.tool_adapter import (  # noqa: E402
+    ASK_QUESTION_SPEC,
     sdk_kpi_tool_specs,
     sdk_kpi_write_tool_specs,
     sdk_tool_specs,
 )
+
+READINESS_SDK_TOOLS = (dict(ASK_QUESTION_SPEC),)
 
 # HITL classification replicated from app.tools.hitl.needs_confirmation.
 # We do NOT import that module because it pulls in PySide6/Qt at import time,
@@ -2272,6 +2280,16 @@ _NAMED_RESULT_FILE_RE = re.compile(
 
 
 def _files_named_in_answer(answer: str) -> list[str]:
+    return _files_named_in_answer_detailed(answer)[0]
+
+
+def _files_named_in_answer_detailed(answer: str) -> tuple[list[str], bool]:
+    """File names the answer mentions.
+
+    Returns ``(names, declared)``: ``declared`` is True when the names come from
+    the structured FILES section (the agent claims these files exist). Names
+    picked from prose («черновик protocol.md не записан») are only hints.
+    """
     raw = answer or ""
     section = re.search(
         r"(?is)\bFILES\b\s*:?\s*(.*?)(?:\n\s*(?:ACTIONS|NOTIFICATIONS|SCHEDULE|CLARIFY|TESTS)\b|\Z)",
@@ -2284,7 +2302,7 @@ def _files_named_in_answer(answer: str) -> list[str]:
         if name and name not in names:
             names.append(name)
     if names:
-        return names
+        return names, section is not None
     for match in re.finditer(
         r"([A-Za-zА-Яа-я0-9_.\-]+\.(?:docx|xlsx|xls|pdf|md|txt))",
         blob,
@@ -2293,7 +2311,7 @@ def _files_named_in_answer(answer: str) -> list[str]:
         name = Path(match.group(1)).name
         if name and name not in names:
             names.append(name)
-    return names
+    return names, False
 
 
 def _write_answer_document(cwd: str, filename: str, answer: str) -> Path | None:
@@ -2329,7 +2347,7 @@ def _ensure_result_files_from_answer(
 ) -> list[str]:
     if api is None or not (workflow_id or "").strip():
         return []
-    names = _files_named_in_answer(answer)
+    names, declared = _files_named_in_answer_detailed(answer)
     if not names:
         return []
     created: list[str] = []
@@ -2338,6 +2356,12 @@ def _ensure_result_files_from_answer(
         existing = folder / name if folder else None
         if existing is not None and existing.is_file():
             created.append(str(existing))
+            continue
+        # Only materialize files the agent *declared* in FILES. A name mentioned
+        # in prose («protocol-….md: черновик, не записан») must not turn the
+        # WORK_RESULT text into a fake report document.
+        if not declared:
+            log("skip synthetic result file (not declared in FILES): " + _ascii(name))
             continue
         written = _write_answer_document(run_cwd, name, answer)
         if written is not None and written.is_file():
@@ -2388,18 +2412,22 @@ def _upload_run_attachments(
     workflow_id: str,
     file_paths: list[str],
     run_id: str = "",
-) -> bool:
-    """Upload files as temporary per-run attachments (not permanent knowledge)."""
+) -> list[Any]:
+    """Upload files as temporary per-run attachments (not permanent knowledge).
+
+    Returns the stored attachment records (with server file ids) so the agent
+    prompt can name the file_id tools like audio.transcribe require.
+    """
     allowed = [str(path) for path in file_paths if Path(str(path)).is_file()]
     if not (workflow_id.strip() and run_id.strip() and allowed):
-        return False
+        return []
     try:
-        api.register_run_attachments(workflow_id, run_id, allowed)
+        stored = api.register_run_attachments(workflow_id, run_id, allowed)
         _emit_files_updated(workflow_id, run_id)
-        return True
+        return list(getattr(stored, "run_attachments", []) or [])
     except Exception as exc:  # noqa: BLE001
         log("run attachment upload failed: " + _ascii(repr(exc)))
-        return False
+        return []
 
 
 def _persist_run_attachment(
@@ -2417,8 +2445,8 @@ def _persist_run_attachment(
     Only the explicit keepKnowledgeFile tool writes permanent knowledge.
     """
     copied = _copy_attachments(run_cwd, file_paths)
-    _upload_run_attachments(api, workflow_id, file_paths, run_id=run_id)
-    return copied
+    stored = _upload_run_attachments(api, workflow_id, file_paths, run_id=run_id)
+    return _pair_attachments(copied, stored)
 
 
 def _persist_knowledge_files(
@@ -2514,14 +2542,31 @@ def _write_text(cwd: str, relative: str, text: str) -> str:
     return relative.replace("\\", "/")
 
 
-def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> None:
-    regulation = api.get_regulation(draft.regulation_id)
+def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> bool:
     suggestions = list(draft.agent_suggestions or [])
-    by_block = {item.fragment_id: item for item in regulation.fragments}
+    fragments: list[Any] = []
+    file_name = "Регламент"
+    regulation_id = str(getattr(draft, "regulation_id", "") or "").strip()
+    if regulation_id:
+        try:
+            regulation = api.get_regulation(regulation_id)
+        except ApiError as exc:
+            if exc.status_code not in {404, 502, 503}:
+                raise
+            regulation = None
+        if regulation is not None:
+            fragments = list(regulation.fragments or [])
+            file_name = str(getattr(regulation, "file_name", "") or file_name)
+    by_block = {item.fragment_id: item for item in fragments}
 
     _write_text(cwd, "AGENTS.md", READINESS_AGENTS_MD)
-    regulation_lines = [f"# {regulation.file_name}", ""]
-    for fragment in regulation.fragments:
+    regulation_lines = [f"# {file_name}", ""]
+    if not fragments:
+        regulation_lines.append(
+            "Полный текст регламента сейчас недоступен. "
+            "Опирайся на блоки из materials/functions.md и не вызывай внешние системы."
+        )
+    for fragment in fragments:
         text = (fragment.text or "").strip()
         if not text:
             continue
@@ -2562,14 +2607,21 @@ def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> None:
         (previous or "Ответов пользователя пока нет.") + "\n",
     )
     _write_text(cwd, "materials/manifest.json", json.dumps({"files": []}, ensure_ascii=False, indent=2) + "\n")
+    return bool(previous)
 
 
-def _build_readiness_prompt() -> str:
+def _build_readiness_prompt(*, has_answers: bool = False) -> str:
+    extra = (
+        " В materials/answers.md уже есть ответы пользователя — не спрашивай то же самое."
+        if has_answers
+        else ""
+    )
     return (
         "Прочитай AGENTS.md и все файлы в materials. "
         "Закрой через askQuestion пробелы логики по каждому функциональному блоку. "
         "В каждом askQuestion передай 2-6 конкретных вариантов в options. "
         "Когда все пробелы закрыты, верни JSON readiness и остановись."
+        + extra
     )
 
 
@@ -3042,11 +3094,16 @@ class Sidecar:
             )
         except ApiError as exc:
             self._finish_active_history(active, "Cursor SDK не отвечает")
+            message = _exc_text(exc, "Ошибка backend во время запуска агента")
+            if exc.status_code in {502, 503}:
+                backend = str(getattr(self._api, "base_url", "") or "").rstrip("/")
+                if backend and backend not in message:
+                    message = f"{message} ({backend})"
             emit(
                 {
                     "type": "error",
                     "runId": active.run_id,
-                    "message": _exc_text(exc, "Ошибка backend во время запуска агента"),
+                    "message": message,
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -3292,17 +3349,18 @@ class Sidecar:
         draft = self._api.get_agent_draft(draft_id)
         run_cwd = bridge.workspace_cwd(f"draft-{draft_id}")
         active.run_cwd = run_cwd
-        _prepare_readiness_workspace(self._api, draft, run_cwd)
+        has_answers = _prepare_readiness_workspace(self._api, draft, run_cwd)
         events = active.events
         result = bridge.run(
-            prompt=_build_readiness_prompt(),
+            prompt=_build_readiness_prompt(has_answers=has_answers),
             workflow_id=f"draft-{draft_id}",
             cwd=run_cwd,
             mode="design",
+            tools=[dict(item) for item in READINESS_SDK_TOOLS],
             on_event=self._forward_events(active, events),
             on_question=active.gate.ask_question,
             should_stop=active.stop.is_set,
-            confirm_writes=True,
+            confirm_writes=False,
         )
         answer = str(result.get("answer") or "").strip()
         updated = self._api.finish_sdk_readiness(draft_id, answer=answer, events=events)
@@ -3953,6 +4011,7 @@ class Sidecar:
         reset_run_scratch(
             run_cwd,
             clear_attachments=autonomous or not resume_agent_id or _has_new_files,
+            clear_tool_results=not bool(resume_agent_id),
         )
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=workflow)
         if _is_meeting_workflow(workflow):
@@ -4815,11 +4874,18 @@ class Sidecar:
             input_data["for_user"] = for_user
         if command.get("allVisible"):
             input_data["all_visible"] = True
+        calendar_owners = command.get("calendarOwners")
+        calendar_owner = isinstance(calendar_owners, list) and bool(calendar_owners)
+        if calendar_owner:
+            input_data["calendar_owners"] = [str(item or "").strip() for item in calendar_owners]
         days_forward = command.get("daysForward")
         if isinstance(days_forward, int) and days_forward > 0:
             input_data["days_forward"] = days_forward
         if command.get("allVisible"):
             input_data["max_scan_items"] = 2000
+        elif calendar_owner:
+            input_data["max_scan_items"] = 500 * len(calendar_owners)
+            input_data["max_results"] = 200 * len(calendar_owners)
         elif for_user:
             input_data["max_scan_items"] = 500
 
@@ -5087,17 +5153,55 @@ def _existing_methodology_files(run_cwd: Path) -> list[str]:
     return found
 
 
-def _attachments_note(relative_paths: list[str], *, position: str = "") -> str:
-    if not relative_paths:
+def _pair_attachments(relative_paths: list[str], stored: list[Any]) -> list[dict[str, str]]:
+    """Join workspace copies with the server records by filename order.
+
+    Upload keeps the source order and skips missing files the same way the copy
+    does, so the i-th stored record matches the i-th copied path.
+    """
+    paired: list[dict[str, str]] = []
+    for index, path in enumerate(relative_paths):
+        item = stored[index] if index < len(stored) else None
+        paired.append(
+            {
+                "path": path,
+                "file_id": str(getattr(item, "id", "") or ""),
+                "filename": str(getattr(item, "filename", "") or Path(path).name),
+            }
+        )
+    return paired
+
+
+def _attachments_note(attachments: list[Any], *, position: str | None = None) -> str:
+    if not attachments:
         return ""
-    listing = ", ".join(relative_paths)
-    who = f" Должность: {position}." if position.strip() else ""
-    return (
-        "PDF методики, не папка: office.read_file filename= "
-        + listing
-        + "."
-        + who
-    )
+    # KPI methodology: paths plus the office.read_file hint. Other callers omit position.
+    if position is not None and all(isinstance(entry, str) for entry in attachments):
+        listing = ", ".join(str(entry) for entry in attachments)
+        who = f" Должность: {position}." if position.strip() else ""
+        return "PDF методики, не папка: office.read_file filename= " + listing + "." + who
+    lines: list[str] = []
+    for entry in attachments:
+        if isinstance(entry, str):
+            lines.append(f"- {entry}")
+            continue
+        path = str(entry.get("path") or "")
+        file_id = str(entry.get("file_id") or "")
+        filename = str(entry.get("filename") or Path(path).name)
+        if file_id:
+            lines.append(f"- file_id={file_id} · {filename} · {path}")
+        else:
+            lines.append(f"- {path}")
+    has_ids = any("file_id=" in line for line in lines)
+    hint = ""
+    if has_ids:
+        hint = (
+            "\nАудио/видео-вложение расшифровывай инструментом audio.transcribe, "
+            'передав file_id: {"name": "audio.transcribe", "arguments": {"file_id": "…"}}. '
+            "Он вернёт сегменты с таймкодами start/end, полный текст и длительность. "
+            "Подтверждение человека для него не нужно."
+        )
+    return "Прикреплённые файлы этого запуска:\n" + "\n".join(lines) + hint
 
 
 def _backend_kpi_root() -> Path:
@@ -5146,6 +5250,11 @@ def _prepare_kpi_workspace(run_cwd: Path, session: dict[str, Any]) -> None:
         json.dumps(extracted or {}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    data_sources = session.get("data_sources") if isinstance(session.get("data_sources"), list) else []
+    (materials / "data_sources.json").write_text(
+        json.dumps(data_sources, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     (run_cwd / "AGENTS.md").write_text(
         "\n".join(
             [
@@ -5164,6 +5273,11 @@ def _prepare_kpi_workspace(run_cwd: Path, session: dict[str, Any]) -> None:
                 "Finished modules are stored in backend/kpi/generated.",
                 "Export `SOURCE`, `load_<slug>_rows(ctx)`, `score_<slug>_kpi(rows, ...)`",
                 "and `compute_<slug>_kpi(ctx)` = load then score.",
+                "SOURCE = {'source': '<name>', 'params': {...}} — name ONLY from materials/data_sources.json.",
+                "load_<slug>_rows(ctx) returns ctx.load_for(SOURCE). Never fetch 1C/Outlook/files yourself.",
+                "One module serves every employee of the position: use {employee_fio}, never a hardcoded FIO.",
+                "Params may use {employee_fio}, {period_from}, {period_to}, {period_from_dt}, {period_to_dt}.",
+                "Backend rejects a module whose SOURCE is missing or not in the registry.",
                 "Daily run calls compute only. Extractor hands rows to the calculator.",
                 "Tests: FakeCtx for compute/load, dict fixtures for score. No live 1C/Outlook.",
                 "Never ask schedule, Outlook cadence, or when to run the agent.",
@@ -5238,21 +5352,25 @@ def _run_kpi_slug_tests(run_cwd: Path, slug: str) -> tuple[bool, str]:
         [str(root), str(_backend_kpi_root().parent), env.get("PYTHONPATH") or ""]
     )
     from app.tools.ac.code_execution_tools import pytest_command_prefix
+    from app.tools.ac.process_run import run_captured
 
     try:
-        completed = subprocess.run(
+        # run_captured закрывает stdin (DEVNULL) и вычитывает пайпы в потоках —
+        # без этого pytest под сидкаром висит до таймаута на унаследованном stdin.
+        completed = run_captured(
             [*pytest_command_prefix(), "-m", "pytest", str(test.relative_to(root)), "-q"],
             cwd=str(root),
             env=env,
-            capture_output=True,
-            text=True,
             timeout=180,
         )
     except Exception as exc:  # noqa: BLE001
         log("kpi slug pytest failed to start: " + repr(exc))
         return False, repr(exc)
     output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-    if completed.returncode != 0:
+    if completed.timed_out:
+        log("kpi slug pytest timed out")
+        return False, output or "pytest timed out"
+    if completed.exit_code != 0:
         log("kpi slug pytest failed: " + _ascii(output[:800]))
         return False, output
     return True, output or "passed"
@@ -5288,20 +5406,23 @@ def _run_kpi_workspace_tests(run_cwd: Path) -> tuple[bool, str]:
     env["PYTHONPATH"] = os.pathsep.join(
         [str(run_cwd), str(_backend_kpi_root().parent), env.get("PYTHONPATH") or ""]
     )
+    from app.tools.ac.process_run import run_captured
+
     try:
-        completed = subprocess.run(
+        completed = run_captured(
             _pytest_argv(),
             cwd=str(run_cwd),
             env=env,
-            capture_output=True,
-            text=True,
             timeout=180,
         )
     except Exception as exc:  # noqa: BLE001
         log("kpi pytest failed to start: " + repr(exc))
         return False, repr(exc)
     output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-    if completed.returncode != 0:
+    if completed.timed_out:
+        log("kpi pytest timed out")
+        return False, output or "pytest timed out"
+    if completed.exit_code != 0:
         log("kpi pytest failed: " + _ascii(output[:800]))
         return False, output
     return True, output or "passed"

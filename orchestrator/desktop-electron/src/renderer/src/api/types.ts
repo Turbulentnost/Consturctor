@@ -11,6 +11,8 @@ export interface UserProfile {
   canChangeDepartment: boolean
   activityStatus: string
   isSupport: boolean
+  /** Ref_Key Catalog_Пользователи — только для записи в 1С, в UI не показывается. */
+  onecCatalogRefKey?: string
 }
 
 export interface LoginResult {
@@ -559,7 +561,6 @@ export interface AgentRunnerEvent {
   agentId?: string
   run_id?: string
   question?: string
-  options?: string[]
 }
 
 /** Top-level messages emitted by the Python agent sidecar. */
@@ -726,6 +727,45 @@ export interface PositionKpiDaily {
   cached: boolean
   stale: boolean
   tiles: PositionKpiTile[]
+}
+
+export interface PositionKpiDataSourceInfo {
+  name: string
+  title: string
+  description: string
+  kind: string
+  params: Record<string, string>
+  perEmployee: boolean
+}
+
+/** Что считает плитку KPI: код модуля, источник и формула (кнопка «i»). */
+export interface PositionKpiMetricDetail {
+  position: string
+  sharedNote: string
+  code: string
+  name: string
+  weight: number
+  unit: string
+  plan: number | null
+  formulaKind: string
+  formulaHuman: string
+  module: {
+    name: string
+    origin: 'generated' | 'builtin' | string
+    code: string
+    tests: string
+    updatedAt: string
+  } | null
+  dataSource: {
+    source: string
+    params: Record<string, unknown>
+    legacy: Record<string, unknown>
+    registry: PositionKpiDataSourceInfo | null
+    ok: boolean
+    errors: string[]
+    warnings: string[]
+  }
+  sources: { role: string; kind: string; title: string; detail: string; updateRule: string }[]
 }
 
 export interface PositionKpiBuildMessage {

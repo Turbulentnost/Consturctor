@@ -393,7 +393,6 @@ export function PositionKpiBuildPage({
             pendingQuestion={agent.pendingQuestion}
             pendingHitl={agent.pendingHitl}
             emptyHint=""
-            embed
             allowQuestionFiles
             hideRunningStatus
             onAnswer={(requestId, value, filePaths) => agent.answer(requestId, value, filePaths)}

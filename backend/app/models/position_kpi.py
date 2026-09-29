@@ -159,6 +159,39 @@ class PositionKpiDailyFact(Base):
     )
 
 
+class PositionKpiSubjectFact(Base):
+    """Дневной снимок KPI конкретного сотрудника. Каталог и модули общие для должности."""
+
+    __tablename__ = "position_kpi_subject_facts"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "subject",
+            "day",
+            "period_from",
+            "period_to",
+            name="uq_position_kpi_subject_facts_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("position_kpi_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    subject: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    subject_fio: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    period_from: Mapped[date] = mapped_column(Date, nullable=False)
+    period_to: Mapped[date] = mapped_column(Date, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class PositionKpiBuild(Base):
     """Сессия конструирования KPI-модуля по методике должности."""
 

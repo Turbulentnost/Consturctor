@@ -908,6 +908,22 @@ def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def build_server_document_prompt(*, state: Any, message: str) -> str:
+    """Prompt for assembling the regulation on the gateway, without a desktop agent."""
+    interview = normalize_interview_state(state)
+    inventory = _prompt_state(interview)
+    return (
+        "Собери регламент по уже собранным фактам. Новый вопрос не задавай.\n"
+        f"{_write_document_instructions()}\n"
+        "Верни один JSON без markdown: status='ready', короткий message и полный document "
+        "(title и sections с связным текстом). Не используй шаблоны, эталоны и типовые догадки. "
+        "Пиши только то, что есть в исходных текстах и в ответах пользователя.\n"
+        f"Последний ответ пользователя: {message.strip()}\n"
+        "Текущее состояние интервью и тексты вложений:\n"
+        f"{json.dumps(inventory, ensure_ascii=False)}"
+    )
+
+
 def _write_document_instructions() -> str:
     return (
         "Не пиши новый документ с нуля. Возьми исходный файл из materials/* как основу: "
@@ -1123,6 +1139,7 @@ def build_followup_creation_prompt(
     force_create: bool,
     state: Any = None,
     write_document: bool = False,
+    resume: bool = True,
 ) -> str:
     facts_closed = interview_facts_closed(state) if state is not None else False
     if force_create:
@@ -1147,9 +1164,14 @@ def build_followup_creation_prompt(
         inventory = _prompt_state(interview)
         inventory["attachments"] = _prompt_attachment_refs(inventory.get("attachments") or [])
         focus = _current_process_prompt_hint(interview)
+        history_hint = (
+            "это сообщение и историю диалога"
+            if resume
+            else "только это сообщение и последний ответ пользователя"
+        )
         snapshot = (
             "Текущая карта интервью. Не читай файлы и не вызывай инструменты, "
-            "используй только это сообщение и историю диалога:\n"
+            f"используй {history_hint}:\n"
             f"{json.dumps(inventory, ensure_ascii=False, indent=2)}\n"
         )
     if write_document or force_create or facts_closed:
@@ -1163,8 +1185,14 @@ def build_followup_creation_prompt(
             "Не задавай новый вопрос. "
             f"{_write_document_instructions()}"
         )
+    history_line = (
+        "История диалога уже у тебя. "
+        if resume
+        else "Отдельной истории агента нет. Опирайся на карту интервью ниже и на последний ответ пользователя. "
+    )
     return (
-        "Продолжи то же интервью текстом, без инструментов. История диалога уже у тебя. "
+        "Продолжи то же интервью текстом, без инструментов. "
+        f"{history_line}"
         "Не читай interview.json и materials/* с диска. Не пиши Cursor-план и не меняй файлы.\n"
         f"{focus}"
         f"{snapshot}"

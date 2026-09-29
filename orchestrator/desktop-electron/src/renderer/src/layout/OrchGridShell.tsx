@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { Sidebar, type PageKey } from '../components/Sidebar'
+import { PAGE_SEARCH_PLACEHOLDER, usePageSearch } from './pageSearchContext'
+import { Sidebar, type PageKey, type SidebarNavItem } from '../components/Sidebar'
 import { PAGE_LABELS } from '../components/Sidebar'
 import type { ChatThread, DirectoryUser } from '../api/types'
 import { UserMenu } from '../components/UserMenu'
@@ -38,6 +39,7 @@ interface OrchGridShellProps {
   gridClassName?: string
   /** Hide workplace title/search — used for agent run/history overlays. */
   subpage?: boolean
+  pinnedExtensionNav?: SidebarNavItem[]
   children: ReactNode
 }
 
@@ -64,6 +66,7 @@ export function OrchGridShell({
   toast,
   gridClassName = '',
   subpage = false,
+  pinnedExtensionNav = [],
   children
 }: OrchGridShellProps): React.JSX.Element {
   const meta = TAB_REGISTRY[activeKey]
@@ -72,6 +75,9 @@ export function OrchGridShell({
   const displayTitle = isToday ? todayGreeting(user.fio || '') : title
   const displaySub = isToday ? meta?.subtitle || '' : meta?.subtitle || ''
   const gridMods = [gridClassName, subpage ? 'orch-grid-subpage' : ''].filter(Boolean).join(' ')
+  const pageSearch = usePageSearch()
+  const searchPlaceholder =
+    PAGE_SEARCH_PLACEHOLDER[activeKey] || 'Поиск на открытой странице…'
 
   return (
     <div className="orch-grid-frame">
@@ -85,6 +91,7 @@ export function OrchGridShell({
           onOpenThread={onOpenThread}
           onOpenFio={onOpenFio}
           refreshAt={chatRefreshAt}
+          pinnedExtensionNav={pinnedExtensionNav}
         />
       </div>
 
@@ -93,7 +100,11 @@ export function OrchGridShell({
         <>
           <header className={`orch-grid-title${isToday ? ' orch-grid-title-today' : ''}`}>
             <span className="orch-grid-title-icon" aria-hidden>
-              <NavIcon page={activeKey} />
+              {meta?.titleLogoSrc ? (
+                <img className="orch-grid-title-logo" src={meta.titleLogoSrc} alt="" />
+              ) : (
+                <NavIcon page={activeKey} />
+              )}
             </span>
             <div>
               <h1 className="page-title">{displayTitle}</h1>
@@ -106,13 +117,29 @@ export function OrchGridShell({
           <div className="orch-grid-search" role="search">
             <div className="global-search">
               <span className="global-search-icon" aria-hidden />
-              <input placeholder="Поиск по процессам, документам, задачам, проектам…" aria-label="Поиск" />
+              <input
+                type="search"
+                value={pageSearch.query}
+                placeholder={searchPlaceholder}
+                aria-label="Поиск на странице"
+                onChange={(event) => pageSearch.setQuery(event.target.value)}
+              />
             </div>
           </div>
         </>
       )}
 
       <div className="orch-grid-util">
+        <button
+          type="button"
+          className="icon-btn-help"
+          title="Помощь"
+          onClick={() => {
+            window.open('https://wiki.turbo-don.ru', '_blank', 'noopener,noreferrer')
+          }}
+        >
+          ?
+        </button>
         <UserMenu
           user={user}
           avatarUrl={avatarUrl}

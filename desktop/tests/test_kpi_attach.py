@@ -168,7 +168,8 @@ def test_kpi_write_jobs_one_slug_per_prompt() -> None:
     assert "def score_orders_on_time_kpi(rows, *, as_of" in first
     assert "def load_orders_on_time_rows(ctx)" in first
     assert "def compute_orders_on_time_kpi(ctx" in first
-    assert 'SOURCE = {"loader": "odata"}' in first
+    assert '"source": "onec.odata"' in first
+    assert "data_sources.json" in first
     assert "Откуда брать план и факт: 1С" in first
     assert "Источник любой" in first
     assert "не подставляй odata" not in first
@@ -180,8 +181,8 @@ def test_kpi_write_jobs_one_slug_per_prompt() -> None:
         slug="otchet_po_obektam",
     )
     assert "Турбопроект" in turbo
-    assert 'SOURCE = {"kind": "unknown"' in turbo
-    assert "не подставляй odata" in turbo
+    assert "data_sources.json" in turbo
+    assert "Турбопроект" in turbo
     assert "Помощник руководителя" in first
     assert "generated/naznachenie_dpi.py" in second
     assert "generated/planirovanie_zasedaniy.py" not in second
@@ -218,7 +219,7 @@ def test_write_kpi_example_matches_contract(tmp_path: Path) -> None:
     assert "def score_orders_on_time_kpi(rows, *, as_of" in sample
     assert "def load_orders_on_time_rows(ctx)" in sample
     assert "def compute_orders_on_time_kpi(ctx" in sample
-    assert 'SOURCE = {"loader": "odata"}' in sample
+    assert '"source": "onec.odata"' in sample
     assert "fact_pct" in sample
     assert "compute_orders_on_time_kpi" in test
 

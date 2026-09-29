@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { resolveWindowsPythonExe, spawnHidden } from './spawnHidden'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { app } from 'electron'
@@ -105,6 +106,29 @@ function resolveDesktopRoot(starts: string[], fallback: string): string {
   return found.find((path) => hasCursorKey(path)) || found[0] || fallback
 }
 
+const ONEC_DESKTOP_ENV_KEYS = [
+  'ONEC_COM_SERVER',
+  'ONEC_COM_REF',
+  'ONEC_COM_CONNECTION_STRING',
+  'ONEC_ENTERPRISE_DB',
+  'ONEC_COM_PROGID',
+  'ONEC_DB_PATH',
+  'BACKEND_URL'
+] as const
+
+function onecInfraEnvFromDesktop(desktopRoot: string): Record<string, string> {
+  const parsed = parseEnvFile(join(desktopRoot, '.env'))
+  const out: Record<string, string> = {}
+  for (const key of ONEC_DESKTOP_ENV_KEYS) {
+    const value = parsed[key]?.trim()
+    if (value) out[key] = value
+  }
+  if (!out.ONEC_ENTERPRISE_DB && out.ONEC_COM_SERVER && out.ONEC_COM_REF) {
+    out.ONEC_ENTERPRISE_DB = `/S${out.ONEC_COM_SERVER}\\${out.ONEC_COM_REF}`
+  }
+  return out
+}
+
 function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
   const appData = process.env.APPDATA || ''
   const files = [
@@ -155,7 +179,8 @@ const START_TYPES = new Set([
   'run',
   'check_trigger',
   'form_orchestrator',
-  'calc_orchestrator'
+  'calc_orchestrator',
+  'kpi_module'
 ])
 
 function isStartCommand(command: AgentSidecarMessage): boolean {
@@ -232,7 +257,9 @@ export class AgentSidecar {
 
   private pythonCommand(): string {
     const bundled = join(process.resourcesPath, 'python', process.platform === 'win32' ? 'python.exe' : 'python')
-    return process.env.CONSTRUCTOR_PYTHON || (app.isPackaged && existsSync(bundled) ? bundled : 'python')
+    if (process.env.CONSTRUCTOR_PYTHON) return process.env.CONSTRUCTOR_PYTHON
+    if (app.isPackaged && existsSync(bundled)) return bundled
+    return resolveWindowsPythonExe()
   }
 
   private nodeCommand(): string {
@@ -246,6 +273,7 @@ export class AgentSidecar {
     const pathParts = [nodeDir, process.env.PATH || process.env.Path || ''].filter(Boolean)
     const browsersPath = join(desktopRoot, 'ms-playwright')
     const cursorEnv = cursorEnvFromDesktop(desktopRoot)
+    const onecEnv = onecInfraEnvFromDesktop(desktopRoot)
     const pythonPathParts = [desktopRoot, process.env.PYTHONPATH].filter(Boolean)
     const localAppData = process.env.LOCALAPPDATA || process.env.APPDATA || ''
     const orchestratorWorkspacesRoot = localAppData
@@ -258,6 +286,7 @@ export class AgentSidecar {
     }
     return {
       ...process.env,
+      ...onecEnv,
       ...cursorEnv,
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
@@ -328,11 +357,10 @@ export class AgentSidecar {
     const env = this.runtimeEnv(sidecar, desktopRoot)
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawn(env.CONSTRUCTOR_PYTHON || python, ['-u', sidecar], {
+      child = spawnHidden(env.CONSTRUCTOR_PYTHON || python, ['-u', sidecar], {
         cwd: existsSync(cwd) ? cwd : undefined,
-        env,
-        windowsHide: true
-      })
+        env
+      }) as ChildProcessWithoutNullStreams
     } catch (err) {
       this.lastStartError = `Не удалось запустить sidecar: ${err instanceof Error ? err.message : String(err)}`
       this.onEvent({
@@ -348,7 +376,9 @@ export class AgentSidecar {
     this.isReady = false
     this.stdoutBuffer = ''
     child.stdout.setEncoding('utf-8')
-    child.stdout.on('data', (chunk: string) => this.onStdout(chunk))
+    child.stdout.on('data', (chunk: string) => {
+      if (this.child === child) this.onStdout(chunk)
+    })
     child.stderr.setEncoding('utf-8')
     child.stderr.on('data', (chunk: string) => {
       const text = String(chunk).trim()
@@ -373,6 +403,9 @@ export class AgentSidecar {
       } catch {
         /* already closed */
       }
+      // A child replaced by hardRestartSidecar exits late: it must not clear the
+      // new child or spawn another one, or commands (HITL) go to the wrong process.
+      if (this.child !== child) return
       this.child = null
       this.isReady = false
       if (this.stopping) return
@@ -583,14 +616,22 @@ export class AgentSidecar {
 
   configure(
     token: string | null,
-    credentials?: { login?: string; password?: string; onecComUsr?: string }
+    credentials?: {
+      login?: string
+      password?: string
+      onecComUsr?: string
+      nameMail?: string
+      userId?: string
+      onecCatalogRefKey?: string
+      [key: string]: unknown
+    }
   ): void {
     this.lastToken = token ?? null
     if (credentials) {
       if (credentials.login !== undefined) this.lastLogin = String(credentials.login || '')
       if (credentials.password !== undefined) this.lastPassword = String(credentials.password || '')
     }
-    this.send({
+    const payload: Record<string, unknown> = {
       type: 'configure',
       backendUrl: this.backendUrl,
       token: this.lastToken,
@@ -598,12 +639,29 @@ export class AgentSidecar {
       fio: this.lastLogin,
       erp_login: this.lastLogin,
       password: this.lastPassword
-    })
+    }
+    if (credentials) {
+      for (const [key, value] of Object.entries(credentials)) {
+        if (value === undefined || value === null) continue
+        const text = String(value).trim()
+        if (!text) continue
+        payload[key] = text
+      }
+    }
+    this.send(payload)
   }
 
   ready(
     token: string | null,
-    credentials?: { login?: string; password?: string; onecComUsr?: string }
+    credentials?: {
+      login?: string
+      password?: string
+      onecComUsr?: string
+      nameMail?: string
+      userId?: string
+      onecCatalogRefKey?: string
+      [key: string]: unknown
+    }
   ): void {
     this.lastToken = token ?? null
     this.start()

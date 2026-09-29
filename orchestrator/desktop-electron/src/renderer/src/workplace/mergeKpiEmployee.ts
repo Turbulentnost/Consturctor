@@ -1,5 +1,7 @@
 import type { MeetingEvent } from '../utils/outlookMeetings'
 import { parseMeetingTime } from '../utils/outlookMeetings'
+import { addDays, mondayOf } from '../utils/calendar'
+import { KPI_MONTHS_SHORT } from '../pages/KpiRangePicker'
 import type { SpecTaskRow } from './specV04DemoData'
 import type { WorkflowBoard } from '../api/types'
 import {
@@ -84,6 +86,96 @@ function formatDayLabel(d: Date): string {
   return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
+export type KpiDynamicsScale = 'day' | 'week' | 'month' | 'year'
+
+export type KpiDynamicsBucket = {
+  label: string
+  end: Date
+}
+
+const WORKDAY_START_HOUR = 9
+const WORK_HOUR_SLOTS = 8
+
+export function detectKpiDynamicsScale(from: string, to: string): KpiDynamicsScale {
+  const days = eachDay(from, to).length
+  if (days <= 1) return 'day'
+  if (days <= 7) return 'week'
+  if (days <= 31) return 'month'
+  return 'year'
+}
+
+/** Шкала графика «Динамика показателей»: 8 ч / 5 дн / 4 нед / месяцы периода (до 12). */
+export function buildKpiDynamicsBuckets(from: string, to: string): KpiDynamicsBucket[] {
+  const scale = detectKpiDynamicsScale(from, to)
+  const lo = parseDayBound(from, false)
+  const hi = parseDayBound(to, true)
+
+  if (scale === 'day') {
+    const base = new Date(lo)
+    base.setHours(0, 0, 0, 0)
+    return Array.from({ length: WORK_HOUR_SLOTS }, (_, index) => {
+      const hour = WORKDAY_START_HOUR + index
+      const end = new Date(base)
+      end.setHours(hour, 59, 59, 999)
+      return { label: `${String(hour).padStart(2, '0')}:00`, end }
+    })
+  }
+
+  if (scale === 'week') {
+    const monday = mondayOf(parseDayBound(to, false))
+    return Array.from({ length: 5 }, (_, index) => {
+      const day = addDays(monday, index)
+      const end = new Date(day)
+      end.setHours(23, 59, 59, 999)
+      return { label: formatDayLabel(day), end }
+    })
+  }
+
+  if (scale === 'month') {
+    const startMs = lo.getTime()
+    const endMs = hi.getTime()
+    const span = Math.max(endMs - startMs, 86_400_000)
+    return Array.from({ length: 4 }, (_, index) => {
+      const sliceEndMs = startMs + (span * (index + 1)) / 4
+      const end = new Date(Math.min(sliceEndMs, endMs))
+      end.setHours(23, 59, 59, 999)
+      return { label: `Нед ${index + 1}`, end }
+    })
+  }
+
+  const monthCount =
+    (hi.getFullYear() - lo.getFullYear()) * 12 + (hi.getMonth() - lo.getMonth()) + 1
+  if (monthCount > 12) {
+    const startMs = lo.getTime()
+    const endMs = hi.getTime()
+    const span = Math.max(endMs - startMs, 86_400_000)
+    return Array.from({ length: 12 }, (_, index) => {
+      const sliceEndMs = startMs + (span * (index + 1)) / 12
+      const end = new Date(Math.min(sliceEndMs, endMs))
+      end.setHours(23, 59, 59, 999)
+      const label = KPI_MONTHS_SHORT[end.getMonth()]
+      return { label, end }
+    })
+  }
+
+  const buckets: KpiDynamicsBucket[] = []
+  let cursor = new Date(lo.getFullYear(), lo.getMonth(), 1, 12, 0, 0, 0)
+  while (cursor <= hi && buckets.length < 12) {
+    const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0, 23, 59, 59, 999)
+    const end = monthEnd > hi ? new Date(hi) : monthEnd
+    const label =
+      lo.getFullYear() === hi.getFullYear()
+        ? KPI_MONTHS_SHORT[cursor.getMonth()]
+        : `${KPI_MONTHS_SHORT[cursor.getMonth()]} ${String(cursor.getFullYear()).slice(2)}`
+    buckets.push({ label, end })
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1, 12, 0, 0, 0)
+  }
+  if (!buckets.length) {
+    buckets.push({ label: formatDayLabel(lo), end: hi })
+  }
+  return buckets
+}
+
 export function toIsoDate(d: Date): string {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, '0')
@@ -165,11 +257,9 @@ export function workloadPct(tasksPerWeek: number, meetingHoursPerWeek: number, r
   return Math.min(100, Math.max(0, Math.round((a * 0.9 * b * 40) / c)))
 }
 
-function cutoffThroughDay(day: Date): Date {
-  const dayEnd = new Date(day)
-  dayEnd.setHours(23, 59, 59, 999)
+function cutoffThroughInstant(stamp: Date): Date {
   const now = new Date()
-  return dayEnd > now ? now : dayEnd
+  return stamp > now ? now : stamp
 }
 
 /** Кумулятивное выполнение за период (те же числитель/знаменатель, что и KPI «2 из 9»). */
@@ -177,12 +267,12 @@ function cumulativeCompletionSeries(
   periodTasks: SpecTaskRow[],
   regDone: number,
   regTotal: number,
-  days: Date[]
+  buckets: KpiDynamicsBucket[]
 ): number[] {
   const total = periodTasks.length + regTotal
-  if (total <= 0) return days.map(() => 0)
-  return days.map((day) => {
-    const cutoff = cutoffThroughDay(day)
+  if (total <= 0) return buckets.map(() => 0)
+  return buckets.map((bucket) => {
+    const cutoff = cutoffThroughInstant(bucket.end)
     let erpDone = 0
     for (const task of periodTasks) {
       if (task.status !== 'Выполнена') continue
@@ -194,11 +284,15 @@ function cumulativeCompletionSeries(
 }
 
 /** Кумулятивное SLA — только задачи с дедлайном (как snap.slaPct). */
-function cumulativeSlaSeries(periodTasks: SpecTaskRow[], days: Date[], fallbackPct: number): number[] {
+function cumulativeSlaSeries(
+  periodTasks: SpecTaskRow[],
+  buckets: KpiDynamicsBucket[],
+  fallbackPct: number
+): number[] {
   const withDue = periodTasks.filter((t) => parseTaskDue(t.deadline))
-  if (!withDue.length) return days.map(() => fallbackPct)
-  return days.map((day) => {
-    const cutoff = cutoffThroughDay(day)
+  if (!withDue.length) return buckets.map(() => fallbackPct)
+  return buckets.map((bucket) => {
+    const cutoff = cutoffThroughInstant(bucket.end)
     let ok = 0
     for (const task of withDue) {
       const due = parseTaskDue(task.deadline)
@@ -228,9 +322,10 @@ function trendFromSparkline(points: number[], isQuality: boolean): { delta: stri
 }
 
 function emptyKpiEmployeeSnapshot(from: string, to: string): KpiEmployeeSnapshot {
-  const days = eachDay(from, to)
-  const zeroLine = days.map(() => 0)
+  const buckets = buildKpiDynamicsBuckets(from, to)
+  const zeroLine = buckets.map(() => 0)
   const q0 = qualityFromPct(0)
+  const days = eachDay(from, to)
   return {
     hasData: false,
     completionPct: 0,
@@ -247,9 +342,9 @@ function emptyKpiEmployeeSnapshot(from: string, to: string): KpiEmployeeSnapshot
     hoursPerWorkDay: hoursPerWorkDay(),
     sparkTasks: [...zeroLine],
     sparkSla: [...zeroLine],
-    sparkQuality: days.map(() => q0),
+    sparkQuality: buckets.map(() => q0),
     sparkLoad: [...zeroLine],
-    xLabels: days.map(formatDayLabel)
+    xLabels: buckets.map((b) => b.label)
   }
 }
 
@@ -272,6 +367,7 @@ export function computeKpiEmployeeSnapshot(
   const quality = qualityFromPct(completion)
 
   const days = eachDay(from, to)
+  const buckets = buildKpiDynamicsBuckets(from, to)
   const dayCount = Math.max(1, days.length)
   const weeks = dayCount / 7
   const tasksPerWeek = Math.round(total / weeks)
@@ -280,13 +376,13 @@ export function computeKpiEmployeeSnapshot(
   const remaining = remainingWorkWeekHours(new Date())
   const load = workloadPct(tasksPerWeek, meetPerWeek, remaining)
 
-  let sparkTasks = cumulativeCompletionSeries(periodTasks, sources.regDone, sources.regTotal, days)
+  let sparkTasks = cumulativeCompletionSeries(periodTasks, sources.regDone, sources.regTotal, buckets)
   sparkTasks = syncLastPoint(sparkTasks, completion)
-  let sparkSla = cumulativeSlaSeries(periodTasks, days, completion)
+  let sparkSla = cumulativeSlaSeries(periodTasks, buckets, completion)
   sparkSla = syncLastPoint(sparkSla, slaPct)
   const sparkQuality = sparkTasks.map((p) => qualityFromPct(p))
-  let sparkLoad = days.map((day) =>
-    workloadPct(tasksPerWeek, meetPerWeek, remainingWorkWeekHours(day))
+  let sparkLoad = buckets.map((bucket) =>
+    workloadPct(tasksPerWeek, meetPerWeek, remainingWorkWeekHours(bucket.end))
   )
   sparkLoad = syncLastPoint(sparkLoad, load)
 
@@ -308,7 +404,7 @@ export function computeKpiEmployeeSnapshot(
     sparkSla,
     sparkQuality,
     sparkLoad,
-    xLabels: days.map(formatDayLabel)
+    xLabels: buckets.map((b) => b.label)
   }
 }
 

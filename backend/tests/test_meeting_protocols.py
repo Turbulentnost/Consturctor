@@ -84,6 +84,16 @@ def test_build_protocol_list_path_has_expand() -> None:
     assert "$expand=ТемаСовещания" in path
 
 
+def test_build_protocol_list_path_selects_header_and_access_keys_only() -> None:
+    from app.services.meeting_protocols import build_protocol_list_path
+
+    path = build_protocol_list_path(odata_filter="DeletionMark eq false", limit=10)
+    select = path.split("$select=", 1)[1].split("&", 1)[0].split(",")
+    assert {"Ref_Key", "Number", "Комментарий", "ТемаСовещания/Description"} <= set(select)
+    assert "ПрисутствующиеНаСовещании/Участник_Key" in select
+    assert not any("Файл" in field for field in select)
+
+
 def test_list_meeting_protocols_odata(monkeypatch) -> None:
     sample = {
         "Ref_Key": "e72f4680-aa87-11f1-987a-6cb31113810e",
@@ -140,6 +150,49 @@ def test_build_protocol_filter_sd_includes_psd() -> None:
     )
     assert "startswith(Number,'ПСД')" in filt
     assert "Date ge datetime'2026-09-01T00:00:00'" in filt
+
+
+def test_build_protocol_filter_any_is_the_whole_journal_for_period() -> None:
+    filt = build_protocol_filter(
+        {"meeting_kind": "any", "date_from": "2026-09-21", "date_to": "2026-09-21"},
+        kind="any",
+    )
+    assert "DeletionMark eq false" in filt
+    assert "startswith" not in filt
+    assert "Posted eq false" not in filt
+    assert "Закрыт" not in filt
+    assert "Date ge datetime'2026-09-21T00:00:00'" in filt
+    assert "Date le datetime'2026-09-21T23:59:59'" in filt
+
+
+def test_list_meeting_protocols_any_requires_period() -> None:
+    result = list_meeting_protocols({"meeting_kind": "any"})
+    assert result["protocols"] == []
+    assert "date" in result["error"]
+
+
+def test_normalize_protocol_row_clock() -> None:
+    row = normalize_protocol_row(
+        {
+            "Ref_Key": "96396617-b5b0-11f1-9889-6cb31113810c",
+            "Number": "ДР__062_О_426",
+            "Date": "2026-09-21T10:30:00",
+            "Posted": False,
+            "Статус": "Подготовлен",
+            "ВидСовещания": "Отчетное",
+            "ВремяНачалаСовещания": "0001-01-01T10:30:00",
+            "ВремяОкончанияСовещания": "0001-01-01T11:00:00",
+            "КраткийСоставДокумента": "Жалыбин Максим Дмитриевич",
+            "Комментарий": "outlook:abc",
+            "ТемаСовещания": {"Description": "Еженедельное совещание"},
+        },
+        kind="any",
+    )
+    assert row["time_start"] == "10:30"
+    assert row["time_end"] == "11:00"
+    assert row["meeting_topic"] == "Еженедельное совещание"
+    assert row["brief"] == "Жалыбин Максим Дмитриевич"
+    assert row["meeting_kind_label"] == "Все протоколы"
 
 
 def test_list_meeting_protocols_sd_september_live() -> None:

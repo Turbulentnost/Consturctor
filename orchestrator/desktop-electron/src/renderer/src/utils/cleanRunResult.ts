@@ -91,12 +91,6 @@ export function stripToWorkResult(text: string): string {
     const prefix = lastUsefulPrefix(before)
     if (prefix) return `${prefix} ${body}`.replace(/[ \t]+/g, ' ').trim()
   }
-  if (before && body && isBrokenResultText(body)) {
-    const useful = stripJunkParagraphs(before) || lastUsefulPrefix(before)
-    if (useful && !isMostlyJunk(useful) && !isBrokenResultText(useful) && useful.length >= body.length) {
-      return useful
-    }
-  }
   if (before && body && body.length < 48 && before.length > body.length * 2) {
     const useful = stripJunkParagraphs(before) || lastUsefulPrefix(before)
     if (useful && useful.length > body.length) return useful
@@ -158,14 +152,6 @@ function isContinuationFragment(text: string): boolean {
   const value = (text || '').trim()
   if (!value) return false
   return CONTINUATION_START.test(value)
-}
-
-/** Обрубок: начало с середины слова/фразы или со служебного союза. */
-export function isBrokenResultText(text: string): boolean {
-  const value = (text || '').trim()
-  if (!value) return true
-  if (isContinuationFragment(value)) return true
-  return /^[а-яёa-z]/.test(value)
 }
 
 function isJunkLine(line: string): boolean {
@@ -243,8 +229,9 @@ function preferLongerResult(named: string, full: string): string {
 function looksTruncatedResult(text: string, source: string): boolean {
   const body = (text || '').trim()
   const full = (source || '').trim()
-  if (!body) return Boolean(full)
-  if (isBrokenResultText(body) && full.length > body.length) return true
+  if (!full) return false
+  if (!body) return true
+  if (isContinuationFragment(body) && full.length > body.length) return true
   return body.length < 48 && full.length > body.length * 2
 }
 
@@ -253,9 +240,7 @@ function cleanText(raw: string): string {
   if (!stripped || isPlaceholderResult(stripped)) return ''
   if (hasWorkResultMarker(stripped)) {
     const body = stripWorkResultChrome(stripToWorkResult(stripped))
-    if (body && !isPlaceholderResult(body) && !isBrokenResultText(body)) {
-      return presentAgentText(body).trim()
-    }
+    if (body && !isPlaceholderResult(body)) return presentAgentText(body).trim()
   }
   const full = stripResultHeading(stripJunkParagraphs(stripped))
   let named = ''
@@ -310,7 +295,7 @@ function fromEvents(events: AgentRunnerEvent[], allowAssistantFallback = true): 
     const cleaned = cleanText(eventText(event))
     if (cleaned) last = cleaned
   }
-  const truncated = !last || isBrokenResultText(last)
+  const truncated = !last || isContinuationFragment(last) || last.length < 48
   if (last && !truncated) return last
   if (!allowAssistantFallback) return last
   for (const event of events) {
@@ -350,12 +335,13 @@ export function cleanRunResult(input: {
     statusKey === 'failed'
   if (!terminatedBad && hasWorkResultMarker(rawAnswer)) {
     const fromStored = cleanText(rawAnswer)
-    if (fromStored && !isBrokenResultText(fromStored)) {
+    if (fromStored && !isContinuationFragment(fromStored) && fromStored.length >= 48) {
       return { text: fromStored, emptyHint: '' }
     }
   }
   const fromAnswer = terminatedBad ? '' : cleanText(rawAnswer)
-  const allowAssistant = !terminatedBad && (!fromAnswer || isBrokenResultText(fromAnswer))
+  const allowAssistant =
+    !terminatedBad && (!fromAnswer || isContinuationFragment(fromAnswer) || fromAnswer.length < 48)
   const fromEvent = fromEvents(events, allowAssistant)
   const text = preferLongerResult(fromEvent, fromAnswer) || fromEvent || fromAnswer
   if (!text) return { text: '', emptyHint: emptyHint(input.status || '', rawAnswer) }

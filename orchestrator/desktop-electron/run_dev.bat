@@ -8,7 +8,7 @@ title Orchestrator
 echo Starting Orchestrator Electron...
 echo Backend: %BACKEND_URL%
 echo Vite:    %ORCH_VITE_PORT%
-echo LAN gateway: set BACKEND_URL=http://192.168.1.157:7812
+echo LAN gateway only: set BACKEND_URL=http://192.168.1.157:7812
 echo Local backend + 1C SOAP: run_dev_local.bat
 npm run dev
 if errorlevel 1 pause

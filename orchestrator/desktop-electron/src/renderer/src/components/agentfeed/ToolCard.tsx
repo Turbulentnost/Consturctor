@@ -24,12 +24,6 @@ const ODATA_TOOLS = new Set([
   'onec.meeting_protocols'
 ])
 
-function isOfficeVisionResult(item: ToolItem): boolean {
-  if (item.tool === 'office.read_file') return true
-  const result = item.result
-  return Boolean(result && (result.vision === true || Array.isArray(result.vision_pages)))
-}
-
 function pretty(value: Record<string, unknown>): string {
   try {
     return JSON.stringify(value, null, 2)
@@ -87,8 +81,7 @@ export function ToolCard({ item, liftMeetings = false }: ToolCardProps): React.J
   const request = requestLines(item)
   const hasResult = Boolean(item.result && Object.keys(item.result).length > 0)
   const structured = meetings.length > 0 || odataRows.length > 0
-  const hideRaw = isOfficeVisionResult(item)
-  const expandable = structured || (hasResult && !hideRaw) || request.length > 0
+  const expandable = structured || hasResult || request.length > 0
   const [open, setOpen] = useState(false)
   const [touched, setTouched] = useState(false)
   const shown = touched ? open : structured
@@ -160,7 +153,7 @@ export function ToolCard({ item, liftMeetings = false }: ToolCardProps): React.J
               entityHint={odataEntityHint(item.arguments, item.result)}
             />
           )}
-          {hasResult && !structured && item.result && !isOfficeVisionResult(item) && (
+          {hasResult && !structured && item.result && (
             <div className="feed-tool-block">
               <div className="feed-tool-label">Результат</div>
               <pre>{pretty(item.result)}</pre>

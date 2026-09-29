@@ -32,6 +32,7 @@ class PositionKpiDailyOut(BaseModel):
     computed_at: str
     cached: bool = False
     stale: bool = False
+    subject: str = ""
     tiles: list[PositionKpiTileOut] = Field(default_factory=list)
 
 
@@ -75,6 +76,7 @@ class PositionKpiBuildOut(BaseModel):
     modules: list[dict[str, Any]] = Field(default_factory=list)
     profile_id: str = ""
     sdk_prompt: str = ""
+    data_sources: list[dict[str, Any]] = Field(default_factory=list)
     messages: list[PositionKpiBuildMessageOut] = Field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""

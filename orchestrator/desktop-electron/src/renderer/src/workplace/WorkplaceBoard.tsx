@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
-import { writeGridCache } from './gridDataCache'
+import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 import { api } from '../api/client'
 import type {
   AgentKpi,
   BoardAgent,
   CalendarEvent,
   PositionOrchestrator,
+  WorkflowFileItem,
   WorkflowBoard
 } from '../api/types'
 import { humanWhen, parseIso, sameDay, windowFor } from '../utils/calendar'
@@ -16,6 +17,7 @@ import { personalAgentWorkflowId } from './personalAgent'
 import { useRuns } from '../store/runs'
 import {
   findPendingToolRequest,
+  isUserFacingResultFile,
   readVerdict,
   runDecisionId,
   writeVerdict
@@ -871,9 +873,7 @@ function PreparedSolutionsRail({
         </div>
       </header>
       {!featured ? (
-        <p className="wp-rail-empty">
-          Пока нет запросов на разрешение. Они появятся, когда агенту понадобится подтверждение операции.
-        </p>
+        <p className="wp-rail-empty">Пока нет подготовленных решений. Они появятся после запусков агентов.</p>
       ) : (
         <article className="wp-solution-card">
           <div className="wp-solution-ico" aria-hidden>
@@ -1115,7 +1115,7 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
   const reloadRef = useRef<() => Promise<void>>(async () => undefined)
   const generation = useGridRefreshGeneration(personal?.userId)
 
-  const reload = useCallback(async (): Promise<void> => {
+  const reload = async (): Promise<void> => {
     const win = windowFor('week', new Date())
     const userId = personal?.userId || ''
     try {
@@ -1134,7 +1134,7 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
     } finally {
       setLoading(false)
     }
-  }, [personal?.userId])
+  }
   reloadRef.current = reload
 
   useEffect(() => {
@@ -1142,12 +1142,27 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
       setLoading(false)
       return
     }
-    void reload()
+    const cacheKey = `workplace-board:${personal.userId}`
+    if (!shouldRunGridFetch(cacheKey, generation)) {
+      const cached = readGridCache<{ board: WorkflowBoard; orch: PositionOrchestrator | null }>(cacheKey)
+      if (cached) {
+        setBoard(cached.board)
+        setOrch(cached.orch)
+        setLoading(false)
+      } else {
+        void reload()
+      }
+    } else {
+      // #region agent log
+      fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H5',location:'WorkplaceBoard.tsx:reload',message:'workplace board fetch (generation or miss)',data:{generation,userId:personal.userId},timestamp:Date.now()})}).catch(()=>{})
+      // #endregion
+      void reload()
+    }
     const unsubscribe = window.api.onBoardUpdated?.(() => {
       void reloadRef.current()
     })
     return () => unsubscribe?.()
-  }, [personal?.userId, generation, reload])
+  }, [personal?.userId, generation])
 
   const notice = (text: string): void => {
     setFlash(text)
@@ -1212,6 +1227,7 @@ export function TodayWorkplace({
   const [catalog, setCatalog] = useState<'today' | 'all'>('today')
   const [selectedId, setSelectedId] = useState('')
   const [askText, setAskText] = useState('')
+  const [recentFilesByWorkflow, setRecentFilesByWorkflow] = useState<Record<string, WorkflowFileItem[]>>({})
   const [kpiByWorkflow, setKpiByWorkflow] = useState<Record<string, AgentKpi | null>>({})
   const [latestRunByWorkflow, setLatestRunByWorkflow] = useState<Record<string, AgentRunHistoryItem | null>>({})
   const [boardTick, setBoardTick] = useState(0)
@@ -1266,26 +1282,51 @@ export function TodayWorkplace({
       if (agent.standalone) continue
       const liveHitl = runs.entries[agent.workflowId]?.state.pendingHitl
       const liveQuestion = runs.entries[agent.workflowId]?.state.pendingQuestion
-      if (!liveHitl && !liveQuestion && agent.status !== 'WAITING_HUMAN') continue
-      cards.push({
-        id: `wait:${agent.id}`,
-        kind: 'waiting',
-        title:
-          liveQuestion?.question ||
-          liveHitl?.title ||
-          agent.tasks.find((task) => task.status === 'needs_decision')?.title ||
-          `Разрешение: ${agent.name}`,
-        note: 'Агенту потребовалось разрешение на выполнение операции.',
-        meta: `Агент «${agent.name}» · ждёт подтверждения`,
-        workflowId: agent.workflowId,
-        agentName: agent.name,
-        requestId: liveHitl?.requestId || liveQuestion?.requestId,
-        runId: runs.entries[agent.workflowId]?.backendRunId || agent.tasks.find((task) => task.runId)?.runId,
-        live: Boolean(liveHitl?.requestId || liveQuestion?.requestId)
-      })
+      if (agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR' || liveHitl || liveQuestion) {
+        cards.push({
+          id: `wait:${agent.id}`,
+          kind: 'waiting',
+          title:
+            liveQuestion?.question ||
+            agent.tasks.find((task) => task.status === 'needs_decision')?.title ||
+            `Решение: ${agent.name}`,
+          note:
+            agent.status === 'ERROR'
+              ? 'Агент сообщил об ошибке — разберите результат и подтвердите следующий шаг.'
+              : 'Агент подготовил материал и ждёт подтверждения человека.',
+          meta: `Агент «${agent.name}» · ${STATUS_LABEL[agent.status]}`,
+          workflowId: agent.workflowId,
+          agentName: agent.name,
+          requestId: liveHitl?.requestId || liveQuestion?.requestId,
+          runId: runs.entries[agent.workflowId]?.backendRunId || agent.tasks.find((task) => task.runId)?.runId,
+          live: Boolean(liveHitl?.requestId || liveQuestion?.requestId)
+        })
+      }
+      const files = (recentFilesByWorkflow[agent.workflowId] || []).filter(isUserFacingResultFile)
+      for (const file of files.slice(0, 2)) {
+        const fileId = file.id || file.name
+        if (readVerdict(agent.workflowId, fileId)) continue
+        cards.push({
+          id: `file:${agent.workflowId}:${fileId}`,
+          kind: 'file',
+          title: file.name || 'Файл результата',
+          note: `Результат агента «${agent.name}». Откройте файл и подтвердите или верните на доработку.`,
+          meta: file.createdAt
+            ? `Подготовлено ${(() => {
+                const stamp = parseIso(file.createdAt)
+                return stamp ? humanWhen(stamp) : 'сегодня'
+              })()}`
+            : 'Подготовлено сегодня',
+          workflowId: agent.workflowId,
+          agentName: agent.name,
+          fileId,
+          fileUrl: file.downloadUrl,
+          runId: file.runId
+        })
+      }
     }
     return cards.slice(0, 6)
-  }, [agents, runs.entries])
+  }, [agents, recentFilesByWorkflow, runs.entries, decisionTick])
 
   const openPreparedItem = (item: PreparedCard): void => {
     if (item.fileUrl) {
@@ -1399,6 +1440,39 @@ export function TodayWorkplace({
         }
       })
   }, [visible, kpiByWorkflow, latestRunByWorkflow, runs.entries, boardTick])
+
+  useEffect(() => {
+    const targets = agents
+      .map((agent) => agent.workflowId)
+      .filter((workflowId) => workflowId && !workflowId.startsWith('personal-agent:'))
+    if (!targets.length) {
+      setRecentFilesByWorkflow({})
+      return
+    }
+    let alive = true
+    void Promise.all(
+      targets.map(async (workflowId) => {
+        const files = await api.listWorkflowFiles(workflowId).catch(() => [] as WorkflowFileItem[])
+        const produced = files
+          .filter((file) => {
+            const source = String(file.source || '').toLowerCase()
+            const origin = String(file.origin || '').toLowerCase()
+            return source === 'agent' || source === 'result' || origin.includes('agent')
+          })
+          .filter(isUserFacingResultFile)
+          .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+        return [workflowId, produced] as const
+      })
+    ).then((pairs) => {
+      if (!alive) return
+      const next: Record<string, WorkflowFileItem[]> = {}
+      for (const [workflowId, files] of pairs) next[workflowId] = files
+      setRecentFilesByWorkflow(next)
+    })
+    return () => {
+      alive = false
+    }
+  }, [agents])
 
   useEffect(() => {
     const unsubscribe = window.api.onBoardUpdated?.(() => setBoardTick((value) => value + 1))

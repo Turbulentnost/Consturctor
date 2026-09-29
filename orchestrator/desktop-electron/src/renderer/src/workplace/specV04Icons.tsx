@@ -1,4 +1,6 @@
-/** Inline SVG-иконки для v0.4 (без внешних ассетов). */
+import onecLogo from '../assets/fileicons/onec.png'
+
+/** Inline SVG-иконки для v0.4; логотип 1С — из fileicons. */
 
 export function SpecIconReg(): React.JSX.Element {
   return (
@@ -12,14 +14,7 @@ export function SpecIconReg(): React.JSX.Element {
 }
 
 export function SpecIconOnec(): React.JSX.Element {
-  return (
-    <svg className="spec-tile-ico" viewBox="0 0 24 24" aria-hidden>
-      <path
-        fill="currentColor"
-        d="M4 4h16v2H4V4zm0 5h10v2H4V9zm0 5h16v2H4v-2zm0 5h10v2H4v-2z"
-      />
-    </svg>
-  )
+  return <img className="spec-tile-ico spec-icon-onec" src={onecLogo} alt="" />
 }
 
 export function SpecIconProject(): React.JSX.Element {
@@ -85,28 +80,6 @@ export function SpecIconPlay(): React.JSX.Element {
   )
 }
 
-export function SpecIconDecision(): React.JSX.Element {
-  return (
-    <svg className="spec-tile-ico" viewBox="0 0 24 24" aria-hidden>
-      <path
-        fill="currentColor"
-        d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.2 14.2-3.5-3.5 1.4-1.4 2.1 2.1 5.3-5.3 1.4 1.4-6.7 6.7z"
-      />
-    </svg>
-  )
-}
-
-export function SpecIconResults(): React.JSX.Element {
-  return (
-    <svg className="spec-tile-ico" viewBox="0 0 24 24" aria-hidden>
-      <path
-        fill="currentColor"
-        d="M6 2h9l5 5v15a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm8 1.5V8h4.5L14 3.5zM8 12h8v2H8v-2zm0 4h6v2H8v-2z"
-      />
-    </svg>
-  )
-}
-
 const TILE_ICON: Record<string, () => React.JSX.Element> = {
   day: SpecIconReg,
   reg: SpecIconReg,
@@ -115,9 +88,7 @@ const TILE_ICON: Record<string, () => React.JSX.Element> = {
   proj: SpecIconProject,
   mail: SpecIconMail,
   meet: SpecIconMeeting,
-  ev: SpecIconMeeting,
-  decisions: SpecIconDecision,
-  results: SpecIconResults
+  ev: SpecIconMeeting
 }
 
 export function SpecTileIcon({ id }: { id: string }): React.JSX.Element | null {
@@ -132,11 +103,7 @@ export function SpecTileIcon({ id }: { id: string }): React.JSX.Element | null {
           ? 'proj'
           : id === 'onec-from-me'
             ? 'onec'
-            : id === 'decisions'
-              ? 'decisions'
-              : id === 'results'
-                ? 'results'
-                : id
+            : id
   return (
     <span className={`spec-tile-icon-wrap tone-${tone}`} aria-hidden>
       <Icon />

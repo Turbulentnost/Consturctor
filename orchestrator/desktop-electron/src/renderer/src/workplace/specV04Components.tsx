@@ -1,21 +1,27 @@
 import type { ReactNode } from 'react'
+import { BookOpen, Calendar, Mail, Plus, Play } from 'lucide-react'
 import { stageProgressTone } from './specV04Shell'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecPillTone } from './specV04DemoData'
-import { SpecIconCalendar, SpecIconOnec, SpecIconPlay, SpecTileIcon } from './specV04Icons'
+import { SpecIconOnec, SpecIconPlay, SpecTileIcon } from './specV04Icons'
 import type { SpecQuickActionIcon } from './specGridQuickActions'
 import { openWorkplaceTab } from './workplaceNav'
 
+function SpecQuickActionGlyph({ kind }: { kind: SpecQuickActionIcon }): React.JSX.Element {
+  if (kind === 'plus') return <Plus strokeWidth={2.4} />
+  if (kind === 'play') return <Play strokeWidth={2.4} />
+  if (kind === 'calendar') return <Calendar strokeWidth={2.2} />
+  if (kind === 'mail') return <Mail strokeWidth={2.2} />
+  if (kind === 'book') return <BookOpen strokeWidth={2.2} />
+  return <SpecIconOnec />
+}
+
 function SpecQuickActionIcon({ kind }: { kind: SpecQuickActionIcon }): React.JSX.Element {
-  const icon =
-    kind === 'play' ? (
-      <SpecIconPlay />
-    ) : kind === 'calendar' ? (
-      <SpecIconCalendar />
-    ) : (
-      <SpecIconOnec />
-    )
-  return <span className="spec-quick-action-ico">{icon}</span>
+  return (
+    <span className={`spec-quick-action-ico${kind === 'onec' ? ' spec-quick-action-ico--onec' : ''}`}>
+      <SpecQuickActionGlyph kind={kind} />
+    </span>
+  )
 }
 
 export function SpecPill({
@@ -26,6 +32,15 @@ export function SpecPill({
   tone?: SpecPillTone | string
 }): React.JSX.Element {
   return <span className={`spec-pill tone-${tone}`}>{children}</span>
+}
+
+/** Метка задачи 1С, которой не было при предыдущем входе сегодня. */
+export function NewOneCTaskMark(): React.JSX.Element {
+  return (
+    <em className="onec-new-mark" title="Новая задача с прошлого входа">
+      новая
+    </em>
+  )
 }
 
 export function SpecProgress({ value }: { value: number }): React.JSX.Element {
@@ -86,17 +101,15 @@ export function SpecSummaryTiles({
         ]
           .filter(Boolean)
           .join(' ')
+        const tooltip =
+          tile.tooltip ||
+          [tile.label, tile.hint].filter((part) => part && part !== tile.value).join(' · ')
         const body = (
           <>
             <div className="spec-v04-tile-top">
               <div className="spec-v04-tile-label-row">
-                <span className="spec-tile-icon-host">
-                  <SpecTileIcon id={tile.id} />
-                  {tile.notify ? (
-                    <i className="spec-tile-notify-dot" title="Есть уведомление" aria-hidden />
-                  ) : null}
-                </span>
-                <span className="spec-v04-tile-label" title={tile.label}>
+                <SpecTileIcon id={tile.id} />
+                <span className="spec-v04-tile-label" title={tooltip}>
                   {tile.label}
                 </span>
               </div>
@@ -134,7 +147,7 @@ export function SpecSummaryTiles({
               type="button"
               className={classNames}
               aria-pressed={active}
-              aria-label={tile.notify ? `${tile.label}, есть уведомление` : tile.label}
+              title={tooltip}
               onClick={() => onSelect?.(tile.id)}
             >
               {body}
@@ -142,7 +155,7 @@ export function SpecSummaryTiles({
           )
         }
         return (
-          <article key={tile.id} className={classNames}>
+          <article key={tile.id} className={classNames} title={tooltip}>
             {body}
           </article>
         )
@@ -252,19 +265,9 @@ export function SpecBottomRow({ children }: { children: ReactNode }): React.JSX.
   return <div className="spec-v04-bottom-row">{children}</div>
 }
 
-export function SpecPanel({
-  title,
-  extra,
-  children,
-  className
-}: {
-  title?: string
-  extra?: ReactNode
-  children: ReactNode
-  className?: string
-}): React.JSX.Element {
+export function SpecPanel({ title, extra, children }: { title?: string; extra?: ReactNode; children: ReactNode }): React.JSX.Element {
   return (
-    <section className={`wp-card spec-v04-panel${className ? ` ${className}` : ''}`}>
+    <section className="wp-card spec-v04-panel">
       {title || extra ? (
         <header className="spec-v04-panel-head">
           {title ? <h3>{title}</h3> : null}
@@ -325,8 +328,7 @@ export function SpecAskOrchestratorBlock({
 }
 
 export function SpecQuickActions({
-  items,
-  layout = 'column'
+  items
 }: {
   items: Array<
     | string
@@ -338,10 +340,9 @@ export function SpecQuickActions({
         onClick?: () => void
       }
   >
-  layout?: 'column' | 'row'
 }): React.JSX.Element {
   return (
-    <ul className={`spec-quick-actions${layout === 'row' ? ' spec-quick-actions--row' : ''}`}>
+    <ul className="spec-quick-actions">
       {items.map((item) => {
         const label = typeof item === 'string' ? item : item.label
         const key = typeof item === 'string' ? item : item.id
@@ -352,9 +353,7 @@ export function SpecQuickActions({
           <li key={key}>
             <button
               type="button"
-              className={`spec-quick-action-btn${tone ? ` spec-quick-action--${tone}` : ''}${
-                layout === 'row' ? ' spec-quick-action-btn--badge' : ''
-              }`}
+              className={`spec-quick-action-btn${tone ? ` spec-quick-action--${tone}` : ''}`}
               onClick={onClick}
             >
               {icon ? <SpecQuickActionIcon kind={icon} /> : null}

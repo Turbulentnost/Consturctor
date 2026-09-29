@@ -26,8 +26,9 @@ async def _erp_reachable() -> bool:
         return _ping_cache[1]
     reachable = False
     try:
-        # Windows impersonation + legacy ODBC can take ~20s on first connect.
-        ping_timeout = min(45.0, max(25.0, float(settings.erp_sql_timeout or 45)))
+        # First ODBC login can take ~20s. Cap it so a hung erp_pm does not hold
+        # the poll for the full driver timeout; /health/live stays instant.
+        ping_timeout = min(25.0, max(20.0, float(settings.erp_sql_timeout or 25)))
         reachable = await asyncio.wait_for(asyncio.to_thread(ping), timeout=ping_timeout)
     except TimeoutError:
         logger.warning("ERP health check timed out")
@@ -37,6 +38,12 @@ async def _erp_reachable() -> bool:
         logger.warning("Unexpected ERP health check error", exc_info=True)
     _ping_cache = (now, bool(reachable))
     return bool(reachable)
+
+
+@router.get("/health/live")
+async def health_live() -> dict[str, str]:
+    """Uvicorn is up — no erp_pm ODBC (for dev scripts / desktop startup)."""
+    return {"status": "ok"}
 
 
 @router.get("/health", response_model=HealthResponse)

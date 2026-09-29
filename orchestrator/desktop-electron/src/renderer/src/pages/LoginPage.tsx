@@ -58,6 +58,10 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
     return () => window.clearInterval(timer)
   }, [busy])
 
+  useEffect(() => {
+    void api.searchUsers('').catch(() => undefined)
+  }, [])
+
   async function submit(): Promise<void> {
     setError('')
     if (!fio.trim() || !password) {
@@ -100,6 +104,7 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
           inputClassName="login-input"
           variant="dark"
           onEnter={submit}
+          publicOnly
         />
 
         <label>Пароль</label>

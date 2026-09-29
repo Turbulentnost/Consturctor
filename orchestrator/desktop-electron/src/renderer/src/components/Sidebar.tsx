@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { FioSuggest } from './FioSuggest'
 import { api, parseChatMessage } from '../api/client'
 import { previewText } from '../api/chatCodec'
@@ -7,6 +7,7 @@ import type { ChatMessage, ChatThread, DirectoryUser } from '../api/types'
 import logoUrl from '../assets/logo.png'
 import iconSearch from '../assets/search.png'
 import { NavIcon } from '../layout/navIcons'
+import { useSpecV04SourcesContext } from '../workplace/SpecV04SourcesProvider'
 
 export type AdminPageKey =
   | 'overview'
@@ -21,9 +22,15 @@ export type UserPageKey =
   | 'tasks'
   | 'projects'
   | 'mail'
+  | 'docflow'
   | 'meetings'
   | 'decisions'
   | 'knowledge'
+  | 'extensions'
+  | 'assignments_registry'
+  | 'agent_library'
+  | 'task_create'
+  | 'platform_task_create'
 
 export type SharedPageKey = 'kpi' | 'history' | 'settings'
 export type PageKey = AdminPageKey | UserPageKey | SharedPageKey
@@ -41,9 +48,15 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   tasks: 'Задачи',
   projects: 'Проекты',
   mail: 'Письма',
+  docflow: 'Документооборот',
   meetings: 'Совещания',
   decisions: 'Решения',
   knowledge: 'База знаний',
+  extensions: 'Расширения',
+  assignments_registry: 'Реестр поручений',
+  agent_library: 'Библиотека агентов',
+  task_create: 'Создание задачи',
+  platform_task_create: 'Задача в платформе',
   kpi: 'KPI',
   history: 'История',
   settings: 'Настройки'
@@ -66,13 +79,17 @@ const USER_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'tasks', label: PAGE_LABELS.tasks },
   { key: 'projects', label: PAGE_LABELS.projects },
   { key: 'mail', label: PAGE_LABELS.mail },
+  { key: 'docflow', label: PAGE_LABELS.docflow },
   { key: 'meetings', label: PAGE_LABELS.meetings },
   { key: 'decisions', label: PAGE_LABELS.decisions },
   { key: 'kpi', label: PAGE_LABELS.kpi },
   { key: 'history', label: PAGE_LABELS.history },
   { key: 'knowledge', label: PAGE_LABELS.knowledge },
+  { key: 'extensions', label: '+ Расширения' },
   { key: 'settings', label: PAGE_LABELS.settings }
 ]
+
+export type SidebarNavItem = { key: PageKey; label: string; extension?: boolean }
 
 function initials(fio: string): string {
   const parts = (fio || '').replace(/\./g, ' ').split(/\s+/).filter(Boolean)
@@ -139,6 +156,8 @@ interface SidebarProps {
   onOpenThread: (thread: ChatThread) => void
   onOpenFio: (fio: string, user?: DirectoryUser) => void
   refreshAt?: number
+  /** Pinned extension tabs (inserted before «+ Расширения»). */
+  pinnedExtensionNav?: SidebarNavItem[]
 }
 
 export function Sidebar({
@@ -150,7 +169,8 @@ export function Sidebar({
   onNavigate,
   onOpenThread,
   onOpenFio,
-  refreshAt = 0
+  refreshAt = 0,
+  pinnedExtensionNav = []
 }: SidebarProps): React.JSX.Element {
   const [collapsed, setCollapsed] = useState(false)
   const [fio, setFio] = useState('')
@@ -158,7 +178,21 @@ export function Sidebar({
   const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
   const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
   const [checking, setChecking] = useState(false)
-  const items = showAdminNav ? ADMIN_ITEMS : USER_ITEMS
+  const { newOneCTaskKeys } = useSpecV04SourcesContext()
+  const navBadges: Partial<Record<PageKey, number>> = { tasks: newOneCTaskKeys.size }
+  const items = useMemo((): SidebarNavItem[] => {
+    if (showAdminNav) return ADMIN_ITEMS
+    const pinnedKeys = new Set(pinnedExtensionNav.map((item) => item.key))
+    const core = USER_ITEMS.filter((item) => item.key !== 'extensions' && !pinnedKeys.has(item.key))
+    const settings = USER_ITEMS.find((item) => item.key === 'settings')
+    const extensionsHub = USER_ITEMS.find((item) => item.key === 'extensions')
+    return [
+      ...core.filter((item) => item.key !== 'settings'),
+      ...pinnedExtensionNav,
+      ...(extensionsHub ? [extensionsHub] : []),
+      ...(settings ? [settings] : [])
+    ]
+  }, [showAdminNav, pinnedExtensionNav])
 
   const runCheck = (): void => {
     if (checking) return
@@ -302,17 +336,33 @@ export function Sidebar({
       <nav className="nav">
         {items.map((item) => {
           const isActive = item.key === active
+          const isExtensionModule = 'extension' in item && Boolean(item.extension)
+          const isExtensionsHub = item.key === 'extensions'
+          const badge = showAdminNav ? 0 : navBadges[item.key] ?? 0
+          const badgeText = badge > 99 ? '99+' : String(badge)
           return (
             <button
               key={item.key}
-              className={isActive ? 'nav-item active' : 'nav-item'}
+              className={[
+                'nav-item',
+                isActive ? 'active' : '',
+                isExtensionsHub ? 'nav-item-extensions-hub' : '',
+                isExtensionModule ? 'nav-item-extension-module' : ''
+              ]
+                .filter(Boolean)
+                .join(' ')}
               onClick={() => onNavigate(item.key)}
-              title={item.label}
+              title={badge > 0 ? `${item.label}: новых задач 1С — ${badge}` : item.label}
             >
               <span className="nav-icon" aria-hidden>
                 <NavIcon page={item.key} />
               </span>
               {!collapsed && <span className="nav-label">{item.label}</span>}
+              {badge > 0 ? (
+                <em className="nav-badge" aria-label={`Новых: ${badge}`}>
+                  {badgeText}
+                </em>
+              ) : null}
             </button>
           )
         })}

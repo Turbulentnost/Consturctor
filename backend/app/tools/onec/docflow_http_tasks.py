@@ -117,19 +117,17 @@ def fetch_document_executor_tasks_http(
     auth = dok_http_auth(auth_args)
     if not dok_http_base_url() or not auth or not user_ref.strip():
         return [], ""
-    try:
-        import app.tools.onec.dok_http as colleague  # noqa: WPS433
+    from app.tools.onec import dok_http
 
-        rows = colleague.fetch_user_document_executions(
-            user_ref.strip(),
-            user_fio=fio,
-        )
-        if not isinstance(rows, list):
-            return [], ""
-    except ImportError:
-        rows = _request_tasksii(user_ref.strip(), auth=auth)
+    dok_http.set_request_auth(auth[0], auth[1])
+    try:
+        rows = dok_http.fetch_user_document_executions(user_ref.strip(), user_fio=fio)
+        if not rows and fio.strip() and fio.strip() != user_ref.strip():
+            rows = dok_http.fetch_user_document_executions(fio.strip(), user_fio=fio)
     except Exception as exc:  # noqa: BLE001
         return [], f"TasksII: {exc}".strip()
+    finally:
+        dok_http.clear_request_auth()
 
     if not rows:
         return [], ""

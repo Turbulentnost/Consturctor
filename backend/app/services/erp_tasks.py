@@ -90,7 +90,7 @@ def earliest_task_date() -> date | None:
     except Exception:  # noqa: BLE001
         return None
     finally:
-        conn.close()
+        erp_sql._release_connection(conn)
 
 
 def parse_date(raw: str, *, end: bool = False) -> datetime:
@@ -505,7 +505,7 @@ def _query_tasks(
     except Exception as exc:  # noqa: BLE001
         raise ErpTaskError(f"Не удалось прочитать задачи из erp_pm: {exc}") from exc
     finally:
-        conn.close()
+        erp_sql._release_connection(conn)
 
 
 def merge_task_lists(

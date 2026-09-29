@@ -65,42 +65,6 @@
   min-height: 0;
 }
 
-.tab-chrome-canvas--view .react-resizable-handle {
-  display: none;
-  pointer-events: none;
-}
-
-.tab-chrome-canvas--view .react-grid-item:has([data-widget-id='side']) {
-  z-index: 4;
-}
-
-.tab-chrome-shell[data-widget-id='side'] .tab-chrome-content {
-  overflow: hidden;
-}
-
-.tab-chrome-shell[data-widget-id='side'] .spec-detail-card,
-.tab-chrome-shell[data-widget-id='side'] .wp-decision-detail {
-  height: 100%;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-}
-
-.tab-chrome-shell[data-widget-id='side'] .spec-detail-card {
-  position: relative;
-  z-index: 2;
-}
-
-.tab-chrome-shell[data-widget-id='side'] .spec-detail-actions {
-  position: relative;
-  z-index: 3;
-  pointer-events: auto;
-}
-
-.tab-chrome-shell[data-widget-id='side'] .spec-detail-actions button {
-  pointer-events: auto;
-}
-
 .tab-chrome-shell {
   height: 100%;
   min-height: 0;
@@ -144,64 +108,27 @@
 
 .tab-chrome-content .spec-table-toolbar,
 .tab-chrome-content .orch-process-tabs {
-  flex: 0 0 auto;
-  max-height: none;
+  flex: 0 0 40px;
+  max-height: 40px;
   min-height: 40px;
 }
 
-.orch-process-main,
-.orch-tasks-main {
-  position: relative;
+.orch-process-main {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
 }
 
-.orch-tasks-drawer {
-  position: absolute;
-  top: 40px;
-  right: 8px;
-  width: min(360px, 34%);
-  max-height: calc(100% - 48px);
-  z-index: 5;
-  min-height: 0;
-}
-
-.orch-tasks-drawer .spec-detail-card {
-  height: auto;
-  max-height: 100%;
-  overflow: auto;
-  box-shadow: 0 10px 28px rgba(16, 20, 26, 0.12);
-}
-
-.orch-tasks-toolbar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  min-height: 40px;
-  margin: 0;
-  padding: 0 2px 4px;
-  overflow: visible;
-}
-
-.orch-tasks-main > .spec-v04-table-wrap {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-
 .orch-process-tabs {
-  flex: 0 0 auto;
-  max-height: none;
+  flex: 0 0 40px;
+  max-height: 40px;
   min-height: 40px;
   margin: 0;
   padding: 0 2px;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  overflow: visible;
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
 .orch-process-tabs .spec-table-tabs {
@@ -218,87 +145,9 @@
   white-space: nowrap;
 }
 
-.orch-process-tabs-tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-  margin-left: auto;
-}
-
 .orch-process-tabs-sort {
   flex: 0 0 auto;
   height: 28px;
-}
-
-.spec-v04-table-tasks {
-  table-layout: fixed;
-}
-
-.spec-v04-table-tasks col.spec-v04-col-task {
-  width: 42%;
-}
-
-.spec-v04-table-tasks col.spec-v04-col-source {
-  width: 14%;
-}
-
-.spec-v04-table-tasks col.spec-v04-col-process {
-  width: 10%;
-}
-
-.spec-v04-table-tasks col.spec-v04-col-deadline {
-  width: 76px;
-}
-
-.spec-v04-table-tasks col.spec-v04-col-person {
-  width: 18%;
-}
-
-.spec-v04-table-tasks col.spec-v04-col-created {
-  width: 140px;
-}
-
-.spec-v04-table-tasks .spec-v04-cell-task strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.spec-v04-table-tasks .spec-v04-cell-source,
-.spec-v04-table-tasks .spec-v04-cell-process {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.spec-v04-table-tasks .spec-v04-cell-deadline {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 0;
-}
-
-.spec-v04-table-tasks .spec-v04-cell-progress {
-  width: auto;
-  min-width: 120px;
-}
-
-.spec-v04-table-tasks .spec-progress {
-  width: 100%;
-  min-width: 0;
-  max-width: none;
-}
-
-.spec-v04-table-tasks .spec-progress-bar {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 8px;
-}
-
-.spec-v04-table-tasks .spec-progress span {
-  flex: 0 0 auto;
 }
 
 .orch-process-main > .spec-v04-table-wrap {
@@ -307,15 +156,104 @@
   overflow: auto;
 }
 
-.tab-chrome-content .orch-process-main,
-.tab-chrome-content .orch-tasks-main {
+.orch-process-main .spec-v04-table th,
+.orch-process-main .spec-v04-table td {
+  padding: 6px 8px;
+}
+
+/* Полоса над таблицей задач: кнопка архива справа. */
+.tasks-table-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 8px;
+  flex: 0 0 auto;
+}
+
+.tasks-table-toolbar .tasks-closed-btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  gap: 6px;
+  font-size: 12px;
+}
+
+/* Закрытые задачи 1С — список за период. */
+.closed-tasks-dialog {
+  width: min(1080px, calc(100vw - 48px));
+  max-width: min(1080px, calc(100vw - 48px));
+  max-height: min(88vh, 820px);
+  padding: 0;
+  gap: 0;
   overflow: hidden;
 }
 
-.tab-chrome-content > .spec-v04-table-wrap {
+.closed-tasks-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid #e8ecf1;
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+}
+
+.closed-tasks-head .modal-title {
+  margin: 0 0 4px;
+}
+
+.closed-tasks-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.closed-tasks-toolbar .docflow-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.closed-tasks-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  padding: 0 18px 8px;
+}
+
+.closed-tasks-body .spec-v04-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f7f9fc;
+}
+
+.closed-tasks-dialog .modal-actions {
+  padding: 12px 18px 16px;
+  border-top: 1px solid #e8ecf1;
+  margin: 0;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-v04-panel {
+  padding: 10px 12px;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-v04-panel-head {
+  margin-bottom: 6px;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-detail-card {
+  padding: 10px 12px;
+  gap: 8px;
+}
+
+.tab-chrome-shell[data-widget-id='side'] .spec-detail-head h2,
+.tab-chrome-shell[data-widget-id='side'] .spec-detail-card h2 {
+  font-size: 15px;
+  line-height: 1.25;
 }
 
 .tab-chrome-filters-bar {
@@ -326,6 +264,32 @@
   width: 100%;
   overflow: hidden;
   z-index: 3;
+}
+
+.workplace-global-period {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.workplace-global-filters-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  max-height: 40px;
+  padding: 0 10px;
+  min-width: 0;
+}
+
+.orch-slot-filters .workplace-global-filters-strip,
+.orch-slot-filters .kpi-range-picker-btn,
+.tab-chrome-filters-bar .kpi-range-picker-btn,
+.today-filters-bar .kpi-range-picker-btn {
+  height: 26px;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 12px;
 }
 
 .tab-chrome-filters-wrap {
@@ -499,6 +463,13 @@
   height: 62%;
 }
 
+.tab-chrome-shell[data-widget-id='tiles'] .spec-icon-onec,
+.tab-chrome-shell[data-widget-id^='tile:'] .spec-icon-onec {
+  width: 86%;
+  height: 86%;
+  object-fit: contain;
+}
+
 @container orch-tile (max-height: 78px) {
   .tab-chrome-shell[data-widget-id='tiles'] .spec-v04-tile,
   .tab-chrome-shell[data-widget-id^='tile:'] .spec-v04-tile {
@@ -537,11 +508,6 @@
   height: 100%;
   margin: 0;
   box-sizing: border-box;
-  min-width: 0;
-}
-
-.tab-chrome-shell[data-widget-id^='tile:'] .wp-decisions-kpi-card > div:last-child {
-  min-width: 0;
 }
 
 .tab-chrome-filters-bar .spec-v04-filters,
@@ -634,11 +600,16 @@
   display: none;
 }
 
+.tab-chrome-filters-extra {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 .tab-chrome-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: auto;
+  flex-shrink: 0;
   flex: 0 0 auto;
   height: 28px;
 }
@@ -714,128 +685,4 @@
   color: var(--content-muted, #6b7785);
   font-size: 11px;
   cursor: pointer;
-}
-
-.orch-date-range {
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.orch-date-range-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--card-border, #d5deea);
-  background: #fff;
-  color: var(--content-primary, #10141a);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  font-family: inherit;
-}
-
-.orch-date-range-trigger:hover,
-.orch-date-range.is-open .orch-date-range-trigger {
-  border-color: rgba(21, 101, 192, 0.45);
-  background: #f5f9ff;
-}
-
-.orch-date-range-label {
-  color: var(--content-muted, #6b7785);
-  font-weight: 600;
-}
-
-.orch-date-range-popup {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 80;
-  width: 280px;
-  padding: 12px;
-  border-radius: 12px;
-  border: 1px solid #dde6ef;
-  background: #fff;
-  box-shadow: 0 10px 28px rgba(15, 35, 62, 0.12);
-}
-
-.orch-date-range-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.orch-date-range-head strong {
-  font-size: 13px;
-  color: #243044;
-}
-
-.orch-date-range-nav {
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 8px;
-  background: #eef3f8;
-  color: #42586f;
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-}
-
-.orch-date-range-nav:hover {
-  background: #e3ebf4;
-}
-
-.orch-date-range-weekdays,
-.orch-date-range-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 2px;
-}
-
-.orch-date-range-weekdays span {
-  text-align: center;
-  font-size: 11px;
-  color: #8a96a8;
-  padding: 4px 0;
-}
-
-.orch-date-range-grid button {
-  height: 32px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #243044;
-  font-size: 12px;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.orch-date-range-grid button.muted {
-  color: #b0b8c4;
-}
-
-.orch-date-range-grid button.in-range {
-  background: #e8f1fb;
-}
-
-.orch-date-range-grid button.edge {
-  background: #1565c0;
-  color: #fff;
-  font-weight: 700;
-}
-
-.orch-date-range-grid button.today:not(.edge) {
-  box-shadow: inset 0 0 0 1px #1565c0;
-}
-
-.orch-date-range-hint {
-  margin-top: 8px;
-  font-size: 11px;
-  color: #8a96a8;
-  text-align: center;
 }

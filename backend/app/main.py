@@ -58,6 +58,9 @@ def _configure_logging() -> None:
 
 _configure_console_encoding()
 _configure_logging()
+from app.services.upstream_error_log import install_httpx_capture
+
+install_httpx_capture()
 logger = logging.getLogger(__name__)
 http_logger = logging.getLogger("app.http")
 
@@ -88,8 +91,19 @@ async def lifespan(_app: FastAPI):
     )
     scheduler_tasks: list[asyncio.Task] = []
     try:
-        init_db()
-        logger.info("App Postgres schema ready")
+        db_ready = True
+        try:
+            init_db()
+            logger.info("App Postgres schema ready")
+        except Exception:
+            if not settings.app_db_optional:
+                raise
+            db_ready = False
+            logger.warning(
+                "App Postgres unavailable — starting without it (APP_DB_OPTIONAL=1): %s",
+                settings.database_url.split("@")[-1],
+                exc_info=True,
+            )
         from app.api.v1.notifications import board_live_subscriber, notification_scheduler
         from app.services.triggers.tick import tick_due_triggers
         from app.modules.chat.realtime import dispatch_event
@@ -108,8 +122,17 @@ async def lifespan(_app: FastAPI):
                 from app.modules.chat.bus.outbound import consume_outbound
 
                 consume_outbound(dispatch_event)
-            except Exception:
-                logger.warning("chat outbound consumer not started", exc_info=True)
+            except Exception as exc:
+                # RabbitMQ optional on dev PC (docker compose constructor-rabbit).
+                if "ConnectionRefusedError" in type(exc).__name__ or "AMQPConnectionError" in type(
+                    exc
+                ).__name__:
+                    logger.info(
+                        "Chat outbound skipped (RabbitMQ not on 127.0.0.1:5672). "
+                        "Run: docker compose up -d constructor-rabbit"
+                    )
+                else:
+                    logger.warning("chat outbound consumer not started", exc_info=True)
 
         import threading
 
@@ -136,6 +159,8 @@ async def lifespan(_app: FastAPI):
                     logger.exception("KPI scheduler tick failed")
                 await asyncio.sleep(60)
 
+        from app.api.v1.platform_tasks import platform_task_scheduler
+
         async def position_kpi_cache_scheduler() -> None:
             from app.services.position_kpi.daily import run_daily_position_kpi_cache
 
@@ -147,13 +172,15 @@ async def lifespan(_app: FastAPI):
                     logger.exception("Position KPI daily cache tick failed")
                 await asyncio.sleep(300)
 
-        scheduler_tasks = [
-            asyncio.create_task(notification_scheduler()),
-            asyncio.create_task(board_live_subscriber()),
-            asyncio.create_task(trigger_scheduler()),
-            asyncio.create_task(kpi_scheduler()),
-            asyncio.create_task(position_kpi_cache_scheduler()),
-        ]
+        if db_ready:
+            scheduler_tasks = [
+                asyncio.create_task(platform_task_scheduler()),
+                asyncio.create_task(notification_scheduler()),
+                asyncio.create_task(board_live_subscriber()),
+                asyncio.create_task(trigger_scheduler()),
+                asyncio.create_task(kpi_scheduler()),
+                asyncio.create_task(position_kpi_cache_scheduler()),
+            ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")
         raise

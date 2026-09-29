@@ -218,7 +218,7 @@ export function isErpMetaHintRecord(task: Record<string, unknown>): boolean {
   if (!title) return true
   if (isTechnicalDocflowConfigMessage(title)) return true
   if (
-    /BACKEND_URL|127\.0\.0\.1:7812|192\.168\.\d+\.\d+:7812|LAN gateway|run_dev\.bat|erp_reachable|constructor-gateway устарел|VPN на вашем ПК/i.test(
+    /BACKEND_URL|127\.0\.0\.1:7812|192\.168\.\d+\.\d+:7812|LAN gateway|run_dev\.bat|erp_reachable|constructor-gateway устарел|VPN на вашем ПК|JWT недействителен|Недействительный токен/i.test(
       title
     )
   ) {

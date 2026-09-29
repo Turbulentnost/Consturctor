@@ -7,6 +7,8 @@ export interface UserProfile {
   canChangeDepartment: boolean
   activityStatus: string
   isSupport: boolean
+  /** Ref_Key Catalog_Пользователи — только для записи в 1С, в UI не показывается. */
+  onecCatalogRefKey?: string
 }
 
 export interface LoginResult {

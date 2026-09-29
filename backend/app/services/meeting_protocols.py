@@ -34,6 +34,12 @@ _KIND_ALIASES = {
     "совет": "sd",
     "сд": "sd",
     "board": "sd",
+    # Calendar / manual form: every Document_ТД_Протокол in the period, no number prefix.
+    "any": "any",
+    "all": "any",
+    "все": "any",
+    "календарь": "any",
+    "calendar": "any",
 }
 
 _NUMBER_PREFIXES: dict[str, tuple[str, ...]] = {
@@ -50,7 +56,7 @@ def _normalize_kind(raw: str) -> str:
     kind = _KIND_ALIASES.get(key)
     if not kind:
         raise ValueError(
-            "meeting_kind обязателен: rk (Ревизионная комиссия) или sd (Совет директоров)"
+            "meeting_kind: rk (Ревизионная комиссия), sd (Совет директоров) или any (все протоколы за период)"
         )
     return kind
 
@@ -133,18 +139,18 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     psd_only = psd_mark_requested(args)
     if number:
         filters.append(f"Number eq '{_escape_odata_string(number)}'")
-    else:
+    elif psd_only or kind in _NUMBER_PREFIXES:
         filters.append(_number_scope_filter(args, kind=kind))
 
     review_only = args.get("review_only")
     if review_only is None:
-        review_only = not psd_only
-    if _arg_flag(review_only, default=not psd_only):
+        review_only = (not psd_only) and kind != "any"
+    if _arg_flag(review_only, default=(not psd_only) and kind != "any"):
         filters.append("(Posted eq false or Статус eq 'Подготовлен')")
     else:
         include_closed = args.get("include_closed")
         if include_closed is None:
-            include_closed = psd_only
+            include_closed = psd_only or kind == "any"
         if not _arg_flag(include_closed, default=False):
             filters.append("Статус ne 'Закрыт'")
 
@@ -156,12 +162,44 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     return " and ".join(filters)
 
 
+# Without $select 1C returns every tabular part (with Файл_Base64Data): a month of protocols
+# exceeds the 60 s OData timeout. Nested person keys stay for the confidentiality filter.
+_PROTOCOL_LIST_SELECT = ",".join(
+    (
+        "Ref_Key",
+        "Number",
+        "Date",
+        "Posted",
+        "DeletionMark",
+        "Статус",
+        "ДатаСоздания",
+        "ДатаСледующегоСовещания",
+        "ВидСовещания",
+        "ВремяНачалаСовещания",
+        "ВремяОкончанияСовещания",
+        "КраткийСоставДокумента",
+        "Комментарий",
+        "Ответственный_Key",
+        "Руководитель_Key",
+        "Подготовил_Key",
+        "Подразделение_Key",
+        "ТемаСовещания/Description",
+        "ПрисутствующиеНаСовещании/Участник_Key",
+        "ПовесткаСовещания/Ответственный_Key",
+        "ПеременныеЗадачиПротокола/Ответственный_Key",
+        "ПеременныеЗадачиПротокола/Автор_Key",
+        "ПостоянныеЗадачиПротокола/Автор_Key",
+    )
+)
+
+
 def build_protocol_list_path(*, odata_filter: str, limit: int) -> str:
     """OData list path for Document_ТД_Протокол with topic expand."""
     filt = quote(odata_filter, safe="=,'")
     return (
         f"{PROTOCOL_ENTITY}?$format=json&$top={limit}"
         f"&$filter={filt}&$orderby=Date%20desc&$expand=ТемаСовещания"
+        f"&$select={_PROTOCOL_LIST_SELECT}"
     )
 
 
@@ -172,7 +210,7 @@ def _relaxed_protocol_filters(args: dict[str, Any], *, kind: str) -> list[str]:
     number = str(args.get("number") or args.get("Number") or "").strip()
     if number:
         parts.append(f"Number eq '{_escape_odata_string(number)}'")
-    else:
+    elif psd_mark_requested(args) or kind in _NUMBER_PREFIXES:
         parts.append(_number_scope_filter(args, kind=kind))
     start, end = _period(args)
     if start:
@@ -256,6 +294,21 @@ def _attach_protocol_sections(
         protocol["sections_path_prefix"] = f"{PROTOCOL_ENTITY}(guid'{ref_key}')/"
 
 
+def _kind_label(kind: str) -> str:
+    if kind == "rk":
+        return "Ревизионная комиссия"
+    if kind == "sd":
+        return "Совет директоров"
+    return "Все протоколы"
+
+
+def _clock(value: Any) -> str:
+    text = str(value or "").strip()
+    if "T" in text:
+        text = text.split("T", 1)[1]
+    return text[:5] if len(text) >= 5 and text[2:3] == ":" else ""
+
+
 def _topic_from_row(row: dict[str, Any]) -> str:
     theme = row.get("ТемаСовещания")
     if isinstance(theme, dict):
@@ -282,8 +335,11 @@ def normalize_protocol_row(row: dict[str, Any], *, kind: str) -> dict[str, Any]:
         "needs_review": needs_review,
         "meeting_topic": _topic_from_row(row),
         "meeting_kind": kind,
-        "meeting_kind_label": "Ревизионная комиссия" if kind == "rk" else "Совет директоров",
+        "meeting_kind_label": _kind_label(kind),
         "meeting_type": str(row.get("ВидСовещания") or "").strip(),
+        "time_start": _clock(row.get("ВремяНачалаСовещания")),
+        "time_end": _clock(row.get("ВремяОкончанияСовещания")),
+        "brief": str(row.get("КраткийСоставДокумента") or "").strip(),
         "responsible_key": str(row.get("Ответственный_Key") or "").strip(),
         "department_key": str(row.get("Подразделение_Key") or "").strip(),
         "comment": str(row.get("Комментарий") or "").strip(),
@@ -298,8 +354,26 @@ def list_meeting_protocols(
     from app.services.onec_access import OnecAccessDenied, filter_odata_result
     from app.services.onec_tools import OnecToolError, _fetch_odata_list
 
+    ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
+    if ref_key:
+        return _read_protocol_card(ref_key)
+
     kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or ""))
-    limit = max(1, min(100, int(args.get("max_results") or args.get("limit") or 30)))
+    start, end = _period(args)
+    number = str(args.get("number") or args.get("Number") or "").strip()
+    if kind == "any" and not number and not start and not end:
+        return {
+            "protocols": [],
+            "count": 0,
+            "source": "odata",
+            "readonly": True,
+            "meeting_kind": kind,
+            "entity": PROTOCOL_ENTITY,
+            "method": "odata_meeting_protocols",
+            "error": "Для meeting_kind=any укажите date или date_from/date_to",
+        }
+    cap = 200 if kind == "any" else 100
+    limit = max(1, min(cap, int(args.get("max_results") or args.get("limit") or (80 if kind == "any" else 30))))
     include_sections = bool(args.get("include_sections") or args.get("with_sections"))
     odata_filter = build_protocol_filter(args, kind=kind)
     try:
@@ -339,14 +413,14 @@ def list_meeting_protocols(
     start, end = _period(args)
     review_only = args.get("review_only")
     if review_only is None:
-        review_only = not psd_mark_requested(args)
+        review_only = (not psd_mark_requested(args)) and kind != "any"
     result = {
         "protocols": protocols,
         "count": len(protocols),
         "source": "odata",
         "readonly": True,
         "meeting_kind": kind,
-        "meeting_kind_label": "Ревизионная комиссия" if kind == "rk" else "Совет директоров",
+        "meeting_kind_label": _kind_label(kind),
         "entity": PROTOCOL_ENTITY,
         "path": raw.get("path"),
         "filter": odata_filter,
@@ -366,6 +440,27 @@ def list_meeting_protocols(
     if raw.get("filter_relaxed"):
         result["filter_relaxed"] = True
     return result
+
+
+def _read_protocol_card(ref_key: str) -> dict[str, Any]:
+    """One protocol as an editable form (names instead of GUIDs). Read-only."""
+    from app.services.meeting_protocol_write import ProtocolWriteError, read_protocol_form
+    from app.services.onec_tools import OnecToolError
+
+    try:
+        protocol = read_protocol_form(ref_key)
+    except ProtocolWriteError as exc:
+        raise OnecToolError(str(exc)) from exc
+    return {
+        "protocol": protocol,
+        "protocols": [protocol],
+        "count": 1,
+        "source": "odata",
+        "readonly": True,
+        "entity": PROTOCOL_ENTITY,
+        "method": "odata_meeting_protocol_card",
+        "summary": f"протокол {protocol.get('number') or ref_key}: {protocol.get('status') or '—'}",
+    }
 
 
 def stub_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:

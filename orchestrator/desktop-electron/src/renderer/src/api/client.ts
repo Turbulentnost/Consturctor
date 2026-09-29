@@ -40,11 +40,12 @@ import {
   type TriggerKind,
   type IntervalUnit,
   type AgentKpi,
-  type PositionOrchestrator,
+  type PositionKpiBuildSession,
   type PositionKpiDaily,
   type PositionKpiTile,
   type PositionKpiBuildMessage,
-  type PositionKpiBuildSession,
+  type PositionKpiMetricDetail,
+  type PositionOrchestrator,
   type KpiTile,
   type KpiSide,
   type KpiMethod,
@@ -171,7 +172,9 @@ function parseUser(data: Record<string, unknown>): UserProfile {
       (data.canChangeDepartment as boolean) ?? (data.can_change_department as boolean) ?? true,
     activityStatus:
       (data.activityStatus as string) ?? (data.activity_status as string) ?? 'online',
-    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false
+    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false,
+    onecCatalogRefKey:
+      String(data.onecCatalogRefKey ?? data.onec_catalog_ref_key ?? '').trim() || undefined
   })
 }
 
@@ -295,6 +298,136 @@ function parseStyleRun(value: unknown): RegulationStyleRun {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+}
+
+function asNullableNumber(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function parsePositionKpiDaily(raw: Record<string, unknown> | null | undefined): PositionKpiDaily {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const tiles = ((data.tiles as Record<string, unknown>[]) ?? [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const row = asRecord(item)
+      return {
+        code: String(row.code ?? ''),
+        name: String(row.name ?? ''),
+        weight: asNullableNumber(row.weight) ?? 0,
+        unit: String(row.unit ?? '%'),
+        plan: asNullableNumber(row.plan),
+        fact: asNullableNumber(row.fact),
+        score: asNullableNumber(row.score),
+        contrib: asNullableNumber(row.contrib),
+        evidence: String(row.evidence ?? '')
+      } satisfies PositionKpiTile
+    })
+  return {
+    position: String(data.position ?? ''),
+    profileId: String(data.profile_id ?? data.profileId ?? ''),
+    periodFrom: String(data.period_from ?? data.periodFrom ?? ''),
+    periodTo: String(data.period_to ?? data.periodTo ?? ''),
+    asOf: String(data.as_of ?? data.asOf ?? ''),
+    computedAt: String(data.computed_at ?? data.computedAt ?? ''),
+    cached: Boolean(data.cached),
+    stale: Boolean(data.stale),
+    tiles
+  }
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item ?? '')).filter(Boolean) : []
+}
+
+function parsePositionKpiMetric(raw: Record<string, unknown>): PositionKpiMetricDetail {
+  const moduleRaw = raw.module && typeof raw.module === 'object' ? asRecord(raw.module) : null
+  const ds = asRecord(raw.data_source)
+  const validation = asRecord(ds.validation)
+  const registry = ds.registry && typeof ds.registry === 'object' ? asRecord(ds.registry) : null
+  const paramsRaw = registry ? asRecord(registry.params) : {}
+  return {
+    position: String(raw.position ?? ''),
+    sharedNote: String(raw.shared_note ?? ''),
+    code: String(raw.code ?? ''),
+    name: String(raw.name ?? ''),
+    weight: asNullableNumber(raw.weight) ?? 0,
+    unit: String(raw.unit ?? '%'),
+    plan: asNullableNumber(raw.plan),
+    formulaKind: String(raw.formula_kind ?? ''),
+    formulaHuman: String(raw.formula_human ?? ''),
+    module: moduleRaw
+      ? {
+          name: String(moduleRaw.name ?? ''),
+          origin: String(moduleRaw.origin ?? ''),
+          code: String(moduleRaw.code ?? ''),
+          tests: String(moduleRaw.tests ?? ''),
+          updatedAt: String(moduleRaw.updated_at ?? '')
+        }
+      : null,
+    dataSource: {
+      source: String(ds.source ?? ''),
+      params: asRecord(ds.params),
+      legacy: asRecord(ds.legacy),
+      registry: registry
+        ? {
+            name: String(registry.name ?? ''),
+            title: String(registry.title ?? ''),
+            description: String(registry.description ?? ''),
+            kind: String(registry.kind ?? ''),
+            params: Object.fromEntries(Object.entries(paramsRaw).map(([key, value]) => [key, String(value ?? '')])),
+            perEmployee: Boolean(registry.per_employee)
+          }
+        : null,
+      ok: Boolean(validation.ok),
+      errors: stringList(validation.errors),
+      warnings: stringList(validation.warnings)
+    },
+    sources: (Array.isArray(raw.sources) ? raw.sources : []).map((item) => {
+      const row = asRecord(item)
+      return {
+        role: String(row.role ?? ''),
+        kind: String(row.kind ?? ''),
+        title: String(row.title ?? ''),
+        detail: String(row.detail ?? ''),
+        updateRule: String(row.update_rule ?? '')
+      }
+    })
+  }
+}
+
+function parsePositionKpiBuild(raw: Record<string, unknown> | null | undefined): PositionKpiBuildSession {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const messages = ((data.messages as Record<string, unknown>[]) ?? [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const row = asRecord(item)
+      return {
+        messageId: String(row.message_id ?? row.messageId ?? ''),
+        role: String(row.role ?? ''),
+        content: String(row.content ?? ''),
+        structured: asRecord(row.structured ?? row.structured_json),
+        createdAt: String(row.created_at ?? row.createdAt ?? '')
+      } satisfies PositionKpiBuildMessage
+    })
+  const modules = ((data.modules as Record<string, unknown>[]) ?? []).filter(
+    (item) => item && typeof item === 'object'
+  )
+  return {
+    buildId: String(data.build_id ?? data.buildId ?? ''),
+    position: String(data.position ?? ''),
+    status: String(data.status ?? ''),
+    cursorAgentId: String(data.cursor_agent_id ?? data.cursorAgentId ?? ''),
+    extracted: asRecord(data.extracted),
+    catalogDraft: asRecord(data.catalog_draft ?? data.catalogDraft),
+    modules,
+    profileId: String(data.profile_id ?? data.profileId ?? ''),
+    sdkPrompt: String(data.sdk_prompt ?? data.sdkPrompt ?? ''),
+    messages,
+    createdAt: String(data.created_at ?? data.createdAt ?? ''),
+    updatedAt: String(data.updated_at ?? data.updatedAt ?? '')
+  }
 }
 
 function parseInboxNotification(value: unknown): InboxNotification {
@@ -927,76 +1060,6 @@ export function scheduleDraftFromRecord(
   return parseScheduleDraft(asRecord(raw))
 }
 
-function asNullableNumber(value: unknown): number | null {
-  if (value == null || value === '') return null
-  const n = Number(value)
-  return Number.isFinite(n) ? n : null
-}
-
-export function parsePositionKpiDaily(raw: Record<string, unknown> | null | undefined): PositionKpiDaily {
-  const data = raw && typeof raw === 'object' ? raw : {}
-  const tiles = ((data.tiles as Record<string, unknown>[]) ?? [])
-    .filter((item) => item && typeof item === 'object')
-    .map((item) => {
-      const row = asRecord(item)
-      return {
-        code: String(row.code ?? ''),
-        name: String(row.name ?? ''),
-        weight: asNullableNumber(row.weight) ?? 0,
-        unit: String(row.unit ?? '%'),
-        plan: asNullableNumber(row.plan),
-        fact: asNullableNumber(row.fact),
-        score: asNullableNumber(row.score),
-        contrib: asNullableNumber(row.contrib),
-        evidence: String(row.evidence ?? '')
-      } satisfies PositionKpiTile
-    })
-  return {
-    position: String(data.position ?? ''),
-    profileId: String(data.profile_id ?? data.profileId ?? ''),
-    periodFrom: String(data.period_from ?? data.periodFrom ?? ''),
-    periodTo: String(data.period_to ?? data.periodTo ?? ''),
-    asOf: String(data.as_of ?? data.asOf ?? ''),
-    computedAt: String(data.computed_at ?? data.computedAt ?? ''),
-    cached: Boolean(data.cached),
-    stale: Boolean(data.stale),
-    tiles
-  }
-}
-
-export function parsePositionKpiBuild(raw: Record<string, unknown> | null | undefined): PositionKpiBuildSession {
-  const data = raw && typeof raw === 'object' ? raw : {}
-  const messages = ((data.messages as Record<string, unknown>[]) ?? [])
-    .filter((item) => item && typeof item === 'object')
-    .map((item) => {
-      const row = asRecord(item)
-      return {
-        messageId: String(row.message_id ?? row.messageId ?? ''),
-        role: String(row.role ?? ''),
-        content: String(row.content ?? ''),
-        structured: asRecord(row.structured ?? row.structured_json),
-        createdAt: String(row.created_at ?? row.createdAt ?? '')
-      } satisfies PositionKpiBuildMessage
-    })
-  const modules = ((data.modules as Record<string, unknown>[]) ?? []).filter(
-    (item) => item && typeof item === 'object'
-  )
-  return {
-    buildId: String(data.build_id ?? data.buildId ?? ''),
-    position: String(data.position ?? ''),
-    status: String(data.status ?? ''),
-    cursorAgentId: String(data.cursor_agent_id ?? data.cursorAgentId ?? ''),
-    extracted: asRecord(data.extracted),
-    catalogDraft: asRecord(data.catalog_draft ?? data.catalogDraft),
-    modules,
-    profileId: String(data.profile_id ?? data.profileId ?? ''),
-    sdkPrompt: String(data.sdk_prompt ?? data.sdkPrompt ?? ''),
-    messages,
-    createdAt: String(data.created_at ?? data.createdAt ?? ''),
-    updatedAt: String(data.updated_at ?? data.updatedAt ?? '')
-  }
-}
-
 export function parsePositionOrchestrator(raw: Record<string, unknown> | null | undefined): PositionOrchestrator {
   const data = raw && typeof raw === 'object' ? raw : {}
   const tiles = ((data.tiles as Record<string, unknown>[]) ?? [])
@@ -1127,6 +1190,9 @@ export function suggestionsFromRoleMatch(roleMatch: RoleMatchResult): AgentSugge
 
 export type UnauthorizedHandler = (message: string, status: number) => void
 
+const FIO_SUGGEST_CACHE_MS = 120_000
+const fioSuggestCache = new Map<string, { at: number; items: string[] }>()
+
 export class ApiClient {
   private token: string | null = null
   private unauthorizedHandler: UnauthorizedHandler | null = null
@@ -1197,14 +1263,25 @@ export class ApiClient {
     return parseUser(data)
   }
 
-  async searchUsers(search = ''): Promise<string[]> {
+  async searchUsers(search = '', limit?: number): Promise<string[]> {
+    const key = `${search.trim().toLowerCase()}|${limit ?? ''}`
+    const cached = fioSuggestCache.get(key)
+    if (cached && Date.now() - cached.at < FIO_SUGGEST_CACHE_MS) {
+      return cached.items
+    }
     try {
+      const params: Record<string, string> = {}
+      if (search.trim()) params.search = search
+      if (limit) params.limit = String(limit)
       const data = await this.request<{ items?: unknown[] }>('GET', '/api/v1/auth/users', {
-        params: search.trim() ? { search } : undefined
+        params: Object.keys(params).length ? params : undefined,
+        timeoutMs: limit ? 120_000 : 25_000
       })
-      return (data.items ?? []).map((x) => String(x))
+      const items = (data.items ?? []).map((x) => String(x))
+      fioSuggestCache.set(key, { at: Date.now(), items })
+      return items
     } catch {
-      return []
+      return cached?.items ?? []
     }
   }
 
@@ -1306,7 +1383,7 @@ export class ApiClient {
   }): Promise<WorkflowBoard> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/workflows/board', {
       params,
-      timeoutMs: 15_000
+      timeoutMs: 45_000
     })
     return parseBoard(data)
   }
@@ -1362,6 +1439,26 @@ export class ApiClient {
 
   async deleteWorkflow(workflowId: string): Promise<void> {
     await this.request('DELETE', `/api/v1/workflows/${workflowId}`, { timeoutMs: 60_000 })
+  }
+
+  async listAgentLibrary(): Promise<{
+    catalog: Record<string, unknown>[]
+    adopted: Record<string, unknown>[]
+  }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/agents/library', {
+      timeoutMs: 12_000
+    })
+    const catalog = Array.isArray(data.catalog) ? (data.catalog as Record<string, unknown>[]) : []
+    const adopted = Array.isArray(data.adopted) ? (data.adopted as Record<string, unknown>[]) : []
+    return { catalog, adopted }
+  }
+
+  async adoptAgentFromLibrary(sourceWorkflowId: string): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/agents/library/${encodeURIComponent(sourceWorkflowId)}/adopt`,
+      { timeoutMs: 120_000 }
+    )
   }
 
   async stopWorkflowAutoRun(workflowId: string): Promise<void> {
@@ -1657,92 +1754,6 @@ export class ApiClient {
     return parseAgentKpi(data ?? {})
   }
 
-  async getPositionKpi(position = ''): Promise<PositionKpiDaily> {
-    const query = position.trim() ? `?position=${encodeURIComponent(position.trim())}` : ''
-    const data = await this.request<Record<string, unknown>>('GET', `/api/v1/position-kpi${query}`, {
-      timeoutMs: 60_000
-    })
-    return parsePositionKpiDaily(data ?? {})
-  }
-
-  async getPositionKpiSubject(fio: string): Promise<{ fio: string; position: string }> {
-    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/subject', {
-      params: { fio: fio.trim() },
-      timeoutMs: 30_000
-    })
-    return {
-      fio: String(data.fio || fio).trim(),
-      position: String(data.position || '').trim()
-    }
-  }
-
-  async downloadPositionKpiForm(
-    fio: string,
-    from = '',
-    to = ''
-  ): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
-    const params = new URLSearchParams()
-    if (fio.trim()) params.set('fio', fio.trim())
-    if (from) params.set('from', from)
-    if (to) params.set('to', to)
-    const surname = fio.trim().split(/\s+/)[0] || 'сотрудник'
-    const stamp = (from || '').slice(0, 7) || 'period'
-    return window.api.download({
-      url: `/api/v1/position-kpi/bonus-form?${params.toString()}`,
-      defaultName: `ИЦПП_${surname}_${stamp}.xlsx`,
-      token: this.resolveToken()
-    })
-  }
-
-  async startPositionKpiBuild(position = ''): Promise<PositionKpiBuildSession> {
-    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/position-kpi/builds', {
-      body: { position },
-      timeoutMs: 60_000
-    })
-    return parsePositionKpiBuild(data ?? {})
-  }
-
-  async getPositionKpiBuild(buildId: string): Promise<PositionKpiBuildSession> {
-    const data = await this.request<Record<string, unknown>>(
-      'GET',
-      `/api/v1/position-kpi/builds/${buildId}`,
-      { timeoutMs: 60_000 }
-    )
-    return parsePositionKpiBuild(data ?? {})
-  }
-
-  async uploadPositionKpiBuildFiles(
-    buildId: string,
-    filePaths: string[]
-  ): Promise<PositionKpiBuildSession> {
-    let latest: PositionKpiBuildSession | null = null
-    for (const filePath of filePaths) {
-      const res = await window.api.upload<Record<string, unknown>>({
-        endpoint: `/api/v1/position-kpi/builds/${buildId}/files`,
-        filePath,
-        fieldName: 'files',
-        token: this.resolveToken(),
-        timeoutMs: 180_000
-      })
-      if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить методику', res.status)
-      latest = parsePositionKpiBuild(res.data ?? {})
-    }
-    if (!latest) throw new ApiError('Не удалось загрузить методику')
-    return latest
-  }
-
-  async sendPositionKpiBuildTurn(
-    buildId: string,
-    message: string
-  ): Promise<PositionKpiBuildSession> {
-    const data = await this.request<Record<string, unknown>>(
-      'POST',
-      `/api/v1/position-kpi/builds/${buildId}/turns`,
-      { body: { message }, timeoutMs: 120_000 }
-    )
-    return parsePositionKpiBuild(data ?? {})
-  }
-
   async getOrchestrator(): Promise<PositionOrchestrator> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/orchestrator/me', {
       timeoutMs: 60_000
@@ -1937,31 +1948,6 @@ export class ApiClient {
   }
 
   // ---------- Files ----------
-  async getWorkflowFileText(workflowId: string, fileId: string): Promise<string> {
-    const data = await this.request<Record<string, unknown>>(
-      'GET',
-      `/api/v1/workflows/${workflowId}/files/${fileId}/text`,
-      { timeoutMs: 20_000 }
-    )
-    return String(data.text ?? data.extracted_text ?? data.summary ?? '').trim()
-  }
-
-  async getWorkflowFilePreview(
-    workflowId: string,
-    fileId: string
-  ): Promise<{ text: string; summary: string; workbook: unknown }> {
-    const data = await this.request<Record<string, unknown>>(
-      'GET',
-      `/api/v1/workflows/${workflowId}/files/${fileId}/preview`,
-      { timeoutMs: 20_000 }
-    )
-    return {
-      text: String(data.text ?? data.extracted_text ?? '').trim(),
-      summary: String(data.summary ?? '').trim(),
-      workbook: data.workbook ?? null
-    }
-  }
-
   async listPlatformFiles(): Promise<WorkflowFileItem[]> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/workflows/files', {
       timeoutMs: 20_000
@@ -1974,14 +1960,27 @@ export class ApiClient {
     const data = await this.request<Record<string, unknown>>(
       'GET',
       `/api/v1/workflows/${workflowId}/files`,
-      { timeoutMs: 20_000, params: runId ? { run_id: runId } : undefined }
+      { timeoutMs: 120_000, params: runId ? { run_id: runId } : undefined }
     )
     const userFiles = (data.user_files as Record<string, unknown>[]) ?? []
     const agentFiles = (data.agent_files as Record<string, unknown>[]) ?? []
     const runAttachments = (data.run_attachments as Record<string, unknown>[]) ?? []
-    return [...userFiles, ...agentFiles, ...runAttachments].map((item) =>
-      parsePlatformFile({ ...item, workflow_id: workflowId })
-    )
+    // Tag bucket when API omits source so callers can filter agent_files vs user uploads.
+    return [
+      ...userFiles.map((item) =>
+        parsePlatformFile({ ...item, workflow_id: workflowId, source: item.source ?? 'user' })
+      ),
+      ...agentFiles.map((item) =>
+        parsePlatformFile({ ...item, workflow_id: workflowId, source: item.source ?? 'agent' })
+      ),
+      ...runAttachments.map((item) =>
+        parsePlatformFile({
+          ...item,
+          workflow_id: workflowId,
+          source: item.source ?? 'attachment'
+        })
+      )
+    ]
   }
 
   async uploadWorkflowFiles(workflowId: string, filePaths: string[]): Promise<WorkflowFileItem[]> {
@@ -2093,6 +2092,77 @@ export class ApiClient {
       mime: String(res.data.mime ?? ''),
       size: Number(res.data.size ?? 0)
     }
+  }
+
+  // ---------- Задачи платформы ----------
+  async listPlatformTasks(): Promise<import('../workplace/platformTasks').PlatformTask[]> {
+    const data = await this.request<{ items?: unknown[] }>('GET', '/api/v1/platform-tasks')
+    const { parsePlatformTask } = await import('../workplace/platformTasks')
+    return (data.items ?? []).map(parsePlatformTask)
+  }
+
+  async listPlatformAssignees(
+    search = ''
+  ): Promise<{ fio: string; user_id: string; position: string; department: string }[]> {
+    const data = await this.request<{ items?: Record<string, unknown>[] }>('GET', '/api/v1/platform-tasks/assignees', {
+      params: search.trim() ? { search } : undefined,
+      timeoutMs: 60_000
+    })
+    return (data.items ?? []).map((item) => ({
+      fio: String(item.fio ?? ''),
+      user_id: String(item.user_id ?? ''),
+      position: String(item.position ?? ''),
+      department: String(item.department ?? '')
+    }))
+  }
+
+  async syncPlatformOrg(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('POST', '/api/v1/platform-tasks/org/sync', { timeoutMs: 300_000 })
+  }
+
+  async createPlatformTask(body: {
+    assignee_fio: string
+    description: string
+    priority: string
+    due_at: string
+  }): Promise<import('../workplace/platformTasks').PlatformTask> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/platform-tasks', { body })
+    const { parsePlatformTask } = await import('../workplace/platformTasks')
+    return parsePlatformTask(data)
+  }
+
+  async setPlatformTaskStatus(
+    taskId: string,
+    action: 'done' | 'reject' | 'accept' | 'rework',
+    comment = ''
+  ): Promise<import('../workplace/platformTasks').PlatformTask> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/platform-tasks/${encodeURIComponent(taskId)}/${action}`,
+      { body: { comment } }
+    )
+    const { parsePlatformTask } = await import('../workplace/platformTasks')
+    return parsePlatformTask(data)
+  }
+
+  async uploadPlatformTaskFile(taskId: string, filePath: string): Promise<void> {
+    const res = await window.api.upload<Record<string, unknown>>({
+      endpoint: `/api/v1/platform-tasks/${encodeURIComponent(taskId)}/files`,
+      filePath,
+      fieldName: 'file',
+      token: this.resolveToken(),
+      timeoutMs: 120_000
+    })
+    if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить файл', res.status)
+  }
+
+  async downloadPlatformTaskFile(taskId: string, fileId: string, filename: string): Promise<boolean> {
+    const res = await window.api.download({
+      url: `/api/v1/platform-tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(fileId)}`,
+      defaultName: filename,
+      token: this.resolveToken()
+    })
+    return Boolean(res.ok)
   }
 
   async markChatRead(threadId: string): Promise<void> {
@@ -2273,6 +2343,96 @@ export class ApiClient {
     return Boolean(res.ok)
   }
 
+  async getPositionKpi(position = ''): Promise<PositionKpiDaily> {
+    const query = position.trim() ? `?position=${encodeURIComponent(position.trim())}` : ''
+    const data = await this.request<Record<string, unknown>>('GET', `/api/v1/position-kpi${query}`, {
+      timeoutMs: 60_000
+    })
+    return parsePositionKpiDaily(data ?? {})
+  }
+
+  async getPositionKpiMetric(position: string, code: string): Promise<PositionKpiMetricDetail> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/position-kpi/metrics/${encodeURIComponent(code)}`,
+      { params: { position: position.trim() }, timeoutMs: 30_000 }
+    )
+    return parsePositionKpiMetric(data ?? {})
+  }
+
+  async getPositionKpiSubject(fio: string): Promise<{ fio: string; position: string }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/subject', {
+      params: { fio: fio.trim() },
+      timeoutMs: 30_000
+    })
+    return {
+      fio: String(data?.fio || fio).trim(),
+      position: String(data?.position || '').trim()
+    }
+  }
+
+  /** Форма премирования «Индивидуальные целевые показатели» (xlsx) за месяц периода. */
+  async downloadPositionKpiForm(
+    fio: string,
+    from = '',
+    to = ''
+  ): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
+    const params = new URLSearchParams()
+    if (fio.trim()) params.set('fio', fio.trim())
+    if (from) params.set('from', from)
+    if (to) params.set('to', to)
+    const surname = fio.trim().split(/\s+/)[0] || 'сотрудник'
+    const stamp = (from || '').slice(0, 7) || 'period'
+    return window.api.download({
+      url: `/api/v1/position-kpi/bonus-form?${params.toString()}`,
+      defaultName: `ИЦПП_${surname}_${stamp}.xlsx`,
+      token: this.resolveToken()
+    })
+  }
+
+  async startPositionKpiBuild(position = ''): Promise<PositionKpiBuildSession> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/position-kpi/builds', {
+      body: { position },
+      timeoutMs: 60_000
+    })
+    return parsePositionKpiBuild(data ?? {})
+  }
+
+  async getPositionKpiBuild(buildId: string): Promise<PositionKpiBuildSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/position-kpi/builds/${buildId}`,
+      { timeoutMs: 60_000 }
+    )
+    return parsePositionKpiBuild(data ?? {})
+  }
+
+  async uploadPositionKpiBuildFiles(buildId: string, filePaths: string[]): Promise<PositionKpiBuildSession> {
+    let latest: PositionKpiBuildSession | null = null
+    for (const filePath of filePaths) {
+      const res = await window.api.upload<Record<string, unknown>>({
+        endpoint: `/api/v1/position-kpi/builds/${buildId}/files`,
+        filePath,
+        fieldName: 'files',
+        token: this.resolveToken(),
+        timeoutMs: 180_000
+      })
+      if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить методику', res.status)
+      latest = parsePositionKpiBuild(res.data ?? {})
+    }
+    if (!latest) throw new ApiError('Не удалось загрузить методику')
+    return latest
+  }
+
+  async sendPositionKpiBuildTurn(buildId: string, message: string): Promise<PositionKpiBuildSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/position-kpi/builds/${buildId}/turns`,
+      { body: { message }, timeoutMs: 120_000 }
+    )
+    return parsePositionKpiBuild(data ?? {})
+  }
+
   async getWorkplaceKpi(params: { from?: string; to?: string } = {}): Promise<import('../workplace/workplaceKpiTypes').WorkplaceKpiDashboard> {
     const { parseWorkplaceKpiDashboard } = await import('../workplace/workplaceKpiTypes')
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/workplace/kpi', {
@@ -2284,7 +2444,7 @@ export class ApiClient {
   async syncWorkplaceKpiDailyMetrics(body: {
     metrics: { day: string; tasksPct: number; slaPct: number }[]
   }): Promise<void> {
-    await this.request<void>('POST', '/api/v1/workplace/kpi/daily-metrics', { json: body })
+    await this.request<void>('POST', '/api/v1/workplace/kpi/daily-metrics', { body })
   }
 
   // ---------- Admin (orchestrator panel) ----------

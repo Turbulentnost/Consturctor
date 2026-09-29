@@ -11,6 +11,9 @@ export type TodayProjectTaskRow = {
   assignee: string
   assigneeTone: SpecPillTone
   turboScope?: 'mine' | 'managed' | 'both'
+  progress?: number
+  projectId?: string
+  taskUid?: string
 }
 
 function dayStamp(day: Date): string {

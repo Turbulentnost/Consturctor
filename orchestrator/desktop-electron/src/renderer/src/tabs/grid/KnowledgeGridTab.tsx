@@ -8,6 +8,9 @@ import { SpecPill } from '../../workplace/specV04Components'
 import { type SpecKnowledgeRow } from '../../workplace/specV04DemoData'
 import { openHttpUrl } from '../../workplace/workplaceNav'
 import { GridFilterBar } from './gridFilters'
+import { usePageSearch } from '../../layout/pageSearchContext'
+import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
+import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 
 export function KnowledgeGridTab({
   user
@@ -19,7 +22,8 @@ export function KnowledgeGridTab({
   const [selectedId, setSelectedId] = useState('')
   const [openHint, setOpenHint] = useState('')
   const [opening, setOpening] = useState(false)
-  const [query, setQuery] = useState('')
+  const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
+  const { query, setQuery } = usePageSearch()
   const [tileFilter, setTileFilter] = useState('all')
 
   useEffect(() => {
@@ -58,6 +62,7 @@ export function KnowledgeGridTab({
   const visibleCatalog = useMemo(() => {
     const q = query.trim().toLowerCase()
     return catalog.filter((row) => {
+      if (!deadlineInWorkplacePeriod(row.updated, periodFrom, periodTo)) return false
       if (tileFilter === 'reg' && row.type !== 'Регламент') return false
       if (tileFilter === 'tpl' || tileFilter === 'art' || tileFilter === 'upd') return false
       if (q && !`${row.name} ${row.section} ${row.process} ${row.author}`.toLowerCase().includes(q)) {
@@ -65,7 +70,7 @@ export function KnowledgeGridTab({
       }
       return true
     })
-  }, [catalog, query, tileFilter])
+  }, [catalog, query, tileFilter, periodFrom, periodTo])
   const selected = visibleCatalog.find((c) => c.id === (selectedId || visibleCatalog[0]?.id))
 
   const tiles: SpecSummaryTile[] = useMemo(

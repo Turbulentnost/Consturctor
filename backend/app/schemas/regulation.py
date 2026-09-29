@@ -286,6 +286,8 @@ class RoleMatchRequest(BaseModel):
 
 class RoleMatchDecisionRequest(BaseModel):
     status: Literal["accepted", "rejected"]
+    runId: str = ""
+    regulationId: str = ""
 
 
 class RoleMatchResult(BaseModel):

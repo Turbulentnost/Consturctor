@@ -32,8 +32,12 @@ for env_path in (WORKSPACE / ".env", BACKEND / ".env"):
         if not raw or raw.startswith("#") or "=" not in raw:
             continue
         key, _, value = raw.partition("=")
-        if key.strip() and key.strip() not in os.environ:
-            os.environ[key.strip()] = value.strip()
+        key = key.strip()
+        if not key:
+            continue
+        # backend/.env должен перекрывать пустые переменные окружения для CLI.
+        if key not in os.environ or not str(os.environ.get(key, "")).strip():
+            os.environ[key] = value.strip()
 
 
 def format_when(value: str | None) -> str:
@@ -104,17 +108,22 @@ def dump_user_tasks(
         }
 
     if executions:
-        from app.tools.onec.connection import create_session
-        from app.tools.onec.dok_http import dok_endpoint_url, fetch_user_document_executions
-        from app.tools.onec.lookup_user_ref import resolve_user_by_fio
+        from app.tools.onec.dok_http import (
+            clear_request_auth,
+            dok_endpoint_url,
+            fetch_user_document_executions,
+            set_request_auth,
+        )
 
-        if already_ref:
-            user_ref = user.strip()
-            resolved_fio = user_ref
-        else:
-            session = create_session()
-            user_ref, resolved_fio, _ = resolve_user_by_fio(session, user)
-        rows = fetch_user_document_executions(user_ref, user_fio=resolved_fio)
+        fio = user.strip()
+        user_ref = fio if not already_ref else fio
+        resolved_fio = fio
+        if password:
+            set_request_auth(fio, password)
+        try:
+            rows = fetch_user_document_executions(user_ref, user_fio=resolved_fio)
+        finally:
+            clear_request_auth()
         return {
             "endpoint": dok_endpoint_url(template="TasksII", suffix="User"),
             "user_ref": user_ref,
@@ -125,7 +134,13 @@ def dump_user_tasks(
 
     from app.tools.onec.dok_soap import fetch_user_inbox_tasks
 
-    return fetch_user_inbox_tasks(user.strip(), since_days=since_days)
+    fio = user.strip()
+    return fetch_user_inbox_tasks(
+        fio,
+        since_days=since_days,
+        username=fio if password else None,
+        password=password or None,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

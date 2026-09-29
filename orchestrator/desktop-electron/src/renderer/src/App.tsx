@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { APP_TITLE, PAGE_LABELS, Sidebar, type PageKey } from './components/Sidebar'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { APP_TITLE, PAGE_LABELS, Sidebar, type PageKey, type SidebarNavItem } from './components/Sidebar'
 import { UserMenu } from './components/UserMenu'
 import { LoginPage } from './pages/LoginPage'
 import { MessengerPage } from './pages/MessengerPage'
@@ -30,24 +30,31 @@ import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
 import { FilesPage } from './pages/FilesPage'
 import { OrchGridShell } from './layout/OrchGridShell'
+import { PageSearchProvider } from './layout/pageSearchContext'
 import type { WorkplaceTabKey } from './layout/tabRegistry'
 import { ProcessesGridTab } from './tabs/grid/ProcessesGridTab'
 import { TasksGridTab } from './tabs/grid/TasksGridTab'
 import { ProjectsGridTab } from './tabs/grid/ProjectsGridTab'
 import { MailGridTab } from './tabs/grid/MailGridTab'
+import { DocflowGridTab } from './tabs/grid/DocflowGridTab'
+import { CreateOneCTaskPage } from './tabs/grid/CreateOneCTaskPage'
+import { CreatePlatformTaskPage } from './tabs/grid/CreatePlatformTaskPage'
 import { MeetingsGridTab } from './tabs/grid/MeetingsGridTab'
 import { KnowledgeGridTab } from './tabs/grid/KnowledgeGridTab'
 import { TodayGridTab } from './tabs/grid/TodayGridTab'
 import { KpiGridTab } from './tabs/grid/KpiGridTab'
-import { PositionKpiBuildPage } from './pages/PositionKpiBuildPage'
 import { DecisionsGridTab } from './tabs/grid/DecisionsGridTab'
 import { HistoryGridTab } from './tabs/grid/HistoryGridTab'
+import { ExtensionsHubTab } from './tabs/grid/ExtensionsHubTab'
+import { ExtensionsProvider, useExtensions } from './extensions/ExtensionsProvider'
+import { EXTENSION_MODULES, extensionModuleForPage } from './extensions/extensionModules'
 import { RunProvider, useRuns } from './store/runs'
 import { isInFlightRunStatus, liveEntryMatchesRun } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
+import { WorkplacePeriodProvider } from './workplace/workplacePeriod'
 import { clearGridCacheForUser } from './workplace/gridDataCache'
 import { ORCH_OPEN_TAB, type WorkplaceTabIntent } from './workplace/workplaceNav'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
@@ -82,11 +89,16 @@ const WORKPLACE_TAB_KEYS: WorkplaceTabKey[] = [
   'tasks',
   'projects',
   'mail',
+  'docflow',
   'meetings',
   'decisions',
   'kpi',
   'history',
-  'knowledge'
+  'knowledge',
+  'extensions',
+  'task_create',
+  'platform_task_create',
+  ...EXTENSION_MODULES.map((item) => item.pageKey as WorkplaceTabKey)
 ]
 
 type View =
@@ -99,7 +111,6 @@ type View =
   | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'schedule'; workflowId: string; title: string; published?: boolean }
-  | { kind: 'kpi-build'; position: string; buildId?: string }
 
 function decodeJwtPart(part: string): string {
   const normalized = part.replace(/-/g, '+').replace(/_/g, '/')
@@ -159,7 +170,6 @@ function windowTitle(view: View, signedIn: boolean): string {
   if (view.kind === 'agentrun') return `${view.title || 'Запуск'} — ${APP_TITLE}`
   if (view.kind === 'history') return `История: ${view.title || 'агент'} — ${APP_TITLE}`
   if (view.kind === 'schedule') return `Расписание: ${view.title || 'агент'} — ${APP_TITLE}`
-  if (view.kind === 'kpi-build') return `Методика KPI — ${APP_TITLE}`
   return APP_TITLE
 }
 
@@ -195,6 +205,15 @@ export function App(): React.JSX.Element {
   )
 }
 
+function WithExtensionNav({
+  children
+}: {
+  children: (pinnedExtensionNav: SidebarNavItem[]) => ReactNode
+}): React.JSX.Element {
+  const { pinnedNav } = useExtensions()
+  return <>{children(pinnedNav)}</>
+}
+
 function AppShell(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
   const [user, setUser] = useState<UserProfile | null>(null)
@@ -216,7 +235,6 @@ function AppShell(): React.JSX.Element {
   const seenRunNotifyRef = useRef<Map<string, 'started' | 'finished'>>(new Map())
   const [tabIntent, setTabIntent] = useState<WorkplaceTabIntent | null>(null)
   const runs = useRuns()
-
   useEffect(() => {
     document.title = booting ? APP_TITLE : windowTitle(view, Boolean(user))
   }, [booting, user, view])
@@ -228,7 +246,7 @@ function AppShell(): React.JSX.Element {
       done = true
       setBooting(false)
     }
-    const watchdog = window.setTimeout(finish, 10_000)
+    const watchdog = window.setTimeout(finish, 4_000)
     ;(async () => {
       try {
         const config = await window.api.getConfig()
@@ -510,7 +528,7 @@ function AppShell(): React.JSX.Element {
     setRequireComLogin(false)
     void agentClient
       .ready(result.accessToken || null, {
-        login: result.user.fio,
+        login: typedLogin || result.user.fio,
         password
       })
       .catch(() => undefined)
@@ -522,10 +540,13 @@ function AppShell(): React.JSX.Element {
     setUser(result.user)
     setModeForUser(result.user)
     if (result.accessToken) {
-      void api.me().then((profile) => {
-        setUser(profile)
-        setModeForUser(profile)
-      }).catch(() => undefined)
+      void api
+        .me()
+        .then((profile) => {
+          setUser(profile)
+          setModeForUser(profile)
+        })
+        .catch(() => undefined)
     }
   }
 
@@ -681,7 +702,7 @@ function AppShell(): React.JSX.Element {
         onLoggedIn={onLoggedIn}
         banner={
           requireComLogin
-            ? 'Сеанс Orchestrator восстановлен по сохранённому токену. Введите пароль 1С для загрузки задач и OData.'
+            ? 'Сеанс восстановлен по токену. Введите пароль 1С — без него erp_pm и COM недоступны.'
             : undefined
         }
       />
@@ -699,7 +720,7 @@ function AppShell(): React.JSX.Element {
           ? 'ai_agents'
           : lastTab
 
-  async function openAgentRun(workflowId: string, runId = '', autoStart = false, title = ''): Promise<void> {
+  async function openAgentRun(workflowId: string, runId = '', _autoStart = false, title = ''): Promise<void> {
     if (!workflowId) {
       flash('У карточки нет id агента на сервере')
       return
@@ -709,10 +730,6 @@ function AppShell(): React.JSX.Element {
       return
     }
     const nextTitle = title || 'ИИ-агент'
-    if (autoStart) {
-      setView({ kind: 'agentrun', workflowId, title: nextTitle, autoStart: true })
-      return
-    }
     const live = runs.entries[workflowId]
     if (liveEntryMatchesRun(live, runId)) {
       setView({ kind: 'agentrun', workflowId, title: nextTitle || live.title, autoStart: false })
@@ -754,8 +771,10 @@ function AppShell(): React.JSX.Element {
     const nextTitle = agentTitle || runs.entries[workflowId]?.title || 'ИИ-агент'
     if (/запуск начался|начат плановый запуск/i.test(title)) {
       setView({ kind: 'agentrun', workflowId, title: nextTitle, autoStart: false })
-      runs.noteRunning(workflowId, nextTitle, runId)
-      void runs.attachHistoryFeed(workflowId)
+      if (runId) {
+        runs.noteRunning(workflowId, nextTitle, runId)
+        void runs.attachHistoryFeed(workflowId)
+      }
       return
     }
     if (/запуск закончен/i.test(title) && runId) {
@@ -865,55 +884,65 @@ function AppShell(): React.JSX.Element {
   function renderWorkplaceGridTab(key: WorkplaceTabKey): React.JSX.Element {
     switch (key) {
       case 'processes':
-        return (
-          <ProcessesGridTab
-            user={activeUser}
-            navProcessTab={tabIntent?.processTab}
-            onOpen={(workflowId, title) => {
-              setLastTab('processes')
-              setView({ kind: 'passport', workflowId, title, tab: 'info' })
-            }}
-            onRun={(workflowId, title) => {
-              setLastTab('processes')
-              void openAgentRun(workflowId, '', true, title)
-            }}
-            onOpenRun={(workflowId, title, runId) => {
-              setLastTab('processes')
-              void openAgentRun(workflowId, runId || '', false, title)
-            }}
-          />
-        )
+        return <ProcessesGridTab user={activeUser} navProcessTab={tabIntent?.processTab} onOpen={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
       case 'tasks':
         return <TasksGridTab user={activeUser} navTaskFilter={tabIntent?.taskFilter} />
       case 'projects':
         return <ProjectsGridTab user={activeUser} />
       case 'mail':
         return <MailGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+      case 'docflow':
+        return <DocflowGridTab user={activeUser} />
+      case 'task_create':
+        return <CreateOneCTaskPage user={activeUser} />
+      case 'platform_task_create':
+        return <CreatePlatformTaskPage user={activeUser} />
       case 'meetings':
         return <MeetingsGridTab user={activeUser} />
       case 'decisions':
         return <DecisionsGridTab user={activeUser} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
       case 'kpi':
-        return (
-          <KpiGridTab
-            user={activeUser}
-            onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })}
-            onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })}
-            onUploadMethodology={(position) => {
-              setLastTab('kpi')
-              setView({ kind: 'kpi-build', position: position || activeUser.position || '' })
-            }}
-          />
-        )
+        return <KpiGridTab user={activeUser} onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
       case 'knowledge':
         return <KnowledgeGridTab user={activeUser} />
       case 'history':
         return <HistoryGridTab onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
+      case 'extensions':
+        return (
+          <ExtensionsHubTab
+            user={activeUser}
+            onNotify={flash}
+            onOpenExtension={(pageKey) => {
+              setLastTab(pageKey)
+              setView({ kind: 'tab', key: pageKey })
+            }}
+          />
+        )
       case 'today':
-      default:
+      default: {
+        const extensionTab = extensionModuleForPage(key)
+        if (extensionTab) {
+          return (
+            <>
+              {extensionTab.renderTab({
+                user: activeUser,
+                onAskOrchestrator: askOrchestratorFromTab,
+                onRunAgent: (workflowId, title, message) =>
+                  setView({ kind: 'agentrun', workflowId, title, autoStart: false, initialMessage: message }),
+                onNavigate: (pageKey) => {
+                  setLastTab(pageKey)
+                  setView({ kind: 'tab', key: pageKey })
+                },
+                onOpenPassport: (workflowId, title, tab) =>
+                  setView({ kind: 'passport', workflowId, title, tab })
+              })}
+            </>
+          )
+        }
         return (
           <TodayGridTab
             user={activeUser}
+            onAskOrchestrator={askOrchestratorFromTab}
             onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })}
             onOpenMetrics={() => setView({ kind: 'tab', key: 'kpi' })}
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
@@ -921,6 +950,7 @@ function AppShell(): React.JSX.Element {
             onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
           />
         )
+      }
     }
   }
 
@@ -941,7 +971,7 @@ function AppShell(): React.JSX.Element {
       return <AgentRunPage workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
     }
     if (view.kind === 'passport') {
-      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: isWorkplaceTabKey(lastTab) ? lastTab : 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
+      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
     }
     if (view.kind === 'history') {
       return (
@@ -957,16 +987,6 @@ function AppShell(): React.JSX.Element {
     }
     if (view.kind === 'schedule') {
       return <AgentSchedulePage workflowId={view.workflowId} title={view.title} published={Boolean(view.published)} onBack={() => setView({ kind: 'tab', key: lastTab })} onNext={() => setView({ kind: 'tab', key: lastTab })} />
-    }
-    if (view.kind === 'kpi-build') {
-      return (
-        <PositionKpiBuildPage
-          position={view.position}
-          buildId={view.buildId}
-          onBack={() => setView({ kind: 'tab', key: 'kpi' })}
-          onReady={() => setView({ kind: 'tab', key: 'kpi' })}
-        />
-      )
     }
     return (
       <SettingsTab
@@ -987,47 +1007,44 @@ function AppShell(): React.JSX.Element {
   }
 
   const workplaceGrid = !isAdminMode && view.kind === 'tab' && isWorkplaceTabKey(view.key)
-  const workplaceSubpage =
-    !isAdminMode &&
-    (view.kind === 'history' ||
-      view.kind === 'agentrun' ||
-      view.kind === 'passport' ||
-      view.kind === 'schedule' ||
-      view.kind === 'kpi-build')
-  const tabKey = workplaceGrid && view.kind === 'tab' ? view.key : null
-  const workplaceShellKey: WorkplaceTabKey | null = tabKey
-    ? tabKey
-    : workplaceSubpage
-      ? view.kind === 'history'
-        ? 'history'
-        : view.kind === 'kpi-build'
-          ? 'kpi'
-          : isWorkplaceTabKey(lastTab)
-            ? lastTab
-            : 'today'
-      : null
+  const workplaceShellKey: WorkplaceTabKey | null =
+    workplaceGrid && view.kind === 'tab' && isWorkplaceTabKey(view.key) ? view.key : null
   const content = isAdminMode ? renderAdminContent() : renderUserContent()
-  // #region agent log
-  fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'post-fix',hypothesisId:'H2',location:'App.tsx:unified-tree',message:'render unified provider tree',data:{workplaceGrid,workplaceSubpage,isAdminMode,tabKey,viewKind:view.kind},timestamp:Date.now()})}).catch(()=>{})
-  // #endregion
 
   return (
-    <GridDataRefreshProvider userId={activeUser.id}>
-      <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
-        <DebugSourcesLifetime />
-        {workplaceShellKey ? (
+    <ExtensionsProvider user={activeUser}>
+      <GridDataRefreshProvider userId={activeUser.id}>
+        <WorkplacePeriodProvider>
+        <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
+          <DebugSourcesLifetime />
+          <WithExtensionNav>
+            {(pinnedExtensionNav) =>
+              workplaceShellKey ? (
           <div className="app-root orch-app-root">
+            <PageSearchProvider tabKey={workplaceShellKey}>
             <OrchGridShell
               activeKey={workplaceShellKey}
-              subpage={workplaceSubpage}
+              pinnedExtensionNav={pinnedExtensionNav}
               gridClassName={
-                workplaceSubpage
-                  ? ''
-                  : workplaceShellKey === 'today'
-                    ? 'orch-grid-today'
-                    : workplaceShellKey === 'kpi'
-                      ? 'orch-grid-kpi'
-                      : ''
+                workplaceShellKey === 'today'
+                  ? 'orch-grid-today'
+                  : workplaceShellKey === 'kpi'
+                    ? 'orch-grid-kpi'
+                    : workplaceShellKey === 'assignments_registry'
+                      ? 'orch-grid-registry'
+                      : workplaceShellKey === 'history'
+                        ? 'orch-grid-history'
+                        : workplaceShellKey === 'extensions'
+                          ? 'orch-grid-extensions'
+                          : workplaceShellKey === 'agent_library'
+                            ? 'orch-grid-agent-library'
+                            : workplaceShellKey === 'processes'
+                              ? 'orch-grid-processes'
+                              : workplaceShellKey === 'docflow' ||
+                                  workplaceShellKey === 'task_create' ||
+                                  workplaceShellKey === 'platform_task_create'
+                                ? 'orch-grid-docflow'
+                                : ''
               }
               user={activeUser}
               avatarUrl={avatarUrl}
@@ -1053,22 +1070,18 @@ function AppShell(): React.JSX.Element {
               onSwitchAdminView={switchAdminView}
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
             >
-              {workplaceSubpage ? (
-                <div className="orch-agent-subpage-root">{renderUserFullscreen()}</div>
-              ) : (
-                renderUserContent()
-              )}
+              {renderWorkplaceGridTab(workplaceShellKey)}
             </OrchGridShell>
-            {view.kind === 'chat' || view.kind === 'agentrun' || view.kind === 'kpi-build' ? null : (
-              <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
-            )}
+            </PageSearchProvider>
+            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
           </div>
-        ) : (
+              ) : (
           <div className="app-root">
             <Sidebar
               active={activeKey}
               light={false}
               showAdminNav={isAdminMode}
+              pinnedExtensionNav={pinnedExtensionNav}
               activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
               currentUserId={activeUser.id || ''}
               onNavigate={(key) => {
@@ -1105,12 +1118,14 @@ function AppShell(): React.JSX.Element {
                 {content}
               </div>
             </main>
-            {view.kind === 'chat' || view.kind === 'agentrun' || view.kind === 'kpi-build' ? null : (
-              <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
-            )}
+            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
           </div>
-        )}
-      </SpecV04SourcesProvider>
-    </GridDataRefreshProvider>
+              )
+            }
+          </WithExtensionNav>
+        </SpecV04SourcesProvider>
+        </WorkplacePeriodProvider>
+      </GridDataRefreshProvider>
+    </ExtensionsProvider>
   )
 }

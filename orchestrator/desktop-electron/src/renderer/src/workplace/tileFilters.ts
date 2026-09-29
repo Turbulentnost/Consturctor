@@ -2,11 +2,18 @@ import { parseMeetingTime } from '../utils/outlookMeetings'
 import { parseIso, sameDay } from '../utils/calendar'
 import type { MeetingEvent } from '../utils/outlookMeetings'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
-import { personNameMatches } from './turboAssigneeMatch'
 import type { SpecV04SourcesState } from './useSpecV04Data'
 import type { WorkplaceKpiAgentRow } from './workplaceKpiTypes'
 
-export type TaskSourceFilter = 'all' | 'onec' | 'onec-from-me' | 'proj' | 'reg'
+export type TaskSourceFilter =
+  | 'all'
+  | 'onec'
+  | 'onec-from-me'
+  | 'proj'
+  | 'proj-mine'
+  | 'proj-mgr'
+  | 'reg'
+  | 'platform'
 
 export type TaskTileFilter = {
   source: TaskSourceFilter
@@ -15,10 +22,19 @@ export type TaskTileFilter = {
 
 export const EMPTY_TASK_TILE_FILTER: TaskTileFilter = { source: 'all', overdueOnly: false }
 
-/** Today tile «Задачи из 1С»: только срок сегодня / просроченные, роль executor|both. */
+/** Today tile «Задачи из 1С»: source=onec → role executor|both (see isDocflowToMe). */
 export const TODAY_ONEC_TASK_FILTER: TaskTileFilter = { source: 'onec', overdueOnly: false }
 
-const TASK_SOURCE_IDS = new Set<string>(['all', 'onec', 'onec-from-me', 'proj', 'reg'])
+const TASK_SOURCE_IDS = new Set<string>([
+  'all',
+  'onec',
+  'onec-from-me',
+  'proj',
+  'proj-mine',
+  'proj-mgr',
+  'reg',
+  'platform'
+])
 
 function norm(value: string | undefined): string {
   return String(value || '').trim().toLowerCase()
@@ -29,17 +45,10 @@ export function docflowRoleOf(row: { role?: string }): string {
   return norm(row.role)
 }
 
-export function isDocflowToMe(
-  row: { role?: string; performer?: string; executor?: string },
-  actorFio = ''
-): boolean {
+/** Исполнитель — я или тот, за кого я работаю (role=delegate). */
+export function isDocflowToMe(row: { role?: string }): boolean {
   const role = docflowRoleOf(row)
-  if (role === 'author') return false
-  const performer = String(row.performer || '').trim()
-  if (actorFio && performer && performer !== '—' && personNameMatches(actorFio, performer)) {
-    return true
-  }
-  return role === 'executor' || role === 'both'
+  return role === 'executor' || role === 'both' || role === 'delegate' || role === ''
 }
 
 export function isTurboTaskToMe(row: { turboScope?: string }): boolean {
@@ -54,7 +63,15 @@ export function isDocflowFromMe(row: { role?: string; author?: string }, actorFi
   const role = docflowRoleOf(row)
   if (role === 'author' || role === 'both') return true
   const author = String(row.author || '').trim()
-  return Boolean(author && actorFio.trim() && personNameMatches(actorFio, author))
+  const actor = actorFio.trim()
+  if (!author || !actor) return false
+  const authorKey = author.toLowerCase()
+  const actorKey = actor.toLowerCase()
+  if (authorKey === actorKey || authorKey.includes(actorKey) || actorKey.includes(authorKey)) {
+    return true
+  }
+  const surname = actorKey.split(/\s+/)[0] || ''
+  return Boolean(surname && authorKey.includes(surname))
 }
 
 /** «Иванов Иван Иванович» / «Иванов И.И.» → «Иванов И.И.». */
@@ -73,34 +90,10 @@ export function formatSurnameInitials(fio: string): string {
 
 export function isTaskDueOnDay(row: { deadline?: string }, day: Date): boolean {
   const raw = String(row.deadline || '').trim()
-  if (!raw || raw === '—') return false
-  if (/сегодня/i.test(raw)) return sameDay(day, new Date())
+  if (!raw || raw === '—') return true
   const due = parseTaskDueDate(raw)
-  if (!due) return false
+  if (!due) return true
   return sameDay(due, day)
-}
-
-/** Вкладка «Сегодня»: срок выбранного дня или просрочка как в 1С (не любой прошлый срок). */
-export function isTodayOrOverdueTask(row: SpecTaskRow, day: Date, now = new Date()): boolean {
-  if (row.status === 'Выполнена') return false
-  if (isTaskDueOnDay(row, day)) return true
-  if (!sameDay(day, now)) return false
-  return /просроч/i.test(row.status || '') || Boolean(row.urgent)
-}
-
-/** Виджет/плитка «Задачи из 1С» на Сегодня: мне (или «от меня»), только сегодня + просроченные. */
-export function filterOnecTodayRows(
-  rows: SpecTaskRow[],
-  day: Date,
-  opts?: { fromMe?: boolean; actorFio?: string }
-): SpecTaskRow[] {
-  const fromMe = Boolean(opts?.fromMe)
-  const fio = opts?.actorFio || ''
-  return rows.filter((row) => {
-    if (!isTodayOrOverdueTask(row, day)) return false
-    if (fromMe) return isDocflowFromMe(row, fio)
-    return isDocflowToMe(row, fio)
-  })
 }
 
 export function parseTaskDueDate(deadline: string): Date | null {
@@ -117,7 +110,9 @@ export function parseTaskDueDate(deadline: string): Date | null {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, hours, minutes, timeMatch ? 0 : 59)
     return day
   }
-  const dotted = /^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?(?:\s|$|,)/.exec(raw)
+  const iso = parseIso(raw) || parseIso(raw.replace(' ', 'T'))
+  if (iso) return iso
+  const dotted = /^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?/.exec(raw)
   if (dotted) {
     const day = Number(dotted[1])
     const month = Number(dotted[2]) - 1
@@ -125,15 +120,17 @@ export function parseTaskDueDate(deadline: string): Date | null {
     if (year < 100) year += 2000
     return new Date(year, month, day, hours, minutes, timeMatch ? 0 : 59)
   }
-  const iso = parseIso(raw) || parseIso(raw.replace(' ', 'T'))
-  if (iso) return iso
   return null
 }
 
-export function isOverdueTask(row: SpecTaskRow, _now = new Date()): boolean {
+export function isOverdueTask(row: SpecTaskRow, now = new Date()): boolean {
   if (row.status === 'Выполнена') return false
-  // Как в шапке 1С «Просроченных»: не любой прошедший срок, только пометка ДО.
-  return /просроч/i.test(row.status || '') || Boolean(row.urgent)
+  if (/просроч/i.test(row.status || '')) return true
+  if (row.urgent) return true
+  const due = parseTaskDueDate(row.deadline)
+  if (!due) return false
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return due.getTime() < todayStart.getTime()
 }
 
 export function compareTasksByUrgency(left: SpecTaskRow, right: SpecTaskRow): number {
@@ -168,10 +165,11 @@ export function processRowToTaskRow(row: SpecProcessRow): SpecTaskRow {
 export function buildTaskCatalog(
   erpTasks: SpecTaskRow[],
   turboTasks: SpecTaskRow[],
-  processRows: SpecProcessRow[]
+  processRows: SpecProcessRow[],
+  platformTasks: SpecTaskRow[] = []
 ): { rows: SpecTaskRow[]; erpIds: Set<string>; turboIds: Set<string> } {
   return {
-    rows: [...erpTasks, ...turboTasks, ...processRows.map(processRowToTaskRow)],
+    rows: [...platformTasks, ...erpTasks, ...turboTasks, ...processRows.map(processRowToTaskRow)],
     erpIds: new Set(erpTasks.map((row) => row.id)),
     turboIds: new Set(turboTasks.map((row) => row.id))
   }
@@ -182,6 +180,7 @@ function taskOrigin(
   erpIds: Set<string>,
   turboIds: Set<string>
 ): TaskSourceFilter {
+  if (row.sourceKind === 'platform') return 'platform'
   if (erpIds.has(row.id)) return 'onec'
   if (turboIds.has(row.id)) return 'proj'
   return 'reg'
@@ -191,15 +190,16 @@ function matchesTaskSource(
   row: SpecTaskRow,
   source: TaskSourceFilter,
   erpIds: Set<string>,
-  turboIds: Set<string>,
-  actorFio = ''
+  turboIds: Set<string>
 ): boolean {
   if (source === 'all') return true
   const origin = taskOrigin(row, erpIds, turboIds)
-  if (source === 'proj' || source === 'reg') return origin === source
+  if (source === 'proj' || source === 'reg' || source === 'platform') return origin === source
+  if (source === 'proj-mine') return origin === 'proj' && isTurboTaskToMe(row)
+  if (source === 'proj-mgr') return origin === 'proj' && isTurboTaskAsManager(row)
   if (origin !== 'onec') return false
-  if (source === 'onec') return isDocflowToMe(row, actorFio)
-  if (source === 'onec-from-me') return isDocflowFromMe(row, actorFio)
+  if (source === 'onec') return isDocflowToMe(row)
+  if (source === 'onec-from-me') return isDocflowFromMe(row)
   return false
 }
 
@@ -207,11 +207,10 @@ export function filterTaskRows(
   rows: SpecTaskRow[],
   filter: TaskTileFilter,
   erpIds: Set<string>,
-  turboIds: Set<string>,
-  actorFio = ''
+  turboIds: Set<string>
 ): SpecTaskRow[] {
   return rows.filter((row) => {
-    if (!matchesTaskSource(row, filter.source, erpIds, turboIds, actorFio)) return false
+    if (!matchesTaskSource(row, filter.source, erpIds, turboIds)) return false
     if (filter.overdueOnly && !isOverdueTask(row)) return false
     return true
   })
@@ -221,7 +220,7 @@ export function isDeadTaskSource(data: SpecV04SourcesState, id: string): boolean
   if (id === 'onec' || id === 'onec-from-me') {
     return Boolean(data.erpError) && !data.erpTaskCount && !data.erpLoading
   }
-  if (id === 'proj') {
+  if (id === 'proj' || id === 'proj-mine' || id === 'proj-mgr') {
     return Boolean(data.turboError) && !data.turboTaskCount && !data.turboLoading
   }
   return false
@@ -247,6 +246,95 @@ export function applyTaskTileClick(
     return { ...current, source: 'all' }
   }
   return { ...current, source: clickedId as TaskSourceFilter }
+}
+
+export type TodayKpiTileState = {
+  activeIds: string[]
+  onecFromMe: boolean
+  projectAsManager: boolean
+  outlookFromMe: boolean
+}
+
+export const EMPTY_TODAY_KPI_TILE: TodayKpiTileState = {
+  activeIds: ['all'],
+  onecFromMe: false,
+  projectAsManager: false,
+  outlookFromMe: false
+}
+
+/** KPI «Сегодня»: переключение «мне / от меня» и фокус виджета по клику на плитку. */
+export function applyTodayKpiTileClick(
+  current: TodayKpiTileState,
+  clickedId: string
+): TodayKpiTileState {
+  const toggle = (id: string): string[] => {
+    if (current.activeIds.includes(id)) return ['all']
+    return [id]
+  }
+  switch (clickedId) {
+    case 'all':
+    case 'day':
+      return { ...EMPTY_TODAY_KPI_TILE }
+    case 'onec':
+      return {
+        activeIds: toggle('onec'),
+        onecFromMe: false,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'onec-from-me':
+      return {
+        activeIds: ['onec'],
+        onecFromMe: true,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'proj-mine':
+      return {
+        activeIds: ['projects'],
+        onecFromMe: current.onecFromMe,
+        projectAsManager: false,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'proj-mgr':
+      return {
+        activeIds: ['projects'],
+        onecFromMe: current.onecFromMe,
+        projectAsManager: true,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'outlook':
+      return {
+        activeIds: toggle('outlook'),
+        onecFromMe: current.onecFromMe,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: false
+      }
+    case 'outlook-from-me':
+      return {
+        activeIds: ['outlook'],
+        onecFromMe: current.onecFromMe,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: true
+      }
+    case 'events':
+    case 'ev':
+      return {
+        activeIds: toggle('events'),
+        onecFromMe: current.onecFromMe,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: current.outlookFromMe
+      }
+    case 'reg':
+      return {
+        activeIds: toggle('results'),
+        onecFromMe: current.onecFromMe,
+        projectAsManager: current.projectAsManager,
+        outlookFromMe: current.outlookFromMe
+      }
+    default:
+      return current
+  }
 }
 
 export function taskTileActiveIds(filter: TaskTileFilter): string[] {
@@ -285,19 +373,19 @@ export function todayRowsForTile<T>(filter: string, widgetId: string, rows: T[])
 }
 
 export function mailMatchesTile(row: SpecMailRow, id: string): boolean {
-  if (id === 'all' || id === 'new') return true
+  if (id === 'all' || id === 'inbox' || id === 'sent' || id === 'new') return true
   if (id === 'proc') return /обработ|непрочитан/i.test(row.status)
   if (id === 'hi') return /высок/i.test(row.priority) || row.unread === true
+  if (id === 'proj') return row.appFolderId === 'proj'
   const blob = `${row.subject} ${row.category} ${row.link}`
-  if (id === 'proj') return /проект|turbo|crm/i.test(blob)
   if (id === 'reg') return /регламент|договор|акт|согласован/i.test(blob)
   return true
 }
 
 export function countMailTiles(rows: SpecMailRow[]): Record<string, number> {
   return {
-    new: rows.filter((row) => row.unread).length || rows.length,
-    proc: rows.filter((row) => mailMatchesTile(row, 'proc')).length,
+    inbox: rows.filter((row) => row.direction !== 'sent').length,
+    sent: rows.filter((row) => row.direction === 'sent').length,
     hi: rows.filter((row) => mailMatchesTile(row, 'hi')).length,
     proj: rows.filter((row) => mailMatchesTile(row, 'proj')).length,
     reg: rows.filter((row) => mailMatchesTile(row, 'reg')).length

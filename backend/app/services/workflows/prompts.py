@@ -830,6 +830,36 @@ def build_playbook_prompt(
     )
 
 
+def _format_file_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} МБ"
+    if size >= 1024:
+        return f"{size / 1024:.0f} КБ"
+    return f"{size} Б"
+
+
+def _run_attachments_block(attachments: list[dict[str, Any]] | None) -> str:
+    """Вложения текущего запуска: агент берёт отсюда file_id для audio.transcribe."""
+    items = [item for item in (attachments or []) if isinstance(item, dict)]
+    if not items:
+        return ""
+    lines = ["===== ВЛОЖЕНИЯ ЗАПУСКА ====="]
+    for item in items:
+        file_id = str(item.get("file_id") or item.get("id") or "").strip()
+        filename = str(item.get("filename") or item.get("name") or "file").strip()
+        size = int(item.get("size") or 0)
+        lines.append(f"- file_id={file_id} · {filename} · {_format_file_size(size)}")
+    lines.append(
+        "Аудио/видео-вложение (wav, mp3, m4a, aac, ogg, opus, flac, webm, mp4, mkv, "
+        "wma, amr) расшифровывай инструментом audio.transcribe: блок constructor_tool "
+        'с {"name": "audio.transcribe", "arguments": {"file_id": "…"}}. '
+        "Он вернёт segments с таймкодами start/end, полный text и duration_sec. "
+        "Подтверждение человека для него не нужно."
+    )
+    lines.append("===== КОНЕЦ ВЛОЖЕНИЙ =====")
+    return "\n".join(lines) + "\n\n"
+
+
 def build_published_run_prompt(
     *,
     instructions: str,
@@ -838,6 +868,7 @@ def build_published_run_prompt(
     title: str = "",
     steps: list[dict[str, Any]] | None = None,
     chain: str = "",
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
     from app.services.workflows.playbook_validation import verified_chain_text
 
@@ -874,6 +905,7 @@ def build_published_run_prompt(
         "===== ПРИМЕР УСПЕШНОГО ПРОГОНА =====\n"
         f"{(example_run or '').strip() or '—'}\n"
         "===== КОНЕЦ ПРИМЕРА =====\n\n"
+        f"{_run_attachments_block(attachments)}"
         "===== ЗАДАЧА СЕЙЧАС =====\n"
         f"{(user_message or '').strip()}\n"
         "===== КОНЕЦ ЗАДАЧИ ====="

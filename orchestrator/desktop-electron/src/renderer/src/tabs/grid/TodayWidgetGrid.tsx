@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/legacy'
 import 'react-grid-layout/css/styles.css'
 import { mergeTodayLayout, reflowTodayLayout } from './todayLayoutCompact'
-import { TodayWidgetExpandContext } from './TodayWidgetExpandContext'
+import { TodayWidgetExpandContext, TodayWidgetRequestExpandContext } from './TodayWidgetExpandContext'
 import {
   TODAY_GRID_COLS,
   TODAY_GRID_LAYOUT_MAX_ROWS,
@@ -70,14 +70,12 @@ function TodayWidgetChrome({
   id,
   editMode,
   locked,
-  notify,
   onToggleLock,
   onExpand
 }: {
   id: TodayWidgetId
   editMode: boolean
   locked: boolean
-  notify?: boolean
   onToggleLock: () => void
   onExpand: () => void
 }): React.JSX.Element {
@@ -87,13 +85,12 @@ function TodayWidgetChrome({
       className={[
         'today-widget-chrome',
         'today-widget-chrome-bar',
-        editMode ? 'today-widget-chrome-bar--edit' : '',
-        notify ? 'has-notify' : ''
+        editMode ? 'today-widget-chrome-bar--edit' : ''
       ]
         .filter(Boolean)
         .join(' ')}
       role="group"
-      aria-label={notify ? `${label}, есть уведомление` : label}
+      aria-label={label}
     >
       <span
         className="today-widget-drag-handle"
@@ -102,10 +99,7 @@ function TodayWidgetChrome({
       >
         <GripVertical size={15} strokeWidth={2} aria-hidden />
       </span>
-      <span className="today-widget-chrome-title">
-        {label}
-        {notify ? <i className="today-widget-notify-dot" title="Есть уведомление" aria-hidden /> : null}
-      </span>
+      <span className="today-widget-chrome-title">{label}</span>
       <button
         type="button"
         className="today-widget-expand-btn"
@@ -149,40 +143,28 @@ export function TodayWidgetGrid({
   widgets,
   visibleWidgetIds,
   rightRail,
-  openWidgetId,
-  onOpenWidgetConsumed,
-  widgetAlerts,
-  onWidgetOpened
+  kpiFocusWidgetIds
 }: {
   userId: string
   editMode: boolean
   layoutWithStatic: LayoutItem[]
-  fullLayout?: LayoutItem[]
+  fullLayout: LayoutItem[]
   locked: Partial<Record<TodayWidgetId, boolean>>
   onLayoutChange: (layout: Layout) => void
   onToggleLock: (id: TodayWidgetId) => void
-  onRequestEditMode?: () => void
+  onRequestEditMode: () => void
   widgets: Record<TodayWidgetId, React.ReactNode>
   visibleWidgetIds: TodayWidgetId[]
   rightRail?: React.ReactNode
-  openWidgetId?: TodayWidgetId | null
-  onOpenWidgetConsumed?: () => void
-  widgetAlerts?: Partial<Record<TodayWidgetId, boolean>>
-  onWidgetOpened?: (id: TodayWidgetId) => void
+  /** Подсветка виджета после клика по KPI-плитке. */
+  kpiFocusWidgetIds?: TodayWidgetId[]
 }): React.JSX.Element {
   const canvasRef = useRef<HTMLDivElement>(null)
-  const layoutRef = useRef(fullLayout || layoutWithStatic)
+  const layoutRef = useRef(fullLayout)
   const layoutSessionRef = useRef(false)
   const layoutReadyRef = useRef(false)
   const [expandedWidgetId, setExpandedWidgetId] = useState<TodayWidgetId | null>(null)
   const [sessionLayout, setSessionLayout] = useState<LayoutItem[] | null>(null)
-
-  useEffect(() => {
-    if (!openWidgetId) return
-    setExpandedWidgetId(openWidgetId)
-    onWidgetOpened?.(openWidgetId)
-    onOpenWidgetConsumed?.()
-  }, [onOpenWidgetConsumed, onWidgetOpened, openWidgetId])
 
   const visibleLayout = useMemo(
     () => layoutWithStatic.filter((item) => visibleWidgetIds.includes(item.i as TodayWidgetId)),
@@ -199,8 +181,8 @@ export function TodayWidgetGrid({
   )
 
   useEffect(() => {
-    layoutRef.current = fullLayout || layoutWithStatic
-  }, [fullLayout, layoutWithStatic])
+    layoutRef.current = fullLayout
+  }, [fullLayout])
 
   useEffect(() => {
     if (!layoutSessionRef.current) setSessionLayout(null)
@@ -211,8 +193,11 @@ export function TodayWidgetGrid({
     if (!node) return
 
     const measure = (): void => {
-      const viewportHeight = node.parentElement?.clientHeight ?? node.clientHeight
-      const height = Math.max(viewportHeight, GRID_MIN_CANVAS_HEIGHT)
+      const parentH = node.parentElement?.clientHeight ?? 0
+      const selfH = node.clientHeight ?? 0
+      const viewportHeight = parentH > 0 ? parentH : selfH
+      const height =
+        viewportHeight > 0 ? viewportHeight : Math.max(parentH, selfH, GRID_MIN_CANVAS_HEIGHT)
       const width = node.clientWidth
       const layoutRows = editMode
         ? Math.max(TODAY_GRID_MAX_ROWS, extentRows)
@@ -231,8 +216,8 @@ export function TodayWidgetGrid({
 
   const beginLayoutSession = useCallback(() => {
     layoutSessionRef.current = true
-    onRequestEditMode?.()
-  }, [onRequestEditMode])
+    if (!editMode) onRequestEditMode()
+  }, [editMode, onRequestEditMode])
 
   const settleLayout = useCallback(
     (next: Layout, priorityIds: string[]) => {
@@ -271,6 +256,8 @@ export function TodayWidgetGrid({
     [colWidth, marginX, marginY, rowHeight]
   )
 
+  const focusSet = useMemo(() => new Set(kpiFocusWidgetIds || []), [kpiFocusWidgetIds])
+
   const children = useMemo(() => {
     return visibleWidgetIds.map((id) => (
       <div key={id} className="today-widget-grid-item">
@@ -278,7 +265,8 @@ export function TodayWidgetGrid({
           className={[
             'today-widget-shell',
             editMode ? 'today-widget-shell--edit' : '',
-            locked[id] ? 'today-widget-shell--locked' : ''
+            locked[id] ? 'today-widget-shell--locked' : '',
+            focusSet.has(id) ? 'today-widget-shell--kpi-focus' : ''
           ]
             .filter(Boolean)
             .join(' ')}
@@ -288,18 +276,18 @@ export function TodayWidgetGrid({
             id={id}
             editMode={editMode}
             locked={Boolean(locked[id])}
-            notify={Boolean(widgetAlerts?.[id])}
             onToggleLock={() => onToggleLock(id)}
-            onExpand={() => {
-              setExpandedWidgetId(id)
-              onWidgetOpened?.(id)
-            }}
+            onExpand={() => setExpandedWidgetId(id)}
           />
-          <div className="today-widget-content">{widgets[id]}</div>
+          <div className="today-widget-content">
+            <TodayWidgetRequestExpandContext.Provider value={() => setExpandedWidgetId(id)}>
+              {widgets[id]}
+            </TodayWidgetRequestExpandContext.Provider>
+          </div>
         </div>
       </div>
     ))
-  }, [editMode, locked, onToggleLock, onWidgetOpened, visibleWidgetIds, widgetAlerts, widgets])
+  }, [editMode, focusSet, locked, onToggleLock, visibleWidgetIds, widgets])
 
   return (
     <>
@@ -318,6 +306,7 @@ export function TodayWidgetGrid({
         data-user-id={userId || 'default'}
       >
         <GridLayout
+          key={editMode ? 'today-grid-edit' : 'today-grid-view'}
           className="today-widget-grid"
           style={{
             height: editMode ? canvasHeight : '100%',
@@ -350,10 +339,10 @@ export function TodayWidgetGrid({
           onResizeStop={(layout, _oldItem, newItem) => {
             settleLayout(layout, newItem?.i ? [newItem.i] : [])
           }}
-          draggableHandle=".today-widget-drag-handle"
+          draggableHandle=".today-widget-chrome-bar--edit, .today-widget-drag-handle"
           draggableCancel=".today-widget-expand-btn, .today-widget-lock-btn"
-          isDraggable
-          isResizable
+          isDraggable={editMode}
+          isResizable={editMode}
           isBounded
           compactType={null}
           preventCollision={false}

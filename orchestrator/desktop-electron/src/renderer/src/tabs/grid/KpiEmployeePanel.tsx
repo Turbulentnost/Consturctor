@@ -25,7 +25,15 @@ function yMaxForMetric(metric: WorkplaceKpiEmployeeMetric): number {
   return 100
 }
 
-function KpiEmployeeTile({ metric, gradId }: { metric: WorkplaceKpiEmployeeMetric; gradId: string }): React.JSX.Element {
+function KpiEmployeeTile({
+  metric,
+  gradId,
+  onInfo
+}: {
+  metric: WorkplaceKpiEmployeeMetric
+  gradId: string
+  onInfo?: (code: string) => void
+}): React.JSX.Element {
   const width = 200
   const height = 52
   const yMax = yMaxForMetric(metric)
@@ -38,6 +46,17 @@ function KpiEmployeeTile({ metric, gradId }: { metric: WorkplaceKpiEmployeeMetri
     <article className="kpi-employee-tile">
       <div className="kpi-employee-tile-head">
         <span className="kpi-employee-tile-title">{metric.title}</span>
+        {onInfo ? (
+          <button
+            type="button"
+            className="kpi-employee-info"
+            title="Как считается этот показатель"
+            aria-label={`Как считается «${metric.title}»`}
+            onClick={() => onInfo(metric.id)}
+          >
+            i
+          </button>
+        ) : null}
       </div>
       <div className="kpi-employee-tile-values">
         <strong>{metric.displayValue}</strong>
@@ -63,22 +82,23 @@ function KpiEmployeeTile({ metric, gradId }: { metric: WorkplaceKpiEmployeeMetri
 }
 
 export function KpiEmployeePanel({
-  title = 'KPI сотрудника',
   metrics,
   loading,
-  needsBuild = false,
+  needsMethodology,
+  onCalculate,
   onDetails,
-  onUploadMethodology
+  onInfo
 }: {
-  title?: string
   metrics: WorkplaceKpiEmployeeMetric[]
   loading?: boolean
-  needsBuild?: boolean
+  /** Нет готового модуля расчёта KPI должности — не показываем заглушку. */
+  needsMethodology?: boolean
+  onCalculate?: () => void
   onDetails?: () => void
-  onUploadMethodology?: () => void
+  /** Открыть код, источник и формулу показателя. */
+  onInfo?: (code: string) => void
 }): React.JSX.Element {
   const gradPrefix = useId().replace(/:/g, '')
-  const showUpload = needsBuild || (!loading && metrics.length === 0)
   return (
     <section className="kpi-employee-panel">
       <header className="kpi-employee-panel-head">
@@ -93,29 +113,24 @@ export function KpiEmployeePanel({
             />
           </svg>
         </span>
-        <h3 className="kpi-employee-panel-title">{title}</h3>
-        {showUpload ? null : (
-          <button type="button" className="kpi-employee-panel-more" onClick={() => onDetails?.()} title="Подробнее">
-            Подробнее →
-          </button>
-        )}
+        <h3 className="kpi-employee-panel-title">KPI сотрудника</h3>
+        <button type="button" className="kpi-employee-panel-more" onClick={() => onDetails?.()} title="Подробнее">
+          Подробнее →
+        </button>
       </header>
-      {loading && !metrics.length && !showUpload ? (
+      {loading && !metrics.length ? (
         <p className="spec-v04-muted kpi-employee-loading">Загружаем…</p>
-      ) : showUpload ? (
+      ) : needsMethodology ? (
         <div className="kpi-employee-empty">
-          <p className="kpi-employee-empty-text">
-            Для этой должности ещё нет рабочей методики расчёта KPI. Загрузите положение о мотивации
-            — соберём показатели и подключим калькуляторы.
-          </p>
-          <button type="button" className="kpi-employee-upload-btn" onClick={() => onUploadMethodology?.()}>
-            Загрузить методику расчёта
+          <p>Для этой должности ещё нет модуля расчёта KPI.</p>
+          <button type="button" className="spec-btn-launch" onClick={() => onCalculate?.()}>
+            Рассчитать методику
           </button>
         </div>
       ) : (
         <div className="kpi-employee-grid">
           {metrics.map((m) => (
-            <KpiEmployeeTile key={m.id} metric={m} gradId={`${gradPrefix}-${m.id}`} />
+            <KpiEmployeeTile key={m.id} metric={m} gradId={`${gradPrefix}-${m.id}`} onInfo={onInfo} />
           ))}
         </div>
       )}

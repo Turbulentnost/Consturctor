@@ -31,7 +31,7 @@ def _authorized_request(
         raise RuntimeError("Нет сессии пользователя — войдите в Constructor.")
     url = f"{_base_url}{path}"
     headers = {"Authorization": f"Bearer {_token}", "Accept": accept}
-    with httpx.Client(timeout=timeout) as client:
+    with httpx.Client(timeout=timeout, trust_env=False) as client:
         response = client.request(method, url, headers=headers, json=json, params=params)
     if response.status_code >= 400:
         detail = response.text

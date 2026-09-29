@@ -18,8 +18,6 @@ interface AgentFeedProps {
   allowQuestionFiles?: boolean
   hideRunningStatus?: boolean
   dockQuestion?: boolean
-  /** Grow with the parent scroller instead of keeping a nested overflow. */
-  embed?: boolean
   onAnswer: (requestId: string, value: string, filePaths?: string[]) => void
   onHitl: (requestId: string, approved: boolean) => void
   onSkip: () => void
@@ -102,7 +100,6 @@ export function AgentFeed({
   allowQuestionFiles = false,
   hideRunningStatus = false,
   dockQuestion = false,
-  embed = false,
   onAnswer,
   onHitl,
   onSkip
@@ -123,20 +120,16 @@ export function AgentFeed({
   const resultMeetings = useMemo(() => meetingsFromFeed(visibleItems), [visibleItems])
 
   useEffect(() => {
-    if (embed || !pinnedRef.current) return
+    if (!pinnedRef.current) return
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [embed, visibleItems, pendingQuestion, pendingHitl, status, running])
+  }, [visibleItems, pendingQuestion, pendingHitl, status, running])
   const hasResultItem = visibleItems.some((item) => item.kind === 'result')
   const liftCalendar = resultMeetings.length > 0
   const isEmpty = visibleItems.length === 0 && !pendingQuestion && !pendingHitl && !running
 
   return (
-    <div
-      className={embed ? 'agent-feed agent-feed--embed' : 'agent-feed'}
-      ref={embed ? undefined : scrollRef}
-      onScroll={embed ? undefined : handleScroll}
-    >
+    <div className="agent-feed" ref={scrollRef} onScroll={handleScroll}>
       {isEmpty && emptyHint && <div className="agent-feed-empty">{emptyHint}</div>}
       {visibleItems.map((item) => (
         <FeedRow

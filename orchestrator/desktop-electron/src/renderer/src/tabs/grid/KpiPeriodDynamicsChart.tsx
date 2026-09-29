@@ -24,6 +24,7 @@ export function KpiPeriodDynamicsChart({ dynamics }: { dynamics: WorkplaceKpiDyn
   const height = 120
   const yMax = dynamics.yMax || 100
   const labels = dynamics.xLabels
+  const xFont = labels.length > 8 ? 9 : 11
   const yTicks = [0, 50, 100].filter((t) => t <= yMax)
 
   const innerW = width - PAD.left - PAD.right
@@ -49,7 +50,7 @@ export function KpiPeriodDynamicsChart({ dynamics }: { dynamics: WorkplaceKpiDyn
           return (
             <g key={`x-${label}-${index}`}>
               <line x1={x} x2={x} y1={PAD.top} y2={PAD.top + innerH} className="kpi-period-grid kpi-period-grid--v" />
-              <text x={x} y={height - 4} textAnchor="middle" className="kpi-period-axis-x">
+              <text x={x} y={height - 4} textAnchor="middle" className="kpi-period-axis-x" fontSize={xFont}>
                 {label}
               </text>
             </g>

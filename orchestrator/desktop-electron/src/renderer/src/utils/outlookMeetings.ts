@@ -1,4 +1,10 @@
-import { addDays, mondayOf, sameDay, type CalendarView } from './calendar'
+import { addDays, mondayOf, type CalendarView } from './calendar'
+import {
+  calendarStatusFor,
+  publishCalendarStatus,
+  readTrackedCalendars,
+  type CalendarReadStatus
+} from './trackedCalendars'
 
 export function isOutlookFolderOwner(value: string | undefined): boolean {
   const text = String(value || '').trim().toLowerCase()
@@ -58,12 +64,8 @@ interface OutlookMeetingRaw {
   optional_attendees?: string
 }
 
-const CACHE_KEY = 'orchOutlookMeetings:v6'
+const CACHE_KEY = 'orchOutlookMeetings:v5'
 const REQUEST_TIMEOUT_MS = 180_000
-const inflight = new Map<
-  string,
-  Promise<{ ok: boolean; meetings: MeetingEvent[]; error?: string; cached: boolean }>
->()
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0')
@@ -138,6 +140,30 @@ export function meetingInvolvesPerson(meeting: MeetingEvent, person: string): bo
     return hay.includes(last)
   }
   return last ? hay.includes(last) : false
+}
+
+function meetingDayKey(meeting: MeetingEvent): string {
+  const parsed = parseMeetingTime(meeting.start)
+  if (parsed) return dayKey(parsed)
+  const raw = (meeting.start || '').trim()
+  return raw.length >= 10 ? raw.slice(0, 10) : raw
+}
+
+/** One calendar occurrence (Outlook id + local day). Recurring series share id but not this key. */
+export function meetingInstanceKey(meeting: MeetingEvent): string {
+  const id = (meeting.id || '').trim()
+  const day = meetingDayKey(meeting)
+  if (id && day) return `${id}|${day}`
+  if (id) return id
+  return `${day}|${(meeting.subject || '').trim()}`
+}
+
+/** Marker in comment протокола 1С: outlook:<EntryID>|YYYY-MM-DD */
+export function meetingOutlookMarker(meeting: MeetingEvent): string {
+  const id = (meeting.id || '').trim()
+  if (!id) return ''
+  const day = meetingDayKey(meeting)
+  return day ? `outlook:${id}|${day}` : `outlook:${id}`
 }
 
 function meetingDedupeKey(meeting: MeetingEvent): string {
@@ -221,6 +247,24 @@ function writeCache(cache: MeetingCache): void {
   }
 }
 
+/** Users whose meetings come from someone else's shared Outlook calendar instead of their own. */
+const SHARED_MEETING_CALENDARS: { surname: string; calendarOwner: string }[] = [
+  { surname: 'ильченко', calendarOwner: 'Амураль Игорь Борисович' }
+]
+
+export function sharedMeetingCalendarFor(fio: string | undefined): string {
+  const surname = String(fio || '').trim().split(/\s+/)[0]?.toLocaleLowerCase('ru') || ''
+  if (!surname) return ''
+  return SHARED_MEETING_CALENDARS.find((item) => item.surname === surname)?.calendarOwner || ''
+}
+
+type CalendarRequestResult = {
+  ok: boolean
+  meetings: MeetingEvent[]
+  error?: string
+  calendars?: CalendarReadStatus[]
+}
+
 /** Low-level: ask the local Outlook (via the agent sidecar) for meetings. */
 function requestOutlookMeetings(range: {
   dateFrom: string
@@ -228,11 +272,12 @@ function requestOutlookMeetings(range: {
   people?: string[]
   forUser?: string
   allVisible?: boolean
-}): Promise<{ ok: boolean; meetings: MeetingEvent[]; error?: string }> {
+  calendarOwners?: string[]
+}): Promise<CalendarRequestResult> {
   return new Promise((resolve) => {
     const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     let settled = false
-    const finish = (result: { ok: boolean; meetings: MeetingEvent[]; error?: string }): void => {
+    const finish = (result: CalendarRequestResult): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -253,10 +298,15 @@ function requestOutlookMeetings(range: {
             .map((item, index) => normalizeMeeting(item, index))
             .filter((item) => meetingInvolvesPerson(item, range.forUser || ''))
         )
-        finish({
-          ok: true,
-          meetings
+        const calendars = (Array.isArray(payload.calendars) ? payload.calendars : []).map((item) => {
+          const row = (item || {}) as { person?: unknown; count?: unknown; hint?: unknown }
+          return {
+            person: String(row.person || ''),
+            count: Number(row.count) || 0,
+            hint: row.hint ? String(row.hint) : undefined
+          }
         })
+        finish({ ok: true, meetings, calendars })
       } else {
         finish({
           ok: false,
@@ -271,54 +321,27 @@ function requestOutlookMeetings(range: {
       dateTo: range.dateTo,
       people: range.people,
       forUser: range.forUser,
-      allVisible: range.allVisible
+      allVisible: range.allVisible,
+      calendarOwners: range.calendarOwners
     })
   })
 }
 
-export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()): number {
-  return meetings.filter((item) => meetingOverlapsLocalDay(item, anchor)).length
-}
-
-/** Meeting starts, ends or spans the local calendar day. */
-export function meetingOverlapsLocalDay(meeting: MeetingEvent, day: Date): boolean {
-  const start = parseMeetingTime(meeting.start)
-  if (!start) return false
-  if (sameDay(start, day)) return true
-  const end = parseMeetingTime(meeting.end)
-  if (end && sameDay(end, day)) return true
-  if (!end || end <= start) return false
-  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate())
-  const dayEnd = addDays(dayStart, 1)
-  return start < dayEnd && end > dayStart
-}
-
 /**
- * «Предстоящие события» = те же совещания, что колонка выбранного дня
- * на вкладке «Совещания» и плитка «События дня». Не подмешивать остаток недели.
+ * Return the user's meetings for the window a view needs, hitting Outlook at most
+ * once per day (the "first launch of the day" fetch) unless `force` is set or the
+ * cached window does not cover what is requested. Subsequent same-day reads for a
+ * covered window are served from localStorage without touching Outlook COM.
  */
-export function selectUpcomingEventMeetings(
-  meetings: MeetingEvent[],
-  periodDay: Date
-): MeetingEvent[] {
-  return meetings
-    .filter((meeting) => meetingOverlapsLocalDay(meeting, periodDay))
-    .sort((left, right) => left.start.localeCompare(right.start))
-}
-
-function meetingsFromCache(
-  cache: MeetingCache,
-  owner: string,
-  allVisible: boolean
-): MeetingEvent[] {
-  const list = dedupeMeetingEvents(cache.meetings)
-  if (!allVisible) return list
-  return list.filter((item) => meetingInvolvesPerson(item, owner))
-}
-
-function cacheCoversWindow(cache: MeetingCache, fromKey: string, toKey: string): boolean {
-  if (cache.from > fromKey || cache.to < toKey) return false
-  return cache.meetings.length > 0 || (cache.from === fromKey && cache.to === toKey)
+export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()): number {
+  const y = anchor.getFullYear()
+  const m = anchor.getMonth()
+  const d = anchor.getDate()
+  return meetings.filter((item) => {
+    const start = parseMeetingTime(item.start)
+    if (!start) return false
+    return start.getFullYear() === y && start.getMonth() === m && start.getDate() === d
+  }).length
 }
 
 export async function ensureOutlookMeetings(
@@ -331,57 +354,51 @@ export async function ensureOutlookMeetings(
   const toKey = dayKey(addDays(win.to, -1))
   const today = dayKey(new Date())
   const owner = (options.owner || '').trim()
-  const allVisible = Boolean(options.allVisible)
-  const inflightKey = `${fromKey}|${toKey}|${owner}|${Number(allVisible)}`
+  const baseCalendar = sharedMeetingCalendarFor(owner)
+  const tracked = readTrackedCalendars(owner).filter(
+    (person) => person.toLocaleLowerCase('ru') !== baseCalendar.toLocaleLowerCase('ru')
+  )
+  const calendarOwners = baseCalendar || tracked.length ? [baseCalendar, ...tracked] : []
+  const cacheOwner = calendarOwners.length ? `${owner}@${calendarOwners.join('|')}` : owner
 
   if (!options.force) {
     const cache = readCache()
-    if (cache && cache.day === today && cache.owner === owner && cacheCoversWindow(cache, fromKey, toKey)) {
+    if (
+      cache &&
+      cache.day === today &&
+      cache.owner === cacheOwner &&
+      cache.from <= fromKey &&
+      cache.to >= toKey
+    ) {
       return {
         ok: true,
-        meetings: meetingsFromCache(cache, owner, allVisible),
+        meetings: dedupeMeetingEvents(
+          calendarOwners.length
+            ? cache.meetings
+            : cache.meetings.filter((item) => meetingInvolvesPerson(item, owner))
+        ),
         error: '',
         cached: true
       }
     }
-    const pending = inflight.get(inflightKey)
-    if (pending) return pending
   }
 
-  const run = (async () => {
-    const result = await requestOutlookMeetings({
-      dateFrom: fromKey,
-      dateTo: toKey,
-      forUser: allVisible ? owner : undefined,
-      allVisible
-    })
-    if (result.ok) {
-      const prev = readCache()
-      if (
-        result.meetings.length === 0 &&
-        prev &&
-        prev.day === today &&
-        prev.owner === owner &&
-        prev.meetings.length > 0 &&
-        cacheCoversWindow(prev, fromKey, toKey)
-      ) {
-        return {
-          ok: true,
-          meetings: meetingsFromCache(prev, owner, allVisible),
-          error: '',
-          cached: true
+  const result = await requestOutlookMeetings(
+    calendarOwners.length
+      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners }
+      : {
+          dateFrom: fromKey,
+          dateTo: toKey,
+          forUser: options.allVisible ? owner : undefined,
+          allVisible: Boolean(options.allVisible)
         }
-      }
-      writeCache({ day: today, from: fromKey, to: toKey, owner, meetings: result.meetings })
-    }
-    return { ...result, cached: false }
-  })()
-
-  if (!options.force) {
-    inflight.set(inflightKey, run)
-    void run.finally(() => {
-      if (inflight.get(inflightKey) === run) inflight.delete(inflightKey)
-    })
+  )
+  if (!result.ok) return { ...result, cached: false }
+  publishCalendarStatus(result.calendars || [])
+  const baseStatus = baseCalendar ? calendarStatusFor(baseCalendar, result.calendars || []) : undefined
+  if (baseStatus?.hint && !result.meetings.length) {
+    return { ok: false, meetings: [], error: `Календарь «${baseCalendar}»: ${baseStatus.hint}`, cached: false }
   }
-  return run
+  writeCache({ day: today, from: fromKey, to: toKey, owner: cacheOwner, meetings: result.meetings })
+  return { ...result, cached: false }
 }

@@ -1,272 +1,168 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Plus } from 'lucide-react'
+import type { UserProfile } from '../../api/types'
 import type { SpecMailRow } from '../../workplace/specV04DemoData'
 import { SpecPill } from '../../workplace/specV04Components'
+import { MailIncomingCreateDialog } from './MailIncomingCreateDialog'
 import {
   displayOutlookMail,
-  fetchOutlookMailDetail,
   hasOutlookEntryId,
   markOutlookMailRead,
-  saveOutlookAttachment,
-  type OutlookMailAttachment,
   type OutlookMailDetail
 } from '../../utils/outlookMailActions'
-import { fetchImapMessage, parseImapUid } from '../../utils/imapMail'
-import {
-  downloadAttachmentCopy,
-  ensureAttachmentSaved,
-  loadAttachmentPreview,
-  openAttachmentExternally
-} from '../../utils/mailAttachmentPreview'
-import { MailAttachmentsModal } from './MailAttachmentsModal'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
+import { MailLetterTabs, useMailDetail } from './MailLetterTabs'
+import { formatMailTime } from '../../utils/outlookMail'
+import './mailGrid.css'
 
 export function MailDetailPanel({
   mail,
+  user,
   onPatchRow,
   onAskOrchestrator
 }: {
   mail: SpecMailRow
+  user: UserProfile
   onPatchRow?: (id: string, patch: Partial<SpecMailRow>) => void
   onAskOrchestrator?: (message: string) => void
 }): React.JSX.Element {
+  const loaded = useMailDetail(mail)
   const [detail, setDetail] = useState<OutlookMailDetail | null>(null)
-  const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState('')
   const [note, setNote] = useState('')
-  const [attModalOpen, setAttModalOpen] = useState(false)
-  const [attModalFocus, setAttModalFocus] = useState<number | undefined>()
+  const [incomingDialogOpen, setIncomingDialogOpen] = useState(false)
 
   const showNote = useCallback((text: string, isError = false): void => {
     setNote(isError ? text : text)
     if (text) {
-      window.setTimeout(() => setNote(''), 4000)
+      window.setTimeout(() => setNote(''), 6000)
     }
   }, [])
 
   const canOutlookActions = hasOutlookEntryId(mail)
 
   useEffect(() => {
-    let alive = true
-    setDetail(null)
-    setLoading(true)
     setNote('')
-    const load = async (): Promise<void> => {
-      if (hasOutlookEntryId(mail)) {
-        const res = await fetchOutlookMailDetail(mail)
-        if (!alive) return
-        setLoading(false)
-        if (res.ok) {
-          setDetail(res.detail)
-          if (typeof res.detail.unread === 'boolean') {
-            onPatchRow?.(mail.id, {
-              unread: res.detail.unread,
-              status: res.detail.unread ? 'Непрочитано' : 'Прочитано',
-              stTone: res.detail.unread ? 'orange' : 'blue'
-            })
-          }
-          return
-        }
-        showNote(res.error, true)
-        return
-      }
-      const uid = parseImapUid(mail)
-      if (!uid) {
-        setLoading(false)
-        return
-      }
-      const res = await fetchImapMessage(uid)
-      if (!alive) return
-      setLoading(false)
-      if (res.ok) {
-        setDetail({
-          entryId: '',
-          subject: res.subject || mail.subject,
-          sender: res.from || mail.sender,
-          body: res.body,
-          bodyPreview: res.body.slice(0, 400),
-          unread: Boolean(mail.unread),
-          attachments: []
-        })
-        return
-      }
-      showNote(res.error || 'IMAP: не удалось загрузить письмо', true)
+  }, [mail.id])
+
+  useEffect(() => {
+    setDetail(loaded.detail)
+    if (loaded.detail && hasOutlookEntryId(mail) && typeof loaded.detail.unread === 'boolean') {
+      onPatchRow?.(mail.id, {
+        unread: loaded.detail.unread,
+        status: loaded.detail.unread ? 'Непрочитано' : 'Прочитано',
+        stTone: loaded.detail.unread ? 'orange' : 'blue'
+      })
     }
-    void load()
-    return () => {
-      alive = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload only when selection changes
-  }, [mail.id, mail.entryId, mail.imapUid])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync once per loaded letter
+  }, [loaded.detail])
+
+  useEffect(() => {
+    if (loaded.error) showNote(loaded.error, true)
+  }, [loaded.error, showNote])
 
   const runAction = async (label: string, fn: () => Promise<{ ok: boolean; error?: string }>): Promise<void> => {
     if (busy) return
     setBusy(label)
     try {
       const res = await fn()
-      if (res.ok) showNote('Готово')
+      if (res.ok) {
+        showNote(
+          label === 'open' || label === 'reply' || label === 'reply_all'
+            ? 'Открыто в Outlook'
+            : 'Готово'
+        )
+      }
       else showNote(res.error || 'Ошибка', true)
     } finally {
       setBusy('')
     }
   }
 
-  const openInOrchestrator = (att: OutlookMailAttachment): void => {
-    setAttModalFocus(att.index)
-    setAttModalOpen(true)
-  }
-
-  const quickOpenAttachment = async (att: OutlookMailAttachment): Promise<void> => {
+  const openCreateIncoming = (): void => {
     if (busy) return
-    setBusy('attachment')
-    try {
-      const saved = await ensureAttachmentSaved(mail, att)
-      if (!saved.ok) {
-        showNote(saved.error, true)
-        return
-      }
-      const preview = await loadAttachmentPreview(saved.path)
-      if (preview.kind === 'external' || preview.kind === 'too_large') {
-        const opened = await openAttachmentExternally(saved.path)
-        if (opened.ok) showNote('Открыто')
-        else showNote(opened.error || 'Ошибка', true)
-        return
-      }
-      if (preview.kind === 'error') {
-        showNote(preview.message, true)
-        return
-      }
-      setAttModalFocus(att.index)
-      setAttModalOpen(true)
-    } finally {
-      setBusy('')
-    }
+    setIncomingDialogOpen(true)
   }
-
-  const quickDownloadAttachment = async (att: OutlookMailAttachment): Promise<void> => {
-    await runAction('download', async () => {
-      const saved = await saveOutlookAttachment(mail, att.index)
-      if (!saved.ok) return { ok: false, error: saved.error }
-      const res = await downloadAttachmentCopy(saved.path, att.file_name)
-      if (res.canceled) return { ok: true }
-      return res
-    })
-  }
-
-  const bodyText =
-    detail?.body?.trim() ||
-    detail?.bodyPreview?.trim() ||
-    mail.bodyPreview?.trim() ||
-    (loading ? 'Загружаем текст…' : 'Текст письма недоступен')
-
-  const attachments: OutlookMailAttachment[] =
-    detail?.attachments?.length
-      ? detail.attachments
-      : (mail.attachmentNames || []).map((name, idx) => ({
-          index: idx + 1,
-          file_name: name
-        }))
 
   return (
     <>
-      <div className="spec-detail-card spec-mail-preview wp-card">
-        <h2>{mail.subject}</h2>
-        <p className="spec-v04-muted">
-          От: {mail.sender} · {mail.time}
-        </p>
-        <div className="spec-detail-tags">
-          <SpecPill tone={mail.priTone}>{mail.priority}</SpecPill>
-          <SpecPill tone={mail.stTone}>{mail.status}</SpecPill>
-          <SpecPill tone={mail.catTone}>{mail.category}</SpecPill>
-        </div>
-        {note ? <p className="spec-v04-muted spec-mail-action-note">{note}</p> : null}
-        {!canOutlookActions ? (
-          <p className="spec-v04-muted spec-mail-action-note">
-            Ответ / открыть / прочитано — через Outlook COM (письмо только в IMAP).
+      <div className="spec-detail-card spec-mail-detail-grid wp-card">
+        <header className="spec-mail-detail-grid__head">
+          <h2>{decodeMimeHeader(mail.subject)}</h2>
+          <p className="spec-v04-muted">
+            От: {decodeMimeHeader(mail.sender)} · {formatMailTime(mail.time)}
           </p>
-        ) : null}
-        <div className="spec-mail-body-preview">{bodyText}</div>
-        {attachments.length ? (
-          <div className="spec-attachments spec-mail-attachments">
-            <div className="spec-mail-att-head">
-              <h4 className="spec-detail-pane">Вложения ({attachments.length})</h4>
-              <button
-                type="button"
-                className="spec-btn-outline spec-mail-att-open-all"
-                disabled={Boolean(busy)}
-                onClick={() => {
-                  setAttModalFocus(undefined)
-                  setAttModalOpen(true)
-                }}
-              >
-                Все вложения
-              </button>
-            </div>
-            <ul className="spec-mail-att-compact-list">
-              {attachments.map((att) => (
-                <li key={`${mail.id}-${att.index}`} className="spec-mail-att-compact-row">
-                  <span className="spec-mail-att-name">{att.file_name}</span>
-                  <div className="spec-mail-att-compact-actions">
-                    <button
-                      type="button"
-                      className="spec-btn-launch spec-mail-att-action-btn"
-                      disabled={Boolean(busy)}
-                      onClick={() => void quickOpenAttachment(att)}
-                    >
-                      Открыть
-                    </button>
-                    <button
-                      type="button"
-                      className="spec-btn-outline spec-mail-att-action-btn"
-                      disabled={Boolean(busy)}
-                      onClick={() => void quickDownloadAttachment(att)}
-                    >
-                      Скачать
-                    </button>
-                    <button
-                      type="button"
-                      className="spec-btn-outline spec-mail-att-action-btn"
-                      disabled={Boolean(busy)}
-                      onClick={() => openInOrchestrator(att)}
-                    >
-                      В оркестраторе
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+          <div className="spec-detail-tags">
+            <SpecPill tone={mail.priTone}>{mail.priority}</SpecPill>
+            <SpecPill tone={mail.stTone}>{mail.status}</SpecPill>
+            <SpecPill tone={mail.catTone}>{mail.category}</SpecPill>
           </div>
-        ) : null}
-        <footer className="spec-detail-actions spec-mail-detail-actions">
+        </header>
+
+        <div className="spec-mail-detail-grid__content">
+          <MailLetterTabs mail={mail} detail={detail} loading={loaded.loading} onToast={showNote} />
+        </div>
+
+        <footer className="spec-mail-detail-grid__actions">
+          {note ? <p className="spec-v04-muted spec-mail-detail-grid__note">{note}</p> : null}
+          {!canOutlookActions ? (
+            <p className="spec-v04-muted spec-mail-detail-grid__note">
+              Ответ / входящая в 1С — через Outlook COM (это письмо только из IMAP).
+            </p>
+          ) : null}
           <button
             type="button"
-            className="spec-btn-launch spec-btn-launch-block"
-            disabled={Boolean(busy) || !canOutlookActions}
+            className="spec-btn-launch"
+            disabled={Boolean(busy)}
             onClick={() => void runAction('reply', () => displayOutlookMail(mail, 'reply'))}
           >
             {busy === 'reply' ? '…' : 'Ответить'}
           </button>
           <button
             type="button"
-            className="spec-btn-outline spec-btn-outline-block"
-            disabled={Boolean(busy) || !canOutlookActions}
+            className="spec-btn-outline"
+            disabled={Boolean(busy)}
             onClick={() => void runAction('reply_all', () => displayOutlookMail(mail, 'reply_all'))}
           >
             {busy === 'reply_all' ? '…' : 'Ответить всем'}
           </button>
           <button
             type="button"
-            className="spec-btn-outline spec-btn-outline-block"
-            disabled={Boolean(busy) || !canOutlookActions}
+            className="spec-btn-launch"
+            disabled={Boolean(busy)}
             onClick={() => void runAction('open', () => displayOutlookMail(mail, 'open'))}
           >
             {busy === 'open' ? '…' : 'В Outlook'}
           </button>
+          {onAskOrchestrator ? (
+            <button
+              type="button"
+              className="spec-btn-outline"
+              disabled={Boolean(busy)}
+              onClick={() =>
+                onAskOrchestrator(
+                  `Помоги с письмом «${decodeMimeHeader(mail.subject)}» от ${decodeMimeHeader(mail.sender)}`
+                )
+              }
+            >
+              Передать ИИ
+            </button>
+          ) : (
+            <span aria-hidden />
+          )}
           <div className="spec-mail-read-row">
             <button
               type="button"
-              className="spec-btn-outline spec-mail-read-btn"
-              disabled={Boolean(busy) || !canOutlookActions}
+              className="spec-btn-launch spec-mail-read-btn"
+              disabled={Boolean(busy)}
               onClick={() =>
                 void runAction('read', async () => {
+                  if (!canOutlookActions) {
+                    return {
+                      ok: false,
+                      error: 'Это письмо из IMAP. Статус «прочитано» меняется только у письма в Outlook.'
+                    }
+                  }
                   const res = await markOutlookMailRead(mail, false)
                   if (res.ok) {
                     onPatchRow?.(mail.id, {
@@ -287,9 +183,15 @@ export function MailDetailPanel({
             <button
               type="button"
               className="spec-btn-outline spec-mail-read-btn"
-              disabled={Boolean(busy) || !canOutlookActions}
+              disabled={Boolean(busy)}
               onClick={() =>
                 void runAction('unread', async () => {
+                  if (!canOutlookActions) {
+                    return {
+                      ok: false,
+                      error: 'Это письмо из IMAP. Статус «прочитано» меняется только у письма в Outlook.'
+                    }
+                  }
                   const res = await markOutlookMailRead(mail, true)
                   if (res.ok) {
                     onPatchRow?.(mail.id, {
@@ -308,27 +210,24 @@ export function MailDetailPanel({
               Непрочитано
             </button>
           </div>
-          {onAskOrchestrator ? (
-            <button
-              type="button"
-              className="spec-btn-launch spec-btn-launch-block"
-              disabled={Boolean(busy)}
-              onClick={() =>
-                onAskOrchestrator(`Помоги с письмом «${mail.subject}» от ${mail.sender}`)
-              }
-            >
-              Передать ИИ
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="spec-btn-launch spec-mail-incoming-btn"
+            disabled={Boolean(busy)}
+            title="Заполнить маршрут и создать входящую в 1С через OData (как agent-pochta)"
+            onClick={openCreateIncoming}
+          >
+            <Plus size={14} aria-hidden /> Зарегистрировать входящую
+          </button>
         </footer>
       </div>
-      <MailAttachmentsModal
-        open={attModalOpen}
+      <MailIncomingCreateDialog
+        open={incomingDialogOpen}
         mail={mail}
-        attachments={attachments}
-        initialIndex={attModalFocus}
-        onClose={() => setAttModalOpen(false)}
-        onToast={showNote}
+        user={user}
+        detail={detail}
+        onClose={() => setIncomingDialogOpen(false)}
+        onCreated={(message, isError) => showNote(message, Boolean(isError))}
       />
     </>
   )

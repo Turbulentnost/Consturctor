@@ -16,6 +16,8 @@ engine = create_engine(
     pool_recycle=1800,
     pool_timeout=10,
     future=True,
+    # Without a DB the OS TCP timeout (~2 min) would stall every DB-backed request.
+    connect_args={"connect_timeout": 5} if settings.app_db_optional else {},
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
@@ -25,7 +27,9 @@ def init_db() -> None:
     from app.models import agent_run as _agent_run  # noqa: F401
     from app.models import calendar_overlay as _calendar_overlay  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
+    from app.models import org as _org  # noqa: F401
     from app.models import orchestrator as _orchestrator  # noqa: F401
+    from app.models import platform_task as _platform_task  # noqa: F401
     from app.models import regulation as _regulation  # noqa: F401
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401
@@ -110,6 +114,8 @@ def _ensure_columns() -> None:
             alters.append("ADD COLUMN activity_status VARCHAR(16) NOT NULL DEFAULT 'online'")
         if "is_support" not in existing:
             alters.append("ADD COLUMN is_support BOOLEAN NOT NULL DEFAULT FALSE")
+        if "onec_catalog_ref_key" not in existing:
+            alters.append("ADD COLUMN onec_catalog_ref_key VARCHAR(36) NOT NULL DEFAULT ''")
         if existing and "fio" not in existing:
             alters.append("ADD COLUMN fio VARCHAR(512) NOT NULL DEFAULT ''")
         if existing:
@@ -205,6 +211,24 @@ def _ensure_columns() -> None:
                 """
             )
         ).fetchall()
+        ptask_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'platform_tasks'
+                """
+            )
+        ).fetchall()
+        ptask_cols = {str(r[0]) for r in ptask_rows}
+        if ptask_cols and "review_due_at" not in ptask_cols:
+            conn.execute(text("ALTER TABLE platform_tasks ADD COLUMN review_due_at TIMESTAMPTZ NULL"))
+        if ptask_cols and "accepted_at" not in ptask_cols:
+            conn.execute(text("ALTER TABLE platform_tasks ADD COLUMN accepted_at TIMESTAMPTZ NULL"))
+        if ptask_cols and "rework_count" not in ptask_cols:
+            conn.execute(
+                text("ALTER TABLE platform_tasks ADD COLUMN rework_count INTEGER NOT NULL DEFAULT 0")
+            )
         creation_cols = {str(r[0]) for r in creation_rows}
         if creation_cols and "interview_json" not in creation_cols:
             conn.execute(

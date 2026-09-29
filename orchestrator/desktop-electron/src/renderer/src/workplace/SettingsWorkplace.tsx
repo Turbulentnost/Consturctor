@@ -2,15 +2,30 @@ import { useEffect, useMemo, useState } from 'react'
 import type { UserProfile } from '../api/types'
 import { api } from '../api/client'
 import {
+  defaultTodayTileVisibility,
   defaultTodayWidgetVisibility,
+  readTodayTileVisibility,
   readTodayWidgetVisibility,
+  TODAY_TILE_IDS,
+  TODAY_TILE_LABELS,
+  TODAY_TILE_VISIBILITY_EVENT,
   TODAY_WIDGET_IDS,
   TODAY_WIDGET_LABELS,
+  type TodayTileId,
   type TodayWidgetId,
-  writeTodayWidgetVisibility
+  writeTodayTileVisibility,
+  writeTodayWidgetVisibility,
+  TODAY_WIDGET_VISIBILITY_EVENT
 } from '../tabs/grid/todayWidgetSettings'
+import { OneCSessionProfileSection } from './OneCSessionProfileSection'
 
-type SettingsSection = 'general' | 'notifications' | 'access' | 'diagnostics' | 'integrations'
+type SettingsSection =
+  | 'general'
+  | 'notifications'
+  | 'access'
+  | 'diagnostics'
+  | 'integrations'
+  | 'onec_profile'
 
 type SendWhen = 'immediate' | '60m' | 'off'
 type Escalate = '30m' | 'none' | 'owner'
@@ -121,6 +136,7 @@ const TABS: { id: SettingsSection; label: string }[] = [
   { id: 'notifications', label: 'Уведомления' },
   { id: 'access', label: 'Права доступа' },
   { id: 'diagnostics', label: 'Диагностика' },
+  { id: 'onec_profile', label: 'Профиль 1С' },
   { id: 'integrations', label: 'Интеграции' }
 ]
 
@@ -333,6 +349,10 @@ export function SettingsWorkplace({
   const [widgetDraft, setWidgetDraft] = useState<Record<TodayWidgetId, boolean>>(() =>
     readTodayWidgetVisibility(user.id)
   )
+  const [tileVisibility, setTileVisibility] = useState<Record<TodayTileId, boolean>>(() =>
+    readTodayTileVisibility(user.id)
+  )
+  const [tileDraft, setTileDraft] = useState<Record<TodayTileId, boolean>>(() => readTodayTileVisibility(user.id))
 
   useEffect(() => {
     const next = loadPrefs(user.id)
@@ -341,6 +361,29 @@ export function SettingsWorkplace({
     const widgets = readTodayWidgetVisibility(user.id)
     setWidgetVisibility(widgets)
     setWidgetDraft(widgets)
+    const tiles = readTodayTileVisibility(user.id)
+    setTileVisibility(tiles)
+    setTileDraft(tiles)
+  }, [user.id])
+
+  useEffect(() => {
+    const syncTiles = (): void => {
+      const tiles = readTodayTileVisibility(user.id)
+      setTileVisibility(tiles)
+      setTileDraft(tiles)
+    }
+    window.addEventListener(TODAY_TILE_VISIBILITY_EVENT, syncTiles)
+    return () => window.removeEventListener(TODAY_TILE_VISIBILITY_EVENT, syncTiles)
+  }, [user.id])
+
+  useEffect(() => {
+    const syncWidgets = (): void => {
+      const widgets = readTodayWidgetVisibility(user.id)
+      setWidgetVisibility(widgets)
+      setWidgetDraft(widgets)
+    }
+    window.addEventListener(TODAY_WIDGET_VISIBILITY_EVENT, syncWidgets)
+    return () => window.removeEventListener(TODAY_WIDGET_VISIBILITY_EVENT, syncWidgets)
   }, [user.id])
 
   useEffect(() => {
@@ -382,8 +425,9 @@ export function SettingsWorkplace({
   const dirty = useMemo(
     () =>
       JSON.stringify(draft) !== JSON.stringify(prefs) ||
-      JSON.stringify(widgetDraft) !== JSON.stringify(widgetVisibility),
-    [draft, prefs, widgetDraft, widgetVisibility]
+      JSON.stringify(widgetDraft) !== JSON.stringify(widgetVisibility) ||
+      JSON.stringify(tileDraft) !== JSON.stringify(tileVisibility),
+    [draft, prefs, widgetDraft, widgetVisibility, tileDraft, tileVisibility]
   )
 
   function patchEvent(id: string, patch: Partial<EventChannelRow>): void {
@@ -398,6 +442,8 @@ export function SettingsWorkplace({
     setPrefs(draft)
     writeTodayWidgetVisibility(user.id, widgetDraft)
     setWidgetVisibility(widgetDraft)
+    writeTodayTileVisibility(user.id, tileDraft)
+    setTileVisibility(tileDraft)
     setSavedNote('Изменения сохранены')
   }
 
@@ -406,6 +452,17 @@ export function SettingsWorkplace({
     setDraft(next)
     const widgets = defaultTodayWidgetVisibility()
     setWidgetDraft(widgets)
+    setTileDraft(defaultTodayTileVisibility())
+  }
+
+  function saveTileSettings(): void {
+    writeTodayTileVisibility(user.id, tileDraft)
+    setTileVisibility(tileDraft)
+    setSavedNote('Настройки плиток сохранены')
+  }
+
+  function toggleTileDraft(id: TodayTileId): void {
+    setTileDraft((prev) => ({ ...prev, [id]: prev[id] === false }))
   }
 
   function saveWidgetSettings(): void {
@@ -416,6 +473,10 @@ export function SettingsWorkplace({
 
   function restoreWidgetDefaults(): void {
     setWidgetDraft(defaultTodayWidgetVisibility())
+  }
+
+  function toggleWidgetDraft(id: TodayWidgetId): void {
+    setWidgetDraft((prev) => ({ ...prev, [id]: prev[id] === false }))
   }
 
   function openNotificationCenter(): void {
@@ -445,6 +506,7 @@ export function SettingsWorkplace({
               <p className="set-sub">Профиль, обновления и рабочие файлы</p>
             </div>
           </header>
+          <div className="set-general-grid">
           <section className="set-card">
             <h2>Профиль</h2>
             <p className="set-muted">
@@ -474,22 +536,22 @@ export function SettingsWorkplace({
           <section className="set-card set-widgets-card">
             <h2>Виджеты вкладки «Сегодня»</h2>
             <p className="set-muted">Выберите, какие блоки показывать на главной рабочей вкладке.</p>
-            <ul className="set-widget-list">
-              {TODAY_WIDGET_IDS.map((id) => (
-                <li key={id}>
-                  <label className="set-widget-row">
-                    <input
-                      type="checkbox"
-                      checked={widgetDraft[id] !== false}
-                      onChange={(event) =>
-                        setWidgetDraft((prev) => ({ ...prev, [id]: event.target.checked }))
-                      }
-                    />
-                    <span>{TODAY_WIDGET_LABELS[id]}</span>
-                  </label>
-                </li>
-              ))}
-            </ul>
+            <div className="set-widget-grid-9" role="group" aria-label="Видимость виджетов">
+              {TODAY_WIDGET_IDS.map((id) => {
+                const on = widgetDraft[id] !== false
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`set-widget-toggle${on ? ' is-on' : ''}`}
+                    aria-pressed={on}
+                    onClick={() => toggleWidgetDraft(id)}
+                  >
+                    {TODAY_WIDGET_LABELS[id]}
+                  </button>
+                )
+              })}
+            </div>
             <div className="wp-actions set-widget-actions">
               <button className="btn-primary" type="button" onClick={saveWidgetSettings}>
                 Сохранить виджеты
@@ -499,6 +561,35 @@ export function SettingsWorkplace({
               </button>
             </div>
           </section>
+          <section className="set-card set-widgets-card">
+            <h2>Плитки вкладки «Сегодня»</h2>
+            <p className="set-muted">Выберите, какие плитки показателей показывать над виджетами.</p>
+            <div className="set-widget-grid-9" role="group" aria-label="Видимость плиток">
+              {TODAY_TILE_IDS.map((id) => {
+                const on = tileDraft[id] !== false
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`set-widget-toggle${on ? ' is-on' : ''}`}
+                    aria-pressed={on}
+                    onClick={() => toggleTileDraft(id)}
+                  >
+                    {TODAY_TILE_LABELS[id]}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="wp-actions set-widget-actions">
+              <button className="btn-primary" type="button" onClick={saveTileSettings}>
+                Сохранить плитки
+              </button>
+              <button className="btn-ghost" type="button" onClick={() => setTileDraft(defaultTodayTileVisibility())}>
+                Все плитки
+              </button>
+            </div>
+          </section>
+          </div>
         </div>
       ) : null}
 
@@ -828,6 +919,18 @@ export function SettingsWorkplace({
               </ul>
             </section>
           ) : null}
+        </div>
+      ) : null}
+
+      {section === 'onec_profile' ? (
+        <div className="set-body">
+          <header className="set-head">
+            <div>
+              <h1 className="page-title">Профиль 1С</h1>
+              <p className="set-sub">Идентификатор пользователя erp_pm и данные для COM (временный режим)</p>
+            </div>
+          </header>
+          <OneCSessionProfileSection user={user} />
         </div>
       ) : null}
 

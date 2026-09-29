@@ -1,4 +1,5 @@
 import { invokeLocalAcTool } from './localAcTool'
+import { decodeMimeHeader } from './mimeHeader'
 
 /** UI actions — короче, чем search_mail (180s), чтобы не «висеть» на кнопках. */
 export const OUTLOOK_MAIL_ACTION_TIMEOUT_MS = 45_000
@@ -14,6 +15,8 @@ export interface OutlookMailDetail {
   entryId: string
   subject: string
   sender: string
+  /** SMTP-адрес отправителя из Outlook (PR_SENDER_SMTP_ADDRESS); может быть пуст. */
+  senderEmail: string
   body: string
   bodyPreview: string
   unread: boolean
@@ -66,8 +69,9 @@ export async function fetchOutlookMailDetail(
     ok: true,
     detail: {
       entryId,
-      subject: String(raw.subject || ''),
-      sender: String(raw.sender || ''),
+      subject: decodeMimeHeader(String(raw.subject || '')),
+      sender: decodeMimeHeader(String(raw.sender || '')),
+      senderEmail: String(raw.sender_email || '').trim(),
       body: String(raw.body || raw.body_preview || ''),
       bodyPreview: String(raw.body_preview || raw.body || ''),
       unread: Boolean(raw.unread),
@@ -91,12 +95,24 @@ export async function markOutlookMailRead(
   return { ok: true }
 }
 
+async function focusOutlookWindow(): Promise<void> {
+  if (typeof window.api?.focusOutlook !== 'function') return
+  await window.api.focusOutlook()
+}
+
 export async function displayOutlookMail(
   row: { entryId?: string; id: string },
   mode: 'open' | 'reply' | 'reply_all' | 'forward' = 'open'
 ): Promise<{ ok: boolean; error?: string }> {
   const entryId = entryIdOf(row)
-  if (!entryId) return { ok: false, error: 'Нет идентификатора письма' }
+  if (!entryId) {
+    await focusOutlookWindow()
+    return {
+      ok: false,
+      error:
+        'Письмо пришло по IMAP, у него нет идентификатора Outlook. Окно Outlook открыто, но ответ по этому письму отсюда не создать.'
+    }
+  }
   const res = await invokeLocalAcTool(
     'outlook.display_message',
     { entry_id: entryId, mode },

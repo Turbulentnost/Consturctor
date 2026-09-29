@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -22,11 +23,18 @@ from app.config import settings
 from app.core.jwt import create_access_token
 from app.schemas.auth import LoginResponse, UserDirectoryItem, UserOut
 from app.services import app_users
+from app.services.name_mail_resolver import latin_slug_from_login, resolve_name_mail_for_user
 from app.services.profile_overrides import apply_profile_overrides
 from app.services.sessions import DEFAULT_CLIENT, new_session_id, normalize_client, replace_session
 from tools.onec.password import verify_password
 
 logger = logging.getLogger(__name__)
+
+# Подсказки ФИО на экране входа — не дергать erp_pm на каждый символ.
+_FIO_LIST_CACHE_TTL_SEC = 120.0
+_fio_list_cache: dict[str, tuple[float, list[str]]] = {}
+_erp_reachable_cache: tuple[float, bool] | None = None
+_ERP_REACHABLE_CACHE_TTL_SEC = 12.0
 
 
 def _trace(message: str) -> None:
@@ -60,11 +68,21 @@ def _auth_gateway_base() -> str:
     return (settings.auth_erp_gateway_url or "").strip().rstrip("/")
 
 
-def _erp_auth_unavailable_message(*, gateway_failed: bool = False) -> str:
+def _erp_auth_unavailable_message(
+    *,
+    gateway_failed: bool = False,
+    gateway_unreachable: bool = False,
+) -> str:
     gw = _auth_gateway_base()
     local = (
         f"На этом backend нет доступа к erp_pm (ERP_SQL_SERVER={settings.erp_sql_server!r}). "
     )
+    if gw and gateway_unreachable:
+        return (
+            f"{local}Gateway {gw} не отвечает (порт 7812 недоступен с этого ПК). "
+            "Поднимите constructor-gateway на 192.168.1.157 или дождитесь его запуска, "
+            "затем войдите снова (можно BACKEND_URL=http://192.168.1.157:7812 в run_dev.bat)."
+        )
     if gw and gateway_failed:
         return (
             f"{local}Прокси AUTH_ERP_GATEWAY_URL={gw} не принял вход — проверьте LAN до "
@@ -76,21 +94,46 @@ def _erp_auth_unavailable_message(*, gateway_failed: bool = False) -> str:
             f"{local}VPN на ПК не нужен, если gateway доступен ({gw}). "
             "Проверьте сеть или BACKEND_URL=http://192.168.1.157:7812."
         )
-    return (
-        f"{local}Без VPN: BACKEND_URL=http://192.168.1.157:7812 (аутентификация на gateway) "
-        "или в backend/.env AUTH_ERP_GATEWAY_URL=http://192.168.1.157:7812 при локальном "
-        "127.0.0.1:7812. Либо ERP_LOGIN/ERP_PASSWORD и AUTH_SKIP_ERP_SQL=1."
+    server = settings.erp_sql_server or "ii1"
+    driver = settings.erp_sql_driver or "SQL Server"
+    sql_hint = (
+        f"Вход через SQL {server}:1433 (база {settings.erp_sql_database}, драйвер ODBC {driver!r}). "
+        "Проверьте сеть до сервера, установку ODBC и ERP_SQL_* в backend/.env."
     )
+    if not settings.erp_sql_trusted_connection:
+        if not (settings.erp_sql_user or "").strip():
+            sql_hint += " Нужны ERP_SQL_USER и ERP_SQL_PASSWORD — read-only учётку выдаёт DBA."
+        elif not settings.erp_sql_password:
+            sql_hint += " Задайте ERP_SQL_PASSWORD для read-only SQL-учётки."
+    return f"{local}{sql_hint}"
 
 
 async def _local_erp_reachable() -> bool:
     try:
-        return await asyncio.wait_for(asyncio.to_thread(ping), timeout=3.0)
+        ping_timeout = max(15.0, float(settings.erp_sql_timeout or 45) + 10.0)
+        return await asyncio.wait_for(asyncio.to_thread(ping), timeout=ping_timeout)
     except (TimeoutError, ErpSqlError):
         return False
     except Exception:
         logger.warning("Unexpected ERP ping error", exc_info=True)
         return False
+
+
+async def _local_erp_reachable_quick(max_sec: float = 8.0) -> bool:
+    """Short probe for login routing to gateway — must not block on full ODBC timeout."""
+    global _erp_reachable_cache
+    now = time.monotonic()
+    if _erp_reachable_cache is not None and now - _erp_reachable_cache[0] < _ERP_REACHABLE_CACHE_TTL_SEC:
+        return _erp_reachable_cache[1]
+    try:
+        ok = await asyncio.wait_for(asyncio.to_thread(ping), timeout=max(2.0, max_sec))
+    except (TimeoutError, ErpSqlError):
+        ok = False
+    except Exception:
+        logger.warning("Unexpected ERP quick ping error", exc_info=True)
+        ok = False
+    _erp_reachable_cache = (now, bool(ok))
+    return bool(ok)
 
 
 def _user_out_from_gateway_payload(raw: dict[str, Any]) -> UserOut:
@@ -125,7 +168,7 @@ def _login_via_erp_gateway(fio: str, password: str, client: str = DEFAULT_CLIENT
     except httpx.HTTPError as exc:
         logger.warning("ERP auth gateway unreachable at %s: %s", url, exc)
         raise AuthError(
-            _erp_auth_unavailable_message(gateway_failed=True),
+            _erp_auth_unavailable_message(gateway_unreachable=True),
             status_code=503,
         ) from exc
 
@@ -168,12 +211,14 @@ def _login_via_erp_gateway(fio: str, password: str, client: str = DEFAULT_CLIENT
     return LoginResponse(access_token=token, user=user_out)
 
 
-def _list_fios_via_erp_gateway(search: str | None) -> list[str]:
+def _list_fios_via_erp_gateway(search: str | None, limit: int = 200) -> list[str]:
     base = _auth_gateway_base()
     if not base:
         return []
     url = f"{base}/api/v1/auth/users"
-    params = {"search": search} if search else None
+    params: dict[str, str | int] = {"limit": limit}
+    if search:
+        params["search"] = search
     try:
         with httpx.Client(timeout=30.0) as http:
             response = http.get(url, params=params)
@@ -224,11 +269,13 @@ def _login_via_bypass(fio: str, password: str, client: str = DEFAULT_CLIENT) -> 
         session_id=session_id,
         client=client,
     )
+    name_mail = (settings.my_name_mail or "").strip().lower()
     user_out = _to_user_out(
         user_id=user_id,
         fio=canon_fio,
         department=department,
         position=position,
+        name_mail=name_mail,
     )
     _trace(
         f"Auth login bypass id={user_id} fio={canon_fio} "
@@ -238,18 +285,16 @@ def _login_via_bypass(fio: str, password: str, client: str = DEFAULT_CLIENT) -> 
 
 
 def _name_mail_from_erp_login(raw: str) -> str:
-    """v8users.Name — латинский логин для корпоративной почты."""
-    text = (raw or "").strip().lower()
-    if not text:
-        return ""
-    if "@" in text:
-        text = text.split("@", 1)[0].strip()
-    if any("\u0400" <= ch <= "\u04ff" for ch in text):
-        return ""
-    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._-")
-    if not text or any(ch not in allowed for ch in text):
-        return ""
-    return text
+    return latin_slug_from_login(raw)
+
+
+def _name_mail_for_erp_user(erp_user: Any, *, password: str = "") -> str:
+    return resolve_name_mail_for_user(
+        fio=getattr(erp_user, "fio", "") or "",
+        erp_name=getattr(erp_user, "name", "") or "",
+        erp_descr=getattr(erp_user, "descr", "") or "",
+        password=password,
+    )
 
 
 def _to_user_out(
@@ -269,8 +314,18 @@ def _to_user_out(
         )
         out = app_users.to_user_out(app_user)
     except Exception as exc:
-        logger.exception("Failed to upsert app user id=%s", user_id)
-        raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
+        if not settings.app_db_optional:
+            logger.exception("Failed to upsert app user id=%s", user_id)
+            raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
+        logger.warning("App Postgres unavailable, user id=%s not saved: %s", user_id, exc)
+        out = app_users.to_user_out(
+            app_users.AppUser(
+                id=user_id,
+                fio=fio,
+                department=department or "",
+                position=position or "",
+            )
+        )
     if name_mail:
         return out.model_copy(update={"name_mail": name_mail})
     return out
@@ -290,13 +345,16 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
     client = normalize_client(client)
 
     _trace(f"Auth login start fio={fio} client={client}")
-    if _erp_sql_bypass_enabled():
+    if _erp_sql_bypass_enabled() and settings.erp_login.strip() and settings.erp_password:
         return await asyncio.to_thread(_login_via_bypass, fio, password, client)
 
     gateway = _auth_gateway_base()
-    if gateway and not await _local_erp_reachable():
-        _trace(f"Auth login local ERP down, using gateway {gateway}")
-        return await asyncio.to_thread(_login_via_erp_gateway, fio, password, client)
+    if gateway:
+        erp_up = await _local_erp_reachable_quick()
+        if not erp_up:
+            _trace(f"Auth login local ERP not ready in 8s, using gateway {gateway}")
+            return await asyncio.to_thread(_login_via_erp_gateway, fio, password, client)
+    # Без gateway: не делаем отдельный ping — find_user_by_fio сам откроет ODBC (один connect, не два).
 
     try:
         erp_user = await asyncio.to_thread(find_user_by_fio, fio)
@@ -354,7 +412,7 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
         fio=erp_user.fio,
         department=department or "",
         position=position or "",
-        name_mail=_name_mail_from_erp_login(erp_user.name),
+        name_mail=_name_mail_for_erp_user(erp_user, password=password),
     )
     _trace(
         f"Auth login ok id={erp_user.id} fio={erp_user.fio} "
@@ -363,26 +421,38 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
     return LoginResponse(access_token=token, user=user_out)
 
 
-async def list_user_fios(search: str | None = None) -> list[str]:
+async def list_user_fios(search: str | None = None, *, limit: int = 200) -> list[str]:
+    cache_key = _fio_key(f"{search or ''}|{limit}")
+    now = time.monotonic()
+    cached = _fio_list_cache.get(cache_key)
+    if cached is not None and now - cached[0] < _FIO_LIST_CACHE_TTL_SEC:
+        return list(cached[1])
+
     if _erp_sql_bypass_enabled():
         fio = settings.erp_login.strip()
         if not fio:
             return []
         if search and _fio_key(search) not in _fio_key(fio):
             return []
-        return [fio]
+        items = [fio]
+        _fio_list_cache[cache_key] = (now, items)
+        return items
     gateway = _auth_gateway_base()
-    if gateway and not await _local_erp_reachable():
-        items = await asyncio.to_thread(_list_fios_via_erp_gateway, search)
+    if gateway and not await _local_erp_reachable_quick():
+        items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit)
         if items or search:
+            _fio_list_cache[cache_key] = (now, items)
             return items
     try:
-        return await asyncio.to_thread(search_user_fios, search)
+        items = await asyncio.to_thread(search_user_fios, search, limit)
+        _fio_list_cache[cache_key] = (now, items)
+        return items
     except ErpSqlError as exc:
         logger.exception("ERP SQL error listing users")
         if gateway:
-            items = await asyncio.to_thread(_list_fios_via_erp_gateway, search)
+            items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit)
             if items:
+                _fio_list_cache[cache_key] = (now, items)
                 return items
         raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc
 
@@ -411,13 +481,26 @@ async def list_department_names() -> list[str]:
         raise AuthError("Не удалось загрузить список отделов", status_code=503) from exc
 
 
+def _cached_app_user(user_id: str, fio_hint: str | None) -> Any:
+    try:
+        user = app_users.get_app_user(user_id)
+        if user is None and fio_hint:
+            user = app_users.find_app_user_by_fio(fio_hint)
+        return user
+    except Exception as exc:
+        if not settings.app_db_optional:
+            raise
+        logger.warning("App Postgres unavailable, profile id=%s from erp_pm: %s", user_id, exc)
+        return None
+
+
 async def get_current_user_profile(user_id: str, fio_hint: str | None = None) -> UserOut:
+    app_cached = await asyncio.to_thread(_cached_app_user, user_id, fio_hint)
+    if app_cached is not None and (app_cached.fio or "").strip():
+        # Desktop calls /auth/me on every open — do not reopen ODBC if login already synced Postgres.
+        return app_users.to_user_out(app_cached)
+
     if _erp_sql_bypass_enabled():
-        app_user = app_users.get_app_user(user_id)
-        if app_user is None and fio_hint:
-            app_user = app_users.find_app_user_by_fio(fio_hint)
-        if app_user is not None:
-            return app_users.to_user_out(app_user)
         fio = (fio_hint or settings.erp_login).strip()
         return await asyncio.to_thread(
             _to_user_out,
@@ -431,9 +514,7 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
         erp_user = await asyncio.to_thread(find_user_by_id, user_id)
     except ErpSqlError as exc:
         logger.exception("ERP SQL error loading profile")
-        app_user = app_users.get_app_user(user_id)
-        if app_user is None and fio_hint:
-            app_user = app_users.find_app_user_by_fio(fio_hint)
+        app_user = await asyncio.to_thread(_cached_app_user, user_id, fio_hint)
         if app_user is not None:
             return app_users.to_user_out(app_user)
         raise AuthError(_erp_auth_unavailable_message(), status_code=503) from exc
@@ -465,5 +546,5 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
         fio=erp_user.fio,
         department=department or "",
         position=position or "",
-        name_mail=_name_mail_from_erp_login(erp_user.name),
+        name_mail=_name_mail_for_erp_user(erp_user),
     )

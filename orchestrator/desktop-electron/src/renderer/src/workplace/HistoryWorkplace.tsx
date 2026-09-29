@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowBoard } from '../api/types'
 import { historyResultText } from '../pages/historyDetail'
-import { formatKpiRangeLabel, KpiRangePicker } from '../pages/KpiRangePicker'
+import { formatKpiRangeLabel } from '../pages/KpiRangePicker'
+import { useWorkplacePeriod } from './workplacePeriod'
 import { cleanRunResult } from '../utils/cleanRunResult'
 import {
   formatRunTime,
@@ -97,8 +98,7 @@ export function HistoryWorkplace({
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
 }): React.JSX.Element {
   const today = todayDayKey()
-  const [rangeFrom, setRangeFrom] = useState(today)
-  const [rangeTo, setRangeTo] = useState(today)
+  const { from: rangeFrom, to: rangeTo, setRange: setWorkplaceRange } = useWorkplacePeriod()
   const [board, setBoard] = useState<WorkflowBoard>(EMPTY_BOARD)
   const [titles, setTitles] = useState<Record<string, string>>({})
   const [runs, setRuns] = useState<AgentRunHistoryItem[]>([])
@@ -358,8 +358,7 @@ export function HistoryWorkplace({
           ? `Период: ${formatKpiRangeLabel(rangeFrom, rangeTo)}`
           : '',
       onClear: () => {
-        setRangeFrom(today)
-        setRangeTo(today)
+        setWorkplaceRange({ from: today, to: today })
       }
     },
     {
@@ -530,20 +529,6 @@ export function HistoryWorkplace({
 
       <section className="hist-filters">
         <div className="hist-filters-primary">
-          <div className="hist-field">
-            <span>Период</span>
-            <div className="hist-range-picker">
-              <KpiRangePicker
-                from={rangeFrom}
-                to={rangeTo}
-                showShortcuts={false}
-                onApply={({ from, to }) => {
-                  setRangeFrom(from)
-                  setRangeTo(to)
-                }}
-              />
-            </div>
-          </div>
           <label className="hist-field">
             <span>Процесс</span>
             <select className="hist-select" value={agentId} onChange={(e) => setAgentId(e.target.value)}>

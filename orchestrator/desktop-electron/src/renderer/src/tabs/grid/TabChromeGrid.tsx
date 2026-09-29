@@ -3,12 +3,14 @@ import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/lega
 import 'react-grid-layout/css/styles.css'
 import { SpecSummaryTiles } from '../../workplace/specV04Components'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
+import { WorkplaceGlobalRangePicker } from '../../workplace/workplacePeriod'
 import {
   STANDARD_TAB_LABELS,
   TAB_CHROME_COLS,
   TAB_CHROME_MARGIN,
   TAB_CHROME_MAX_ROWS,
   tabChromeGridDimensions,
+  tabUsesSnapGrid,
   computeTabChromeMetrics,
   TAB_CHROME_SNAP_MIN_ROW,
   isTileWidgetId,
@@ -279,8 +281,8 @@ export function TabChromeGrid({
   const canvasRef = useRef<HTMLDivElement>(null)
   const { cols: gridCols, maxRows: gridMaxRows } = tabChromeGridDimensions(tabId)
   const layoutRows = Math.max(1, ...layoutWithStatic.map((item) => item.y + item.h), 1)
-  const usedRows = tabId === 'kpi' ? gridMaxRows : Math.min(gridMaxRows, layoutRows)
-  const snapGrid = tabId === 'kpi'
+  const snapGrid = tabUsesSnapGrid(tabId)
+  const usedRows = snapGrid ? gridMaxRows : Math.min(gridMaxRows, layoutRows)
   const metricsOptions = useMemo(
     () =>
       snapGrid
@@ -300,8 +302,12 @@ export function TabChromeGrid({
     const node = canvasRef.current
     if (!node) return
     const measure = (): void => {
-      const height = Math.max(node.clientHeight, 200)
+      if (!node.isConnected) return
+      // Hidden / collapsed canvases (tab not visible, zero box) must not bin widgets.
+      if (node.offsetParent === null && node.getClientRects().length === 0) return
+      const height = node.clientHeight
       const width = node.clientWidth
+      if (height < 8 || width < 8) return
       const next = computeTabChromeMetrics(height, width, usedRows, metricsOptions)
       setMetrics((prev) =>
         prev.rowHeight === next.rowHeight &&
@@ -444,7 +450,9 @@ export function StandardTabChrome({
   defaults,
   labels,
   widgets,
-  chromeTiles
+  chromeTiles,
+  filterToolbarExtra,
+  hideGlobalPeriod
 }: {
   tabId: string
   userId: string
@@ -452,6 +460,10 @@ export function StandardTabChrome({
   labels?: Record<string, string>
   widgets: Record<string, React.ReactNode>
   chromeTiles?: ChromeTileSpec[]
+  /** Кнопки справа в полосе фильтров (перед «Редактировать виджеты»). */
+  filterToolbarExtra?: React.ReactNode
+  /** Скрыть общий KPI-календарь (редко — если дублируется). */
+  hideGlobalPeriod?: boolean
 }): React.JSX.Element {
   const layoutDefaults = useMemo(
     () => defaults.filter((item) => item.i !== 'tiles' && item.i !== 'filters' && !isTileWidgetId(item.i)),
@@ -490,7 +502,11 @@ export function StandardTabChrome({
       ) : null}
       <div className="tab-chrome-filters-bar">
         <div className="tab-chrome-filters-wrap">
+          {hideGlobalPeriod ? null : <WorkplaceGlobalRangePicker />}
           {filterNode}
+          {filterToolbarExtra ? (
+            <div className="tab-chrome-filters-extra">{filterToolbarExtra}</div>
+          ) : null}
           <TabChromeToolbar
             editMode={chrome.editMode}
             onToggleEdit={() => chrome.setEditMode((value) => !value)}

@@ -3,15 +3,25 @@ import {
   Forward,
   Mail,
   Paperclip,
+  Plus,
   Reply,
   ReplyAll,
   Search
 } from 'lucide-react'
+import type { UserProfile } from '../../api/types'
+import { MailIncomingCreateDialog } from './MailIncomingCreateDialog'
 import { SpecPanel, SpecPill } from '../../workplace/specV04Components'
 import type { SpecMailRow } from '../../workplace/specV04DemoData'
-import { mailPartyLabel } from '../../workplace/specV04Mappers'
-import { useTodayWidgetExpanded } from './TodayWidgetExpandContext'
-import { TodayFileIcon } from './todayFileIcon'
+import { isOutlookMailFromMe, mailPartyLabel } from '../../workplace/specV04Mappers'
+import {
+  displayOutlookMail,
+  hasOutlookEntryId,
+  markOutlookMailRead,
+  type OutlookMailDetail
+} from '../../utils/outlookMailActions'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
+import { useRequestTodayWidgetExpand, useTodayWidgetExpanded } from './TodayWidgetExpandContext'
+import { MailLetterTabs, useMailDetail } from './MailLetterTabs'
 
 function senderInitials(name: string): string {
   const parts = name
@@ -25,7 +35,11 @@ function senderInitials(name: string): string {
 }
 
 function mailPreview(row: SpecMailRow): string {
-  return row.preview || row.body?.replace(/\s+/g, ' ').slice(0, 140) || row.subject
+  return (
+    row.preview ||
+    (row.body || row.bodyPreview)?.replace(/\s+/g, ' ').slice(0, 140) ||
+    decodeMimeHeader(row.subject)
+  )
 }
 
 function TodayCellText({ text }: { text: string }): React.JSX.Element {
@@ -36,38 +50,98 @@ function TodayCellText({ text }: { text: string }): React.JSX.Element {
   )
 }
 
-function OutlookCommandBar(): React.JSX.Element {
+function OutlookCommandBar({
+  row,
+  busy,
+  onAction,
+  onRegister
+}: {
+  row: SpecMailRow | null
+  busy: string
+  onAction: (mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open') => void
+  onRegister?: () => void
+}): React.JSX.Element {
+  const canAct = Boolean(row && hasOutlookEntryId(row))
   return (
     <div className="today-outlook-command-bar" role="toolbar" aria-label="Действия с письмом">
-      <button type="button" className="today-outlook-cmd today-outlook-cmd-primary">
+      <button
+        type="button"
+        className="today-outlook-cmd today-outlook-cmd-primary"
+        disabled={!canAct || Boolean(busy)}
+        onClick={() => onAction('reply')}
+      >
         <Reply size={16} strokeWidth={2} aria-hidden />
-        Ответить
+        {busy === 'reply' ? '…' : 'Ответить'}
       </button>
-      <button type="button" className="today-outlook-cmd">
+      <button
+        type="button"
+        className="today-outlook-cmd"
+        disabled={!canAct || Boolean(busy)}
+        onClick={() => onAction('reply_all')}
+      >
         <ReplyAll size={16} strokeWidth={2} aria-hidden />
-        Ответить всем
+        {busy === 'reply_all' ? '…' : 'Ответить всем'}
       </button>
-      <button type="button" className="today-outlook-cmd">
+      <button
+        type="button"
+        className="today-outlook-cmd"
+        disabled={!canAct || Boolean(busy)}
+        onClick={() => onAction('forward')}
+      >
         <Forward size={16} strokeWidth={2} aria-hidden />
-        Переслать
+        {busy === 'forward' ? '…' : 'Переслать'}
+      </button>
+      <button
+        type="button"
+        className="today-outlook-cmd"
+        disabled={!canAct || Boolean(busy)}
+        onClick={() => onAction('read')}
+      >
+        <Mail size={16} strokeWidth={2} aria-hidden />
+        {busy === 'read' ? '…' : 'Прочитано'}
+      </button>
+      <button
+        type="button"
+        className="today-outlook-cmd today-outlook-cmd-primary"
+        disabled={!canAct || Boolean(busy)}
+        title="Заполнить маршрут и создать входящую в 1С"
+        onClick={onRegister}
+      >
+        <Plus size={16} strokeWidth={2} aria-hidden />
+        Входящая
       </button>
     </div>
   )
 }
 
-function OutlookReadingPane({ row }: { row: SpecMailRow }): React.JSX.Element {
-  const attachments = row.attachments || []
+function OutlookReadingPane({
+  row,
+  detail,
+  loading,
+  busy,
+  onAction,
+  onToast,
+  onRegister
+}: {
+  row: SpecMailRow
+  detail: OutlookMailDetail | null
+  loading: boolean
+  busy: string
+  onAction: (mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open') => void
+  onToast: (text: string, isError?: boolean) => void
+  onRegister?: () => void
+}): React.JSX.Element {
   return (
     <article className="today-outlook-reading">
-      <OutlookCommandBar />
+      <OutlookCommandBar row={row} busy={busy} onAction={onAction} onRegister={onRegister} />
       <div className="today-outlook-reading-card">
         <header className="today-outlook-reading-head">
           <div className="today-outlook-avatar" aria-hidden>
-            {senderInitials(row.sender)}
+            {senderInitials(decodeMimeHeader(row.sender))}
           </div>
           <div className="today-outlook-reading-meta">
             <div className="today-outlook-reading-title-row">
-              <strong className="today-outlook-sender">{row.sender}</strong>
+              <strong className="today-outlook-sender">{decodeMimeHeader(row.sender)}</strong>
               <span className="today-outlook-when">{row.receivedLabel || row.time}</span>
             </div>
             {row.to ? (
@@ -81,76 +155,128 @@ function OutlookReadingPane({ row }: { row: SpecMailRow }): React.JSX.Element {
             </div>
           </div>
         </header>
-        <h2 className="today-outlook-subject">{row.subject}</h2>
-        {attachments.length ? (
-          <div className="today-outlook-attachments-wrap">
-            <div className="today-outlook-attachments-label">
-              <Paperclip size={14} strokeWidth={2} aria-hidden />
-              Вложения ({attachments.length})
-            </div>
-            <ul className="today-outlook-attachments">
-              {attachments.map((file) => (
-                <li key={file.name} className="today-outlook-attachment">
-                  <TodayFileIcon name={file.name} size={32} />
-                  <span title={file.name}>{file.name}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        <div className="today-outlook-body">
-          {row.body ? (
-            row.body.split(/\n{2,}/).map((block, index) => <p key={index}>{block}</p>)
-          ) : (
-            <p className="today-outlook-body-empty">Текст письма недоступен.</p>
-          )}
+        <h2 className="today-outlook-subject">{decodeMimeHeader(row.subject)}</h2>
+        <div className="today-outlook-letter">
+          <MailLetterTabs mail={row} detail={detail} loading={loading} onToast={onToast} />
         </div>
       </div>
     </article>
   )
 }
 
+function MailDirectionChoice({
+  fromMe,
+  onFromMeChange
+}: {
+  fromMe: boolean
+  onFromMeChange: (value: boolean) => void
+}): React.JSX.Element {
+  return (
+    <div className="today-widget-choice" role="group" aria-label="Письма мне или от меня">
+      <button type="button" className={fromMe ? '' : 'is-active'} aria-pressed={!fromMe} onClick={() => onFromMeChange(false)}>
+        Мне
+      </button>
+      <button type="button" className={fromMe ? 'is-active' : ''} aria-pressed={fromMe} onClick={() => onFromMeChange(true)}>
+        От меня
+      </button>
+    </div>
+  )
+}
+
 export function TodayOutlookMailPanel({
   rows,
-  compactRows,
+  user,
+  fromMe = false,
   loading,
   error,
-  hint
+  hint,
+  onFromMeChange,
+  onPatchRow
 }: {
   rows: SpecMailRow[]
-  compactRows: SpecMailRow[]
+  user?: UserProfile
+  fromMe?: boolean
   loading?: boolean
   error?: string
   hint?: string
+  onFromMeChange?: (value: boolean) => void
+  onPatchRow?: (id: string, patch: Partial<SpecMailRow>) => void
 }): React.JSX.Element {
   const expanded = useTodayWidgetExpanded()
-  const [selectedId, setSelectedId] = useState(rows[0]?.id || '')
+  const requestExpand = useRequestTodayWidgetExpand()
+  const directedRows = useMemo(
+    () => rows.filter((row) => (fromMe ? isOutlookMailFromMe(row) : !isOutlookMailFromMe(row))),
+    [fromMe, rows]
+  )
+  const [selectedId, setSelectedId] = useState(directedRows[0]?.id || '')
   const [filter, setFilter] = useState<'all' | 'unread'>('all')
+  const [busy, setBusy] = useState('')
+  const [actionNote, setActionNote] = useState('')
+  const [incomingOpen, setIncomingOpen] = useState(false)
+
+  const emptyText = fromMe ? 'Нет писем от вас за выбранный день' : 'Нет писем вам за выбранный день'
 
   useEffect(() => {
-    if (!rows.length) {
+    if (!directedRows.length) {
       setSelectedId('')
       return
     }
-    if (!rows.some((row) => row.id === selectedId)) {
-      setSelectedId(rows[0].id)
+    if (!directedRows.some((row) => row.id === selectedId)) {
+      setSelectedId(directedRows[0].id)
     }
-  }, [rows, selectedId])
+  }, [directedRows, selectedId])
 
   const visibleRows = useMemo(() => {
-    if (filter === 'unread') return rows.filter((row) => row.unread)
-    return rows
-  }, [filter, rows])
+    if (filter === 'unread') return directedRows.filter((row) => row.unread)
+    return directedRows
+  }, [directedRows, filter])
 
   const selected = useMemo(
-    () => visibleRows.find((row) => row.id === selectedId) || visibleRows[0] || rows[0],
-    [rows, selectedId, visibleRows]
+    () => visibleRows.find((row) => row.id === selectedId) || visibleRows[0] || null,
+    [selectedId, visibleRows]
   )
 
-  const unreadCount = useMemo(() => rows.filter((row) => row.unread).length, [rows])
+  const unreadCount = useMemo(() => directedRows.filter((row) => row.unread).length, [directedRows])
+  const letter = useMailDetail(expanded ? selected : null)
+
+  const runMailAction = async (
+    mode: 'reply' | 'reply_all' | 'forward' | 'read' | 'open'
+  ): Promise<void> => {
+    if (!selected || busy) return
+    if (!hasOutlookEntryId(selected)) {
+      setActionNote('Действие доступно только для писем Outlook COM')
+      return
+    }
+    setBusy(mode)
+    try {
+      if (mode === 'read') {
+        const res = await markOutlookMailRead(selected, false)
+        if (res.ok) {
+          onPatchRow?.(selected.id, { unread: false, status: 'Прочитано', stTone: 'blue' })
+          setActionNote('Отмечено прочитанным')
+        } else setActionNote(res.error || 'Ошибка')
+        return
+      }
+      const displayMode = mode === 'open' ? 'open' : mode
+      const res = await displayOutlookMail(selected, displayMode)
+      setActionNote(res.ok ? 'Открыто в Outlook' : res.error || 'Ошибка')
+    } finally {
+      setBusy('')
+      window.setTimeout(() => setActionNote(''), 4000)
+    }
+  }
+
+  const showNote = (text: string): void => {
+    setActionNote(text)
+    window.setTimeout(() => setActionNote(''), 4000)
+  }
 
   if (!expanded) {
-    const tableRows = compactRows
+    const tableRows = directedRows
+    const openLetter = (id: string): void => {
+      setSelectedId(id)
+      requestExpand?.()
+    }
     const body = ((): React.ReactNode => {
       if (loading) {
         return (
@@ -174,18 +300,30 @@ export function TodayOutlookMailPanel({
         return (
           <tr>
             <td colSpan={4} className="today-table-status">
-              Нет писем мне и от меня за выбранный день
+              {emptyText}
             </td>
           </tr>
         )
       }
       return tableRows.map((row) => (
-        <tr key={row.id}>
+        <tr
+          key={row.id}
+          className="today-tr-clickable"
+          tabIndex={0}
+          title="Открыть письмо"
+          onClick={() => openLetter(row.id)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              openLetter(row.id)
+            }
+          }}
+        >
           <td>
             <TodayCellText text={mailPartyLabel(row)} />
           </td>
           <td>
-            <TodayCellText text={row.subject} />
+            <TodayCellText text={decodeMimeHeader(row.subject)} />
           </td>
           <td>
             <TodayCellText text={row.time} />
@@ -200,13 +338,17 @@ export function TodayOutlookMailPanel({
     return (
       <SpecPanel
         title="Письма из Outlook"
-        extra={hint ? <span className="spec-v04-muted today-table-hint">{hint}</span> : undefined}
+        extra={
+          onFromMeChange ? (
+            <MailDirectionChoice fromMe={fromMe} onFromMeChange={onFromMeChange} />
+          ) : undefined
+        }
       >
         <div className="spec-v04-table-wrap today-table-scroll">
           <table className="today-mini-table">
             <thead>
               <tr>
-                <th>От / Кому</th>
+                <th>{fromMe ? 'Кому' : 'От кого'}</th>
                 <th>Тема</th>
                 <th>Время</th>
                 <th>Статус</th>
@@ -220,14 +362,18 @@ export function TodayOutlookMailPanel({
   }
 
   return (
+    <>
     <div className="today-outlook-shell">
       <div className="today-outlook-reader">
         <aside className="today-outlook-list-pane" aria-label="Список писем">
           <div className="today-outlook-list-toolbar">
             <div className="today-outlook-folder-row">
               <Mail size={16} strokeWidth={2} aria-hidden />
-              <span className="today-outlook-folder">Входящие и отправленные</span>
-              <span className="today-outlook-folder-count">{rows.length}</span>
+              <span className="today-outlook-folder">{fromMe ? 'От меня' : 'Мне'}</span>
+              <span className="today-outlook-folder-count">{directedRows.length}</span>
+              {onFromMeChange ? (
+                <MailDirectionChoice fromMe={fromMe} onFromMeChange={onFromMeChange} />
+              ) : null}
             </div>
             {hint ? <span className="today-outlook-folder-hint">{hint}</span> : null}
           </div>
@@ -263,13 +409,13 @@ export function TodayOutlookMailPanel({
                   ? 'Загружаем…'
                   : filter === 'unread'
                     ? 'Нет непрочитанных писем'
-                    : error || 'Нет писем мне и от меня за выбранный день'}
+                    : error || emptyText}
               </p>
             ) : (
               <ul className="today-outlook-list-rows">
                 {visibleRows.map((row) => {
                   const active = selected?.id === row.id
-                  const hasFiles = Boolean(row.attachments?.length)
+                  const hasFiles = Boolean(row.attachments?.length || row.attachmentNames?.length)
                   return (
                     <li key={row.id}>
                       <button
@@ -291,7 +437,7 @@ export function TodayOutlookMailPanel({
                         </span>
                         <span className="today-outlook-list-sender">{mailPartyLabel(row)}</span>
                         <span className="today-outlook-list-subject-wrap">
-                          <span className="today-outlook-list-subject">{row.subject}</span>
+                          <span className="today-outlook-list-subject">{decodeMimeHeader(row.subject)}</span>
                           <span className="today-outlook-list-preview">{mailPreview(row)}</span>
                         </span>
                         <span className="today-outlook-list-time">{row.time}</span>
@@ -305,7 +451,20 @@ export function TodayOutlookMailPanel({
         </aside>
         <section className="today-outlook-pane">
           {selected ? (
-            <OutlookReadingPane row={selected} />
+            <>
+              {actionNote ? (
+                <p className="today-outlook-action-note spec-v04-muted">{actionNote}</p>
+              ) : null}
+              <OutlookReadingPane
+                row={selected}
+                detail={letter.detail}
+                loading={letter.loading}
+                busy={busy}
+                onAction={(mode) => void runMailAction(mode)}
+                onToast={showNote}
+                onRegister={user ? () => setIncomingOpen(true) : undefined}
+              />
+            </>
           ) : (
             <div className="today-outlook-empty-pane">
               <Mail size={40} strokeWidth={1.5} aria-hidden />
@@ -315,5 +474,19 @@ export function TodayOutlookMailPanel({
         </section>
       </div>
     </div>
+    {user && selected ? (
+      <MailIncomingCreateDialog
+        open={incomingOpen}
+        mail={selected}
+        user={user}
+        detail={letter.detail}
+        onClose={() => setIncomingOpen(false)}
+        onCreated={(message, isError) => {
+          setActionNote(message)
+          if (!isError) setIncomingOpen(false)
+        }}
+      />
+    ) : null}
+    </>
   )
 }

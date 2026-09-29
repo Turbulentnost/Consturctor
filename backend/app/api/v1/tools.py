@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -16,12 +19,20 @@ from app.services.imap_tools import ImapToolError, imap_configured, invoke_imap
 from app.services.onec_artifacts import ArtifactError, load_artifact_file
 from app.services.onec_tools import ONEC_TOOLS, OnecToolError, invoke_onec, odata_configured
 from app.services.tool_names import resolve_tool_name
+from app.services.gateway_proxy import (
+    gateway_proxy_enabled,
+    proxy_tool_invoke,
+    tool_should_proxy,
+)
 from app.services.turboproject import (
     TURBOPROJECT_TOOLS,
     TurboProjectError,
     invoke_turboproject,
     turboproject_configured,
 )
+from app.clients.erp_sql import ErpSqlError, ping as erp_ping
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -47,7 +58,8 @@ _USERS_TOOLS = frozenset(
         "notify.send",
     }
 )
-_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS | _USERS_TOOLS
+_AUDIO_TOOLS = frozenset({"audio.transcribe"})
+_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS | _USERS_TOOLS | _AUDIO_TOOLS
 
 
 class ToolInvokeBody(BaseModel):
@@ -97,6 +109,8 @@ def _dispatch_server_tool(
             result = invoke_turboproject(tool_name, arguments)
         elif tool_name in _USERS_TOOLS:
             result = _invoke_users_tool(tool_name, arguments, auth)
+        elif tool_name in _AUDIO_TOOLS:
+            result = _invoke_audio_tool(tool_name, arguments, auth)
         else:
             result = invoke_onec(
                 tool_name,
@@ -104,9 +118,8 @@ def _dispatch_server_tool(
                 actor_user_id=auth.user_id,
                 actor_fio=auth.fio or "",
             )
-    except (ImapToolError, OnecToolError, TurboProjectError, ArtifactError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except RuntimeError as exc:
+    except (ImapToolError, OnecToolError, TurboProjectError, ArtifactError, RuntimeError) as exc:
+        logger.warning("tool %s failed: %s", tool_name, exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if tool_name == "onec.download_artifact" and isinstance(result, dict):
         result = _artifact_invoke_view(result)
@@ -149,15 +162,183 @@ async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
     }
 
 
+# Журналы 1С, полная SOAP-выгрузка задач и тяжёлый odata_get не делят одну очередь.
+# Иначе выгрузка на 3–4 минуты и таймаут приказа занимают оба потока, и служебные
+# записки не стартуют, пока клиент уже не ждёт.
+_JOURNAL_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="tool-journal")
+_BULK_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-bulk")
+_SLOW_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool-slow")
+_SLOW_TOOLS = frozenset({"onec.docflow_tasks"})
+_BULK_TOOLS = frozenset({"onec.odata_get"}) | _IMAP_TOOLS
+_READ_COALESCE = _SLOW_TOOLS | _BULK_TOOLS | frozenset(
+    {
+        "onec.docflow_memos",
+        "onec.docflow_memo_card",
+        "onec.docflow_assignments",
+        "onec.docflow_assignment_card",
+        "onec.docflow_protocols",
+        "onec.docflow_protocol_card",
+        "onec.erp_assignments",
+        "onec.incoming_correspondence",
+    }
+)
+_inflight: dict[str, asyncio.Future] = {}
+_inflight_guard = asyncio.Lock()
+
+
+def _bearer_token(request: Request) -> str:
+    raw = request.headers.get("Authorization") or ""
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return ""
+
+
+def _executor_for(tool_name: str) -> ThreadPoolExecutor:
+    if tool_name in _SLOW_TOOLS:
+        return _SLOW_EXECUTOR
+    if tool_name in _BULK_TOOLS:
+        return _BULK_EXECUTOR
+    return _JOURNAL_EXECUTOR
+
+
+def _read_key(tool_name: str, arguments: dict[str, Any], auth: AuthContext) -> str:
+    payload = json.dumps(arguments or {}, sort_keys=True, ensure_ascii=False, default=str)
+    return f"{auth.user_id}\n{tool_name}\n{payload}"
+
+
+def _retrieve_future_error(future: asyncio.Future) -> None:
+    if future.cancelled() or not future.done():
+        return
+    future.exception()
+
+
+async def _run_on_lane(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+) -> dict[str, Any]:
+    return await asyncio.get_running_loop().run_in_executor(
+        _executor_for(tool_name),
+        _dispatch_server_tool,
+        tool_name,
+        arguments,
+        auth,
+    )
+
+
+async def _run_coalesced(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+) -> dict[str, Any]:
+    """Одинаковый читающий вызов одного пользователя выполняется один раз."""
+    if tool_name not in _READ_COALESCE:
+        return await _run_on_lane(tool_name, arguments, auth)
+    key = _read_key(tool_name, arguments, auth)
+    async with _inflight_guard:
+        existing = _inflight.get(key)
+        if existing is not None:
+            shared = existing
+            owner = False
+        else:
+            shared = asyncio.get_running_loop().create_future()
+            shared.add_done_callback(_retrieve_future_error)
+            _inflight[key] = shared
+            owner = True
+    if not owner:
+        result = await asyncio.shield(shared)
+        return dict(result) if isinstance(result, dict) else result
+    try:
+        result = await _run_on_lane(tool_name, arguments, auth)
+    except Exception as exc:
+        if not shared.done():
+            shared.set_exception(exc)
+        raise
+    else:
+        if not shared.done():
+            shared.set_result(result)
+        return result
+    finally:
+        async with _inflight_guard:
+            if _inflight.get(key) is shared:
+                _inflight.pop(key, None)
+
+
+async def _local_erp_reachable() -> bool:
+    try:
+        from app.config import settings
+
+        ping_timeout = max(15.0, float(settings.erp_sql_timeout or 45) + 10.0)
+        return await asyncio.wait_for(asyncio.to_thread(erp_ping), timeout=ping_timeout)
+    except (TimeoutError, ErpSqlError, Exception):
+        return False
+
+
+async def _invoke_with_gateway_fallback(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+    bearer_token: str,
+) -> dict[str, Any]:
+    # Задачи документооборота закрываются HTTP-сервисом базы ДО на этом сервере.
+    # Шлюз ERP этот вызов не выполняет и отвечает 400.
+    action = str((arguments or {}).get("action") or "").strip().lower()
+    skip_gateway_first = "docflow" in tool_name.lower() or action == "close"
+    if skip_gateway_first:
+        logger.info("tool %s stays local (docflow)", tool_name)
+    proxy_first = (
+        not skip_gateway_first
+        and gateway_proxy_enabled()
+        and tool_should_proxy(tool_name)
+        and tool_name.startswith("onec.")
+        and not await _local_erp_reachable()
+    )
+    # Шлюз отвечает до минуты и дольше: синхронный вызов в event loop остановил бы весь backend.
+    if proxy_first and bearer_token:
+        try:
+            return await asyncio.to_thread(
+                proxy_tool_invoke,
+                tool_name=tool_name,
+                arguments=arguments,
+                bearer_token=bearer_token,
+            )
+        except HTTPException as prox_exc:
+            if prox_exc.status_code not in (401, 403, 503):
+                raise
+
+    try:
+        return await _run_coalesced(tool_name, arguments, auth)
+    except HTTPException as exc:
+        if skip_gateway_first:
+            logger.warning("local tool %s failed: %s", tool_name, exc.detail)
+            raise
+        if (
+            exc.status_code == 502
+            and gateway_proxy_enabled()
+            and tool_should_proxy(tool_name)
+            and bearer_token
+        ):
+            return await asyncio.to_thread(
+                proxy_tool_invoke,
+                tool_name=tool_name,
+                arguments=arguments,
+                bearer_token=bearer_token,
+            )
+        raise
+
+
 @router.post("/invoke")
 async def invoke_named_tool(
     body: ToolInvokeBody,
+    request: Request,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     name = str(body.tool or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="tool is required")
-    return await asyncio.to_thread(_dispatch_server_tool, name, body.arguments, auth)
+    return await _invoke_with_gateway_fallback(
+        name, body.arguments, auth, _bearer_token(request)
+    )
 
 
 @router.get("/onec-artifacts/{file_id}")
@@ -187,9 +368,32 @@ async def download_onec_artifact(
 async def invoke_tool(
     tool_name: str,
     body: ToolInvokeBody,
+    request: Request,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    return await asyncio.to_thread(_dispatch_server_tool, tool_name, body.arguments, auth)
+    return await _invoke_with_gateway_fallback(
+        tool_name, body.arguments, auth, _bearer_token(request)
+    )
+
+
+def _invoke_audio_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+) -> dict[str, Any]:
+    """audio.transcribe для desktop SDK-прокси: user_id из JWT-сессии."""
+    from app.services.workflows.cursor_tools import (
+        _invoke_audio_transcribe,
+        clear_tool_context,
+        set_tool_context,
+    )
+
+    _ = tool_name
+    set_tool_context(run_id="", user_id=auth.user_id)
+    try:
+        return _invoke_audio_transcribe(arguments)
+    finally:
+        clear_tool_context()
 
 
 def _invoke_users_tool(

@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -90,11 +91,28 @@ PR_SENDER_NAME_W = PROPTAG_BASE + "0x0C1A001F"
 PR_SENT_REPRESENTING_NAME_W = PROPTAG_BASE + "0x0042001F"
 PR_DISPLAY_TO_W = PROPTAG_BASE + "0x0E04001F"
 PR_DISPLAY_CC_W = PROPTAG_BASE + "0x0E03001F"
+# SMTP-адрес отправителя (не X.500 DN Exchange) — для «Почта отправителя» в 1С.
+PR_SENDER_SMTP_ADDRESS_W = PROPTAG_BASE + "0x5D01001F"
+PR_SENT_REPRESENTING_SMTP_ADDRESS_W = PROPTAG_BASE + "0x5D02001F"
+PR_SENDER_EMAIL_ADDRESS_W = PROPTAG_BASE + "0x0C1F001F"
 
 
 def _log_progress(message: str) -> None:
     """Записать COM progress-сообщение в stderr, не загрязняя stdout JSON."""
     print(f"[COM_DIAG] {message}", file=sys.stderr, flush=True)
+
+
+def _read_sender_smtp(item: Any) -> str:
+    """SMTP-адрес отправителя письма; пусто, если только X.500 DN Exchange."""
+    for schema in (
+        PR_SENDER_SMTP_ADDRESS_W,
+        PR_SENT_REPRESENTING_SMTP_ADDRESS_W,
+        PR_SENDER_EMAIL_ADDRESS_W,
+    ):
+        value = _read_guarded_property(item, schema).strip()
+        if "@" in value:
+            return value
+    return ""
 
 
 def _read_guarded_property(item: Any, schema: str) -> str:
@@ -182,12 +200,22 @@ def _outlook_access_message(prefix: str, exc: Exception) -> str:
     return f"{prefix}: {exc}. {TRUST_CENTER_HINT}"
 
 
+# Outlook COM — один STA-сервер. Параллельный обход почты и клик «В Outlook»
+# дают MK_E_UNAVAILABLE, и кнопка молча не открывает письмо.
+_OUTLOOK_COM_LOCK = threading.Lock()
+
+
 def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
     """Выполнить read-only COM-операцию с CoInitialize и повтором транзиентных ошибок.
 
     ``operation`` получает модуль ``win32com.client`` и возвращает готовый payload.
     ComUnavailableError из загрузки pywin32 пробрасывается как есть (нужно тестам).
     """
+    with _OUTLOOK_COM_LOCK:
+        return _run_com_read_locked(operation, access_error_prefix)
+
+
+def _run_com_read_locked(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
     pythoncom, win32com_client = _load_pywin32_modules()
     _log_progress("step=load_pywin32 ok")
     last_exc: Exception | None = None
@@ -241,6 +269,19 @@ def _safe_str(value: Any) -> str:
         return str(value)
     except Exception:
         return ""
+
+
+def _decode_mime_header(value: str) -> str:
+    """Тема IMAP/Outlook иногда приходит как =?utf-8?Q?...?= / =?utf-8?B?...?=."""
+    text = _safe_str(value)
+    if "=?" not in text:
+        return text
+    try:
+        from email.header import decode_header, make_header
+
+        return str(make_header(decode_header(text)))
+    except Exception:
+        return text
 
 
 OL_MEETING = 1
@@ -449,6 +490,8 @@ def _folder_matches_person(label: str, person: str) -> bool:
 def _calendar_access_hint(status: str) -> str:
     if status in {"own", "shared", "visible", "meetings"}:
         return ""
+    if status.startswith("unresolved"):
+        return "Сотрудник не найден в адресной книге Outlook. Проверьте ФИО."
     return (
         "Нет доступа к этому календарю. Нужен общий доступ в Outlook "
         "или запуск с профиля владельца."
@@ -937,6 +980,12 @@ def read_calendar(input_data: dict) -> dict:
     )
     folder_hint = _safe_str(input_data.get("folder") or input_data.get("calendar") or "").strip()
     all_visible = _truthy(input_data.get("all_visible"))
+    raw_owners = input_data.get("calendar_owners")
+    if not isinstance(raw_owners, list):
+        single = _safe_str(input_data.get("calendar_owner") or "").strip()
+        raw_owners = [single] if single else []
+    calendar_owners = list(dict.fromkeys(_safe_str(item).strip() for item in raw_owners))
+    calendar_owner = bool(calendar_owners)
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -954,7 +1003,9 @@ def read_calendar(input_data: dict) -> dict:
         events: list[dict] = []
         checked_count = 0
         calendars: list[dict] = []
-        want_meetings = _is_public_meetings_label(folder_hint) or bool(people)
+        want_meetings = not calendar_owner and (
+            _is_public_meetings_label(folder_hint) or bool(people)
+        )
         if want_meetings:
             meeting_folders = _find_public_meeting_folders(outlook, namespace, own_name)
             _log_progress(f"step=meetings_folders count={len(meeting_folders)}")
@@ -1057,7 +1108,7 @@ def read_calendar(input_data: dict) -> dict:
                     "range_start": start_at.isoformat(),
                     "range_end": end_at.isoformat(),
                 }
-        if all_visible:
+        if all_visible and not calendar_owner:
             folders = _iter_visible_calendar_folders(outlook, namespace, own_name)
             if not folders:
                 folders = [(own_name or "Календарь", _own_calendar_folder(namespace), True)]
@@ -1121,7 +1172,7 @@ def read_calendar(input_data: dict) -> dict:
                 "range_start": start_at.isoformat(),
                 "range_end": end_at.isoformat(),
             }
-        targets = people or [own_name or ""]
+        targets = calendar_owners or people or [own_name or ""]
         for person in targets:
             remaining_results = max_results - len(events)
             remaining_scan = max_scan_items - checked_count
@@ -1355,6 +1406,16 @@ def _dispatch_outlook(win32com_client: Any) -> Any:
     if last_exc is not None:
         _log_progress(f"step=dispatch_new after_active_fail: {last_exc}")
     return outlook
+
+
+def _mapi_namespace(outlook: Any) -> Any:
+    """MAPI без диалога пароля — профиль уже открыт в Outlook (как read_calendar)."""
+    namespace = outlook.GetNamespace("MAPI")
+    try:
+        namespace.Logon("", "", False, False)
+    except Exception as exc:  # noqa: BLE001
+        _log_progress(f"step=mapi_logon noop: {exc}")
+    return namespace
 
 
 def _verify_saved_appointment(outlook: Any, appt: Any) -> str:
@@ -1895,7 +1956,7 @@ def _collect_mail_messages(
         if scanned_count > max_scan_items or len(results) >= max_results:
             break
 
-        subject = _safe_str(getattr(message, "Subject", ""))
+        subject = _decode_mime_header(getattr(message, "Subject", ""))
         body = _safe_str(getattr(message, "Body", ""))
         message_time = getattr(message, date_attr, None)
         if not _is_within_range(message_time, start_at, end_at):
@@ -1903,15 +1964,18 @@ def _collect_mail_messages(
         if not _matches_query(subject, body, query):
             continue
 
-        sender = _read_guarded_property(message, PR_SENDER_NAME_W)
-        recipients = _read_guarded_property(message, PR_DISPLAY_TO_W)
-        sent_representing = _read_guarded_property(message, PR_SENT_REPRESENTING_NAME_W)
+        sender = _decode_mime_header(_read_guarded_property(message, PR_SENDER_NAME_W))
+        recipients = _decode_mime_header(_read_guarded_property(message, PR_DISPLAY_TO_W))
+        sent_representing = _decode_mime_header(
+            _read_guarded_property(message, PR_SENT_REPRESENTING_NAME_W)
+        )
         # Same as calendar: keep Outlook wall-clock, do not leak a fake +00:00.
         timestamp = _iso_com_datetime(message_time)
         item = {
             "entry_id": _safe_str(getattr(message, "EntryID", "")),
             "subject": subject,
             "sender": sender or sent_representing,
+            "sender_email": _read_sender_smtp(message),
             "to": recipients,
             "received_at": timestamp if direction == "inbox" else "",
             "sent_at": timestamp if direction == "sent" else "",
@@ -1966,8 +2030,8 @@ def _resolve_mail_item(namespace: Any, entry_id: str) -> Any:
 def _mail_detail_payload(message: Any, *, include_body: bool = True) -> dict[str, Any]:
     """Собрать безопасный payload письма для UI."""
     body = _safe_str(getattr(message, "Body", ""))
-    sender = _read_guarded_property(message, PR_SENDER_NAME_W)
-    sent_by = _read_guarded_property(message, PR_SENT_REPRESENTING_NAME_W)
+    sender = _decode_mime_header(_read_guarded_property(message, PR_SENDER_NAME_W))
+    sent_by = _decode_mime_header(_read_guarded_property(message, PR_SENT_REPRESENTING_NAME_W))
     unread = bool(getattr(message, "UnRead", False))
     attachments = []
     try:
@@ -1994,8 +2058,9 @@ def _mail_detail_payload(message: Any, *, include_body: bool = True) -> dict[str
             continue
     return {
         "entry_id": _safe_str(getattr(message, "EntryID", "")),
-        "subject": _safe_str(getattr(message, "Subject", "")),
+        "subject": _decode_mime_header(getattr(message, "Subject", "")),
         "sender": sender or sent_by,
+        "sender_email": _read_sender_smtp(message),
         "body": body if include_body else "",
         "body_preview": body[:BODY_PREVIEW_LIMIT],
         "unread": unread,
@@ -2041,9 +2106,107 @@ def mark_mail_read(input_data: dict) -> dict:
     return _run_com_read(_write, "Ошибка изменения статуса письма Outlook")
 
 
+def _focus_outlook_window(caption: str) -> bool:
+    """Вытащить окно классического Outlook поверх Оркестратора.
+
+    Sidecar — фоновый процесс, поэтому обычный SetForegroundWindow Windows глушит.
+    Цепляемся к потоку текущего переднего окна и только потом активируем Outlook.
+    """
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    user32.IsWindowVisible.restype = ctypes.c_bool
+    user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+    user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.BringWindowToTop.argtypes = [ctypes.c_void_p]
+    user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+    user32.SetForegroundWindow.restype = ctypes.c_bool
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+    user32.AttachThreadInput.argtypes = [ctypes.c_ulong, ctypes.c_ulong, ctypes.c_bool]
+    user32.AttachThreadInput.restype = ctypes.c_bool
+
+    found: list[int] = []
+    hint = (caption or "").strip().casefold()
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def visit(hwnd, _lparam):  # noqa: ANN001
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        class_name = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, class_name, 256)
+        if not str(class_name.value).startswith("rctrl_renwnd32"):
+            return True
+        length = int(user32.GetWindowTextLengthW(hwnd))
+        title_buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title_buf, length + 1)
+        title = str(title_buf.value or "")
+        if hint and hint.casefold() in title.casefold():
+            found.insert(0, hwnd)
+        else:
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(visit, 0)
+    if not found:
+        _log_progress("step=focus_outlook no window")
+        return False
+    hwnd = found[0]
+    user32.ShowWindow(hwnd, 9)
+    foreground = user32.GetForegroundWindow()
+    pid = ctypes.c_ulong()
+    foreground_thread = int(user32.GetWindowThreadProcessId(foreground, ctypes.byref(pid)) or 0)
+    this_thread = int(kernel32.GetCurrentThreadId())
+    attached = False
+    if foreground_thread and foreground_thread != this_thread:
+        attached = bool(user32.AttachThreadInput(this_thread, foreground_thread, True))
+    user32.BringWindowToTop(hwnd)
+    brought = bool(user32.SetForegroundWindow(hwnd))
+    if attached:
+        user32.AttachThreadInput(this_thread, foreground_thread, False)
+    _log_progress(f"step=focus_outlook brought={brought}")
+    return brought
+
+
+def _present_outlook_item(item: Any, *, title_hint: str = "") -> None:
+    """Показать письмо или черновик и переключить фокус на Outlook."""
+    item.Display(False)
+    inspector = None
+    try:
+        inspector = item.GetInspector
+        inspector.Activate()
+    except Exception as exc:  # noqa: BLE001
+        _log_progress("step=inspector_activate " + repr(exc))
+    caption = title_hint
+    if inspector is not None:
+        try:
+            caption = _safe_str(getattr(inspector, "Caption", "")) or title_hint
+        except Exception:  # noqa: BLE001
+            caption = title_hint
+    try:
+        import pythoncom
+
+        pythoncom.PumpWaitingMessages()
+    except Exception:  # noqa: BLE001
+        pass
+    time.sleep(0.15)
+    _focus_outlook_window(caption)
+
+
 def display_mail_message(input_data: dict) -> dict:
-    """Открыть письмо или черновик ответа в Outlook."""
+    """Открыть письмо или черновик ответа в Outlook.
+
+    mode=forward, to=адрес, send=true — переслать и отправить без окна.
+    """
     mode = _safe_str(input_data.get("mode") or "open").strip().casefold()
+    send = bool(input_data.get("send"))
+    to_addr = _safe_str(input_data.get("to") or "").strip()
 
     def _write(win32com_client: Any) -> dict:
         outlook = _dispatch_outlook(win32com_client)
@@ -2057,9 +2220,29 @@ def display_mail_message(input_data: dict) -> dict:
         elif mode == "forward":
             draft = message.Forward()
         else:
-            message.Display(False)
+            _present_outlook_item(message, title_hint=_safe_str(getattr(message, "Subject", "")))
             return {"ok": True, "entry_id": entry_id, "mode": "open", "source": "outlook_com"}
-        draft.Display(False)
+        if to_addr:
+            try:
+                draft.To = to_addr
+            except Exception as exc:
+                raise OutlookAccessError(f"Не удалось указать получателя: {exc}") from exc
+        if send:
+            if not to_addr:
+                raise OutlookAccessError("Для отправки укажите получателя")
+            try:
+                draft.Send()
+            except Exception as exc:
+                raise OutlookAccessError(f"Не удалось отправить письмо: {exc}") from exc
+            return {
+                "ok": True,
+                "entry_id": entry_id,
+                "mode": mode,
+                "sent": True,
+                "to": to_addr,
+                "source": "outlook_com",
+            }
+        _present_outlook_item(draft, title_hint=_safe_str(getattr(draft, "Subject", "")))
         return {
             "ok": True,
             "entry_id": entry_id,
@@ -2068,6 +2251,65 @@ def display_mail_message(input_data: dict) -> dict:
         }
 
     return _run_com_read(_write, "Ошибка открытия письма Outlook")
+
+
+OL_SAVEAS_MSG = 3
+
+
+def _safe_mail_file_stem(subject: str, entry_id: str) -> str:
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (subject or "").strip())[:80]
+    if not stem:
+        stem = "message"
+    suffix = (entry_id or "")[:8].replace("{", "").replace("}", "")
+    return f"{stem}-{suffix}" if suffix else stem
+
+
+def save_mail_message(input_data: dict) -> dict:
+    """Сохранить письмо Outlook как .msg для прикрепления в 1С."""
+    save_dir = _safe_str(input_data.get("save_dir") or "").strip()
+
+    def _write(win32com_client: Any) -> dict:
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = _mapi_namespace(outlook)
+        entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+        message = _resolve_mail_item(namespace, entry_id)
+        subject = _decode_mime_header(getattr(message, "Subject", ""))
+        base_dir = Path(save_dir) if save_dir else Path(tempfile.gettempdir()) / "Constructor" / "outlook" / "messages"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        target = base_dir / f"{_safe_mail_file_stem(subject, entry_id)}.msg"
+        try:
+            message.SaveAs(str(target.resolve()), OL_SAVEAS_MSG)
+        except Exception as exc:
+            raise OutlookAccessError(f"Не удалось сохранить письмо как .msg: {exc}") from exc
+        out = {
+            "ok": True,
+            "entry_id": entry_id,
+            "saved_path": str(target),
+            "file_name": target.name,
+            "subject": subject,
+            "source": "outlook_com",
+        }
+        if _truthy(input_data.get("stage_for_incoming")):
+            from app.tools.ac.workers.mail_incoming_onec import stage_incoming_msg_file
+
+            staged = stage_incoming_msg_file(
+                str(target),
+                entry_id=entry_id,
+                file_name=target.name,
+            )
+            out["staged_path"] = str(staged)
+            try:
+                raw = staged.read_bytes()
+                if len(raw) <= 12 * 1024 * 1024:
+                    import base64
+
+                    out["msg_base64"] = base64.b64encode(raw).decode("ascii")
+                    out["msg_filename"] = staged.name
+            except OSError:
+                pass
+        return out
+
+    return _run_com_read(_write, "Ошибка сохранения письма Outlook")
 
 
 def save_mail_attachment(input_data: dict) -> dict:

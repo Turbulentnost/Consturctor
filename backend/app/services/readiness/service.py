@@ -18,6 +18,7 @@ from app.schemas.regulation import (
     RegulationRevisionResult,
     RoleMatchResult,
 )
+from app.services.role_matching import RoleMatchError, get_run_row
 from app.services.readiness.analyzer import analyze_readiness
 from app.services.readiness.change_planner import change_from_answer
 from app.services.readiness.impact import transaction_for_change
@@ -449,18 +450,16 @@ def _get_doc_and_role_run(
     regulation_id: str,
     role_match_run_id: str,
 ) -> tuple[RegulationDocument, RoleMatchRun]:
-    doc = _get_document(db, user_id=user_id, regulation_id=regulation_id)
-    run = (
-        db.query(RoleMatchRun)
-        .filter(
-            RoleMatchRun.id == role_match_run_id,
-            RoleMatchRun.user_id == user_id,
-            RoleMatchRun.regulation_id == regulation_id,
+    try:
+        run = get_run_row(
+            db,
+            user_id=user_id,
+            regulation_id=regulation_id,
+            run_id=role_match_run_id,
         )
-        .first()
-    )
-    if run is None:
-        raise ReadinessError("Запуск поиска функций не найден", status_code=404)
+    except RoleMatchError as exc:
+        raise ReadinessError("Запуск поиска функций не найден", status_code=404) from exc
+    doc = _get_document(db, user_id=user_id, regulation_id=run.regulation_id)
     return doc, run
 
 

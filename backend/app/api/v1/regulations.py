@@ -225,8 +225,8 @@ async def decide_role_match(
         return update_match_status(
             db,
             user_id=auth.user_id,
-            regulation_id=regulation_id,
-            run_id=run_id,
+            regulation_id=(request.regulationId or regulation_id).strip(),
+            run_id=(request.runId or run_id).strip(),
             match_id=match_id,
             status=request.status,
         )

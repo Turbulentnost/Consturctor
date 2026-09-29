@@ -100,6 +100,11 @@ def invoke_ac_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[s
     args = _ensure_agent_id(arguments if isinstance(arguments, dict) else {})
     registry = get_registry()
     if not registry.has_tool(name):
+        # Sidecar держит процесс — после деплоя новых tools пересобираем реестр один раз.
+        global _REGISTRY
+        _REGISTRY = None
+        registry = get_registry()
+    if not registry.has_tool(name):
         raise AcToolError(f"Неизвестный инструмент: {name}")
     result = registry.get(name).execute(args)
     if result.ok:

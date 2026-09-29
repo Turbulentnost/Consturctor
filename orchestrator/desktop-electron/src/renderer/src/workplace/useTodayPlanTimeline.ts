@@ -1,8 +1,8 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CalendarEvent, WorkflowBoard } from '../api/types'
 import {
   dedupeMeetingEvents,
-  meetingOverlapsLocalDay,
+  ensureOutlookMeetings,
   parseMeetingTime,
   type MeetingEvent
 } from '../utils/outlookMeetings'
@@ -14,36 +14,15 @@ import {
   TODAY_PLAN_PREFER_MOCKS,
   type TodayPlanBlock
 } from '../tabs/grid/todayDemoData'
-import { useTodayOutlookMeetings } from './useTodayOutlookMeetings'
+import { readTrackedCalendars, useTrackedCalendarsVersion } from '../utils/trackedCalendars'
+import { useGridRefreshGeneration } from './GridDataRefreshContext'
+import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
 export const TODAY_PLAN_DAY_START = 9
 export const TODAY_PLAN_DAY_END = 18
 
 const MEETING_TONES: TodayPlanBlock['tone'][] = ['pink', 'purple', 'sky', 'orange', 'teal']
-/** Stable palette so each ИИ-агент keeps one color across all of its blocks. */
-const AI_TONES: TodayPlanBlock['tone'][] = [
-  'sky',
-  'teal',
-  'orange',
-  'blue',
-  'mint',
-  'purple',
-  'pink'
-]
-
-function hashToneKey(value: string): number {
-  let hash = 0
-  const text = value.trim().toLowerCase()
-  for (let i = 0; i < text.length; i += 1) {
-    hash = (hash * 31 + text.charCodeAt(i)) >>> 0
-  }
-  return hash
-}
-
-function toneForAgent(agentKey: string): TodayPlanBlock['tone'] {
-  const key = agentKey.trim() || 'agent'
-  return AI_TONES[hashToneKey(key) % AI_TONES.length]
-}
+const AI_TONES: TodayPlanBlock['tone'][] = ['sky', 'teal', 'orange', 'blue', 'mint']
 
 export const TODAY_LUNCH_BLOCK: TodayPlanBlock = {
   id: 'lunch',
@@ -127,7 +106,11 @@ function meetingToBlock(meeting: MeetingEvent, index: number): TodayPlanBlock | 
   }
 }
 
-function agentEventToBlock(event: CalendarEvent, agentTitle: string): TodayPlanBlock | null {
+function agentEventToBlock(
+  event: CalendarEvent,
+  agentTitle: string,
+  index: number
+): TodayPlanBlock | null {
   const start = parseIso(event.startAt)
   if (!start) return null
   const end = new Date(start.getTime() + 60 * 60 * 1000)
@@ -136,15 +119,13 @@ function agentEventToBlock(event: CalendarEvent, agentTitle: string): TodayPlanB
   const status = (event.status || '').trim()
   const source = (event.source || '').trim()
   const runId = (event.runId || '').trim()
-  const workflowId = (event.workflowId || '').trim()
-  const agentKey = workflowId || agentTitle || displayTitle
   return {
     id: `ai:${event.id || event.runId || `${event.workflowId}-${event.startAt}`}`,
     startHour: decimalHour(start),
     endHour: decimalHour(end),
     title: displayTitle,
     subtitle: agentTitle,
-    tone: toneForAgent(agentKey),
+    tone: AI_TONES[index % AI_TONES.length],
     who: 'ai',
     kind: 'reg',
     lane: 'ai',
@@ -154,7 +135,7 @@ function agentEventToBlock(event: CalendarEvent, agentTitle: string): TodayPlanB
       agentName: agentTitle,
       status: status || undefined,
       source: source || undefined,
-      workflowId: workflowId || undefined,
+      workflowId: event.workflowId || undefined,
       runId: runId || undefined,
       note: (event.title || '').trim() && event.title !== displayTitle ? event.title : undefined
     }
@@ -164,19 +145,19 @@ function agentEventToBlock(event: CalendarEvent, agentTitle: string): TodayPlanB
 function nextRunToBlock(
   workflowId: string,
   nextRunAt: string,
-  agentTitle: string
+  agentTitle: string,
+  index: number
 ): TodayPlanBlock | null {
   const start = parseIso(nextRunAt)
   if (!start) return null
   const end = new Date(start.getTime() + 60 * 60 * 1000)
-  const agentKey = workflowId || agentTitle || 'ИИ-агент'
   return {
     id: `ai-next:${workflowId}-${nextRunAt}`,
     startHour: decimalHour(start),
     endHour: decimalHour(end),
     title: agentTitle || 'ИИ-агент',
     subtitle: 'Плановый запуск',
-    tone: toneForAgent(agentKey),
+    tone: AI_TONES[index % AI_TONES.length],
     who: 'ai',
     kind: 'reg',
     lane: 'ai',
@@ -202,8 +183,8 @@ function aiBlocksForDay(board: WorkflowBoard, periodDay: Date): TodayPlanBlock[]
   const blocks: TodayPlanBlock[] = []
   const seen = new Set<string>()
 
-  dayEvents.forEach((event) => {
-    const block = agentEventToBlock(event, titleById.get(event.workflowId) || 'ИИ-агент')
+  dayEvents.forEach((event, index) => {
+    const block = agentEventToBlock(event, titleById.get(event.workflowId) || 'ИИ-агент', index)
     if (!block) return
     const key = `${event.workflowId}:${Math.floor(block.startHour * 60)}`
     if (seen.has(key)) return
@@ -211,14 +192,16 @@ function aiBlocksForDay(board: WorkflowBoard, periodDay: Date): TodayPlanBlock[]
     blocks.push(block)
   })
 
+  let slot = dayEvents.length
   for (const agent of workflows) {
     const next = parseIso(agent.nextRunAt || '')
     if (!next || !isOnLocalDay(next, periodDay)) continue
     const key = `${agent.id}:${Math.floor(decimalHour(next) * 60)}`
     if (seen.has(key)) continue
     seen.add(key)
-    const block = nextRunToBlock(agent.id, agent.nextRunAt, agent.title)
+    const block = nextRunToBlock(agent.id, agent.nextRunAt, agent.title, slot)
     if (block) blocks.push(block)
+    slot += 1
   }
 
   return blocks.sort((a, b) => a.startHour - b.startHour)
@@ -241,11 +224,56 @@ export function useTodayPlanTimeline(
     userId ? { userId, fio } : null
   )
 
-  const outlookMeetings = useTodayOutlookMeetings(periodDay, { userId, fio })
-  const meetings = outlookMeetings.meetings
-  const meetingsLoading = outlookMeetings.loading
-  const meetingsError = outlookMeetings.error
+  const [meetingsLoading, setMeetingsLoading] = useState(true)
+  const [meetingsError, setMeetingsError] = useState('')
+  const [meetings, setMeetings] = useState<MeetingEvent[]>([])
+
   const dayKey = `${periodDay.getFullYear()}-${periodDay.getMonth()}-${periodDay.getDate()}`
+  const generation = useGridRefreshGeneration()
+  const trackedVersion = useTrackedCalendarsVersion()
+
+  useEffect(() => {
+    let alive = true
+    const cacheKey = `today-plan-meetings:${userId}:${dayKey}:${readTrackedCalendars(fio).join('|')}`
+    if (!shouldRunGridFetch(cacheKey, generation)) {
+      const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
+      if (cached) {
+        setMeetings(cached.meetings)
+        setMeetingsError(cached.error)
+        setMeetingsLoading(false)
+        return
+      }
+    }
+    const hadCache = Boolean(readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey))
+    if (!hadCache) setMeetingsLoading(true)
+    setMeetingsError('')
+    void ensureOutlookMeetings('day', periodDay, { owner: fio })
+      .then((res) => {
+        if (!alive) return
+        if (!res.ok) {
+          const errText = res.error || 'Outlook недоступен'
+          setMeetings([])
+          setMeetingsError(errText)
+          writeGridCache(cacheKey, { meetings: [], error: errText })
+          return
+        }
+        setMeetings(res.meetings)
+        writeGridCache(cacheKey, { meetings: res.meetings, error: '' })
+      })
+      .catch((err) => {
+        if (!alive) return
+        setMeetings([])
+        const errText = err instanceof Error ? err.message : 'Ошибка календаря'
+        setMeetingsError(errText)
+        writeGridCache(cacheKey, { meetings: [], error: errText })
+      })
+      .finally(() => {
+        if (alive) setMeetingsLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [dayKey, fio, generation, periodDay, userId, trackedVersion])
 
   const stableMeetingsRef = useRef<TodayPlanBlock[]>([])
   const stableAiRef = useRef<TodayPlanBlock[]>([])
@@ -253,7 +281,10 @@ export function useTodayPlanTimeline(
   return useMemo(() => {
     const loading = meetingsLoading || boardLoading
     const onDay = dedupeMeetingEvents(
-      meetings.filter((item) => meetingOverlapsLocalDay(item, periodDay))
+      meetings.filter((item) => {
+        const start = parseMeetingTime(item.start)
+        return start ? isOnLocalDay(start, periodDay) : false
+      })
     )
 
     let meetingBlocks = onDay

@@ -57,10 +57,9 @@ export interface KpiModuleCommand {
   kind: 'kpi_module'
   id?: string
   buildId: string
-  workflowId?: string
-  prompt?: string
+  workflowId: string
+  prompt: string
   filePaths?: string[]
-  resumeAgentId?: string
 }
 
 export type StartCommand =
@@ -81,13 +80,22 @@ function newRunId(): string {
  * Thin renderer-side wrapper around window.agent (the sidecar bridge).
  * Every start returns the runId so callers can correlate events/results.
  */
+export type SidecarSessionCredentials = {
+  login?: string
+  password?: string
+  onecComUsr?: string
+  nameMail?: string
+  userId?: string
+  onecCatalogRefKey?: string
+}
+
 export const agentClient = {
   ready(
     token: string | null,
-    credentials?: { login?: string; password?: string; onecComUsr?: string }
+    credentials?: SidecarSessionCredentials | Record<string, unknown>
   ): Promise<{ ok: boolean }> {
     if (!window.agent?.ready) return Promise.resolve({ ok: false })
-    return window.agent.ready(token, credentials)
+    return window.agent.ready(token, credentials as SidecarSessionCredentials)
   },
 
   start(command: StartCommand): string {

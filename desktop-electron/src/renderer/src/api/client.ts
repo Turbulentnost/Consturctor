@@ -126,7 +126,9 @@ function parseUser(data: Record<string, unknown>): UserProfile {
       (data.canChangeDepartment as boolean) ?? (data.can_change_department as boolean) ?? true,
     activityStatus:
       (data.activityStatus as string) ?? (data.activity_status as string) ?? 'online',
-    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false
+    isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false,
+    onecCatalogRefKey:
+      String(data.onecCatalogRefKey ?? data.onec_catalog_ref_key ?? '').trim() || undefined
   })
 }
 
@@ -514,8 +516,8 @@ function parseMatch(item: Record<string, unknown>): RoleMatch {
 export function parseRoleMatch(data: Record<string, unknown>): RoleMatchResult {
   const profile = asRecord(data.profile)
   return {
-    runId: String(data.runId ?? ''),
-    regulationId: String(data.regulationId ?? ''),
+    runId: String(data.runId ?? data.run_id ?? ''),
+    regulationId: String(data.regulationId ?? data.regulation_id ?? ''),
     canonicalTitle: String(profile.canonicalTitle ?? ''),
     department: String(profile.department ?? ''),
     matches: ((data.matches as Record<string, unknown>[]) ?? []).map((item) => parseMatch(item)),
@@ -1455,8 +1457,8 @@ export class ApiClient {
   ): Promise<RoleMatchResult> {
     const data = await this.request<Record<string, unknown>>(
       'PATCH',
-      `/api/v1/regulations/${regulationId}/role-matches/${runId}/${matchId}`,
-      { body: { status }, timeoutMs: 60_000 }
+      `/api/v1/regulations/${encodeURIComponent(regulationId)}/role-matches/${encodeURIComponent(runId)}/${encodeURIComponent(matchId)}`,
+      { body: { status, runId, regulationId }, timeoutMs: 60_000 }
     )
     return parseRoleMatch(data)
   }

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SpecMailRow } from './specV04DemoData'
 import { outlookMessageToMailRow } from './specV04Mappers'
-import { fetchOutlookMailForDay, formatMailReceivedLabel, formatMailTime } from '../utils/outlookMail'
+import {
+  dayKeyLocal,
+  ensureOutlookMailRange,
+  formatMailReceivedLabel,
+  formatMailTime
+} from '../utils/outlookMail'
+import { filterMessagesOnDay } from './mailProbe'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
@@ -42,22 +48,19 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
     setError('')
     void (async () => {
       try {
-        const inbox = await fetchOutlookMailForDay(periodDay, { folder: 'Inbox', maxResults: 40 })
+        const dayIso = dayKeyLocal(periodDay)
+        const batch = await ensureOutlookMailRange('', dayIso, dayIso, {
+          folder: 'All',
+          maxResults: 80
+        })
         if (!alive) return
-        const sent = await fetchOutlookMailForDay(periodDay, { folder: 'Sent', maxResults: 40 })
-        if (!alive) return
-        const inboxOk = inbox.ok
-        const sentOk = sent.ok
-        if (!inboxOk && !sentOk) {
+        if (!batch.ok) {
           setRows([])
           setSource('')
-          setError(inbox.error || sent.error || 'Outlook недоступен')
+          setError(batch.error || 'Outlook недоступен')
           return
         }
-        const combined = [
-          ...(inboxOk ? inbox.messages : []),
-          ...(sentOk ? sent.messages : [])
-        ].sort((left, right) =>
+        const combined = filterMessagesOnDay(batch.messages, dayIso).sort((left, right) =>
           String(right.datetime || right.sent_at || right.received_at || '').localeCompare(
             String(left.datetime || left.sent_at || left.received_at || '')
           )
@@ -67,6 +70,7 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
             const row = outlookMessageToMailRow(msg, index)
             return {
               ...row,
+              receivedAt: String(msg.datetime || msg.received_at || msg.sent_at || row.receivedAt || row.time),
               time: formatMailTime(String(msg.datetime || msg.received_at || msg.sent_at || row.time)),
               receivedLabel: formatMailReceivedLabel(
                 String(msg.datetime || msg.received_at || msg.sent_at || row.time)
@@ -81,13 +85,8 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
           seen.add(key)
           return true
         })
-        const nextSource = [inboxOk ? 'Inbox' : '', sentOk ? 'Sent' : '']
-          .filter(Boolean)
-          .join('+') || inbox.source || sent.source || 'outlook_com'
-        const nextError =
-          inboxOk && sentOk
-            ? ''
-            : [!inboxOk ? inbox.error : '', !sentOk ? sent.error : ''].filter(Boolean).join(' · ')
+        const nextSource = batch.cached ? 'outlook_com (cache)' : 'outlook_com (All)'
+        const nextError = ''
         setSource(nextSource)
         setRows(nextRows)
         setError(nextRows.length ? '' : nextError)

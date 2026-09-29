@@ -19,7 +19,34 @@ ALLOWED_ONEC_TOOLS = {
     "onec.meeting_service_notes",
     "onec.list_attachments",
     "onec.read_attachment",
+    "onec.open_form",
+    "onec.register_incoming_from_mail",
+    "onec.save_incoming_mail_msg",
 }
+
+
+def save_incoming_mail_msg(input_data: dict) -> dict:
+    """Сохранить .msg письма Outlook для OData-регистрации входящей."""
+    from app.tools.ac.workers.mail_incoming_onec import save_incoming_mail_msg as _save
+
+    ensure_onec_readonly_input(input_data)
+    return _save(input_data)
+
+
+def register_incoming_from_mail(input_data: dict) -> dict:
+    """Сохранить .msg и открыть форму входящей корреспонденции в 1С."""
+    from app.tools.ac.workers.mail_incoming_onec import register_incoming_from_outlook_mail
+
+    ensure_onec_readonly_input(input_data)
+    return register_incoming_from_outlook_mail(input_data)
+
+
+def open_metadata_form(input_data: dict) -> dict:
+    """Открыть форму метаданных в толстом клиенте 1С (без записи через COM)."""
+    from app.tools.ac.workers.onec_com_actions import launch_onec_client_form
+
+    ensure_onec_readonly_input(input_data)
+    return launch_onec_client_form(input_data)
 
 FORBIDDEN_INPUT_KEYS = {
     "write",

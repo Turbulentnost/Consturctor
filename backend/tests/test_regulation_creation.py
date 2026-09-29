@@ -45,6 +45,7 @@ from app.services.regulation_creation.service import (
     _result_from_created_document,
     get_active_creation_session,
     get_creation_document,
+    peek_creation_turn,
     persist_creation_turn,
     start_creation_session,
 )
@@ -1164,6 +1165,217 @@ def test_start_creation_fresh_closes_previous_draft() -> None:
     assert old.status == "closed"
     assert active is not None
     assert active.draftId == second.draftId
+
+
+def test_peek_drops_sdk_agent_when_generation_was_cut_off() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    db.commit()
+    started = start_creation_session(db, user_id="user-1")
+    draft = db.get(RegulationCreationDraft, started.draftId)
+    assert draft is not None
+    stale_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    db.execute(
+        update(RegulationCreationDraft)
+        .where(RegulationCreationDraft.id == draft.id)
+        .values(
+            status="generating",
+            cursor_agent_id="agent-stuck",
+            latest_run_id="run-stuck",
+            interview_json=set_sdk_agent_id(draft.interview_json, "agent-stuck"),
+            updated_at=stale_at,
+        )
+    )
+    db.commit()
+    db.expire_all()
+
+    turn = peek_creation_turn(db, user_id="user-1", draft_id=draft.id)
+
+    assert turn.sdkAgentId == ""
+    assert turn.session.status == "interview"
+    assert turn.session.sdkAgentId == ""
+
+
+def _orphaned_draft(db):
+    db.add(AppUser(id="user-1", fio="Тест"))
+    db.commit()
+    started = start_creation_session(db, user_id="user-1")
+    draft = db.get(RegulationCreationDraft, started.draftId)
+    assert draft is not None
+    draft.status = "interview"
+    draft.interview_json = {
+        "askedQuestions": [{"id": "q1", "message": "Как выбираете получателей?"}],
+        "processes": [{"id": "p1", "title": "Регистрация приказов"}],
+        "selectedProcessIds": ["p1"],
+        "attachments": [
+            {
+                "id": "a1",
+                "name": "file.docx",
+                "text": "УНИКАЛЬНЫЙ_ТЕКСТ_ВЛОЖЕНИЯ_ДЛЯ_ПРОВЕРКИ",
+            }
+        ],
+        "turns": [{"role": "user", "text": "директор и помощник"}],
+    }
+    db.add(draft)
+    db.add(
+        RegulationCreationMessage(
+            id="reg-create-msg-user-1",
+            draft_id=draft.id,
+            user_id="user-1",
+            role="user",
+            content="директор и помощник руководителя",
+            structured_json={},
+        )
+    )
+    db.commit()
+    return draft
+
+
+def test_orphaned_interview_prompt_stays_short_when_server_agent_fails(monkeypatch) -> None:
+    def boom(**kwargs):
+        raise RuntimeError("sdk down")
+
+    monkeypatch.setattr(
+        "app.services.regulation_creation.server_interview.run_server_interview_model",
+        boom,
+    )
+    db = _session()
+    draft = _orphaned_draft(db)
+
+    turn = peek_creation_turn(db, user_id="user-1", draft_id=draft.id)
+
+    assert "Отдельной истории агента нет" in turn.sdkPrompt
+    assert "УНИКАЛЬНЫЙ_ТЕКСТ_ВЛОЖЕНИЯ_ДЛЯ_ПРОВЕРКИ" not in turn.sdkPrompt
+    assert turn.sdkAgentId == ""
+
+
+def test_orphaned_interview_question_is_saved_without_desktop_agent(monkeypatch) -> None:
+    answer = json.dumps(
+        {
+            "status": "need_more",
+            "message": "Кто готовит проект приказа до регистрации?",
+            "quickAnswers": ["Я", "Автор документа"],
+        },
+        ensure_ascii=False,
+    )
+    monkeypatch.setattr(
+        "app.services.regulation_creation.server_interview.run_server_interview_model",
+        lambda **kwargs: answer,
+    )
+    db = _session()
+    draft = _orphaned_draft(db)
+
+    turn = peek_creation_turn(db, user_id="user-1", draft_id=draft.id)
+
+    assert turn.sdkPrompt == ""
+    assert turn.session.messages[-1].role == "assistant"
+    assert "Кто готовит проект приказа" in turn.session.messages[-1].content
+
+
+def test_closed_interview_is_assembled_on_server(monkeypatch, tmp_path) -> None:
+    from app.config import settings
+
+    paragraph = (
+        "Помощник руководителя регистрирует приказ в журнале в день поступления документа, "
+        "проверяет реквизиты и передаёт карточку автору после записи в реестр."
+    )
+    answer = json.dumps(
+        {
+            "status": "ready",
+            "message": "Регламент собран по подтверждённым ответам.",
+            "document": {
+                "title": "Регламент помощника руководителя",
+                "sections": [
+                    {
+                        "number": "1",
+                        "title": "Регистрация приказов",
+                        "paragraphs": [paragraph, paragraph + " Запись делается в карточке 1С."],
+                        "items": [],
+                    }
+                ],
+            },
+        },
+        ensure_ascii=False,
+    )
+    monkeypatch.setattr(settings, "regulation_storage_dir", tmp_path)
+    monkeypatch.setattr(
+        "app.services.regulation_creation.server_interview.run_server_interview_model",
+        lambda **kwargs: answer,
+    )
+    db = _session()
+    draft = _orphaned_draft(db)
+    state = _closed_interview()
+    state["document_write_required"] = True
+    draft.interview_json = state
+    db.add(draft)
+    db.commit()
+
+    turn = peek_creation_turn(db, user_id="user-1", draft_id=draft.id)
+
+    assert turn.sdkPrompt == ""
+    assert turn.writeDocument is False
+    assert turn.session.status == "finalized"
+    assert turn.session.messages[-1].role == "assistant"
+
+
+def test_document_step_does_not_fall_back_to_desktop_agent(monkeypatch, tmp_path) -> None:
+    from app.config import settings
+
+    def boom(**kwargs):
+        raise RuntimeError("local agent unavailable")
+
+    monkeypatch.setattr(settings, "regulation_storage_dir", tmp_path)
+    monkeypatch.setattr(
+        "app.services.regulation_creation.server_interview.run_server_interview_model",
+        boom,
+    )
+    db = _session()
+    draft = _orphaned_draft(db)
+    draft.interview_json = _closed_interview()
+    db.add(draft)
+    db.commit()
+
+    turn = peek_creation_turn(db, user_id="user-1", draft_id=draft.id)
+
+    assert turn.sdkPrompt == ""
+    assert turn.writeDocument is False
+    assert turn.useTools is False
+    assert turn.session.status == "finalized"
+
+
+def test_history_route_is_not_captured_as_draft_id() -> None:
+    from app.api.v1.regulation_creation import router
+
+    paths = [getattr(route, "path", "") for route in router.routes]
+    history = "/regulation-creation/sessions/history"
+    draft = "/regulation-creation/sessions/{draft_id}"
+    assert history in paths
+    assert "/regulation-creation/sessions/{draft_id}/resume" in paths
+    assert paths.index(history) < paths.index(draft)
+
+
+def test_resume_closed_creation_session_keeps_messages() -> None:
+    from app.services.regulation_creation.service import (
+        list_creation_sessions,
+        resume_creation_session,
+    )
+
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    db.commit()
+    first = start_creation_session(db, user_id="user-1")
+    start_creation_session(db, user_id="user-1", fresh=True)
+
+    history = list_creation_sessions(db, user_id="user-1")
+    assert [item.draftId for item in history.items]
+    resumed = resume_creation_session(db, user_id="user-1", draft_id=first.draftId)
+    assert resumed.draftId == first.draftId
+    assert resumed.status == "interview"
+    assert any(item.role == "assistant" for item in resumed.messages)
 
 
 def test_apply_agent_reply_replaces_ascii_question_marks() -> None:

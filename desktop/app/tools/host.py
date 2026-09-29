@@ -94,6 +94,10 @@ def _server_tool_timeout(name: str) -> float:
 def _invoke_local_backend_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         if name == "onec.meeting_protocols":
+            # One protocol card (ref_key) and the whole journal (any) are backend-only.
+            kind = str(args.get("meeting_kind") or args.get("kind") or "").strip().casefold()
+            if args.get("ref_key") or kind in {"any", "all", "все", "календарь", "calendar"}:
+                return _invoke_server_tool(name, args)
             from app.tools.meeting_protocols_local import invoke_meeting_protocols
 
             return invoke_meeting_protocols(args)

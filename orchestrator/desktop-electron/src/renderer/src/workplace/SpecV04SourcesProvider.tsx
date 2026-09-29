@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -7,7 +8,9 @@ import {
   useState,
   type ReactNode
 } from 'react'
+import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
+import { platformTaskToRow } from './platformTasks'
 import {
   countMeetingsOnDay,
   dedupeMeetingEvents,
@@ -27,14 +30,17 @@ import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from '.
 import { useWorkplaceData } from './WorkplaceBoard'
 import { summarizeDayLaunches } from './todayKpiLaunches'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
+import { useTrackedCalendarsVersion } from '../utils/trackedCalendars'
 import {
+  fetchOrchestratorCoreSources,
   loadOrchestratorErpTasks,
-  loadOrchestratorOutlookMailWeek,
-  loadOrchestratorTurboPortfolio,
-  loadOrchestratorTurboTaskRows,
-  ORCH_SOURCE_ID
+  ORCH_SOURCE_ID,
+  type OrchestratorErpLoad
 } from './orchestratorTaskSources'
+import { loadOrchestratorMail } from './mailProbe'
+import { useWorkplacePeriod } from './workplacePeriod'
 import type { SpecV04SourcesState } from './useSpecV04Data'
+import { diffAndStoreOneCTaskSnapshot } from './onecTaskSnapshot'
 
 const EMPTY: SpecV04SourcesState = {
   sourcesLoading: false,
@@ -54,6 +60,11 @@ const EMPTY: SpecV04SourcesState = {
   projectCount: 0,
   mailRows: [],
   mailCount: 0,
+  mailLoading: false,
+  mailImapPrimary: false,
+  mailComError: '',
+  mailImapError: '',
+  mailImapStatus: '',
   processRows: [],
   todayProcessRows: [],
   boardEvents: [],
@@ -70,9 +81,17 @@ const EMPTY: SpecV04SourcesState = {
   turboNoSession: false,
   comPasswordInSession: false,
   oneCAuthFailure: false,
-  user: null,
-  reloadBoard: async () => undefined
+  newOneCTaskKeys: new Set(),
+  platformTasks: [],
+  platformTaskCount: 0,
+  platformLoading: false,
+  platformError: '',
+  user: null
 }
+
+const PLATFORM_POLL_MS = 60_000
+/** Исполненные и отклонённые задачи платформы видны ещё неделю — чтобы постановщик увидел итог. */
+const PLATFORM_CLOSED_KEEP_MS = 7 * 24 * 3600 * 1000
 
 export const SpecV04SourcesContext = createContext<SpecV04SourcesState>(EMPTY)
 
@@ -88,15 +107,17 @@ export function SpecV04SourcesProvider({
 }): React.JSX.Element {
   const erpFio = erpActorFio(user)
   const outlookMailbox = outlookMailboxAddress(user)
+  const { from: mailPeriodFrom, to: mailPeriodTo } = useWorkplacePeriod()
+  const mailPeriodKey = `${mailPeriodFrom}:${mailPeriodTo}`
+  const mailPeriodKeyRef = useRef('')
   const { generation, takeHardRefresh } = useGridDataRefreshContext()
-  const { agents, board, loading: agentsLoading, reload: reloadBoard } = useWorkplaceData({
+  const trackedVersion = useTrackedCalendarsVersion()
+  const { agents, board, loading: agentsLoading } = useWorkplaceData({
     userId: user.id || '',
     fio: erpFio
   })
 
   const [sourcesLoading, setSourcesLoading] = useState(true)
-  const [erpLoading, setErpLoading] = useState(false)
-  const [turboLoading, setTurboLoading] = useState(false)
   const [turboNoSession, setTurboNoSession] = useState(false)
   const [error, setError] = useState('')
   const [erpTasks, setErpTasks] = useState<SpecTaskRow[]>([])
@@ -109,87 +130,99 @@ export function SpecV04SourcesProvider({
   const [turboSource, setTurboSource] = useState('—')
   const [mailRows, setMailRows] = useState<SpecMailRow[]>([])
   const [mailSource, setMailSource] = useState('—')
+  const [mailComError, setMailComError] = useState('')
+  const [mailImapError, setMailImapError] = useState('')
+  const [mailImapPrimary, setMailImapPrimary] = useState(false)
+  const [mailImapStatus, setMailImapStatus] = useState('')
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
-  const [meetingsLoading, setMeetingsLoading] = useState(true)
   const [oneCAuthFailure, setOneCAuthFailure] = useState(false)
+  const [newOneCTaskKeys, setNewOneCTaskKeys] = useState<ReadonlySet<string>>(() => new Set())
+  const snapshotUserRef = useRef('')
   const hasLoadedSourcesRef = useRef(false)
+  const liveOneCSessionRef = useRef('')
+  /** Выгрузка с диска: показываем её только если живая не дошла. */
+  const cachedErpRef = useRef<OrchestratorErpLoad | null>(null)
+  const [erpLivePending, setErpLivePending] = useState(false)
+
+  const publishErpLoad = useCallback(
+    (load: OrchestratorErpLoad, userId: string): void => {
+      setErpTasks(load.tasks)
+      setErpSource(load.sourceLabel)
+      const erpLoaded =
+        !load.oneCAuthFailure &&
+        load.sourceLabel !== 'stub' &&
+        (load.tasks.length > 0 || !load.error?.trim())
+      if (erpLoaded && userId && snapshotUserRef.current !== userId) {
+        snapshotUserRef.current = userId
+        setNewOneCTaskKeys(diffAndStoreOneCTaskSnapshot(userId, load.tasks))
+      }
+    },
+    []
+  )
 
   useEffect(() => {
     if (!user.id) {
       setSourcesLoading(false)
       setTurboNoSession(false)
+      setErpLivePending(false)
       return
     }
     let alive = true
-    const refreshOpts = { forceRefresh: takeHardRefresh() }
-
-    if (!hasLoadedSourcesRef.current) {
-      setSourcesLoading(true)
-      setTurboLoading(true)
-    }
-    setError('')
-    setTurboTasksError('')
-    setOneCAuthFailure(false)
-    setErpLoading(true)
-
-    void loadOrchestratorErpTasks(user, erpFio, refreshOpts)
-      .then((erp) => {
+    ;(async () => {
+      if (!hasLoadedSourcesRef.current) setSourcesLoading(true)
+      setError('')
+      setTurboTasksError('')
+      setOneCAuthFailure(false)
+      try {
+        const forced = takeHardRefresh()
+        const bundle = await fetchOrchestratorCoreSources(user, erpFio, {
+          forceRefresh: forced
+        })
         if (!alive) return
-        setErpTasks(erp.tasks)
-        setErpSource(erp.tasks.length ? erp.sourceLabel : erp.sourceLabel)
-        setErpError(erp.error)
-        setErpSecondaryHint(erp.erpSecondaryHint || '')
-        setOneCAuthFailure(erp.oneCAuthFailure)
-        const blockingErp = erp.error?.trim() || ''
+
+        setErpError(bundle.erp.error)
+        setErpSecondaryHint(bundle.erp.erpSecondaryHint || '')
+        setOneCAuthFailure(bundle.erp.oneCAuthFailure)
+        // forced уже дал живой список; иначе он с диска — держим его до живой выгрузки.
+        const liveRefreshPlanned = !forced && Boolean(erpFio) && !bundle.erp.oneCAuthFailure
+        if (liveRefreshPlanned) {
+          cachedErpRef.current = bundle.erp
+          liveOneCSessionRef.current = ''
+          setErpLivePending(true)
+        } else {
+          cachedErpRef.current = null
+          setErpLivePending(false)
+          publishErpLoad(bundle.erp, user.id)
+        }
+        const blockingErp = bundle.erp.error?.trim() || ''
         if (blockingErp) {
           setError((prev) => (prev && prev.includes(blockingErp) ? prev : blockingErp))
         }
-      })
-      .catch((err) => {
-        if (!alive) return
-        setErpError(err instanceof Error ? err.message : 'Не удалось загрузить задачи 1С')
-      })
-      .finally(() => {
-        if (alive) setErpLoading(false)
-      })
 
-    void (async () => {
-      try {
-        const turbo = await loadOrchestratorTurboPortfolio(user, erpFio)
-        if (!alive) return
-
-        setProjects(turbo.projects)
-        setTurboSource(turbo.sourceLabel)
-        setTurboNoSession(turbo.turboNoSession)
-        if (turbo.hint?.trim() && !turbo.projects.length) {
-          setError((prev) => (prev ? `${prev} · ${turbo.hint}` : turbo.hint))
+        setProjects(bundle.turbo.projects)
+        setTurboSource(bundle.turbo.sourceLabel)
+        setTurboNoSession(bundle.turbo.turboNoSession)
+        setTurboTasks(bundle.turboTasks.tasks)
+        setTurboTasksError(bundle.turboTasks.error || '')
+        if (bundle.turbo.hint?.trim() && !bundle.turbo.projects.length) {
+          setTurboTasksError((prev) =>
+            prev ? `${prev} · ${bundle.turbo.hint}` : bundle.turbo.hint
+          )
         }
-
-        const turboTasks = await loadOrchestratorTurboTaskRows(
-          user,
-          erpFio,
-          turbo.projects,
-          turbo.turboNoSession
-        )
-        if (!alive) return
-        setTurboTasks(turboTasks.tasks)
-        setTurboTasksError(turboTasks.error || '')
-        if (turboTasks.error?.trim() && turboTasks.tasks.length) {
+        if (bundle.turboTasks.error?.trim() && bundle.turboTasks.tasks.length) {
           setErpSecondaryHint((prev) =>
-            prev ? `${prev} · Turbo: ${turboTasks.error}` : `Turbo: ${turboTasks.error}`
+            prev ? `${prev} · Turbo: ${bundle.turboTasks.error}` : `Turbo: ${bundle.turboTasks.error}`
           )
         }
 
-        const mail = await loadOrchestratorOutlookMailWeek(outlookMailbox)
-        if (!alive) return
-        setMailRows(mail.rows)
-        setMailSource(mail.sourceLabel)
       } catch (err) {
-        if (alive) setError(err instanceof Error ? err.message : 'Не удалось загрузить данные')
+        if (alive) {
+          setError(err instanceof Error ? err.message : 'Не удалось загрузить данные')
+          setErpLivePending(false)
+        }
       } finally {
         if (alive) {
           hasLoadedSourcesRef.current = true
-          setTurboLoading(false)
           setSourcesLoading(false)
         }
       }
@@ -199,29 +232,84 @@ export function SpecV04SourcesProvider({
     }
   }, [user.id, erpFio, outlookMailbox, generation, comCredsRevision])
 
+  // Каждый заход — живая выгрузка ДО: на диске она может быть многодневной,
+  // и до этого запроса в таблице нет задач, заведённых с её последнего обновления.
+  // Пока она идёт, erpLoading остаётся true: в таблице «Загружаем…», а не устаревший список.
   useEffect(() => {
-    if (!user.id) {
-      setMeetingsLoading(false)
-      return
-    }
+    if (!user.id || !erpFio || sourcesLoading || !erpLivePending) return
+    const sessionKey = `${user.id}:${erpFio}`
+    if (liveOneCSessionRef.current === sessionKey) return
+    liveOneCSessionRef.current = sessionKey
     let alive = true
-    setMeetingsLoading(true)
-    const today = new Date()
-    void ensureOutlookMeetings('week', today, { owner: erpFio })
-      .then((cal) => {
+    void loadOrchestratorErpTasks(user, erpFio, { forceRefresh: true })
+      .then((fresh) => {
         if (!alive) return
-        setMeetings(dedupeMeetingEvents(cal.meetings || []))
+        const failed = fresh.oneCAuthFailure || Boolean(fresh.error.trim())
+        if (!failed) {
+          publishErpLoad(fresh, user.id)
+          return
+        }
+        // Живая не дошла — отдаём то, что есть на диске, но помечаем список неактуальным.
+        const fallback = cachedErpRef.current
+        if (fallback) {
+          publishErpLoad(fallback, user.id)
+          setErpSecondaryHint((prev) => {
+            const note = 'Живая выгрузка 1С не дошла — список из последней выгрузки на диске'
+            return prev ? `${prev} · ${note}` : note
+          })
+        } else {
+          setErpError((prev) => prev || fresh.error)
+        }
+        if (fresh.oneCAuthFailure) setOneCAuthFailure(true)
       })
       .catch(() => {
-        if (alive) setMeetings([])
+        if (alive && cachedErpRef.current) publishErpLoad(cachedErpRef.current, user.id)
       })
       .finally(() => {
-        if (alive) setMeetingsLoading(false)
+        if (alive) setErpLivePending(false)
       })
     return () => {
       alive = false
     }
-  }, [user.id, erpFio, generation])
+  }, [user.id, erpFio, sourcesLoading, erpLivePending, publishErpLoad])
+
+  useEffect(() => {
+    if (!user.id) return
+    let alive = true
+    void loadOrchestratorMail(
+      outlookMailbox,
+      { dateFrom: mailPeriodFrom, dateTo: mailPeriodTo },
+      { forceOutlook: takeHardRefresh() }
+    ).then((mail) => {
+      if (!alive) return
+      setMailRows(mail.rows)
+      setMailSource(mail.sourceLabel)
+      setMailComError(mail.comError || '')
+      setMailImapError(mail.imapError || '')
+      setMailImapPrimary(Boolean(mail.imapPrimary))
+      setMailImapStatus(mail.imapStatus || '')
+      mailPeriodKeyRef.current = mailPeriodKey
+    })
+    return () => {
+      alive = false
+    }
+  }, [user.id, outlookMailbox, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
+
+  useEffect(() => {
+    if (!user.id) return
+    let alive = true
+    const today = new Date()
+    void ensureOutlookMeetings('week', today, { owner: erpFio })
+      .then((cal) => {
+        if (alive) setMeetings(dedupeMeetingEvents(cal.meetings || []))
+      })
+      .catch(() => {
+        if (alive) setMeetings([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [user.id, erpFio, generation, trackedVersion])
 
   const regRows = useMemo(() => {
     return agents.filter((a) => !a.standalone).map(agentToProcessRow)
@@ -251,6 +339,42 @@ export function SpecV04SourcesProvider({
     [erpTasks.length, turboTasks.length, regRows.length]
   )
 
+  const [platformTasks, setPlatformTasks] = useState<SpecTaskRow[]>([])
+  const [platformLoading, setPlatformLoading] = useState(true)
+  const [platformError, setPlatformError] = useState('')
+
+  // Задачи от коллег приходят без действий пользователя, поэтому список ещё и опрашиваем.
+  useEffect(() => {
+    if (!user.id) return
+    let alive = true
+    const load = (): void => {
+      void api
+        .listPlatformTasks()
+        .then((items) => {
+          if (!alive) return
+          const keepSince = Date.now() - PLATFORM_CLOSED_KEEP_MS
+          setPlatformTasks(
+            items
+              .filter((task) => task.status === 'open' || new Date(task.statusAt || 0).getTime() >= keepSince)
+              .map(platformTaskToRow)
+          )
+          setPlatformError('')
+        })
+        .catch((err: unknown) => {
+          if (alive) setPlatformError(err instanceof Error ? err.message : 'Задачи платформы не загрузились')
+        })
+        .finally(() => {
+          if (alive) setPlatformLoading(false)
+        })
+    }
+    load()
+    const timer = window.setInterval(load, PLATFORM_POLL_MS)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [user.id, generation])
+
   const allProcessRows = useMemo(() => {
     const erpRows = erpTasks.map(erpTaskToProcessRow)
     const projRows = projects.map(turboProjectToProcessRow)
@@ -262,11 +386,12 @@ export function SpecV04SourcesProvider({
   const meetingCountToday = useMemo(() => countMeetingsOnDay(meetings), [meetings])
 
   const tableLoading = agentsLoading
+  const erpLoading = sourcesLoading || erpLivePending
   const value = useMemo(
     (): SpecV04SourcesState => ({
       sourcesLoading,
       tableLoading,
-      loading: sourcesLoading || tableLoading || erpLoading,
+      loading: erpLoading || tableLoading,
       error,
       outlookMailbox,
       erpFio,
@@ -277,13 +402,18 @@ export function SpecV04SourcesProvider({
       erpTaskCount: erpTasks.length,
       turboTasks,
       turboTaskCount: turboTasks.length,
-      turboLoading,
+      turboLoading: sourcesLoading,
       turboError: turboTasksError,
-      allTaskCount,
+      allTaskCount: allTaskCount + platformTasks.length,
       projects,
       projectCount: projects.length,
       mailRows,
       mailCount: mailRows.length,
+      mailLoading: sourcesLoading,
+      mailImapPrimary,
+      mailComError,
+      mailImapError,
+      mailImapStatus,
       processRows: regRows,
       todayProcessRows,
       boardEvents: board.events,
@@ -292,7 +422,7 @@ export function SpecV04SourcesProvider({
       meetingCount: meetings.length,
       meetingCountToday,
       meetings,
-      meetingsLoading,
+      meetingsLoading: false,
       sources: {
         erp: erpSource || ORCH_SOURCE_ID.erpPm,
         turbo: turboSource || ORCH_SOURCE_ID.turboProject,
@@ -301,14 +431,20 @@ export function SpecV04SourcesProvider({
       turboNoSession,
       comPasswordInSession: hasComPassword(),
       oneCAuthFailure,
-      user,
-      reloadBoard
+      newOneCTaskKeys,
+      platformTasks,
+      platformTaskCount: platformTasks.length,
+      platformLoading,
+      platformError,
+      user
     }),
     [
+      platformTasks,
+      platformLoading,
+      platformError,
       sourcesLoading,
-      tableLoading,
       erpLoading,
-      turboLoading,
+      tableLoading,
       error,
       outlookMailbox,
       erpFio,
@@ -320,13 +456,16 @@ export function SpecV04SourcesProvider({
       turboTasksError,
       projects,
       mailRows,
+      mailComError,
+      mailImapError,
+      mailImapPrimary,
+      mailImapStatus,
       regRows,
       todayProcessRows,
       board.events,
       board.agents,
       allProcessRows,
       meetings,
-      meetingsLoading,
       meetingCountToday,
       erpSource,
       turboSource,
@@ -334,8 +473,8 @@ export function SpecV04SourcesProvider({
       turboNoSession,
       comCredsRevision,
       oneCAuthFailure,
-      user,
-      reloadBoard
+      newOneCTaskKeys,
+      user
     ]
   )
 

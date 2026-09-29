@@ -57,26 +57,31 @@ def _clear_stale_outputs(base: Path) -> None:
         pass
 
 
-def reset_run_scratch(cwd: str, *, clear_attachments: bool = True) -> None:
+def reset_run_scratch(
+    cwd: str, *, clear_attachments: bool = True, clear_tool_results: bool = True
+) -> None:
     """Delete leftover per-run temp files so they don't accumulate between runs.
 
     The per-workflow workspace is reused across runs, so intermediate artifacts
     would otherwise pile up and leak into the next run (stale attachments make the
     agent see files that "shouldn't be there").
 
-    Always clears ``tool_results/`` (large tool-result dumps). When
-    ``clear_attachments`` is True it also clears ``materials/attachments/`` and
-    removes leftover output documents (xlsx/docx/pdf/...) from the workspace
-    root left by previous runs. ``prepare_sdk_workspace`` then puts the latest
-    persisted agent outputs back under their original names, so the next run
-    can update ActionTracker.xlsx instead of inventing a second file.
-    The caller keeps ``clear_attachments`` False on a resume/follow-up
-    so a file attached or produced in an earlier turn of the same conversation
-    survives. Permanent knowledge in ``materials/`` and the run journal are left
-    untouched (they are re-seeded from the DB anyway).
+    Clears ``tool_results/`` unless this is a resume of the same SDK agent: the
+    previous turn's externalized tool JSON (for example a transcript) is what
+    the continuation has to read. When ``clear_attachments`` is True it also
+    clears ``materials/attachments/`` and removes leftover output documents
+    (xlsx/docx/pdf/...) from the workspace root left by previous runs.
+    ``prepare_sdk_workspace`` then puts the latest persisted agent outputs back
+    under their original names, so the next run can update ActionTracker.xlsx
+    instead of inventing a second file. The caller keeps ``clear_attachments``
+    False on a resume/follow-up so a file attached or produced in an earlier
+    turn of the same conversation survives. Permanent knowledge in
+    ``materials/`` and the run journal are left untouched (they are re-seeded
+    from the DB anyway).
     """
     base = Path((cwd or "").strip() or ".")
-    _clear_dir_contents(base / "tool_results")
+    if clear_tool_results:
+        _clear_dir_contents(base / "tool_results")
     if clear_attachments:
         _clear_dir_contents(base / "materials" / "attachments")
         # Independent run: also drop leftover output documents from prior runs

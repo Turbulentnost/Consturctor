@@ -2,10 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
-import { AgentFeed, omitTriggerCheckNoise } from '../components/agentfeed'
+import { AgentFeed } from '../components/agentfeed'
 import type { FeedItem } from '../components/agentfeed/types'
 import { useRuns } from '../store/runs'
-import { liveRunProgress } from '../store/liveRun'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
@@ -22,6 +21,12 @@ interface AgentRunPageProps {
 }
 
 const MAX_COMPOSER_LINES = 10
+
+interface SentAttachment {
+  name: string
+  path: string
+  atMs: number
+}
 
 
 function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
@@ -88,6 +93,7 @@ export function AgentRunPage({
 
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<string[]>([])
+  const [sentAttachments, setSentAttachments] = useState<SentAttachment[]>([])
   const [files, setFiles] = useState<WorkflowFileItem[]>([])
   const leftRef = useRef<HTMLDivElement | null>(null)
   const dockRef = useRef<HTMLDivElement | null>(null)
@@ -103,10 +109,6 @@ export function AgentRunPage({
   }, [])
 
   const refreshFiles = useCallback(async () => {
-    if (personalAgent) {
-      setFiles([])
-      return
-    }
     try {
       const rows = await api.listWorkflowFiles(workflowId)
       // Runtime panel keeps only today's files; older files stay available
@@ -118,7 +120,7 @@ export function AgentRunPage({
     } catch {
       setFiles([])
     }
-  }, [workflowId, personalAgent, isTodayFile])
+  }, [workflowId, isTodayFile])
 
   useEffect(() => {
     return agentClient.onEvent((event) => {
@@ -129,7 +131,6 @@ export function AgentRunPage({
   }, [workflowId, refreshFiles])
 
   useEffect(() => {
-    if (personalAgent) return
     let cancelled = false
     async function loadResumeAgent(): Promise<void> {
       try {
@@ -141,7 +142,8 @@ export function AgentRunPage({
         /* sidecar also falls back to workflow.local_run.sdk_agent_id */
       }
     }
-    void loadResumeAgent()
+    // personal agent (Оркестратор) не хранится как workflow в БД — getWorkflow пропускаем
+    if (!personalAgent) void loadResumeAgent()
     void refreshFiles()
     return () => {
       cancelled = true
@@ -158,25 +160,17 @@ export function AgentRunPage({
   // events reach this page. Pull persisted steps so the feed is not empty.
   useEffect(() => {
     if (!running) return
-    if (omitTriggerCheckNoise(state?.items ?? []).length > 0) return
+    if ((state?.items?.length ?? 0) > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [running, workflowId, state?.items, runs])
+  }, [running, workflowId, state?.items?.length, runs])
 
   // On open, restore the latest known conversation for this exact agent.
   // Play (autoStart) must start a new run, not reopen the last feed.
   useEffect(() => {
     if (autoStart || initialMessage.trim()) return
-    if (omitTriggerCheckNoise(state?.items ?? []).length > 0) return
+    if ((state?.items?.length ?? 0) > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [workflowId, runs, state?.items, autoStart, initialMessage])
-
-  useEffect(() => {
-    if (!running) return
-    const timer = window.setInterval(() => {
-      void runs.attachHistoryFeed(workflowId)
-    }, 2500)
-    return () => window.clearInterval(timer)
-  }, [running, workflowId, runs])
+  }, [workflowId, runs, state?.items?.length, autoStart, initialMessage])
 
   // The "Запустить" play button opens this page with autoStart, so the agent
   // starts immediately on its own playbook instead of waiting for a message.
@@ -200,7 +194,6 @@ export function AgentRunPage({
   useEffect(() => {
     const message = initialMessage.trim()
     if (!message || initialSentRef.current) return
-    if (running) return
     initialSentRef.current = true
     runs.startRun({
       workflowId,
@@ -227,6 +220,21 @@ export function AgentRunPage({
     setAttachments((prev) => prev.filter((item) => item !== path))
   }
 
+  // Файлы, которые пользователь уже отправил агенту в этой сессии страницы —
+  // показываем их в правой панели, чтобы вложения не «исчезали» после отправки.
+  const recordSentAttachments = useCallback((paths: string[]): void => {
+    if (!paths.length) return
+    const atMs = Date.now()
+    setSentAttachments((prev) => {
+      const known = new Set(prev.map((item) => item.path))
+      const added = paths
+        .filter((path) => !known.has(path))
+        .map((path) => ({ name: path.split(/[\\/]/).pop() || path, path, atMs }))
+      if (!added.length) return prev
+      return [...added, ...prev]
+    })
+  }, [])
+
   const stop = useCallback((): void => {
     if (!running) return
     runs.cancel(workflowId)
@@ -241,6 +249,7 @@ export function AgentRunPage({
       .filter(Boolean)
       .join('\n')
     const filePaths = attachments
+    recordSentAttachments(filePaths)
     setInput('')
     setAttachments([])
     runs.startRun({
@@ -341,13 +350,6 @@ export function AgentRunPage({
     ]
   }, [state?.items, personalAgent])
 
-  const progress = liveRunProgress({
-    running,
-    pendingQuestion: state?.pendingQuestion,
-    pendingHitl: state?.pendingHitl,
-    timing: state?.timing,
-    items: state?.items
-  })
   const statusText = running
     ? state?.status || 'Агент работает…'
     : awaiting
@@ -355,7 +357,7 @@ export function AgentRunPage({
       : 'Готов к работе'
 
   return (
-    <div className="wf-page">
+    <div className={`wf-page${personalAgent ? ' wf-page--orchestrator' : ''}`}>
       <div className="wf-topbar">
         <button className="btn-ghost" onClick={onBack}>
           Назад
@@ -363,14 +365,6 @@ export function AgentRunPage({
         <div className="wf-title-block">
           <h1 className="wf-title">{title || (personalAgent ? 'Оркестратор' : 'Запуск агента')}</h1>
           {personalAgent ? <span className="wf-title-sub">Базовый агент</span> : null}
-          {running || awaiting ? (
-            <div className="wf-run-progress" aria-label={`Прогресс ${progress}%`}>
-              <div className="wf-progress">
-                <span className="wf-progress-fill" style={{ width: `${progress}%` }} />
-              </div>
-              <span className="wf-run-progress-meta">{progress}%</span>
-            </div>
-          ) : null}
         </div>
         <div className="wf-topbar-spacer" />
         {onOpenHistory && !personalAgent && (
@@ -394,6 +388,7 @@ export function AgentRunPage({
               onAnswer={(requestId, value, filePaths) => {
                 runs.answer(workflowId, requestId, value, filePaths)
                 if (filePaths && filePaths.length > 0) {
+                  recordSentAttachments(filePaths)
                   window.setTimeout(() => {
                     void refreshFiles()
                   }, 400)
@@ -474,13 +469,35 @@ export function AgentRunPage({
 
         <div className="wf-right">
           <div className="wf-tabs">
-            <button className="wf-tab active">Файлы за сегодня {files.length}</button>
+            <button className="wf-tab active">Файлы за сегодня {files.length + sentAttachments.length}</button>
           </div>
           <div className="wf-right-body">
-            {files.length === 0 ? (
+            {files.length === 0 && sentAttachments.length === 0 ? (
               <div className="wf-files-empty">Сегодня файлов пока нет</div>
             ) : (
               <div className="wf-file-groups">
+                {sentAttachments.length > 0 ? (
+                  <section className="wf-file-section">
+                    <h4>Приложено пользователем</h4>
+                    <ul className="wf-files">
+                      {sentAttachments.map((item) => (
+                        <li key={item.path}>
+                          <div className="wf-file-card">
+                            <img className="files-type-icon" src={fileTypeIconSrc(item.name)} alt="" />
+                            <div className="wf-file-copy">
+                              <span className="wf-file-name" title={item.name}>
+                                {item.name}
+                              </span>
+                              <span className="wf-file-meta">
+                                {formatFileWhen(new Date(item.atMs).toISOString())}
+                              </span>
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
                 <FileSection title={FILE_CATEGORY_LABELS.temporary} items={temporaryFiles} />
                 <FileSection title={FILE_CATEGORY_LABELS.knowledge} items={knowledgeFiles} />
                 <FileSection title={FILE_CATEGORY_LABELS.instructions} items={instructionFiles} />

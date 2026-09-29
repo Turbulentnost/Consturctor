@@ -51,6 +51,8 @@ def test_outlook_mail_panel_tools_registered() -> None:
     for name in (
         "outlook.fetch_message",
         "outlook.save_attachment",
+        "outlook.save_message",
+        "onec.register_incoming_from_mail",
         "outlook.display_message",
         "outlook.mark_read",
     ):

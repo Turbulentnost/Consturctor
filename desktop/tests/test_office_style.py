@@ -246,6 +246,21 @@ def test_office_format_restyle_wraps_existing_sheet(tmp_path: Path) -> None:
         workbook.close()
 
 
+def test_as_sections_parses_python_literal_and_loose_table() -> None:
+    from app.tools.ac.office_style import as_kpis, as_sections, as_word_table, _is_md_table_row
+
+    sections = as_sections(
+        "[{'heading': 'Сведения', 'body': 'Файл: a.m4a'}, {'heading': 'Повестка', 'body': '1. Статус'}]"
+    )
+    assert [item["heading"] for item in sections] == ["Сведения", "Повестка"]
+    assert as_kpis("[{'label': 'Дата', 'value': '23.09.2026'}]")[0]["value"] == "23.09.2026"
+    headers, rows = as_word_table("{'headers': ['Кто', 'Что'], 'rows': [['Ильченко', 'Протокол']]}")
+    assert headers == ["Кто", "Что"]
+    assert rows == [["Ильченко", "Протокол"]]
+    assert _is_md_table_row("Кто | Роль | Как определён")
+    assert not _is_md_table_row("Обычная строка без таблицы")
+
+
 def test_office_format_word_from_sections(tmp_path: Path) -> None:
     import importlib.util
 

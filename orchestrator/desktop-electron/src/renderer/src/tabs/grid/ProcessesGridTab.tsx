@@ -10,7 +10,10 @@ import {
   SpecQuickActions,
   SpecTableTabs
 } from '../../workplace/specV04Components'
-import { type SpecProcessRow } from '../../workplace/specV04DemoData'
+import { type SpecProcessRow, type SpecTaskRow } from '../../workplace/specV04DemoData'
+import { decodeMimeHeader } from '../../utils/mimeHeader'
+import { WorkplaceProgressSection } from '../../workplace/WorkplaceProgressSection'
+import { taskActionContextFromProcessRow } from '../../workplace/taskSourceKind'
 import {
   buildProcessTiles,
   countProcessRowsByTab,
@@ -18,14 +21,15 @@ import {
   processTabLoading,
   useSpecV04Sources
 } from '../../workplace/useSpecV04Data'
-import { isDeadProcessSource, parseTaskDueDate } from '../../workplace/tileFilters'
+import { isDeadProcessSource } from '../../workplace/tileFilters'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
+import { usePageSearch } from '../../layout/pageSearchContext'
+import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
+import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions'
 import { applyMeetingDoneToRow, isMeetingRowId } from '../../workplace/meetingCompletion'
 import { useMeetingCompletion } from '../../workplace/useMeetingCompletion'
 import { formatRunWhen, historySourceLabel, historyStatusLabel, historyStatusTone } from '../../pages/historyDetail'
-import { OrchDateRangePicker } from './OrchDateRangePicker'
-import { startOfDay, type AdminDateRange } from '../../admin/utils/dateRange'
 
 const DETAIL_TABS = [
   { id: 'general', label: 'Общее' },
@@ -46,60 +50,31 @@ const PROCESS_TABS = [
   { id: 'meet', label: 'Совещания' }
 ]
 
-const EXTERNAL_PROCESS_PREFIXES = ['erp:', 'mail:', 'meet:', 'proj:', 'turbo:', 'imap:']
-
-function constructorWorkflowId(rowId: string): string {
-  if (!rowId || EXTERNAL_PROCESS_PREFIXES.some((prefix) => rowId.startsWith(prefix))) return ''
-  return rowId
-}
-
-function processRowDate(row: SpecProcessRow): Date | null {
-  return parseTaskDueDate(row.deadline)
-}
-
-function inDateRange(stamp: Date | null, range: AdminDateRange): boolean {
-  if (!stamp) return true
-  const day = startOfDay(stamp).getTime()
-  return day >= startOfDay(range.start).getTime() && day <= startOfDay(range.end).getTime()
-}
-
-function rangeFromRows(rows: SpecProcessRow[]): AdminDateRange {
-  const today = startOfDay(new Date())
-  let min = today.getTime()
-  let max = today.getTime()
-  let found = false
-  for (const row of rows) {
-    const due = processRowDate(row)
-    if (!due) continue
-    const t = startOfDay(due).getTime()
-    if (!found) {
-      min = t
-      max = t
-      found = true
-      continue
-    }
-    if (t < min) min = t
-    if (t > max) max = t
-  }
-  return { start: new Date(min), end: new Date(max) }
-}
-
 function ProcessDetail({
   row,
+  user,
+  linkedTask,
+  linkedProjectUrl,
   onOpen,
-  onRun,
   onOpenRun,
   meetingDone,
   onToggleMeetingDone
 }: {
   row: SpecProcessRow
+  user: UserProfile
+  linkedTask?: SpecTaskRow | null
+  linkedProjectUrl?: string
   onOpen?: (workflowId: string, title: string) => void
-  onRun?: (workflowId: string, title: string) => void
   onOpenRun?: (workflowId: string, title: string, runId?: string) => void
   meetingDone?: boolean
   onToggleMeetingDone?: () => void
 }): React.JSX.Element {
-  const openId = constructorWorkflowId(row.id)
+  const title = decodeMimeHeader(row.name)
+  const openId =
+    row.id.startsWith('erp:') || row.id.startsWith('mail:') || row.id.startsWith('meet:') || row.id.startsWith('proj:')
+      ? ''
+      : row.id
+  const processAction = taskActionContextFromProcessRow(row, linkedTask)
   const [detailTab, setDetailTab] = useState<DetailTabId>('general')
   const [historyRuns, setHistoryRuns] = useState<AgentRunHistoryItem[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -145,7 +120,7 @@ function ProcessDetail({
     <div className="spec-detail-card">
       <header className="spec-detail-head">
         <div>
-          <h2>{row.name}</h2>
+          <h2>{title}</h2>
           <span className="wp-code">{row.code}</span>
         </div>
         <button type="button" className="spec-detail-menu" aria-label="Действия">
@@ -188,7 +163,13 @@ function ProcessDetail({
               <dd className={row.deadlineUrgent ? 'spec-deadline-urgent' : undefined}>{row.deadline}</dd>
             </div>
           </dl>
-          <SpecProgress value={row.progress} />
+          <WorkplaceProgressSection
+            user={user}
+            rowId={row.id}
+            baseProgress={row.progress}
+            actionContext={processAction?.kind === 'docflow' ? null : processAction}
+            projectUrl={linkedProjectUrl}
+          />
         </>
       ) : null}
       {detailTab === 'tasks' ? (
@@ -200,7 +181,7 @@ function ProcessDetail({
       ) : null}
       {detailTab === 'reg' ? (
         <div className="spec-detail-pane">
-          <p className="spec-v04-muted">Регламент для «{row.name}».</p>
+          <p className="spec-v04-muted">Регламент для «{title}».</p>
         </div>
       ) : null}
       {detailTab === 'files' ? (
@@ -213,7 +194,7 @@ function ProcessDetail({
           <div className="spec-detail-pane-head">
             <p className="spec-v04-muted">История запусков агента.</p>
             {openId && onOpenRun ? (
-              <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId, row.name)}>
+              <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId, title)}>
                 Открыть страницу истории
               </button>
             ) : null}
@@ -238,7 +219,7 @@ function ProcessDetail({
                     {run.triggerReason ? <div className="history-summary">{run.triggerReason}</div> : null}
                   </div>
                   {onOpenRun ? (
-                    <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId || row.id, row.name, run.runId)}>
+                    <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId || row.id, title, run.runId)}>
                       Открыть
                     </button>
                   ) : null}
@@ -260,27 +241,10 @@ function ProcessDetail({
         ) : null}
         {openId ? (
           <>
-            <button
-              type="button"
-              className="spec-btn-outline spec-btn-outline-block"
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onOpen?.(openId, row.name)
-              }}
-            >
+            <button type="button" className="spec-btn-outline spec-btn-outline-block" onClick={() => onOpen?.(openId, title)}>
               Открыть процесс
             </button>
-            <button
-              type="button"
-              className="spec-btn-launch spec-btn-launch-block"
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                if (onRun) onRun(openId, row.name)
-                else onOpenRun?.(openId, row.name)
-              }}
-            >
+            <button type="button" className="spec-btn-launch spec-btn-launch-block" onClick={() => onOpen?.(openId, title)}>
               <span>Запустить исполнение</span>
             </button>
           </>
@@ -295,50 +259,42 @@ function ProcessDetail({
 export function ProcessesGridTab({
   user,
   onOpen,
-  onRun,
   onOpenRun,
   navProcessTab
 }: {
   user: UserProfile
   onOpen: (workflowId: string, title: string) => void
-  onRun: (workflowId: string, title: string) => void
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
   navProcessTab?: string | null
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
+  const { from: periodFrom, to: periodTo } = useWorkplacePeriod()
   const meetingCompletion = useMeetingCompletion()
   const [tab, setTab] = useState(navProcessTab || 'all')
-  useEffect(() => {
-    void data.reloadBoard()
-  }, [user.id, data.reloadBoard])
-  const [query, setQuery] = useState('')
+  const { query, setQuery } = usePageSearch()
   const [barType, setBarType] = useState('')
+  const [barStatus, setBarStatus] = useState('')
   const [barSource, setBarSource] = useState('')
   const [barProject, setBarProject] = useState('')
-  const [dateRange, setDateRange] = useState<AdminDateRange>(() => rangeFromRows([]))
-  const [dateRangeTouched, setDateRangeTouched] = useState(false)
   useEffect(() => {
     if (navProcessTab) setTab(navProcessTab)
   }, [navProcessTab])
   const [rowMenuId, setRowMenuId] = useState('')
   const allRows = data.allProcessRows
-  useEffect(() => {
-    if (dateRangeTouched || !allRows.length) return
-    setDateRange(rangeFromRows(allRows))
-  }, [allRows, dateRangeTouched])
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
     return filterProcessRowsByTab(allRows, tab).filter((row) => {
+      if (!deadlineInWorkplacePeriod(row.deadline, periodFrom, periodTo)) return false
       if (barType && row.type !== barType) return false
+      if (barStatus && row.status !== barStatus) return false
       if (barSource && row.source !== barSource) return false
       if (barProject && row.project !== barProject) return false
-      if (!inDateRange(processRowDate(row), dateRange)) return false
-      if (q && !`${row.name} ${row.code} ${row.type} ${row.source} ${row.project}`.toLowerCase().includes(q)) {
+      if (q && !`${decodeMimeHeader(row.name)} ${row.code} ${row.type} ${row.source} ${row.project}`.toLowerCase().includes(q)) {
         return false
       }
       return true
     })
-  }, [allRows, tab, query, barType, barSource, barProject, dateRange])
+  }, [allRows, tab, query, barType, barStatus, barSource, barProject, periodFrom, periodTo])
   const displayRows = useMemo(
     () =>
       rows.map((row) =>
@@ -352,6 +308,16 @@ export function ProcessesGridTab({
   const [selectedId, setSelectedId] = useState('')
   const effectiveId = selectedId || displayRows[0]?.id || ''
   const selected = displayRows.find((item) => item.id === effectiveId)
+  const linkedErpTask = useMemo(() => {
+    if (!selected?.id.startsWith('erp:')) return null
+    const ref = selected.id.slice(4)
+    return (data.erpTasks ?? []).find((task) => task.id === ref) ?? null
+  }, [selected?.id, data.erpTasks])
+  const linkedTurboProject = useMemo(() => {
+    if (!selected?.id.startsWith('proj:')) return null
+    const projectId = selected.id.slice(5)
+    return (data.projects ?? []).find((project) => project.id === projectId) ?? null
+  }, [selected?.id, data.projects])
 
   const tabs = useMemo(
     () =>
@@ -367,14 +333,14 @@ export function ProcessesGridTab({
 
   const quickActions = useMemo(
     () =>
-      buildProcessesQuickActions({}).map((action) => ({
+      buildProcessesQuickActions(user).map((action) => ({
         id: action.id,
         label: action.label,
         tone: action.tone,
         icon: action.icon,
         onClick: () => void action.run()
       })),
-    []
+    [user]
   )
 
   const chromeTiles = useMemo(
@@ -405,6 +371,13 @@ export function ProcessesGridTab({
               options: toFilterOptions(uniqueFilterValues(allRows.map((row) => row.type)))
             },
             {
+              id: 'status',
+              value: barStatus,
+              emptyLabel: 'Все статусы',
+              onChange: setBarStatus,
+              options: toFilterOptions(uniqueFilterValues(allRows.map((row) => row.status)))
+            },
+            {
               id: 'source',
               value: barSource,
               emptyLabel: 'Все источники',
@@ -422,10 +395,9 @@ export function ProcessesGridTab({
           onReset={() => {
             setQuery('')
             setBarType('')
+            setBarStatus('')
             setBarSource('')
             setBarProject('')
-            setDateRangeTouched(false)
-            setDateRange(rangeFromRows(allRows))
             setTab('all')
           }}
         />
@@ -434,19 +406,9 @@ export function ProcessesGridTab({
         <div className="orch-process-main">
         <div className="spec-table-toolbar orch-process-tabs">
           <SpecTableTabs tabs={tabs} active={tab} onChange={setTab} />
-          <div className="orch-process-tabs-tools">
-            <OrchDateRangePicker
-              value={dateRange}
-              label="Период"
-              onChange={(next) => {
-                setDateRangeTouched(true)
-                setDateRange(next)
-              }}
-            />
-            <select className="wp-select orch-process-tabs-sort" defaultValue="priority">
-              <option value="priority">Сортировка: По приоритету</option>
-            </select>
-          </div>
+          <select className="wp-select orch-process-tabs-sort" defaultValue="priority">
+            <option value="priority">Сортировка: По приоритету</option>
+          </select>
         </div>
         <div className="spec-v04-table-wrap wp-card">
           <table className="spec-v04-table">
@@ -457,6 +419,7 @@ export function ProcessesGridTab({
                 <th>Источник</th>
                 <th>Проект</th>
                 <th>Моя задача сегодня</th>
+                <th>Статус</th>
                 <th>Срок</th>
                 <th>Прогресс</th>
                 <th />
@@ -465,14 +428,14 @@ export function ProcessesGridTab({
             <tbody>
               {tableBusy ? (
                 <tr>
-                  <td colSpan={8} className="spec-v04-empty">
+                  <td colSpan={9} className="spec-v04-empty">
                     Загружаем регламентные процессы…
                   </td>
                 </tr>
               ) : null}
               {tableEmpty ? (
                 <tr>
-                  <td colSpan={8} className="spec-v04-empty">
+                  <td colSpan={9} className="spec-v04-empty">
                     {processTabLoading(data, tab) ? 'Подгружаем данные…' : 'Нет процессов в категории.'}
                   </td>
                 </tr>
@@ -482,13 +445,9 @@ export function ProcessesGridTab({
                   key={row.id}
                   className={effectiveId === row.id ? 'selected' : ''}
                   onClick={() => setSelectedId(row.id)}
-                  onDoubleClick={() => {
-                    const workflowId = constructorWorkflowId(row.id)
-                    if (workflowId) onOpen(workflowId, row.name)
-                  }}
                 >
                   <td>
-                    <strong>{row.name}</strong>
+                    <strong>{decodeMimeHeader(row.name)}</strong>
                     <div className="wp-code">{row.code}</div>
                   </td>
                   <td>
@@ -497,6 +456,9 @@ export function ProcessesGridTab({
                   <td>{row.source}</td>
                   <td>{row.project}</td>
                   <td>{row.taskToday}</td>
+                  <td>
+                    <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
+                  </td>
                   <td className={row.deadlineUrgent ? 'spec-deadline-urgent' : undefined}>{row.deadline}</td>
                   <td>
                     <SpecProgress value={row.progress} />
@@ -514,8 +476,13 @@ export function ProcessesGridTab({
                             return
                           }
                           setRowMenuId('')
-                          const workflowId = constructorWorkflowId(row.id)
-                          if (workflowId) onOpen(workflowId, row.name)
+                          if (
+                            !row.id.startsWith('erp:') &&
+                            !row.id.startsWith('mail:') &&
+                            !row.id.startsWith('proj:')
+                          ) {
+                            onOpenRun(row.id, decodeMimeHeader(row.name))
+                          }
                         }}
                       >
                         ⋮
@@ -546,8 +513,10 @@ export function ProcessesGridTab({
         side: selected ? (
           <ProcessDetail
             row={selected}
+            user={user}
+            linkedTask={linkedErpTask}
+            linkedProjectUrl={linkedTurboProject?.url}
             onOpen={onOpen}
-            onRun={onRun}
             onOpenRun={onOpenRun}
             meetingDone={isMeetingRowId(selected.id) ? meetingCompletion.isDone(selected.id) : undefined}
             onToggleMeetingDone={
@@ -557,9 +526,31 @@ export function ProcessesGridTab({
         ) : (
           <div className="wp-card spec-v04-muted">Выберите процесс в таблице</div>
         ),
+        botA: (
+        <SpecPanel title="Проекты и проектные задачи">
+          {data.projects.length ? (
+            <table className="spec-v04-table spec-v04-table-compact">
+              <tbody>
+                {data.projects.slice(0, 3).map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.name}</td>
+                    <td>{p.code}</td>
+                    <td>{p.tasks} задач</td>
+                    <td>
+                      <SpecProgress value={p.progress} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="spec-v04-muted">Портфель TurboProject пуст или недоступен.</p>
+          )}
+        </SpecPanel>
+        ),
         botB: (
-        <SpecPanel title="Быстрые действия" className="orch-quick-actions-panel">
-          <SpecQuickActions items={quickActions} layout="row" />
+        <SpecPanel title="Быстрые действия">
+          <SpecQuickActions items={quickActions} />
         </SpecPanel>
         )
       }}

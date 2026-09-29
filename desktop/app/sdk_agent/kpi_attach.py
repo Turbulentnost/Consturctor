@@ -56,15 +56,19 @@ KPI_MODULE_SAMPLE = """from __future__ import annotations
 from datetime import date
 from typing import Any
 
-SOURCE = {"loader": "odata"}
+# Источник ТОЛЬКО из реестра materials/data_sources.json: {"source": "<имя>", "params": {...}}.
+# Один модуль считается для каждого сотрудника — вместо ФИО ставь {employee_fio}.
+SOURCE = {
+    "source": "onec.odata",
+    "params": {
+        "entity": "Document_ТД_Приказ",
+        "filter": "Date ge datetime'{period_from_dt}' and Date le datetime'{period_to_dt}'",
+    },
+}
 
 
 def load_orders_on_time_rows(ctx) -> list[dict[str, Any]]:
-    extra = dict(SOURCE)
-    more = ctx.extra_for() if hasattr(ctx, "extra_for") else {}
-    if isinstance(more, dict):
-        extra.update(more)
-    raw = ctx.load_for(extra) if hasattr(ctx, "load_for") else []
+    raw = ctx.load_for(SOURCE) if hasattr(ctx, "load_for") else []
     rows: list[dict[str, Any]] = []
     for item in raw or []:
         if not isinstance(item, dict):
@@ -110,7 +114,7 @@ class _FakeCtx:
         return {}
 
     def load_for(self, extra):
-        assert extra.get("loader") == "odata"
+        assert extra.get("source") == "onec.odata"
         return [{"on_time": True}, {"on_time": False}]
 
 
@@ -282,6 +286,15 @@ def source_loader_from_kind(kind: str) -> str:
     return {"onec": "odata", "outlook": "outlook", "files": "files"}.get(kind, "")
 
 
+def registry_source_from_kind(kind: str) -> str:
+    """Имя источника из реестра data_sources.json для выбранного канала."""
+    return {
+        "onec": "onec.odata",
+        "outlook": "outlook.calendar",
+        "files": "files.xlsx",
+    }.get(kind, "")
+
+
 def needs_source_detail(text: str) -> bool:
     blob = (text or "").casefold().replace("ё", "е")
     return "другая" in blob or "напишу" in blob
@@ -300,31 +313,32 @@ def source_spec_from_answer(text: str) -> dict[str, Any]:
 def source_loader_hint(source: str) -> str:
     spec = source_spec_from_answer(source)
     kind = spec["kind"]
-    loader = spec.get("loader") or ""
-    if loader == "odata":
+    registry = registry_source_from_kind(kind)
+    if registry == "onec.odata":
         return (
-            'SOURCE = {"kind": "onec", "loader": "odata"}  '
+            'SOURCE = {"source": "onec.odata", "params": {"entity": ..., "filter": ...}}  '
             "entity не угадывай: сначала onec.odata_catalog(search=слова пользователя), "
             "потом onec.odata_get(entity из ответа, top=5). "
-            "В SOURCE только entity/filter, которые вернул каталог."
+            "В filter можно {period_from_dt}, {period_to_dt}, {employee_fio}. "
+            "Если задачи именно этого сотрудника — лучше source docflow.tasks или onec.assignments."
         )
-    if loader == "outlook":
-        return 'SOURCE = {"kind": "outlook", "loader": "outlook"}'
-    if loader == "files":
+    if registry == "outlook.calendar":
+        return 'SOURCE = {"source": "outlook.calendar", "params": {}}'
+    if registry == "files.xlsx":
         return (
-            'SOURCE = {"kind": "files", "loader": "files"}  '
-            "# path только если файл назван"
+            'SOURCE = {"source": "files.xlsx", "params": {"file": "\\\\\\\\сервер\\\\папка\\\\файл.xlsx"}}  '
+            "# путь общий (UNC), иначе на других ПК файла не будет"
         )
     if kind == "regulation":
-        return 'SOURCE = {"kind": "regulation"}  # живых строк нет, load_*_rows → []'
+        return 'SOURCE = {"source": "onec.protocols", "params": {}}  # или свой источник из реестра; иначе load_*_rows → []'
     if kind == "manual":
-        return 'SOURCE = {"kind": "manual"}  # форму не заполняй в тесте, load_*_rows → []'
+        return 'SOURCE = {"source": "manual"}  # форму не заполняй в тесте, load_*_rows → []'
     if kind == "agent_runs":
-        return 'SOURCE = {"kind": "agent_runs"}  # ходы не выдумывай, load_*_rows → []'
+        return 'SOURCE = {"source": "agent_runs"}  # ходы не выдумывай, load_*_rows → []'
     note = spec.get("note") or source or "не назван"
     return (
-        f'SOURCE = {{"kind": "unknown", "note": {note!r}}}  '
-        "канал не 1С и не Outlook — load_*_rows → [], не подставляй odata"
+        f'Выбери source из materials/data_sources.json (канал: {note!r}). '
+        "Нет подходящего — load_*_rows → []. Свой формат {loader:...} не выдумывай."
     )
 
 
@@ -474,8 +488,10 @@ def kpi_write_prompt(
         f"   compute_{slug}_kpi(ctx, *, as_of, date_from=None, date_to=None) — "
         f"rows = load_{slug}_rows(ctx); return score_{slug}_kpi(rows, ...). "
         "Дневной ход вызывает compute, не score напрямую.\n"
-        "   В SOURCE.entity только имя из onec.odata_catalog. "
-        "Если план и факт в разных объектах — два ctx.load_for с двумя entity из каталога.\n"
+        "   SOURCE = {\"source\": <имя из materials/data_sources.json>, \"params\": {...}}. "
+        "Свой формат {loader:...}/{kind:...} не выдумывай — иначе модуль не подключится. "
+        "Для onec.odata entity бери из onec.odata_catalog. "
+        "Если план и факт из разных источников — два ctx.load_for с двумя SOURCE.\n"
         f"4) code.write_python filename=tests/test_{slug}.py — "
         f"from generated.{slug} import compute_{slug}_kpi, load_{slug}_rows, score_{slug}_kpi; "
         "compute/load — FakeCtx; score — словарные фикстуры.\n"

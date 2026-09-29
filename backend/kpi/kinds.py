@@ -23,6 +23,7 @@ SOURCE_KINDS = frozenset(
         "onec",
         "files",
         "agent_runs",
+        "platform",
         "manual",
         "unknown",
     }

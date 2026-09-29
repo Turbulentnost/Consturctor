@@ -4,6 +4,7 @@ import {
   ensureOutlookMeetings,
   type MeetingEvent
 } from '../utils/outlookMeetings'
+import { readTrackedCalendars, useTrackedCalendarsVersion } from '../utils/trackedCalendars'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
@@ -32,10 +33,11 @@ export function useTodayOutlookMeetings(
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
 
   const dayKey = dayKeyFrom(periodDay)
+  const trackedVersion = useTrackedCalendarsVersion()
 
   useEffect(() => {
     let alive = true
-    const cacheKey = `today-outlook-meetings:${userId}:${dayKey}`
+    const cacheKey = `today-outlook-meetings:${userId}:${dayKey}:${readTrackedCalendars(fio).join('|')}`
     if (!shouldRunGridFetch(cacheKey, generation)) {
       const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
       if (cached) {
@@ -76,7 +78,7 @@ export function useTodayOutlookMeetings(
     return () => {
       alive = false
     }
-  }, [dayKey, fio, generation, periodDay, userId])
+  }, [dayKey, fio, generation, periodDay, userId, trackedVersion])
 
   return {
     loading: loading && meetings.length === 0,

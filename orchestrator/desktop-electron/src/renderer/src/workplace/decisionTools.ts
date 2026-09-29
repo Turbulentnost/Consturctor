@@ -121,23 +121,8 @@ export function isQuestionDecision(tool: string): boolean {
 }
 
 export function eventLooksLikeReject(event: AgentRunnerEvent): boolean {
-  const status = String(event.status || '').toLowerCase()
-  if (status === 'rejected' || status === 'denied' || status === 'cancelled' || status === 'canceled') {
-    return true
-  }
-  const type = String(event.type || '').toLowerCase()
-  if ((type === 'hitl' || type === 'question') && event.ok === false && status && status !== 'pending') {
-    return true
-  }
   const text = String(event.text || event.message || event.error || '')
   return /отклон|reject/i.test(text)
-}
-
-function toolItemSkipped(item: FeedItem): boolean {
-  if (item.kind !== 'tool') return false
-  const result = item.result
-  if (result && typeof result === 'object' && (result as { skipped?: unknown }).skipped) return true
-  return item.done && item.error && /пропущ|отклон|skip|reject/i.test(`${item.summary} ${item.statusText}`)
 }
 
 export interface ToolDecisionItem {
@@ -153,16 +138,8 @@ export interface ToolDecisionItem {
   requestId: string
   at: string
   live: boolean
-  permissionRequested?: boolean
   arguments?: Record<string, unknown>
   files?: WorkflowFileItem[]
-}
-
-/** HITL / вопрос / ожидание человека — не итог прогона и не обычный вызов инструмента. */
-export function isPermissionDecision(item: Pick<ToolDecisionItem, 'tool' | 'live' | 'permissionRequested'>): boolean {
-  if (item.tool === 'agent_result') return false
-  if (item.permissionRequested || item.live) return true
-  return item.tool === 'waiting_human' || isQuestionDecision(item.tool)
 }
 
 function eventTool(event: AgentRunnerEvent): string {
@@ -176,7 +153,6 @@ export function feedItemsToRunnerEvents(items: FeedItem[]): AgentRunnerEvent[] {
   const events: AgentRunnerEvent[] = []
   for (const item of items) {
     if (item.kind !== 'tool') continue
-    const skipped = toolItemSkipped(item)
     events.push({
       type: 'tool',
       tool: item.tool,
@@ -185,9 +161,8 @@ export function feedItemsToRunnerEvents(items: FeedItem[]): AgentRunnerEvent[] {
       arguments: item.arguments,
       result: item.result,
       error: item.error ? item.summary || item.statusText : undefined,
-      status: item.done ? (item.error || skipped ? 'error' : 'ok') : 'pending',
-      ok: item.done && !item.error && !skipped,
-      skipped: skipped || undefined
+      status: item.done ? (item.error ? 'error' : 'ok') : 'pending',
+      ok: item.done && !item.error
     })
     if (!item.done && item.requestId) {
       events.push({
@@ -198,19 +173,6 @@ export function feedItemsToRunnerEvents(items: FeedItem[]): AgentRunnerEvent[] {
         arguments: item.arguments,
         confirmOnly: true
       })
-    } else if (item.done && skipped && item.requestId) {
-      events.push({
-        type: 'hitl',
-        tool: item.tool,
-        title: item.title,
-        requestId: item.requestId,
-        arguments: item.arguments,
-        confirmOnly: true,
-        skipped: true,
-        status: 'rejected',
-        ok: false,
-        text: item.summary || item.statusText || 'Отклонено'
-      })
     }
   }
   return events
@@ -218,18 +180,15 @@ export function feedItemsToRunnerEvents(items: FeedItem[]): AgentRunnerEvent[] {
 
 export function extractToolDecisions(
   events: AgentRunnerEvent[],
-  meta: { workflowId: string; agentName: string; runId: string; at: string; runClosed?: boolean },
-  options?: { permissionOnly?: boolean }
+  meta: { workflowId: string; agentName: string; runId: string; at: string; runClosed?: boolean }
 ): ToolDecisionItem[] {
   const items: ToolDecisionItem[] = []
   const open: ToolDecisionItem[] = []
-  const permissionOnly = Boolean(options?.permissionOnly)
 
   const makeItem = (
     tool: string,
     event: AgentRunnerEvent,
-    status: ToolDecisionItem['status'],
-    permissionRequested: boolean
+    status: ToolDecisionItem['status']
   ): ToolDecisionItem => ({
     id: `${meta.runId}:${event.requestId || tool}:${items.length}`,
     workflowId: meta.workflowId,
@@ -247,7 +206,6 @@ export function extractToolDecisions(
     requestId: String(event.requestId || ''),
     at: meta.at,
     live: !meta.runClosed && status === 'pending',
-    permissionRequested,
     arguments: event.arguments && typeof event.arguments === 'object' ? event.arguments : {}
   })
 
@@ -263,28 +221,17 @@ export function extractToolDecisions(
     const type = String(event.type || '').toLowerCase()
     const tool = eventTool(event)
     const confirm = eventLooksLikeConfirm(event)
-    const statusRaw = String(event.status || '').toLowerCase()
-    const rejected = eventLooksLikeReject(event) || Boolean(event.skipped) || statusRaw === 'rejected'
-    const resolvedTool = tool || (confirm ? 'waiting_human' : '')
-    if (confirm && resolvedTool && isDecisionTool(resolvedTool, true)) {
-      const approved =
-        !rejected &&
-        (statusRaw === 'approved' ||
-          statusRaw === 'confirmed' ||
-          (event.ok === true && statusRaw !== 'pending' && statusRaw !== 'rejected'))
-      let item = findOpen(resolvedTool, String(event.requestId || ''))
+    const rejected = eventLooksLikeReject(event) || Boolean(event.skipped)
+    if (confirm && tool && isDecisionTool(tool, true)) {
+      const statusRaw = String(event.status || '').toLowerCase()
+      const approved = statusRaw === 'approved' || (event.ok === true && statusRaw !== 'pending')
+      let item = findOpen(tool, String(event.requestId || ''))
       if (!item) {
-        item = makeItem(
-          resolvedTool,
-          event,
-          rejected ? 'rejected' : approved ? 'confirmed' : 'pending',
-          true
-        )
+        item = makeItem(tool, event, rejected ? 'rejected' : approved ? 'confirmed' : 'pending')
         items.push(item)
         open.push(item)
       } else if (event.requestId) {
         item.requestId = String(event.requestId)
-        item.permissionRequested = true
       }
       if (rejected) {
         item.status = 'rejected'
@@ -305,12 +252,12 @@ export function extractToolDecisions(
     }
     const isToolEvent = type === 'tool_call' || type === 'tool' || type === 'tool_result'
     if (!isToolEvent || !tool || !isDecisionTool(tool, confirm)) continue
+    const statusRaw = String(event.status || '').toLowerCase()
     const hasResult = event.result != null || Boolean(event.error) || /done|ok|error|fail|success/.test(statusRaw)
     const failed = Boolean(event.error) || statusRaw.includes('error') || statusRaw.includes('fail') || event.ok === false
     let item = findOpen(tool, String(event.requestId || ''))
     if (!item) {
-      if (permissionOnly) continue
-      item = makeItem(tool, event, hasResult ? 'done' : 'pending', false)
+      item = makeItem(tool, event, hasResult ? 'done' : 'pending')
       items.push(item)
       open.push(item)
     }
@@ -326,22 +273,9 @@ export function extractToolDecisions(
   if (meta.runClosed) {
     for (const item of items) {
       if (item.status !== 'pending') continue
-      if (isPermissionDecision(item)) {
-        item.status = 'rejected'
-        item.live = false
-        item.result = item.result || 'Прогон завершён без подтверждения.'
-        continue
-      }
       item.status = 'done'
       item.result = item.result || 'Инструмент не был выполнен.'
     }
   }
-  return permissionOnly ? items.filter(isPermissionDecision) : items
-}
-
-export function extractPermissionDecisions(
-  events: AgentRunnerEvent[],
-  meta: { workflowId: string; agentName: string; runId: string; at: string; runClosed?: boolean }
-): ToolDecisionItem[] {
-  return extractToolDecisions(events, meta, { permissionOnly: true })
+  return items
 }

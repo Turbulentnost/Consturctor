@@ -10,8 +10,10 @@ WORKSPACE_ROOT = BACKEND_ROOT.parent.parent
 
 
 class Settings(BaseSettings):
+    # Только backend/.env для ERP/JWT/ODATA — не смешиваем с корневым .env репозитория (MY_*).
+    # Переменные процесса (run_dev.bat) по-прежнему имеют приоритет.
     model_config = SettingsConfigDict(
-        env_file=(WORKSPACE_ROOT / ".env", BACKEND_ROOT / ".env"),
+        env_file=str(BACKEND_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -60,7 +62,9 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+psycopg://constructor:constructor@192.168.1.157:5435/constructor"
     )
-    redis_url: str = "redis://127.0.0.1:6382/0"
+    # Dev only: start without app Postgres (1C/erp_pm tools work, DB-backed routes fail).
+    app_db_optional: bool = False
+    redis_url: str = "redis://192.168.1.157:6382/0"
     rabbitmq_url: str = "amqp://constructor:constructor@127.0.0.1:5672/"
     chat_support_user_ids: str = ""
     chat_encryption_key: str = ""
@@ -68,6 +72,7 @@ class Settings(BaseSettings):
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
+    platform_task_storage_dir: Path = BACKEND_ROOT / "storage" / "platform_tasks"
 
     # IMAP (server-side tools only; desktop never executes imap.*)
     imap_host: str = ""
@@ -102,6 +107,9 @@ class Settings(BaseSettings):
     dok_http_cache_ttl_sec: float = 1800.0
     dok_inbox_cache_dir: Path = BACKEND_ROOT / "storage" / "docflow_inbox"
     dok_http_base_path: str = "/doc"
+    # Временная запись тел HTTP 5xx от публикации 1С и TurboProject.
+    # Выключить: UPSTREAM_ERROR_LOG=0
+    upstream_error_log: bool = True
     erp_login: str = ""
     erp_password: str = ""
     # When local ODBC to erp_pm fails (dev PC without VPN), delegate login to LAN gateway.
@@ -111,6 +119,8 @@ class Settings(BaseSettings):
     # Dev: do not compare JWT sid to Redis (LAN vs localhost BACKEND_URL mismatch).
     auth_skip_session_lock: bool = False
     auth_bypass_user_id: str = ""
+    # TurboProject / Outlook slug when bypass skips erp_pm SQL (MY_NAME_MAIL in .env).
+    my_name_mail: str = ""
     onec_sql_allowlist: str = ""
     onec_odata_entity_allowlist: str = ""
     # Before privileged OData, check the signed-in employee's BSP rights in erp_pm.
@@ -124,5 +134,6 @@ settings.chat_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.platform_task_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.onec_artifact_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.dok_inbox_cache_dir.mkdir(parents=True, exist_ok=True)

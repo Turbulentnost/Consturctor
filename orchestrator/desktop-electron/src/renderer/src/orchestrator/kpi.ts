@@ -30,11 +30,9 @@ const KPI = [
   { number: 4, name: 'Качество протокола и материалов (без возвратов по замечаниям)', target: 98, weight: 25, kind: 'quality' }
 ] as const
 
-export const PSD_POSITION_NAME = 'Помощник Председателя совета директоров'
-
-export function hasPositionKpi(position = ''): boolean {
-  const wanted = (position || '').toLowerCase().split(/\s+/).filter(Boolean).join(' ')
-  return wanted === PSD_POSITION_NAME.toLowerCase()
+export function hasPositionKpi(userId = '', fio = ''): boolean {
+  if (ILCHENKO_USER_IDS.has((userId || '').trim())) return true
+  return (fio || '').toLowerCase().includes('ильченко')
 }
 
 function lockedTile(args: {
@@ -166,6 +164,10 @@ function closed(instances: ProcessInstance[]): ProcessInstance[] {
   return instances.filter((item) => item.status === COMPLETED)
 }
 
+function hasReturn(instance: ProcessInstance): boolean {
+  return instance.events.some((event) => String(event.type || '') === 'returned')
+}
+
 function fact(kind: string, instances: ProcessInstance[]): number | null {
   if (kind === 'package_on_time' || kind === 'protocol_on_time') {
     const done = instances.filter((item) => item.status === COMPLETED || item.status === ERROR)
@@ -177,7 +179,7 @@ function fact(kind: string, instances: ProcessInstance[]): number | null {
   }
   if (kind === 'quality') {
     const done = closed(instances)
-    return ratio(done.length, done.length)
+    return ratio(done.filter((item) => !hasReturn(item)).length, done.length)
   }
   return null
 }

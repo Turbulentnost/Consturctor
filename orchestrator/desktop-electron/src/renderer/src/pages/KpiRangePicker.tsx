@@ -285,3 +285,175 @@ export function KpiRangePicker({
     </div>
   )
 }
+
+export function formatDayKeyRu(key: string): string {
+  const stamp = parseDayKey(key)
+  if (!stamp) return key || '—'
+  return `${pad2(stamp.getDate())}.${pad2(stamp.getMonth() + 1)}.${stamp.getFullYear()}`
+}
+
+/** Одна дата — тот же календарь KPI, для полей «С» / «По». */
+export function KpiDayPicker({
+  value,
+  onChange,
+  prefixLabel,
+  ariaLabel
+}: {
+  value: string
+  onChange: (dayKey: string) => void
+  prefixLabel: string
+  ariaLabel: string
+}): React.JSX.Element {
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const popRef = useRef<HTMLDivElement | null>(null)
+  const [open, setOpen] = useState(false)
+  const [view, setView] = useState(() => parseDayKey(value) || new Date())
+  const [popPos, setPopPos] = useState({ top: 0, left: 0 })
+
+  const placePop = (): void => {
+    const box = buttonRef.current?.getBoundingClientRect()
+    if (!box) return
+    const width = 276
+    const left = Math.min(Math.max(8, box.left), window.innerWidth - width - 8)
+    const top = box.bottom + 6
+    setPopPos({ top, left })
+  }
+
+  useEffect(() => {
+    if (!open) return
+    placePop()
+    const onMove = (): void => placePop()
+    window.addEventListener('resize', onMove)
+    document.addEventListener('scroll', onMove, true)
+    return () => {
+      window.removeEventListener('resize', onMove)
+      document.removeEventListener('scroll', onMove, true)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const inside = (event: MouseEvent): boolean => {
+      const target = event.target as Node | null
+      if (!target) return false
+      if (buttonRef.current?.contains(target) || popRef.current?.contains(target)) return true
+      const path = event.composedPath()
+      return path.includes(buttonRef.current as EventTarget) || path.includes(popRef.current as EventTarget)
+    }
+    const onDoc = (event: MouseEvent): void => {
+      if (!inside(event)) setOpen(false)
+    }
+    const timer = window.setTimeout(() => document.addEventListener('mousedown', onDoc), 0)
+    return () => {
+      window.clearTimeout(timer)
+      document.removeEventListener('mousedown', onDoc)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open])
+
+  const openPicker = (): void => {
+    const anchor = parseDayKey(value) || new Date()
+    setView(new Date(anchor.getFullYear(), anchor.getMonth(), 1))
+    setOpen((v) => !v)
+  }
+
+  const cells = useMemo(() => monthCells(view.getFullYear(), view.getMonth()), [view])
+  const today = dayKeyFromDate(new Date())
+  const display = formatDayKeyRu(value)
+
+  const pickDay = (key: string): void => {
+    onChange(key)
+    setOpen(false)
+  }
+
+  const shiftMonth = (step: number): void => {
+    setView((prev) => new Date(prev.getFullYear(), prev.getMonth() + step, 1))
+  }
+
+  return (
+    <div className="kpi-day-picker registry-date-field">
+      <img src={iconCalendar} alt="" className="kpi-day-picker-ico" />
+      <span className="registry-date-label">{prefixLabel}</span>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`kpi-day-picker-btn${open ? ' open' : ''}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={openPicker}
+      >
+        {display}
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={popRef}
+              className="kpi-range-picker-pop kpi-day-picker-pop"
+              role="dialog"
+              aria-label={ariaLabel}
+              style={{ top: popPos.top, left: popPos.left }}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <div className="kpi-range-picker-nav">
+                <button
+                  type="button"
+                  className="kpi-range-picker-nav-btn"
+                  onClick={() => shiftMonth(-1)}
+                  aria-label="Предыдущий месяц"
+                >
+                  ‹
+                </button>
+                <strong>
+                  {MONTH_TITLE[view.getMonth() + 1]} {view.getFullYear()}
+                </strong>
+                <button
+                  type="button"
+                  className="kpi-range-picker-nav-btn"
+                  onClick={() => shiftMonth(1)}
+                  aria-label="Следующий месяц"
+                >
+                  ›
+                </button>
+              </div>
+              <div className="kpi-range-picker-week">
+                {DAYS_SHORT.map((day) => (
+                  <span key={day}>{day}</span>
+                ))}
+              </div>
+              <div className="kpi-range-picker-grid">
+                {cells.map((stamp) => {
+                  const key = dayKeyFromDate(stamp)
+                  const outside = stamp.getMonth() !== view.getMonth()
+                  const selected = key === value
+                  const classes = [
+                    'kpi-range-picker-day',
+                    outside ? 'outside' : '',
+                    key === today ? 'today' : '',
+                    selected ? 'start end' : ''
+                  ]
+                    .filter(Boolean)
+                    .join(' ')
+                  return (
+                    <button key={key} type="button" className={classes} onClick={() => pickDay(key)}>
+                      {stamp.getDate()}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="kpi-range-picker-hint">Выберите дату</p>
+            </div>,
+            document.body
+          )
+        : null}
+    </div>
+  )
+}

@@ -376,6 +376,7 @@ _TOOL_ALIASES = {
     "subordinates": "users.subordinates",
     "notify": "notify.send",
     "data.process_dataset": "data.process",
+    "transcribe": "audio.transcribe",
 }
 _INTERNAL_ARG_KEYS = frozenset({"workflow_id", "agent_id"})
 _HUMAN_REJECTED = "отклонено человеком"
@@ -643,6 +644,8 @@ def invoke_creation_tool(
         return _invoke_notify_send(args)
     if tool in {"data.process", "data.process_dataset"}:
         return _invoke_data_process(args)
+    if tool in {"audio.transcribe", "transcribe"}:
+        return _invoke_audio_transcribe(args)
 
     ctx = current_tool_context()
     if ctx is None:
@@ -1090,6 +1093,13 @@ def _stream_cursor_with_tools_body(
                     on_event,
                     "decision",
                     "«notify.send»: отправляю уведомление на компьютер…",
+                )
+            if name in {"audio.transcribe", "transcribe"}:
+                _emit(
+                    on_event,
+                    "decision",
+                    "«audio.transcribe»: расшифровываю аудио-вложение "
+                    "(faster-whisper, может занять несколько минут)…",
                 )
             try:
                 result = invoke_creation_tool(
@@ -1568,10 +1578,47 @@ def _invoke_users_list(arguments: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "users": [item.model_dump(mode="json") for item in items],
         "count": len(items),
+        "source": "constructor",
     }
     if ignored:
         payload["ignored_query"] = ignored
+    if search and not items:
+        payload.update(_users_from_erp(search))
     return payload
+
+
+def _users_from_erp(search: str) -> dict[str, Any]:
+    """AppUser is only people who opened Constructor. Surname search falls back to 1C."""
+    try:
+        from app.clients.erp_sql import search_user_fios
+
+        fios = search_user_fios(search, limit=15)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "note": (
+                f"В пользователях Constructor никого по запросу «{search}» нет, "
+                f"справочник 1С недоступен ({exc}). ФИО из Outlook всё равно можно использовать."
+            )
+        }
+    if not fios:
+        return {
+            "note": (
+                f"«{search}» нет ни в Constructor, ни в справочнике 1С. "
+                "Если это участник из Outlook — оставь ФИО как в календаре."
+            )
+        }
+    return {
+        "users": [
+            {"id": "", "fio": fio, "position": "", "department": "", "source": "erp_pm"}
+            for fio in fios
+        ],
+        "count": len(fios),
+        "source": "erp_pm",
+        "note": (
+            "В пользователях Constructor не найдено. ФИО сверены со справочником 1С. "
+            "id пустой: notify.send по ним недоступен, в протокол ФИО писать можно."
+        ),
+    }
 
 
 def _invoke_users_subordinates(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1712,6 +1759,36 @@ def _clip_result(result: dict[str, Any], limit: int = 8000) -> dict[str, Any]:
     if len(raw) <= limit:
         return result
     return {"truncated": True, "preview": raw[:limit] + "…"}
+
+
+def _invoke_audio_transcribe(arguments: dict[str, Any]) -> dict[str, Any]:
+    """audio.transcribe: file_id вложения запуска → сегменты с таймкодами.
+
+    Read-only, подтверждение человека не требуется.
+    """
+    from app.services.audio_transcribe import transcribe_run_attachment
+
+    ctx = current_tool_context()
+    user_id = ctx[1] if ctx else ""
+    if not user_id:
+        raise RuntimeError("Нет пользователя сессии для audio.transcribe")
+    file_id = str(arguments.get("file_id") or arguments.get("fileId") or "").strip()
+    if not file_id:
+        raise RuntimeError(
+            "Для audio.transcribe нужен file_id аудио-вложения запуска "
+            "(указан в блоке «Вложения запуска» промпта)"
+        )
+    raw_names = arguments.get("names") or arguments.get("participants") or []
+    if isinstance(raw_names, str):
+        names = [part.strip() for part in re.split(r"[,;\n]", raw_names) if part.strip()]
+    elif isinstance(raw_names, list):
+        names = [str(part).strip() for part in raw_names if str(part).strip()]
+    else:
+        names = []
+    hint = str(arguments.get("hint") or arguments.get("prompt") or "").strip()
+    return transcribe_run_attachment(
+        file_id=file_id, user_id=user_id, names=names, hint=hint
+    )
 
 
 def _invoke_data_process(arguments: dict[str, Any]) -> dict[str, Any]:

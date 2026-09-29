@@ -17,6 +17,8 @@ from app.services.position_kpi.connect import (
     upsert_generated_catalog,
 )
 from app.services.position_kpi.extract import extract_position_kpis
+from app.services.position_kpi.sources import catalog as data_source_catalog
+from app.services.position_kpi.sources import describe_for_prompt
 from app.services.workflows.document import DocumentError, load_attachment_bytes
 
 logger = logging.getLogger(__name__)
@@ -145,10 +147,11 @@ def build_sdk_prompt(build: PositionKpiBuild) -> str:
         "Не спрашивай расписание, Outlook и «когда запускать агента».",
         "Скан office.read_file отдаёт в зрение Cursor SDK. Не ищи OCR и LM Studio.",
         "Не пиши план «сейчас прочитаю».",
-        "В модуле связка: load_<code>_rows(ctx) отдаёт строки, "
+        "В модуле связка: SOURCE из реестра ниже, load_<code>_rows(ctx) = ctx.load_for(SOURCE), "
         "score_<code>_kpi(rows, ...) считает KPI, "
         "compute_<code>_kpi(ctx) вызывает load и сразу score. "
-        "Тесты: FakeCtx для compute/load, словари для score.",
+        "Тесты: FakeCtx для compute/load, словари для score. "
+        "Модуль без SOURCE из реестра не подключится.",
         "Контракт отчёта: fact_pct, score_pct, contrib_pct, rows.",
         "Неавтоматизируемое оставь formula_kind=needs_clarify.",
         "Живые записи в 1С не создавай.",
@@ -169,6 +172,8 @@ def build_sdk_prompt(build: PositionKpiBuild) -> str:
             f"clarify={metric.get('needs_clarify')})"
         )
         lines.append(f"  {str(metric.get('formula_human') or '')[:300]}")
+    lines.append("")
+    lines.append(describe_for_prompt())
     text = (build.source_text or "").strip()
     if text:
         lines.append("")
@@ -197,6 +202,7 @@ def serialize_build(db: Session, build: PositionKpiBuild) -> dict[str, Any]:
         "modules": build.modules_json or [],
         "profile_id": build.profile_id,
         "sdk_prompt": build_sdk_prompt(build) if build.source_text or build.extracted_json else "",
+        "data_sources": data_source_catalog(),
         "messages": [
             {
                 "message_id": row.id,
@@ -539,12 +545,28 @@ def connect_build(
         ]
     catalog = dict(build.catalog_draft_json or {})
     catalog.setdefault("position_name", build.position_name)
-    profile_id = upsert_generated_catalog(
-        db,
-        position=build.position_name,
-        catalog=catalog,
-        modules=incoming,
-    )
+    # Черновик сессии сохраняем до публикации, чтобы откат ошибки источника его не стёр.
+    db.commit()
+    try:
+        profile_id = upsert_generated_catalog(
+            db,
+            position=build.position_name,
+            catalog=catalog,
+            modules=incoming,
+        )
+    except ValueError as exc:
+        db.rollback()
+        build = _get(db, user_id, build_id)
+        build.status = "clarifying"
+        _add_message(
+            db,
+            build=build,
+            role="assistant",
+            content=f"Методику не подключила. {exc}",
+            structured={"stage": "source_invalid", "needs_continue": True},
+        )
+        db.commit()
+        raise PositionKpiBuildError(str(exc)) from exc
     described = list_module_descriptors(db, profile_id)
     if described:
         build.modules_json = described

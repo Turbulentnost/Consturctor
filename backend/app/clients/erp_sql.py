@@ -12,10 +12,14 @@ import pyodbc
 
 from app.config import settings
 
-_conn_lock = threading.Lock()
-_cached_conn: pyodbc.Connection | None = None
-_cached_at = 0.0
+# SQL Server ODBC runs one statement per connection at a time (no MARS): a
+# connection is checked out by one caller until _release_connection returns it.
+_pool_lock = threading.Lock()
+_idle_conns: list[tuple[pyodbc.Connection, float]] = []
+_reopen_lock = threading.Lock()
 _CONN_TTL_SEC = 300.0
+_MAX_IDLE_CONNS = 4
+_PROBE_TIMEOUT_SEC = 5
 
 _DEPARTMENT_JOIN_SQL = """
     LEFT JOIN dbo._Reference513 d1 WITH (NOLOCK)
@@ -191,6 +195,24 @@ def _login_timeout() -> int:
         return 45
 
 
+_preferred_sql_server: str | None = None
+
+
+def _sql_server_candidates() -> list[str]:
+    """Keep ERP_SQL_SERVER from .env; retry with LAN IP if short name ii1 hangs on SSPI."""
+    primary = (settings.erp_sql_server or "ii1").strip()
+    out: list[str] = []
+    if primary:
+        out.append(primary)
+    if primary.casefold() == "ii1":
+        out.append("192.168.1.157")
+    ordered = list(dict.fromkeys(out))
+    preferred = (_preferred_sql_server or "").strip()
+    if preferred and preferred in ordered:
+        return [preferred] + [host for host in ordered if host != preferred]
+    return ordered
+
+
 def _resolve_odbc_driver() -> str:
     configured = (settings.erp_sql_driver or "").strip()
     available = {name.casefold(): name for name in pyodbc.drivers()}
@@ -207,12 +229,13 @@ def _resolve_odbc_driver() -> str:
     return configured or "SQL Server"
 
 
-def _build_connection_string() -> str:
+def _build_connection_string(*, server: str | None = None) -> str:
     driver = _resolve_odbc_driver()
     timeout = _login_timeout()
+    host = (server or settings.erp_sql_server or "ii1").strip()
     parts = [
         f"DRIVER={{{driver}}}",
-        f"SERVER={settings.erp_sql_server}",
+        f"SERVER={host}",
         f"DATABASE={settings.erp_sql_database}",
         f"Connection Timeout={timeout}",
     ]
@@ -235,57 +258,108 @@ def _build_connection_string() -> str:
     return ";".join(parts) + ";"
 
 
-def _open_connection() -> pyodbc.Connection:
-    timeout = _login_timeout()
+def _query_timeout() -> int:
+    """Верхняя граница для любого запроса: без неё зависший сокет держит поток вечно."""
     try:
-        if _use_windows_impersonation():
-            with _windows_impersonation(settings.erp_sql_user, settings.erp_sql_password):
-                return pyodbc.connect(
-                    _build_connection_string(),
-                    autocommit=True,
-                    timeout=timeout,
-                )
-        return pyodbc.connect(
-            _build_connection_string(),
-            autocommit=True,
-            timeout=timeout,
-        )
-    except (pyodbc.Error, OSError) as exc:
-        raise ErpSqlError(f"Failed to connect to erp_pm: {exc}") from exc
+        return max(60, int(settings.erp_sql_timeout or 45))
+    except (TypeError, ValueError):
+        return 60
 
 
-def _invalidate_cached_connection() -> None:
-    global _cached_conn, _cached_at
-    if _cached_conn is not None:
+def _connect_once(server: str, timeout: int) -> pyodbc.Connection:
+    global _preferred_sql_server
+    conn_str = _build_connection_string(server=server)
+    if _use_windows_impersonation():
+        with _windows_impersonation(settings.erp_sql_user, settings.erp_sql_password):
+            conn = pyodbc.connect(conn_str, autocommit=True, timeout=timeout)
+    else:
+        conn = pyodbc.connect(conn_str, autocommit=True, timeout=timeout)
+    try:
+        conn.timeout = _query_timeout()
+    except (pyodbc.Error, OSError):
+        pass
+    _preferred_sql_server = server.strip()
+    return conn
+
+
+def _open_connection() -> pyodbc.Connection:
+    """Открыть соединение, перебирая серверы-кандидаты (ii1 → LAN IP)."""
+    timeout = _login_timeout()
+    last_exc: Exception | None = None
+    for server in _sql_server_candidates():
         try:
-            _cached_conn.close()
-        except (pyodbc.Error, OSError):
-            pass
-    _cached_conn = None
-    _cached_at = 0.0
+            return _connect_once(server, timeout)
+        except (pyodbc.Error, OSError) as exc:
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise ErpSqlError(f"Failed to connect to erp_pm: {last_exc}") from last_exc
+    raise ErpSqlError("Failed to connect to erp_pm: no ERP_SQL_SERVER configured")
+
+
+def _close_quietly(conn: pyodbc.Connection | None) -> None:
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except (pyodbc.Error, OSError):
+        pass
+
+
+def _probe_connection(conn: pyodbc.Connection) -> bool:
+    """Живо ли соединение. Короткий query timeout: мёртвый сокет не должен вешать SQL."""
+    previous: int | None = None
+    try:
+        previous = conn.timeout
+        conn.timeout = _PROBE_TIMEOUT_SEC
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        return True
+    except (pyodbc.Error, OSError):
+        return False
+    finally:
+        if previous is not None:
+            try:
+                conn.timeout = previous
+            except (pyodbc.Error, OSError):
+                pass
 
 
 def _connect() -> pyodbc.Connection:
-    global _cached_conn, _cached_at
-    now = time.monotonic()
-    with _conn_lock:
-        if _cached_conn is not None and now - _cached_at < _CONN_TTL_SEC:
-            try:
-                cur = _cached_conn.cursor()
-                cur.execute("SELECT 1")
-                cur.fetchone()
-                return _cached_conn
-            except (pyodbc.Error, OSError):
-                _invalidate_cached_connection()
-        conn = _open_connection()
-        _cached_conn = conn
-        _cached_at = now
-        return conn
+    """Взять соединение с erp_pm из пула (вернуть через _release_connection).
+
+    Одно общее на процесс давало «connection is busy». Проба идёт вне
+    _pool_lock. Новый логин ждёт ограниченно, чтобы зависший ODBC не
+    блокировал SQL всему процессу.
+    """
+    while True:
+        with _pool_lock:
+            if not _idle_conns:
+                break
+            conn, released_at = _idle_conns.pop()
+        if time.monotonic() - released_at >= _CONN_TTL_SEC:
+            _close_quietly(conn)
+            continue
+        if _probe_connection(conn):
+            return conn
+        _close_quietly(conn)
+    # Логины под impersonation дорогие — открываем по одному, но ждём ограниченно.
+    if not _reopen_lock.acquire(timeout=_login_timeout() + 5):
+        raise ErpSqlError("ERP SQL занят открытием соединения, повторите запрос")
+    try:
+        return _open_connection()
+    finally:
+        _reopen_lock.release()
 
 
-def _release_connection(_conn: pyodbc.Connection) -> None:
-    """Keep pooled ODBC session alive (Windows impersonation is costly)."""
-    return
+def _release_connection(conn: pyodbc.Connection) -> None:
+    """Return the ODBC session to the pool (Windows impersonation is costly)."""
+    with _pool_lock:
+        if len(_idle_conns) < _MAX_IDLE_CONNS:
+            _idle_conns.append((conn, time.monotonic()))
+            return
+    _close_quietly(conn)
 
 
 def _row_department(row) -> str:
@@ -725,6 +799,99 @@ def _append_missing_heads(
         extra.append(ErpSubordinate(fio=head, position=position, department=department))
         seen_people.add(head)
     return people + extra
+
+
+@dataclass(frozen=True, slots=True)
+class ErpStaffAssignment:
+    fio: str
+    position: str
+    hr_department: str
+    staff_folder: str
+    staff_unit: str
+
+
+def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
+    """Вся управленческая структура: подразделения (_Reference513) и текущие назначения.
+
+    Помеченные на удаление подразделения не берём. Ликвидированные («(ликв.) …»)
+    отсекает вызывающий код: признак хранится только в наименовании.
+    """
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        cur.execute(
+            """
+            SELECT
+                CONVERT(varchar(64), d._IDRRef, 2) AS DeptId,
+                CAST(d._Description AS nvarchar(256)) AS Dept,
+                CONVERT(varchar(64), d._ParentIDRRef, 2) AS ParentId,
+                CAST(hp._Description AS nvarchar(256)) AS HeadFio
+            FROM dbo._Reference513 d WITH (NOLOCK)
+            LEFT JOIN dbo._Reference596 hp WITH (NOLOCK)
+                ON d._Fld14523RRef = hp._IDRRef
+            WHERE d._Marked = 0x00
+              AND LTRIM(RTRIM(d._Description)) <> N''
+            """
+        )
+        departments = [
+            ErpOrgDept(
+                id=(row.DeptId or "").strip().upper(),
+                name=(row.Dept or "").strip(),
+                parent_id=(row.ParentId or "").strip().upper(),
+                head_fio=(row.HeadFio or "").strip(),
+            )
+            for row in cur.fetchall()
+        ]
+        cur.execute(
+            """
+            ;WITH latest AS (
+                SELECT
+                    CAST(p._Description AS nvarchar(256)) AS Person,
+                    CAST(pos._Description AS nvarchar(256)) AS Position,
+                    CAST(hr._Description AS nvarchar(256)) AS HrDept,
+                    CAST(folder._Description AS nvarchar(256)) AS StaffFolder,
+                    CAST(s._Description AS nvarchar(256)) AS StaffUnit,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY p._IDRRef
+                        ORDER BY t._Fld43774 DESC
+                    ) AS rn
+                FROM dbo._InfoRg43757 t WITH (NOLOCK)
+                INNER JOIN dbo._Reference596 p WITH (NOLOCK)
+                    ON t._Fld43761RRef = p._IDRRef
+                INNER JOIN dbo._Reference613X1 s WITH (NOLOCK)
+                    ON t._Fld43767RRef = s._IDRRef
+                LEFT JOIN dbo._Reference613X1 folder WITH (NOLOCK)
+                    ON s._ParentIDRRef = folder._IDRRef
+                LEFT JOIN dbo._Reference164 pos WITH (NOLOCK)
+                    ON t._Fld43766RRef = pos._IDRRef
+                LEFT JOIN dbo._Reference358 hr WITH (NOLOCK)
+                    ON t._Fld43765RRef = hr._IDRRef
+                WHERE t._Fld43775 >= '5999-01-01'
+                  AND t._Fld43774 > '2002-01-01'
+                  AND LTRIM(RTRIM(ISNULL(s._Description, N''))) <> N''
+            )
+            SELECT Person, Position, HrDept, StaffFolder, StaffUnit
+            FROM latest
+            WHERE rn = 1
+              AND LTRIM(RTRIM(ISNULL(Person, N''))) <> N''
+            """
+        )
+        staff = [
+            ErpStaffAssignment(
+                fio=(row.Person or "").strip(),
+                position=(row.Position or "").strip(),
+                hr_department=(row.HrDept or "").strip(),
+                staff_folder=(row.StaffFolder or "").strip(),
+                staff_unit=(row.StaffUnit or "").strip(),
+            )
+            for row in cur.fetchall()
+        ]
+        return departments, staff
+    except pyodbc.Error as exc:
+        raise ErpSqlError(f"Failed to load org structure: {exc}") from exc
+    finally:
+        _release_connection(conn)
 
 
 def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], list[ErpSubordinate]]:

@@ -160,6 +160,8 @@ def test_fetch_inbox_tasks_soap_retries_latin_after_401(monkeypatch) -> None:
 def test_fetch_inbox_tasks_soap_missing_creds_asks_reconnect(monkeypatch) -> None:
     from app.tools.onec import docflow_inbox_fetch
 
+    monkeypatch.setattr(docflow_inbox_fetch, "_soap_service_attempt", lambda: [])
+
     tasks, warning = docflow_inbox_fetch.fetch_inbox_tasks_soap(
         "Иванов И.И.",
         auth_args={"fio": "Иванов И.И."},
@@ -327,6 +329,7 @@ def test_handle_docflow_tasks_forwards_session_password(monkeypatch) -> None:
         return [], ""
 
     monkeypatch.setattr(docflow_tasks, "_get", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(docflow_tasks, "_list_docflow_via_http", lambda *a, **k: ([], ""))
     monkeypatch.setattr("app.tools.onec.docflow_inbox_fetch.fetch_inbox_tasks_soap", fake_soap)
     handle_docflow_tasks(
         {
@@ -336,6 +339,7 @@ def test_handle_docflow_tasks_forwards_session_password(monkeypatch) -> None:
             "erp_password": "secret",
             "today_and_overdue": True,
             "only_open": True,
+            "force_refresh": True,
         },
         actor_fio="Иванов И.И.",
     )
@@ -350,6 +354,7 @@ def test_handle_docflow_tasks_keeps_both_roles_and_warning(monkeypatch) -> None:
     from app.services import docflow_tasks
 
     monkeypatch.setattr(docflow_tasks, "_get", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(docflow_tasks, "_list_docflow_via_http", lambda *a, **k: ([], ""))
     monkeypatch.setattr(
         "app.tools.onec.docflow_inbox_fetch.fetch_inbox_tasks_soap",
         lambda fio, **_kwargs: (
@@ -395,7 +400,14 @@ def test_handle_docflow_tasks_keeps_both_roles_and_warning(monkeypatch) -> None:
         ),
     )
     payload = handle_docflow_tasks(
-        {"today_and_overdue": True, "only_open": True, "limit": 20},
+        {
+            "today_and_overdue": True,
+            "only_open": True,
+            "limit": 20,
+            "password": "secret",
+            "erp_password": "secret",
+            "force_refresh": True,
+        },
         actor_fio="Иванов И.И.",
     )
     assert payload["count"] == 3
@@ -408,6 +420,7 @@ def test_list_docflow_today_and_overdue_drops_future(monkeypatch) -> None:
     from app.services import docflow_tasks
 
     monkeypatch.setattr(docflow_tasks, "_get", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(docflow_tasks, "_list_docflow_via_http", lambda *a, **k: ([], ""))
     monkeypatch.setattr(
         "app.tools.onec.docflow_inbox_fetch.fetch_inbox_tasks_soap",
         lambda fio, **_kwargs: (
@@ -435,6 +448,8 @@ def test_list_docflow_today_and_overdue_drops_future(monkeypatch) -> None:
         only_open=True,
         today_and_overdue=True,
         limit=20,
+        force_refresh=True,
+        auth_args={"fio": "Иванов И.И.", "password": "secret"},
     )
     assert [row["title"] for row in rows] == ["Просрочена"]
 

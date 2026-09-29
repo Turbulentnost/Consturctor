@@ -1,11 +1,3 @@
-import {
-  docxPreviewDataUrl,
-  isDocxFileName,
-  isSpreadsheetFileName,
-  spreadsheetPreviewDataUrl,
-  spreadsheetPreviewFromBuffer
-} from '../../shared/officeSpreadsheetPreview'
-
 const BACKEND = String(import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:7812').replace(/\/+$/, '')
 
 function errorText(data: unknown, fallback: string): string {
@@ -99,6 +91,30 @@ function installBrowserApi(): void {
     },
     upload: async () => ({ ok: false, status: 501, error: 'Загрузка файлов только в Electron' }),
     fetchDataUrl: async () => ({ ok: false, error: 'Только в Electron' }),
+    fetchBinary: async (opts) => {
+      const raw = String(opts.url || '').trim()
+      if (!raw) return { ok: false, error: 'Нет ссылки на файл' }
+      const url = raw.startsWith('http://') || raw.startsWith('https://') ? raw : `${BACKEND}${raw.startsWith('/') ? raw : `/${raw}`}`
+      const headers: Record<string, string> = {}
+      if (opts.token) headers.Authorization = `Bearer ${opts.token}`
+      try {
+        const res = await fetch(url, { headers })
+        if (!res.ok) return { ok: false, error: `Ошибка загрузки (${res.status})` }
+        const buffer = await res.arrayBuffer()
+        const limit = typeof opts.maxBytes === 'number' && opts.maxBytes > 0 ? opts.maxBytes : 50 * 1024 * 1024
+        if (buffer.byteLength > limit) return { ok: false, error: 'Файл слишком большой для просмотра' }
+        const bytes = new Uint8Array(buffer)
+        let binary = ''
+        const chunk = 0x8000
+        for (let i = 0; i < bytes.length; i += chunk) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+        }
+        const contentType = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim().toLowerCase()
+        return { ok: true, base64: btoa(binary), contentType, size: bytes.length }
+      } catch {
+        return { ok: false, error: 'Не удалось загрузить файл' }
+      }
+    },
     fetchFilePreview: async (opts) => {
       const raw = String(opts.url || '').trim()
       if (!raw) return { ok: false, error: 'Нет ссылки на файл' }
@@ -123,22 +139,6 @@ function installBrowserApi(): void {
           bytes[3] === 0x46
         const isText =
           /\.(txt|md|csv|json|xml|html|htm|log)$/.test(name) || headerMime.startsWith('text/')
-        const fileLabel = String(opts.fileName || raw)
-        if (isSpreadsheetFileName(fileLabel)) {
-          const table = spreadsheetPreviewFromBuffer(buffer, fileLabel)
-          if (table) {
-            return {
-              ok: true,
-              kind: 'embed',
-              dataUrl: spreadsheetPreviewDataUrl(table, fileLabel),
-              mime: 'text/html'
-            }
-          }
-        }
-        if (isDocxFileName(fileLabel)) {
-          const dataUrl = await docxPreviewDataUrl(buffer, fileLabel)
-          if (dataUrl) return { ok: true, kind: 'embed', dataUrl, mime: 'text/html' }
-        }
         const isEmbed =
           isPdf ||
           headerMime.startsWith('image/') ||
@@ -175,6 +175,10 @@ function installBrowserApi(): void {
     getPathForFile: () => '',
     openFile: async () => [],
     openPath: async () => ({ ok: false, error: 'Только в Electron' }),
+    focusOutlook: async () => ({ ok: false, error: 'Только в Electron' }),
+    printToPdf: async () => ({ ok: false, error: 'Только в Electron' }),
+    printPreview: async () => ({ ok: false, error: 'Только в Electron' }),
+    printDialog: async () => ({ ok: false, error: 'Только в Electron' }),
     readLocalFilePreview: async () => ({ ok: false, error: 'Только в Electron' }),
     copyLocalFile: async () => ({ ok: false, error: 'Только в Electron' }),
     startNotifications: async () => ({ ok: true }),
