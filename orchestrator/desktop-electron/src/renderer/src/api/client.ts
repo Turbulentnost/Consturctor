@@ -2370,19 +2370,48 @@ export class ApiClient {
   async downloadPositionKpiForm(
     fio: string,
     from = '',
-    to = ''
+    to = '',
+    unlockToken = ''
   ): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
     const params = new URLSearchParams()
     if (fio.trim()) params.set('fio', fio.trim())
     if (from) params.set('from', from)
     if (to) params.set('to', to)
+    if (unlockToken) params.set('unlock', unlockToken)
     const surname = fio.trim().split(/\s+/)[0] || 'сотрудник'
     const stamp = (from || '').slice(0, 7) || 'period'
     return window.api.download({
       url: `/api/v1/position-kpi/bonus-form?${params.toString()}`,
-      defaultName: `ИЦПП_${surname}_${stamp}.xlsx`,
+      defaultName: `ИЦПП_${surname}_${stamp}${unlockToken ? '_руб' : ''}.xlsx`,
       token: this.resolveToken()
     })
+  }
+
+  async getKpiProtection(): Promise<{ enabled: boolean; hasPassword: boolean }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/protection')
+    return { enabled: Boolean(data?.enabled), hasPassword: Boolean(data?.has_password) }
+  }
+
+  async updateKpiProtection(body: {
+    enabled: boolean
+    password?: string
+    currentPassword?: string
+  }): Promise<{ enabled: boolean; hasPassword: boolean }> {
+    const data = await this.request<Record<string, unknown>>('PUT', '/api/v1/position-kpi/protection', {
+      body: {
+        enabled: body.enabled,
+        password: body.password || null,
+        current_password: body.currentPassword || null
+      }
+    })
+    return { enabled: Boolean(data?.enabled), hasPassword: Boolean(data?.has_password) }
+  }
+
+  async unlockKpiMoney(password: string): Promise<{ token: string; expiresAt: number }> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/position-kpi/unlock', {
+      body: { password }
+    })
+    return { token: String(data?.token || ''), expiresAt: Number(data?.expires_at || 0) }
   }
 
   async startPositionKpiBuild(position = ''): Promise<PositionKpiBuildSession> {

@@ -13714,6 +13714,33 @@ button.spec-v04-tile {
 .set-widget-actions {
   margin-top: 4px;
 }
+.kpi-protect-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+  font-size: 14px;
+  cursor: pointer;
+}
+.kpi-protect-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+}
+.kpi-protect-fields .wp-search {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+}
+.kpi-protect-note {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #0a6b58;
+}
+.kpi-protect-note.is-error {
+  color: #a32020;
+}
 .set-channel-cards {
   display: flex;
   gap: 10px;

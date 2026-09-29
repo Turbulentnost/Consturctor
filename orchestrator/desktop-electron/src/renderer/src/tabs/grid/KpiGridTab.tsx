@@ -23,6 +23,7 @@ import { agentMatchesKpiTile, toggleSimpleTile } from '../../workplace/tileFilte
 import type { WorkplaceKpiCard } from '../../workplace/workplaceKpiTypes'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
+import { useKpiProtection, writeKpiUnlock } from '../../workplace/kpiProtection'
 import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel } from './KpiEmployeePanel'
 import { KpiMetricCodeModal } from './KpiMetricCodeModal'
@@ -77,6 +78,13 @@ export function KpiGridTab(_props: {
   const [formNote, setFormNote] = useState('')
   const [agentQuery, setAgentQuery] = useState('')
   const [tileFilter, setTileFilter] = useState('all')
+  const protection = useKpiProtection(_props.user?.id || '')
+  const [gateDismissed, setGateDismissed] = useState(false)
+  const [gateOpen, setGateOpen] = useState(false)
+  const [gatePassword, setGatePassword] = useState('')
+  const [gateBusy, setGateBusy] = useState(false)
+  const [gateError, setGateError] = useState('')
+  const [inMoney, setInMoney] = useState(true)
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
   const positionKpi = usePositionKpi(_props.user?.position || '')
   const [buildingMethod, setBuildingMethod] = useState(false)
@@ -157,15 +165,46 @@ export function KpiGridTab(_props: {
     }
   }, [formOpen, person])
 
+  const userId = _props.user?.id || ''
+  const unlocked = Boolean(protection.unlockToken)
+  const showGate =
+    gateOpen || (protection.loaded && protection.enabled && !unlocked && !gateDismissed)
+
+  const submitGate = async (): Promise<void> => {
+    if (gateBusy || !gatePassword) return
+    setGateBusy(true)
+    setGateError('')
+    try {
+      const unlock = await api.unlockKpiMoney(gatePassword)
+      writeKpiUnlock(userId, unlock)
+      setGatePassword('')
+      setGateOpen(false)
+      setGateDismissed(true)
+    } catch (err: unknown) {
+      setGateError(err instanceof ApiError ? err.message : 'Не удалось проверить пароль')
+    } finally {
+      setGateBusy(false)
+    }
+  }
+
+  const closeGate = (): void => {
+    setGatePassword('')
+    setGateError('')
+    setGateOpen(false)
+    setGateDismissed(true)
+  }
+
   const downloadForm = async (): Promise<void> => {
     if (formBusy) return
     setFormBusy(true)
     setFormNote('')
     const period = bonusMonth(from, to)
+    const token = unlocked && inMoney ? protection.unlockToken : ''
     try {
-      const result = await api.downloadPositionKpiForm(person.trim() || selfFio, period.from, period.to)
+      const result = await api.downloadPositionKpiForm(person.trim() || selfFio, period.from, period.to, token)
       if (result.canceled) return
       if (!result.ok) {
+        if (token && /истёк|пароль KPI/i.test(result.error || '')) writeKpiUnlock(userId, null)
         setFormNote(result.error || 'Не удалось сохранить форму')
         return
       }
@@ -232,7 +271,61 @@ export function KpiGridTab(_props: {
             Скачать форму
           </button>
           <span className="spec-v04-muted">Индивидуальные целевые показатели за месяц выбранного периода</span>
+          {protection.enabled ? (
+            unlocked ? (
+              <span className="kpi-protect-badge">
+                Суммы в рублях открыты
+                <button type="button" className="kpi-protect-lock" onClick={() => writeKpiUnlock(userId, null)}>
+                  Закрыть
+                </button>
+              </span>
+            ) : (
+              <button className="spec-btn-outline kpi-protect-open" type="button" onClick={() => setGateOpen(true)}>
+                Ввести пароль KPI
+              </button>
+            )
+          ) : null}
         </div>
+        {showGate
+          ? createPortal(
+              <div className="kpi-form-modal" role="dialog" aria-modal="true" aria-labelledby="kpi-gate-title">
+                <button className="kpi-form-modal-backdrop" type="button" aria-label="Закрыть" onClick={closeGate} />
+                <form
+                  className="kpi-form-modal-card"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void submitGate()
+                  }}
+                >
+                  <h3 id="kpi-gate-title">Вход в модуль KPI</h3>
+                  <p className="kpi-form-modal-lead">
+                    Введите пароль KPI, чтобы выгружать форму премирования в рублях. Без пароля суммы скрыты.
+                  </p>
+                  <label className="spec-filter-input kpi-form-person">
+                    <input
+                      className="wp-search"
+                      type="password"
+                      autoComplete="current-password"
+                      autoFocus
+                      value={gatePassword}
+                      onChange={(event) => setGatePassword(event.target.value)}
+                      placeholder="Пароль KPI"
+                    />
+                  </label>
+                  {gateError ? <p className="kpi-form-modal-error">{gateError}</p> : null}
+                  <div className="kpi-form-modal-actions">
+                    <button className="btn-primary" type="submit" disabled={gateBusy || !gatePassword}>
+                      {gateBusy ? 'Проверяю…' : 'Войти'}
+                    </button>
+                    <button className="spec-btn-outline" type="button" onClick={closeGate}>
+                      Без сумм
+                    </button>
+                  </div>
+                </form>
+              </div>,
+              document.body
+            )
+          : null}
         {!tiles.length && loading ? (
           <p className="kpi-dash-status-banner">Загружаем показатели…</p>
         ) : null}
@@ -262,6 +355,14 @@ export function KpiGridTab(_props: {
                   </label>
                   {personPosition ? <p className="kpi-form-modal-position">{personPosition}</p> : null}
                   {subjectError ? <p className="kpi-form-modal-error">{subjectError}</p> : null}
+                  {unlocked ? (
+                    <label className="kpi-form-money">
+                      <input type="checkbox" checked={inMoney} onChange={(event) => setInMoney(event.target.checked)} />
+                      <span>В рублях: оклад и база премии из 1С:ЗУП</span>
+                    </label>
+                  ) : protection.enabled ? (
+                    <p className="kpi-form-modal-lead">Форма будет в процентах. Для сумм в рублях введите пароль KPI.</p>
+                  ) : null}
                   {formNote ? <p className="kpi-form-modal-error">{formNote}</p> : null}
                   <div className="kpi-form-modal-actions">
                     <button

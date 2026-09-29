@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import calendar
+from dataclasses import dataclass
 from datetime import date
 from io import BytesIO
 from typing import Any
@@ -19,7 +20,7 @@ from app.services.position_kpi.detail_sheets import attach_kpi_detail_sheets, re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.position_kpi import PositionKpiMetric, PositionKpiProfile
+from app.models.position_kpi import PositionCompRule, PositionKpiMetric, PositionKpiProfile
 from app.services.position_kpi.daily import (
     PositionKpiNotFound,
     get_or_compute_position_kpi,
@@ -60,6 +61,15 @@ _DEADLINE_FONT = Font(name="Calibri", size=11, color="FF0000")
 _LINK_FONT = Font(name="Calibri", size=11, color="0563C1", underline="single")
 _WRAP = Alignment(wrap_text=True, vertical="center", horizontal="left")
 _CENTER = Alignment(wrap_text=True, vertical="center", horizontal="center")
+
+
+@dataclass(frozen=True)
+class BonusMoney:
+    """База премии в рублях: премия строки = база × оценка строки / 100."""
+
+    base: float
+    oklad: float | None
+    basis: str
 
 
 class ReportSubjectError(Exception):
@@ -130,6 +140,33 @@ def _pct(value: float | int | None) -> str:
     return f"{number:.1f}".replace(".", ",") + "%"
 
 
+_RUB_FORMAT = '#,##0.00 "₽"'
+
+
+def _money(sheet: Worksheet, row: int, column: int, value: float | None) -> None:
+    cell = sheet.cell(row, column, round(value, 2) if value is not None else "")
+    if value is not None:
+        cell.number_format = _RUB_FORMAT
+
+
+def resolve_bonus_money(db: Session, profile: PositionKpiProfile, fio: str, as_of: date) -> BonusMoney:
+    """Базовая премия из 1С:ЗУП; если её нет — оклад × ЦРП % из правил должности."""
+    from app.services.position_kpi.salary import lookup_salary
+
+    info = lookup_salary(fio, as_of)
+    if info is None:
+        raise ReportSubjectError(f"Сотрудник «{fio}» не найден в 1С:ЗУП, суммы посчитать не из чего.", 404)
+    if info.base_bonus:
+        return BonusMoney(base=info.base_bonus, oklad=info.oklad, basis="Базовая премия из 1С:ЗУП")
+    if info.oklad:
+        rule = db.execute(
+            select(PositionCompRule).where(PositionCompRule.profile_id == profile.id)
+        ).scalars().first()
+        pct = int(rule.bonus_base_pct) if rule is not None and rule.bonus_base_pct is not None else 100
+        return BonusMoney(base=info.oklad * pct / 100.0, oklad=info.oklad, basis=f"Оклад из 1С:ЗУП × ЦРП {pct}%")
+    raise ReportSubjectError(f"У «{fio}» в 1С:ЗУП не заведены оклад и базовая премия.", 404)
+
+
 def _earned(weight: int, tile: dict[str, Any]) -> float | None:
     contrib = tile.get("contrib")
     if contrib is not None:
@@ -176,6 +213,7 @@ def build_bonus_form_xlsx(
     period_from: date,
     period_to: date,
     rows: list[dict[str, Any]],
+    money: BonusMoney | None = None,
 ) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
@@ -187,6 +225,7 @@ def build_bonus_form_xlsx(
         period_from=period_from,
         period_to=period_to,
         rows=rows,
+        money=money,
     )
     names = attach_kpi_detail_sheets(
         workbook,
@@ -208,6 +247,7 @@ def render_bonus_form(
     position: str,
     date_from: date | None,
     date_to: date | None,
+    with_money: bool = False,
 ) -> tuple[bytes, str]:
     subject = resolve_report_subject(fio=fio, position=position)
     profile = resolve_profile(db, subject["position"])
@@ -229,15 +269,18 @@ def render_bonus_form(
     rows = form_rows(db, profile, tiles)
     if not rows:
         raise PositionKpiNotFound(subject["position"])
+    money = resolve_bonus_money(db, profile, subject["fio"], end) if with_money else None
     content = build_bonus_form_xlsx(
         fio=subject["fio"],
         position=subject["position"],
         period_from=start,
         period_to=end,
         rows=rows,
+        money=money,
     )
     surname = subject["fio"].split()[0] if subject["fio"] else "сотрудник"
-    filename = f"ИЦПП_{surname}_{start.isoformat()[:7]}.xlsx"
+    suffix = "_руб" if money else ""
+    filename = f"ИЦПП_{surname}_{start.isoformat()[:7]}{suffix}.xlsx"
     return content, filename
 
 
@@ -249,12 +292,14 @@ def _write_sheet(
     period_from: date,
     period_to: date,
     rows: list[dict[str, Any]],
+    money: BonusMoney | None = None,
 ) -> None:
-    widths = {"A": 8, "B": 62, "C": 16, "D": 18, "E": 18, "F": 42, "G": 22}
+    last_col = 8 if money else 7
+    widths = {"A": 8, "B": 62, "C": 16, "D": 18, "E": 18, "F": 42, "G": 22, "H": 20}
     for column, width in widths.items():
         sheet.column_dimensions[column].width = width
 
-    sheet.merge_cells("A1:G1")
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
     sheet["A1"] = "Индивидуальные целевые показатели премирования"
     sheet["A1"].font = _TITLE_FONT
     sheet["A1"].alignment = Alignment(vertical="center", horizontal="left")
@@ -270,6 +315,20 @@ def _write_sheet(
 
     _person_block(sheet, start_row=4, label="Оцениваемый работник:", position=position, fio=fio, when=period_from)
     _person_block(sheet, start_row=8, label="Цели установил:", position="", fio="", when=period_from)
+    if money:
+        for row, caption, value in ((4, "Оклад", money.oklad), (5, "База премии", money.base)):
+            label = sheet.cell(row, 7, caption)
+            label.font = _CELL_FONT
+            label.alignment = _CENTER
+            label.border = _THIN
+            _money(sheet, row, 8, value)
+            sheet.cell(row, 8).font = _LABEL_FONT
+            sheet.cell(row, 8).alignment = _CENTER
+            sheet.cell(row, 8).border = _THIN
+        basis = sheet.cell(6, 7, money.basis)
+        basis.font = _CELL_FONT
+        basis.alignment = _WRAP
+        sheet.merge_cells(start_row=6, start_column=7, end_row=6, end_column=8)
 
     header_row = 12
     headers = (
@@ -280,7 +339,7 @@ def _write_sheet(
         "Срок выполнения",
         "Фактический результат (заполняется по итогам выполнения целей)",
         "Заключительная оценка выполнения (% выполнения целевого значения)",
-    )
+    ) + (("Премия, ₽",) if money else ())
     for index, text in enumerate(headers, start=1):
         cell = sheet.cell(header_row, index, text)
         cell.font = _HEADER_FONT
@@ -316,6 +375,13 @@ def _write_sheet(
             cell.font = _DEADLINE_FONT if index == 5 else _CELL_FONT
             cell.alignment = _CENTER if index != 2 and index != 6 else _WRAP
             cell.border = _THIN
+        if money:
+            row_money = money.base * float(earned) / 100.0 if isinstance(earned, (int, float)) else None
+            _money(sheet, excel_row, 8, row_money)
+            cell = sheet.cell(excel_row, 8)
+            cell.font = _CELL_FONT
+            cell.alignment = _CENTER
+            cell.border = _THIN
         sheet.row_dimensions[excel_row].height = 36
 
     total_row = header_row + len(rows) + 1
@@ -325,7 +391,10 @@ def _write_sheet(
     total_label.alignment = Alignment(vertical="center", horizontal="right")
     weight_cell = sheet.cell(total_row, 3, _pct(weight_total))
     score_cell = sheet.cell(total_row, 7, _pct(earned_total) if rows else "")
-    for index in range(1, 8):
+    if money:
+        _money(sheet, total_row, 8, money.base * earned_total / 100.0 if rows else None)
+        sheet.cell(total_row, 8).alignment = _CENTER
+    for index in range(1, last_col + 1):
         cell = sheet.cell(total_row, index)
         cell.border = _THIN
         cell.fill = _TOTAL_FILL
@@ -345,14 +414,17 @@ def _write_sheet(
     )
     comment_row = sign_row + 4
     sheet.cell(comment_row, 1, "Комментарии:").font = _LABEL_FONT
-    sheet.merge_cells(start_row=comment_row + 1, start_column=1, end_row=comment_row + 2, end_column=7)
+    sheet.merge_cells(start_row=comment_row + 1, start_column=1, end_row=comment_row + 2, end_column=last_col)
     note = ""
     if missing:
         note = "По части целей факт за период ещё не посчитан, оценка этих строк пустая."
+    if money:
+        rule = "Премия строки = база премии × заключительная оценка строки."
+        note = f"{note} {rule}".strip()
     comment = sheet.cell(comment_row + 1, 1, note)
     comment.font = _CELL_FONT
     comment.alignment = _WRAP
-    for index in range(1, 8):
+    for index in range(1, last_col + 1):
         sheet.cell(comment_row + 1, index).border = _THIN
         sheet.cell(comment_row + 2, index).border = _THIN
 

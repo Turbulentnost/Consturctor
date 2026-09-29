@@ -243,6 +243,46 @@
   font-size: 14px;
 }
 
+.kpi-protect-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 4px 0 12px;
+  border-radius: 16px;
+  background: #e3f4ee;
+  color: #0a6b58;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.kpi-protect-lock {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #0a6b58;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.kpi-protect-open {
+  flex: 0 0 auto;
+  height: 36px;
+  white-space: nowrap;
+}
+
+.kpi-form-money {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
 .kpi-form-person {
   width: 100%;
 }

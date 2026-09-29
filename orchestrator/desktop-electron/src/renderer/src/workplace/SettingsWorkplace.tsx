@@ -17,6 +17,7 @@ import {
   writeTodayWidgetVisibility,
   TODAY_WIDGET_VISIBILITY_EVENT
 } from '../tabs/grid/todayWidgetSettings'
+import { KpiProtectionSettings } from './KpiProtectionSettings'
 import { OneCSessionProfileSection } from './OneCSessionProfileSection'
 
 type SettingsSection =
@@ -522,6 +523,7 @@ export function SettingsWorkplace({
             <h2>Обновления</h2>
             <SettingsUpdateBlock />
           </section>
+          <KpiProtectionSettings userId={user.id} />
           <section className="set-card">
             <h2>Файлы агентов</h2>
             <p className="set-muted">
