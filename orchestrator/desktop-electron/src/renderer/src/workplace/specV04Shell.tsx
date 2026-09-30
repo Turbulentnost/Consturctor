@@ -14,6 +14,8 @@ export interface SpecSummaryTile {
   tone?: SpecSummaryTone
   progress?: number
   ring?: boolean
+  /** Ключ иконки, если он отличается от id плитки (см. SpecTileIcon). */
+  icon?: string
 }
 
 interface SpecV04ShellProps {

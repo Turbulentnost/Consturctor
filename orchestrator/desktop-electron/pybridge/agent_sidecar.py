@@ -214,6 +214,8 @@ _READ_EXACT = frozenset(
         "onec.docflow_tasks",
         "onec.meeting_service_notes",
         "onec.meeting_protocols",
+        "meetings.memo_requests",
+        "outlook.ews_availability",
         "agent.wait",
         "turboproject",
         "users.list",

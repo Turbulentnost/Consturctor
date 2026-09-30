@@ -11682,6 +11682,14 @@ button.spec-v04-tile {
   background: rgba(230, 167, 0, 0.22);
   color: #c99200;
 }
+.spec-tile-icon-wrap.tone-blue {
+  background: rgba(21, 101, 192, 0.12);
+  color: #1565c0;
+}
+.spec-tile-icon-wrap.tone-green {
+  background: rgba(27, 127, 74, 0.12);
+  color: #1b7f4a;
+}
 .spec-tile-ico {
   width: 18px;
   height: 18px;

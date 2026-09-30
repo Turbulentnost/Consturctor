@@ -81,6 +81,18 @@ class Settings(BaseSettings):
     imap_password: str = ""
     imap_mailbox: str = "INBOX"
 
+    # Exchange (EWS): служебный ящик, от имени которого агенты создают совещания.
+    outlook_email: str = ""
+    outlook_password: str = ""
+    outlook_server: str = ""
+    outlook_mailbox: str = ""
+    outlook_company_calendar: str = ""
+    outlook_timezone: str = "Europe/Moscow"
+    outlook_timeout_sec: float = 60.0
+    outlook_smtp_host: str = ""
+    outlook_smtp_port: int = 587
+    outlook_smtp_tls: bool = True
+
     # TurboProject API (server-side tool turboproject; desktop only proxies)
     turboproject_api_base: str = ""
     turboproject_email: str = ""

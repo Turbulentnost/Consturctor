@@ -327,6 +327,39 @@ function outlookEvent(args: Record<string, unknown>): ToolExplanation {
   )
 }
 
+function companyMeeting(args: Record<string, unknown>): ToolExplanation {
+  const subject = asText(args.subject)
+  const start = asText(args.start)
+  const end = asText(args.end)
+  const location = asText(args.location)
+  const people = formatPeople(args.attendees)
+  const memo = asText(args.memo_number)
+  const clock = (raw: string): string => raw.match(/[T ](\d{2}:\d{2})/)?.[1] || ''
+  const facts: string[] = []
+  if (subject) facts.push(`Тема: ${clip(subject, 120)}`)
+  if (start) {
+    const range = [clock(start), clock(end)].filter(Boolean).join('–')
+    facts.push(`Когда: ${formatDate(start)}${range ? ` ${range}` : ''}`)
+  }
+  if (location) facts.push(`Место: ${clip(location, 120)}`)
+  if (people) facts.push(`Участники: ${people}, Амураль И.Б.`)
+  if (memo) facts.push(`Служебная записка №${memo}`)
+  return explanation(
+    'Совещание в календаре «Совещания»',
+    'поставить совещание в общий календарь «Совещания»',
+    'Ставит совещание в календарь «Совещания»',
+    facts,
+    joinDetail([
+      'Совещание появится в календаре «Совещания», приглашения сразу уйдут участникам и Амуралю И.Б.',
+      force(args) ? 'Шеф в это время занят — ставим поверх, как вы сказали.' : ''
+    ])
+  )
+}
+
+function force(args: Record<string, unknown>): boolean {
+  return args.force === true || String(args.force).toLowerCase() === 'true'
+}
+
 function mailWrite(tool: string, args: Record<string, unknown>): ToolExplanation {
   const draft = tool === 'email.create_draft'
   const to = formatPeople(args.to || args.recipients || args.email)
@@ -416,6 +449,7 @@ function byKnownName(name: string, args: Record<string, unknown>): ToolExplanati
   if (name === 'onec.meeting_protocol_write') return protocolWrite(args)
   if (name === 'onec.odata_post' || name === 'onec.odata_patch') return odataWrite(name, args)
   if (name === 'outlook.create_event') return outlookEvent(args)
+  if (name === 'outlook.ews_create_meeting') return companyMeeting(args)
   if (name === 'outlook.send_mail' || name === 'email.send' || name === 'email.create_draft') {
     return mailWrite(name, args)
   }
@@ -447,6 +481,16 @@ function byKnownName(name: string, args: Record<string, unknown>): ToolExplanati
       'Смотрит служебные записки'
     ],
     'onec.meeting_protocols': ['Протоколы совещаний', 'посмотреть протоколы совещаний в 1С', 'Смотрит протоколы'],
+    'meetings.memo_requests': [
+      'Служебные записки',
+      'посмотреть служебные записки на организацию совещаний',
+      'Смотрит служебные записки'
+    ],
+    'outlook.ews_availability': [
+      'Занятость в Outlook',
+      'проверить, свободны ли Амураль И.Б. и участники',
+      'Проверяет занятость'
+    ],
     'onec.sql_query': ['Запрос 1С', 'выполнить запрос к данным 1С', 'Запрашивает данные 1С'],
     'onec.erp_tasks_current': ['Текущие задачи', 'посмотреть текущие задачи в 1С', 'Смотрит текущие задачи'],
     'onec.erp_tasks_period': ['Задачи за период', 'посмотреть задачи 1С за период', 'Смотрит задачи за период'],
@@ -548,7 +592,8 @@ export function explainTool(tool: string, args?: Record<string, unknown>): ToolE
     'onec.meeting_protocol_write',
     'onec.odata_post',
     'onec.odata_patch',
-    'outlook.create_event'
+    'outlook.create_event',
+    'outlook.ews_create_meeting'
   ]) {
     if (compactName(key) === compact) {
       const matched = byKnownName(key, rawArgs)

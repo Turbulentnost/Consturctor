@@ -17,7 +17,8 @@ function sparklinePath(points: number[], width: number, height: number, max: num
 function sparklineArea(points: number[], width: number, height: number, max: number): string {
   const line = sparklinePath(points, width, height, max)
   if (!line) return ''
-  return `${line} L ${width},${height} L 0,${height} Z`
+  // sparklinePath отдаёт список точек для polyline, а d обязан начинаться с moveto.
+  return `M ${line.split(' ').join(' L ')} L ${width},${height} L 0,${height} Z`
 }
 
 function yMaxForMetric(metric: WorkplaceKpiEmployeeMetric): number {
