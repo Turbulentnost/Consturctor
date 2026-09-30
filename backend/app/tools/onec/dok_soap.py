@@ -1171,6 +1171,9 @@ def person_names_match(actor: str, candidate: str) -> bool:
     return False
 
 
+person_matches = person_names_match
+
+
 def task_role_for_user(row: dict[str, Any], user_fio: str) -> str | None:
     """executor / author / both when the dump row belongs to the session FIO."""
     mine = (user_fio or "").strip()

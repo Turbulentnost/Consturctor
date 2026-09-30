@@ -5,6 +5,7 @@ import {
   deleteSidebarFolder,
   folderNodeId,
   loadSidebarLayout,
+  moveSidebarNode,
   moveSidebarTab,
   normalizeSidebarLayout,
   saveSidebarLayout,
@@ -43,6 +44,53 @@ test('moves a tab into a folder and back to the root', () => {
   const restored = moveSidebarTab(filed, 'tasks', null)
   assert.deepEqual(restored.folders[0].tabKeys, [])
   assert.equal(restored.root.at(-1), tabNodeId('tasks'))
+})
+
+test('reorders tabs and folders relative to an anchor', () => {
+  const initial = addSidebarFolder(normalizeSidebarLayout(null, KEYS), 'Работа', 'work')
+  const folderFirst = moveSidebarNode(initial, folderNodeId('work'), {
+    folderId: null,
+    anchor: tabNodeId('today'),
+    position: 'before'
+  })
+  assert.deepEqual(folderFirst.root, [
+    folderNodeId('work'),
+    tabNodeId('today'),
+    tabNodeId('tasks'),
+    tabNodeId('projects'),
+    tabNodeId('settings')
+  ])
+
+  const swapped = moveSidebarNode(folderFirst, tabNodeId('today'), {
+    folderId: null,
+    anchor: tabNodeId('projects'),
+    position: 'after'
+  })
+  assert.deepEqual(swapped.root, [
+    folderNodeId('work'),
+    tabNodeId('tasks'),
+    tabNodeId('projects'),
+    tabNodeId('today'),
+    tabNodeId('settings')
+  ])
+})
+
+test('inserts a tab at a position inside a folder and refuses nested folders', () => {
+  const base = addSidebarFolder(normalizeSidebarLayout(null, KEYS), 'Работа', 'work')
+  const withTasks = moveSidebarTab(base, 'tasks', 'work')
+  const withToday = moveSidebarNode(withTasks, tabNodeId('today'), {
+    folderId: 'work',
+    anchor: tabNodeId('tasks'),
+    position: 'before'
+  })
+  assert.deepEqual(withToday.folders[0].tabKeys, ['today', 'tasks'])
+  assert.equal(withToday.root.includes(tabNodeId('today')), false)
+
+  const nested = addSidebarFolder(withToday, 'Другое', 'other')
+  assert.equal(
+    moveSidebarNode(nested, folderNodeId('other'), { folderId: 'work', anchor: null, position: 'after' }),
+    nested
+  )
 })
 
 test('deleting a folder restores its tabs at the folder position', () => {

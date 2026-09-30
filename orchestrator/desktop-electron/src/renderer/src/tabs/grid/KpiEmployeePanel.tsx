@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Eye, EyeOff } from 'lucide-react'
-import type { PositionKpiCompensation } from '../../api/types'
+import type { PositionKpiCompensation, PositionKpiMethodology } from '../../api/types'
 import type { WorkplaceKpiEmployeeMetric } from '../../workplace/workplaceKpiTypes'
 
 function sparklinePath(points: number[], width: number, height: number, max: number): string {
@@ -20,7 +20,7 @@ function sparklinePath(points: number[], width: number, height: number, max: num
 function sparklineArea(points: number[], width: number, height: number, max: number): string {
   const line = sparklinePath(points, width, height, max)
   if (!line) return ''
-  return `${line} L ${width},${height} L 0,${height} Z`
+  return `M ${line} L ${width},${height} L 0,${height} Z`
 }
 
 function yMaxForMetric(metric: WorkplaceKpiEmployeeMetric): number {
@@ -141,6 +141,14 @@ function KpiSalaryTile({
   )
 }
 
+function metricWord(count: number): string {
+  const tail = count % 100
+  if (tail >= 11 && tail <= 14) return 'показателей'
+  if (count % 10 === 1) return 'показатель'
+  if (count % 10 >= 2 && count % 10 <= 4) return 'показателя'
+  return 'показателей'
+}
+
 export function KpiEmployeePanel({
   metrics,
   compensation,
@@ -152,6 +160,7 @@ export function KpiEmployeePanel({
   loading,
   needsMethodology,
   methodologyStatus = needsMethodology ? 'needs_modules' : 'ready',
+  methodology,
   onCalculate,
   onDetails,
   onInfo,
@@ -168,6 +177,7 @@ export function KpiEmployeePanel({
   /** Нет готового модуля расчёта KPI должности — не показываем заглушку. */
   needsMethodology?: boolean
   methodologyStatus?: 'none' | 'needs_modules' | 'ready'
+  methodology?: PositionKpiMethodology | null
   onCalculate?: () => void
   onDetails?: () => void
   /** Открыть код, источник и формулу показателя. */
@@ -175,6 +185,7 @@ export function KpiEmployeePanel({
   variant?: 'panel' | 'bar'
 }): React.JSX.Element {
   const gradPrefix = useId().replace(/:/g, '')
+  const pendingMetrics = (methodology?.metrics ?? []).filter((item) => !item.moduleReady)
   const [pinOpen, setPinOpen] = useState(false)
   const [pin, setPin] = useState('')
 
@@ -223,18 +234,36 @@ export function KpiEmployeePanel({
         ) : metrics.map((m) => (
             <KpiEmployeeTile key={m.id} metric={m} gradId={`${gradPrefix}-${m.id}`} onInfo={onInfo} />
           ))}
+      {methodologyStatus === 'needs_modules'
+        ? pendingMetrics.map((item) => (
+            <button
+              key={item.code}
+              type="button"
+              className="kpi-employee-tile kpi-pending-tile"
+              onClick={() => onCalculate?.()}
+              title={[
+                item.name,
+                item.formulaHuman ? `Формула: ${item.formulaHuman}` : '',
+                methodology?.sourceTitle ? `Источник: «${methodology.sourceTitle}»` : '',
+                pendingMetrics.length > 1
+                  ? `Агент напишет модули для ${pendingMetrics.length} ${metricWord(pendingMetrics.length)}`
+                  : ''
+              ]
+                .filter(Boolean)
+                .join('\n')}
+            >
+              <span className="kpi-employee-tile-title">{item.name}</span>
+              <span className="kpi-pending-tile-state">
+                Модуль не создан{item.weight ? ` · вес ${item.weight}%` : ''}
+              </span>
+              <span className="kpi-pending-tile-action">Создать модуль →</span>
+            </button>
+          ))
+        : null}
       </div>
       {methodologyStatus === 'none' ? (
         <div className="kpi-employee-empty kpi-employee-empty--compact">
-          <p>Finance ещё не назначил методику KPI для вашей должности.</p>
-        </div>
-      ) : null}
-      {methodologyStatus === 'needs_modules' ? (
-        <div className="kpi-employee-empty kpi-employee-empty--compact">
-          <p>Методика Finance назначена. Создайте общие модули расчёта для должности.</p>
-          <button type="button" className="spec-btn-launch" onClick={() => onCalculate?.()}>
-            Создать модули расчёта
-          </button>
+          <p>Не загружена методика расчета KPI. Обратитесь к администратору</p>
         </div>
       ) : null}
       {pinOpen

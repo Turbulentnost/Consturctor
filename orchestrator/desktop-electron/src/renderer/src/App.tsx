@@ -6,7 +6,7 @@ import { MessengerPage } from './pages/MessengerPage'
 import { api } from './api/client'
 import { agentClient } from './api/agent'
 import { clearAvatarCache, loadUserAvatar } from './api/avatars'
-import type { ChatThread, LoginResult, UserProfile } from './api/types'
+import { ApiError, type ChatThread, type LoginResult, type UserProfile } from './api/types'
 import {
   clearComCredentials,
   comCredentials,
@@ -133,6 +133,27 @@ function decodeJwtPart(part: string): string {
   }
 }
 
+const RESTORE_DEADLINE_MS = 60_000
+const RESTORE_RETRY_MS = 2_000
+
+/** Only an explicit auth rejection ends the saved session; an unreachable backend is retried. */
+async function restoreProfile(cancelled: () => boolean): Promise<UserProfile | null> {
+  const deadline = Date.now() + RESTORE_DEADLINE_MS
+  while (!cancelled()) {
+    try {
+      return await api.me(8_000)
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        clearSession(true)
+        return null
+      }
+      if (Date.now() >= deadline) return null
+      await new Promise((resolve) => window.setTimeout(resolve, RESTORE_RETRY_MS))
+    }
+  }
+  return null
+}
+
 function isOrchestratorToken(token: string): boolean {
   const parts = token.split('.')
   if (parts.length < 2) return false
@@ -229,6 +250,7 @@ function AppShell(): React.JSX.Element {
 
   useEffect(() => {
     let done = false
+    let disposed = false
     const finish = (): void => {
       if (done) return
       done = true
@@ -258,14 +280,16 @@ function AppShell(): React.JSX.Element {
           if (!isOrchestratorToken(stored.accessToken)) {
             clearSession(true)
           } else {
+            // The local backend may still be starting: keep the splash instead of the login form.
+            window.clearTimeout(watchdog)
             api.setToken(stored.accessToken)
-            try {
-              const profile = await api.me(8_000)
+            const profile = await restoreProfile(() => disposed)
+            if (disposed) return
+            if (profile) {
               setUser(profile)
               // Password comes from login (safeStorage / sidecar), not from JWT.
               setModeForUser(profile)
-            } catch {
-              clearSession(true)
+            } else {
               api.setToken(null)
             }
           }
@@ -280,6 +304,7 @@ function AppShell(): React.JSX.Element {
     return () => {
       window.clearTimeout(watchdog)
       done = true
+      disposed = true
     }
   }, [])
 

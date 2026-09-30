@@ -7,6 +7,7 @@ export interface FinanceEmployee {
   id: string
   fio: string
   position: string
+  department: string
 }
 
 export interface FinancePosition {
@@ -28,6 +29,8 @@ export interface FinanceSalary {
   amount: string
   currency: string
   reason: string
+  /** Empty only for salaries imported before a department became required. */
+  department: string
 }
 
 export interface FinanceImport {
@@ -42,6 +45,40 @@ export interface FinanceImport {
   errors: string[]
   draft: Record<string, unknown>
   effectiveFrom: string
+  /** Null while the file is being parsed or failed to parse. */
+  changes: FinanceChangeSummary | null
+}
+
+export interface FinanceChangeSummary {
+  added: number
+  updated: number
+  removed: number
+  unchanged: number
+  /** False for the first version of a document in its departments. */
+  hasBaseline: boolean
+}
+
+export interface FinanceChangeField {
+  label: string
+  before: string
+  after: string
+}
+
+export interface FinanceChangeEntry {
+  position: string
+  department: string
+  amount: string
+  currency: string
+  effectiveFrom: string
+  metrics: { name: string; weight: number; plan: string }[]
+  changes: FinanceChangeField[]
+}
+
+export interface FinanceImportChanges {
+  summary: FinanceChangeSummary
+  added: FinanceChangeEntry[]
+  updated: FinanceChangeEntry[]
+  removed: FinanceChangeEntry[]
 }
 
 export function financeStatusLabel(status: string): string {
@@ -93,7 +130,8 @@ export async function fetchFinanceEmployees(): Promise<FinanceEmployee[]> {
   return records(await api.adminFinanceEmployees(), 'items', 'employees', 'rows').map((item) => ({
     id: text(item, 'id', 'employee_id', 'employeeId'),
     fio: text(item, 'fio', 'full_name', 'fullName', 'name'),
-    position: text(item, 'position', 'job_title', 'jobTitle')
+    position: text(item, 'position', 'job_title', 'jobTitle'),
+    department: text(item, 'department', 'department_name', 'departmentName')
   }))
 }
 
@@ -102,6 +140,24 @@ export async function fetchFinancePositions(): Promise<FinancePosition[]> {
     id: text(item, 'id', 'position_id', 'positionId'),
     name: text(item, 'name', 'position_name', 'positionName', 'position')
   }))
+}
+
+export interface FinanceDepartments {
+  names: string[]
+  /** Departments where the position is actually staffed, keyed by position id. */
+  byPosition: Record<string, string[]>
+}
+
+export async function fetchFinanceDepartments(): Promise<FinanceDepartments> {
+  const raw = await api.adminFinanceDepartments()
+  const names = records(raw, 'items', 'departments', 'rows')
+    .map((item) => text(item, 'name', 'department'))
+    .filter(Boolean)
+  const byPosition: Record<string, string[]> = {}
+  for (const [positionId, value] of Object.entries(record(record(raw).by_position))) {
+    if (Array.isArray(value)) byPosition[positionId] = value.map(String).filter(Boolean)
+  }
+  return { names, byPosition }
 }
 
 export async function fetchFinanceEmployeeKpi(employeeId: string): Promise<FinanceKpiItem[]> {
@@ -130,7 +186,8 @@ export async function fetchFinanceEmployeeSalaries(employeeId: string): Promise<
       period: text(item, 'period', 'effective_from', 'effectiveFrom', 'date'),
       amount: text(item, 'amount', 'salary', 'value'),
       currency: text(item, 'currency') || '₽',
-      reason: text(item, 'reason', 'comment', 'note')
+      reason: text(item, 'reason', 'comment', 'note'),
+      department: text(item, 'department')
     })
   )
 }
@@ -152,6 +209,7 @@ export function parseFinanceImport(value: unknown): FinanceImport {
   )
   const validation = record(item.validation)
   const rawErrors = Array.isArray(item.errors) ? item.errors : validation.errors
+  const failure = text(item, 'error')
   return {
     id: text(item, 'id', 'import_id', 'importId'),
     kind: kind === 'material_incentive' ? 'material_incentive' : 'salary',
@@ -161,20 +219,87 @@ export function parseFinanceImport(value: unknown): FinanceImport {
     author: text(item, 'author', 'created_by_fio', 'createdByFio', 'created_by', 'createdBy', 'user'),
     rowsCount: Number(item.rows_total ?? item.rows_count ?? item.rowsCount ?? rawRows.length),
     rows: rawRows.map(primitiveRow),
-    errors: Array.isArray(rawErrors)
-      ? rawErrors.map((error) => {
-          const detail = record(error)
-          const row = detail.row === undefined ? '' : `Строка ${Number(detail.row) + 1}: `
-          return row + (text(detail, 'message', 'detail') || String(error))
-        })
-      : [],
+    errors: [
+      ...(Array.isArray(rawErrors)
+        ? rawErrors.map((error) => {
+            const detail = record(error)
+            const row = detail.row === undefined ? '' : `Строка ${Number(detail.row) + 1}: `
+            return row + (text(detail, 'message', 'detail') || String(error))
+          })
+        : []),
+      ...(failure ? [failure] : [])
+    ],
     draft,
-    effectiveFrom: text(draft, 'effective_from', 'effectiveFrom')
+    effectiveFrom: text(draft, 'effective_from', 'effectiveFrom'),
+    changes: item.changes ? parseChangeSummary(record(item.changes).summary) : null
   }
 }
 
-export async function uploadFinanceImport(kind: FinanceImportKind, filePath: string): Promise<FinanceImport> {
-  return parseFinanceImport(await api.uploadAdminFinanceImport(kind, filePath))
+function parseChangeSummary(value: unknown): FinanceChangeSummary {
+  const source = record(value)
+  return {
+    added: Number(source.added ?? 0),
+    updated: Number(source.updated ?? 0),
+    removed: Number(source.removed ?? 0),
+    unchanged: Number(source.unchanged ?? 0),
+    hasBaseline: Boolean(source.has_baseline)
+  }
+}
+
+function parseChangeEntry(item: Record<string, unknown>): FinanceChangeEntry {
+  return {
+    position: text(item, 'position'),
+    department: text(item, 'department'),
+    amount: text(item, 'amount'),
+    currency: text(item, 'currency'),
+    effectiveFrom: text(item, 'effective_from'),
+    metrics: records(item.metrics).map((metric) => ({
+      name: text(metric, 'name'),
+      weight: Number(metric.weight ?? 0),
+      plan: text(metric, 'plan')
+    })),
+    changes: records(item.changes).map((change) => ({
+      label: text(change, 'label'),
+      before: text(change, 'before'),
+      after: text(change, 'after')
+    }))
+  }
+}
+
+export async function fetchFinanceImportChanges(importId: string): Promise<FinanceImportChanges> {
+  const source = record(await api.adminFinanceImportChanges(importId))
+  return {
+    summary: parseChangeSummary(source.summary),
+    added: records(source.added).map(parseChangeEntry),
+    updated: records(source.updated).map(parseChangeEntry),
+    removed: records(source.removed).map(parseChangeEntry)
+  }
+}
+
+const IMPORT_POLL_MS = 3_000
+const IMPORT_MAX_WAIT_MS = 30 * 60_000
+
+/** Upload returns at once with status «parsing»; OCR of a scan runs on the backend for minutes. */
+export async function uploadFinanceImport(
+  kind: FinanceImportKind,
+  filePath: string,
+  onUploaded?: (item: FinanceImport) => void
+): Promise<FinanceImport> {
+  let item = parseFinanceImport(await api.uploadAdminFinanceImport(kind, filePath))
+  onUploaded?.(item)
+  const deadline = Date.now() + IMPORT_MAX_WAIT_MS
+  while (item.status === 'parsing' && item.id) {
+    if (Date.now() > deadline) {
+      throw new Error('Распознавание идёт дольше 30 минут. Откройте импорт позже в истории загрузок.')
+    }
+    await new Promise((resolve) => setTimeout(resolve, IMPORT_POLL_MS))
+    try {
+      item = await fetchFinanceImport(item.id)
+    } catch {
+      // A single failed poll (backend busy) must not abort a long OCR run.
+    }
+  }
+  return item
 }
 
 export async function fetchFinanceImports(): Promise<FinanceImport[]> {

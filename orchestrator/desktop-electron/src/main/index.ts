@@ -26,6 +26,7 @@ import {
   getComSessionSecret,
   setComSessionSecret
 } from './comSessionSecret'
+import { launchTurboProject } from './turboProjectLauncher'
 
 interface RequestOptions {
   method?: string
@@ -1373,12 +1374,24 @@ function registerMainIpcHandlers(): void {
     if (!executablePath) {
       return {
         ok: false,
+        autoLogin: false,
         error:
           'TurboProject не найден. Установите приложение или задайте путь в TURBOPROJECT_DESKTOP_PATH.'
       }
     }
-    const err = await shell.openPath(executablePath)
-    return err ? { ok: false, error: err } : { ok: true }
+    const secret = getComSessionSecret()
+    const credentials = secret?.password
+      ? {
+          nameMail: secret.nameMail || secret.login,
+          password: secret.password
+        }
+      : CONFIG.devGateway?.password
+        ? {
+            nameMail: CONFIG.devGateway.nameMail,
+            password: CONFIG.devGateway.password
+          }
+        : null
+    return launchTurboProject(executablePath, credentials)
   })
   ipcHandle('shell:openPath', async (_evt, filePath: string) => {
     const target = String(filePath || '').trim()

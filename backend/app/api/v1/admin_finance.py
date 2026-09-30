@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import threading
 from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -29,7 +31,7 @@ async def employees(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        login_fios = await auth_service.list_user_fios(search, limit=limit)
+        login_fios = await auth_service.list_user_fios(search, limit=limit, only_shown=True)
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return finance.list_employees(
@@ -59,6 +61,14 @@ def positions(
     db: Session = Depends(get_db),
 ) -> dict:
     return finance.list_positions(db, limit=limit)
+
+
+@router.get("/departments")
+def departments(
+    _auth: AuthContext = Depends(require_admin_page("finance_upload")),
+    db: Session = Depends(get_db),
+) -> dict:
+    return {**finance.list_departments(db), "by_position": finance.position_departments(db)}
 
 
 @router.get("/employees/{person_id}/kpi")
@@ -91,7 +101,8 @@ async def upload_import(
 ) -> dict:
     raw = await file.read()
     try:
-        return finance.create_import(
+        row = await run_in_threadpool(
+            finance.start_import,
             db,
             kind=kind,
             filename=file.filename or "file",
@@ -101,6 +112,14 @@ async def upload_import(
         )
     except finance.FinanceError as exc:
         raise _http(exc) from exc
+    # OCR of a scan takes minutes; the client polls GET /imports/{id} while status is «parsing».
+    threading.Thread(
+        target=finance.process_import_in_background,
+        args=(row.id,),
+        name=f"finance-import-{row.id[:8]}",
+        daemon=True,
+    ).start()
+    return finance.serialize_import(row)
 
 
 @router.get("/imports")
@@ -121,6 +140,18 @@ def import_detail(
 ) -> dict:
     try:
         return finance.serialize_import(finance.get_import(db, import_id))
+    except finance.FinanceError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/imports/{import_id}/changes")
+def import_changes(
+    import_id: str,
+    _auth: AuthContext = Depends(require_admin_page("finance_import_history")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return finance.import_changes(db, import_id)
     except finance.FinanceError as exc:
         raise _http(exc) from exc
 

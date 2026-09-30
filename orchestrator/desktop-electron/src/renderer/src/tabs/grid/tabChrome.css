@@ -625,6 +625,37 @@
   margin-left: auto;
 }
 
+.turbo-launch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+}
+
+.tab-chrome-filters-bar .turbo-launch-btn {
+  width: auto;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.turbo-launch-hint {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--content-muted, #6b7785);
+}
+
+.turbo-launch-hint.error {
+  color: #c0392b;
+}
+
 .tab-chrome-toolbar {
   display: flex;
   align-items: center;

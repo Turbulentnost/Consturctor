@@ -44,9 +44,23 @@ def month_bounds(year: int, month: int) -> tuple[date, date]:
     return date(year, month, 1), date(year, month, last)
 
 
+def department_key(value: str) -> str:
+    return " ".join(str(value or "").casefold().replace("ё", "е").split())
+
+
 def resolve_profile(
-    db: Session, position: str, *, as_of: date | None = None
+    db: Session,
+    position: str,
+    *,
+    as_of: date | None = None,
+    department: str | None = None,
+    exact_department: bool = False,
 ) -> PositionKpiProfile | None:
+    """department=None keeps the old any-department lookup.
+
+    With a department: its own profile, then the shared one (empty department), then any
+    profile of the position. exact_department stops after the first step.
+    """
     name = str(position or "").strip()
     if not name:
         return None
@@ -54,7 +68,7 @@ def resolve_profile(
     exact_rows = db.execute(
         select(PositionKpiProfile).where(PositionKpiProfile.position_name == name)
     ).scalars().all()
-    exact = _profile_for_day(exact_rows, target_day)
+    exact = _pick_profile(exact_rows, target_day, department, exact_department)
     if exact is not None:
         return exact
     wanted = normalize_position_name(name)
@@ -65,7 +79,25 @@ def resolve_profile(
         for row in db.execute(select(PositionKpiProfile)).scalars()
         if normalize_position_name(row.position_name) == wanted
     ]
-    return _profile_for_day(normalized, target_day)
+    return _pick_profile(normalized, target_day, department, exact_department)
+
+
+def _pick_profile(
+    rows: list[PositionKpiProfile],
+    target_day: date,
+    department: str | None,
+    exact_department: bool,
+) -> PositionKpiProfile | None:
+    if department is None:
+        return _profile_for_day(rows, target_day)
+    wanted = department_key(department)
+    own = _profile_for_day(
+        [row for row in rows if department_key(row.department) == wanted], target_day
+    )
+    if own is not None or exact_department:
+        return own
+    shared = _profile_for_day([row for row in rows if not row.department.strip()], target_day)
+    return shared or _profile_for_day(rows, target_day)
 
 
 def _profile_for_day(
@@ -123,15 +155,26 @@ class SourceBundle:
         self._protocols: object = _UNSET
         self._cards: object = _UNSET
         self._metric_extra: dict[str, Any] = {}
+        self._shared_failures: dict[str, str] = {}
+        # Сбои источников текущего показателя: пустой список от упавшего источника — не «0 нарушений».
+        self.source_errors: list[str] = []
+
+    def note_failure(self, label: str, exc: BaseException | str) -> None:
+        text = " ".join(str(exc).split())[:240]
+        self.source_errors.append(f"{label}: {text}" if text else label)
 
     def _load(self, attr: str, loader) -> list[dict[str, Any]]:
         cached = getattr(self, attr)
         if cached is not _UNSET:
+            if attr in self._shared_failures:
+                self.note_failure(attr.lstrip("_"), self._shared_failures[attr])
             return cached  # type: ignore[return-value]
         try:
             value = loader()
         except Exception as exc:  # noqa: BLE001
             logger.warning("position kpi source %s failed: %s", attr, exc)
+            self._shared_failures[attr] = str(exc)
+            self.note_failure(attr.lstrip("_"), exc)
             value = []
         setattr(self, attr, value)
         return value
@@ -165,9 +208,12 @@ class SourceBundle:
             }
             if extra.get("skip") is not None:
                 payload["skip"] = int(extra["skip"])
+            if extra.get("select"):
+                payload["select"] = str(extra["select"])
             raw = _fetch_odata_list(payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning("position kpi odata %s failed: %s", entity, exc)
+            self.note_failure(f"1С {entity}", exc)
             return []
         rows = raw.get("value") or raw.get("rows") or []
         return [row for row in rows if isinstance(row, dict)]
@@ -182,6 +228,7 @@ class SourceBundle:
             return load_tracker_xlsx(Path(path))
         except Exception as exc:  # noqa: BLE001
             logger.warning("position kpi file %s failed: %s", path, exc)
+            self.note_failure("файл", exc)
             return []
 
     def load_docflow(self, extra: dict[str, Any]) -> list[dict[str, Any]]:
@@ -192,6 +239,7 @@ class SourceBundle:
             return fetch_rows(self.date_from, self.date_to, performer=performer)
         except Exception as exc:  # noqa: BLE001
             logger.warning("position kpi docflow cache failed: %s", exc)
+            self.note_failure("Документооборот", exc)
             return []
 
     def load_for(self, extra: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -307,6 +355,7 @@ def _compute_tiles(db: Session, profile: PositionKpiProfile, ctx: SourceBundle) 
                 extra = payload
                 break
         ctx._metric_extra = extra
+        ctx.source_errors = []
         try:
             report, evidence = scorer(metric, ctx)
         except Exception as exc:  # noqa: BLE001
@@ -319,6 +368,10 @@ def _compute_tiles(db: Session, profile: PositionKpiProfile, ctx: SourceBundle) 
             continue
         if not isinstance(report, dict):
             continue
+        if ctx.source_errors:
+            failures = "; ".join(dict.fromkeys(ctx.source_errors))
+            report = {**report, "fact_pct": None, "score_pct": None, "contrib_pct": None, "source_errors": failures}
+            evidence = f"Источник не ответил — показатель не посчитан. {failures}"
         tiles.append(_tile_from_report(metric, report, evidence))
     return tiles
 
@@ -580,10 +633,11 @@ def read_position_kpi_snapshot(
     date_from: date | None = None,
     date_to: date | None = None,
     subject: str = "",
+    department: str | None = None,
 ) -> dict[str, Any] | None:
     """Только кэш, без расчёта. None — снимка ещё нет."""
     as_of = as_of or date.today()
-    profile = resolve_profile(db, position, as_of=as_of)
+    profile = resolve_profile(db, position, as_of=as_of, department=department)
     if profile is None:
         return None
     if date_from is None or date_to is None:
@@ -609,10 +663,15 @@ def get_or_compute_position_kpi(
     refresh: bool = False,
     allow_stale: bool = False,
     subject: str = "",
+    department: str | None = None,
 ) -> dict[str, Any]:
-    """KPI должности. subject — ФИО сотрудника: модули общие, а цифры и кэш у каждого свои."""
+    """KPI должности. subject — ФИО сотрудника: модули общие, а цифры и кэш у каждого свои.
+
+    department — подразделение сотрудника: у одной должности в разных подразделениях
+    может быть своя методика.
+    """
     as_of = as_of or date.today()
-    profile = resolve_profile(db, position, as_of=as_of)
+    profile = resolve_profile(db, position, as_of=as_of, department=department)
     if profile is None:
         raise PositionKpiNotFound(str(position or "").strip())
     if date_from is None or date_to is None:
@@ -732,6 +791,7 @@ def refresh_all_profiles(
                 date_from=date_from,
                 date_to=date_to,
                 refresh=force,
+                department=profile.department,
             )
             computed.append(profile.id)
         except Exception as exc:  # noqa: BLE001
@@ -758,6 +818,7 @@ def refresh_all_profiles(
                     date_to=date_to,
                     refresh=True,
                     subject=fio,
+                    department=profile.department,
                 )
                 subjects += 1
             except Exception as exc:  # noqa: BLE001
@@ -808,13 +869,14 @@ def schedule_today_fill(
     date_from: date | None = None,
     date_to: date | None = None,
     subject: str = "",
+    department: str | None = None,
 ) -> None:
     """Досчитать сегодняшний снимок в фоне, не блокируя GET."""
 
     day = as_of or date.today()
     start = date_from
     end = date_to
-    key = f"{position}|{subject_key(subject)}|{day.isoformat()}|{start}|{end}"
+    key = f"{position}|{department}|{subject_key(subject)}|{day.isoformat()}|{start}|{end}"
     with _FILL_LOCK:
         if key in _FILL_STARTED:
             return
@@ -833,6 +895,7 @@ def schedule_today_fill(
                 date_to=end,
                 refresh=False,
                 subject=subject,
+                department=department,
             )
         except Exception:
             logger.warning("background position kpi fill failed for %s", position, exc_info=True)

@@ -289,10 +289,33 @@ def _ensure_columns() -> None:
                     "DROP CONSTRAINT IF EXISTS position_kpi_profiles_position_name_key"
                 )
             )
+            conn.execute(text("DROP INDEX IF EXISTS uq_position_kpi_profiles_name_effective"))
+            # Old schema had unique=True on position_name; versions per department/date need duplicates.
+            is_unique_name_index = conn.execute(
+                text(
+                    "SELECT 1 FROM pg_indexes WHERE tablename = 'position_kpi_profiles' "
+                    "AND indexname = 'ix_position_kpi_profiles_position_name' "
+                    "AND indexdef LIKE 'CREATE UNIQUE INDEX%'"
+                )
+            ).first()
+            if is_unique_name_index:
+                conn.execute(text("DROP INDEX ix_position_kpi_profiles_position_name"))
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_position_kpi_profiles_position_name "
+                        "ON position_kpi_profiles (position_name)"
+                    )
+                )
             conn.execute(
                 text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_position_kpi_profiles_name_effective "
-                    "ON position_kpi_profiles (position_name, effective_from)"
+                    "ALTER TABLE position_kpi_profiles "
+                    "DROP CONSTRAINT IF EXISTS uq_position_kpi_profiles_name_effective"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_position_kpi_profiles_name_dept_effective "
+                    "ON position_kpi_profiles (position_name, department, effective_from)"
                 )
             )
         salary_rows = conn.execute(
@@ -305,6 +328,13 @@ def _ensure_columns() -> None:
             )
         ).fetchall()
         salary_cols = {str(r[0]) for r in salary_rows}
+        if salary_cols and "department" not in salary_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE finance_salary_entries "
+                    "ADD COLUMN department VARCHAR(512) NOT NULL DEFAULT ''"
+                )
+            )
         if salary_cols and "position_id" not in salary_cols:
             conn.execute(
                 text(
@@ -343,16 +373,23 @@ def _ensure_columns() -> None:
                 )
             conn.execute(
                 text(
+                    "ALTER TABLE finance_salary_entries "
+                    "DROP CONSTRAINT IF EXISTS uq_finance_salary_position_date_revision"
+                )
+            )
+            conn.execute(text("DROP INDEX IF EXISTS uq_finance_salary_position_date_revision"))
+            conn.execute(
+                text(
                     """
                     WITH ranked AS (
                         SELECT
                             id,
                             ROW_NUMBER() OVER (
-                                PARTITION BY position_id, effective_from
+                                PARTITION BY position_id, department, effective_from
                                 ORDER BY created_at, id
                             ) AS new_revision,
                             ROW_NUMBER() OVER (
-                                PARTITION BY position_id, effective_from
+                                PARTITION BY position_id, department, effective_from
                                 ORDER BY created_at DESC, id DESC
                             ) AS newest
                         FROM finance_salary_entries
@@ -369,8 +406,8 @@ def _ensure_columns() -> None:
             conn.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS "
-                    "uq_finance_salary_position_date_revision "
-                    "ON finance_salary_entries (position_id, effective_from, revision)"
+                    "uq_finance_salary_position_dept_date_revision "
+                    "ON finance_salary_entries (position_id, department, effective_from, revision)"
                 )
             )
             conn.execute(

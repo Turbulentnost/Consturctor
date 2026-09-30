@@ -158,6 +158,8 @@ def read_position_kpi(
     date_from = _parse_day(period_from, field="from")
     date_to = _parse_day(period_to, field="to")
     subject = (auth.fio or "").strip()
+    own_position = (auth.position or "").strip().casefold() == name.casefold()
+    department = (auth.department or "").strip() if own_position else None
     try:
         payload = get_or_compute_position_kpi(
             db,
@@ -167,11 +169,14 @@ def read_position_kpi(
             refresh=refresh,
             allow_stale=not refresh,
             subject=subject,
+            department=department,
         )
     except PositionKpiNotFound:
         raise HTTPException(status_code=404, detail="Должность не найдена в каталоге KPI") from None
     if payload.get("stale") and not refresh:
-        schedule_today_fill(name, date_from=date_from, date_to=date_to, subject=subject)
+        schedule_today_fill(
+            name, date_from=date_from, date_to=date_to, subject=subject, department=department
+        )
     return PositionKpiDailyOut.model_validate(payload)
 
 
@@ -190,11 +195,12 @@ def read_methodology_status(
     position = (auth.position or "").strip()
     if not position:
         raise HTTPException(status_code=400, detail="У пользователя не указана должность")
-    profile = resolve_profile(db, position)
+    profile = resolve_profile(db, position, department=(auth.department or "").strip())
     if profile is None or not (profile.source_import_id or "").strip():
         return {
             "status": "none",
             "position": position,
+            "department": "",
             "profile_id": "",
             "source_title": "",
             "effective_from": "",
@@ -207,17 +213,20 @@ def read_methodology_status(
             .order_by(PositionKpiMetric.sort_order, PositionKpiMetric.id)
         ).all()
     )
+    from app.services.position_kpi.connect import builtin_metric_codes
+
     module_codes = set(
         db.scalars(
             select(PositionKpiModule.metric_code).where(
                 PositionKpiModule.profile_id == profile.id
             )
         ).all()
-    )
+    ) | builtin_metric_codes(db, profile.id)
     ready = bool(metrics) and all(metric.code in module_codes for metric in metrics)
     return {
         "status": "ready" if ready else "needs_modules",
         "position": profile.position_name,
+        "department": profile.department,
         "profile_id": profile.id,
         "source_title": profile.source_title,
         "effective_from": profile.effective_from.isoformat() if profile.effective_from else "",

@@ -183,6 +183,59 @@ export function moveSidebarTab(layout: SidebarLayout, tabKey: string, targetFold
   return { ...layout, root, folders }
 }
 
+export type SidebarDropTarget = {
+  /** `null` — корневой список; иначе id папки (папки внутрь папок не кладутся). */
+  folderId: string | null
+  /** Узел, относительно которого вставляем; `null` — в конец списка. */
+  anchor: string | null
+  position: 'before' | 'after'
+}
+
+export function moveSidebarNode(layout: SidebarLayout, nodeId: string, target: SidebarDropTarget): SidebarLayout {
+  const tabKey = tabKeyFromNode(nodeId)
+  const folderId = folderIdFromNode(nodeId)
+  if (tabKey === null && folderId === null) return layout
+  if (target.anchor === nodeId) return layout
+  if (folderId !== null) {
+    if (target.folderId !== null || !layout.folders.some((folder) => folder.id === folderId)) return layout
+  } else {
+    const known =
+      layout.root.includes(nodeId) || layout.folders.some((folder) => folder.tabKeys.includes(tabKey as string))
+    if (!known) return layout
+  }
+  if (target.folderId !== null && !layout.folders.some((folder) => folder.id === target.folderId)) return layout
+
+  const insert = (list: string[]): string[] => {
+    const next = list.filter((item) => item !== nodeId)
+    const anchorIdx = target.anchor === null ? -1 : next.indexOf(target.anchor)
+    if (anchorIdx < 0) next.push(nodeId)
+    else next.splice(target.position === 'before' ? anchorIdx : anchorIdx + 1, 0, nodeId)
+    return next
+  }
+
+  const root = layout.root.filter((item) => item !== nodeId)
+  const folders = layout.folders.map((folder) => ({
+    ...folder,
+    tabKeys: tabKey === null ? folder.tabKeys : folder.tabKeys.filter((key) => key !== tabKey)
+  }))
+  if (target.folderId === null) {
+    return { ...layout, root: insert(root), folders }
+  }
+  return {
+    ...layout,
+    root,
+    folders: folders.map((folder) =>
+      folder.id === target.folderId
+        ? {
+            ...folder,
+            expanded: true,
+            tabKeys: insert(folder.tabKeys.map(tabNodeId)).map((node) => tabKeyFromNode(node) as string)
+          }
+        : folder
+    )
+  }
+}
+
 export function deleteSidebarFolder(layout: SidebarLayout, id: string): SidebarLayout {
   const folder = layout.folders.find((item) => item.id === id)
   if (!folder) return layout

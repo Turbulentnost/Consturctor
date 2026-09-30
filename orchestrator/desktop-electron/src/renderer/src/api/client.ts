@@ -338,6 +338,7 @@ function parsePositionKpiMethodology(
   return {
     status,
     position: String(data.position ?? ''),
+    department: String(data.department ?? ''),
     profileId: String(data.profile_id ?? data.profileId ?? ''),
     sourceTitle: String(data.source_title ?? data.sourceTitle ?? ''),
     effectiveFrom: String(data.effective_from ?? data.effectiveFrom ?? ''),
@@ -449,6 +450,7 @@ function parsePositionKpiBuild(raw: Record<string, unknown> | null | undefined):
   return {
     buildId: String(data.build_id ?? data.buildId ?? ''),
     position: String(data.position ?? ''),
+    subjectFio: String(data.subject_fio ?? data.subjectFio ?? ''),
     status: String(data.status ?? ''),
     cursorAgentId: String(data.cursor_agent_id ?? data.cursorAgentId ?? ''),
     extracted: asRecord(data.extracted),
@@ -1295,8 +1297,9 @@ export class ApiClient {
     return parseUser(data)
   }
 
-  async searchUsers(search = '', limit?: number): Promise<string[]> {
-    const key = `${search.trim().toLowerCase()}|${limit ?? ''}`
+  /** onlyShown: same people as the 1C login dialog ("Показывать в списке выбора"). */
+  async searchUsers(search = '', limit?: number, onlyShown = false): Promise<string[]> {
+    const key = `${search.trim().toLowerCase()}|${limit ?? ''}|${onlyShown ? 1 : 0}`
     const cached = fioSuggestCache.get(key)
     if (cached && Date.now() - cached.at < FIO_SUGGEST_CACHE_MS) {
       return cached.items
@@ -1305,6 +1308,7 @@ export class ApiClient {
       const params: Record<string, string> = {}
       if (search.trim()) params.search = search
       if (limit) params.limit = String(limit)
+      if (onlyShown) params.only_shown = 'true'
       const data = await this.request<{ items?: unknown[] }>('GET', '/api/v1/auth/users', {
         params: Object.keys(params).length ? params : undefined,
         timeoutMs: limit ? 120_000 : 25_000
@@ -2550,6 +2554,10 @@ export class ApiClient {
     return this.request<unknown>('GET', '/api/v1/admin/finance/positions')
   }
 
+  async adminFinanceDepartments(): Promise<unknown> {
+    return this.request<unknown>('GET', '/api/v1/admin/finance/departments')
+  }
+
   async adminFinanceEmployeeKpi(employeeId: string): Promise<unknown> {
     return this.request<unknown>(
       'GET',
@@ -2575,6 +2583,13 @@ export class ApiClient {
     )
   }
 
+  async adminFinanceImportChanges(importId: string): Promise<unknown> {
+    return this.request<unknown>(
+      'GET',
+      `/api/v1/admin/finance/imports/${encodeURIComponent(importId)}/changes`
+    )
+  }
+
   async uploadAdminFinanceImport(
     kind: 'salary' | 'material_incentive',
     filePath: string
@@ -2584,7 +2599,7 @@ export class ApiClient {
       filePath,
       fieldName: 'file',
       token: this.resolveToken(),
-      timeoutMs: 180_000
+      timeoutMs: 120_000
     })
     if (!response.ok) throw new ApiError(response.error || 'Не удалось загрузить файл', response.status)
     return response.data ?? {}

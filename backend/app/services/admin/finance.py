@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import io
+import json
+import logging
 import mimetypes
 import re
 import uuid
@@ -17,16 +20,24 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.finance import FinanceImport, FinanceSalaryEntry
-from app.models.org import OrgPerson, OrgPosition
+from app.models.org import OrgPerson, OrgPosition, OrgUnit
 from app.models.position_kpi import PositionKpiMetric, PositionKpiProfile
 from app.services.admin.salary_extraction import (
     SalaryExtractionError,
+    extract_material_document,
     extract_salary_document,
+    read_full_text,
 )
 from app.services.position_kpi.connect import upsert_generated_catalog
-from app.services.position_kpi.daily import get_or_compute_position_kpi, resolve_profile
-from app.services.position_kpi.extract import extract_position_kpis
+from app.services.position_kpi.daily import (
+    department_key,
+    get_or_compute_position_kpi,
+    resolve_profile,
+)
+from app.services.position_kpi.extract import build_metric
 from app.services.workflows.document import DocumentError, load_attachment_bytes
+
+logger = logging.getLogger(__name__)
 
 IMPORT_KINDS = {"salary", "material_incentive"}
 MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -42,6 +53,64 @@ class FinanceError(Exception):
 
 def _is_russian_name(value: str) -> bool:
     return bool(_RUSSIAN_NAME_RE.fullmatch(value.strip()))
+
+
+def current_salary(
+    db: Session, position_id: str, department: str, as_of: date
+) -> FinanceSalaryEntry | None:
+    """Salary of the department first, then a legacy row imported without a department."""
+    if not position_id:
+        return None
+    own = (department or "").strip()
+    for dept in dict.fromkeys((own, "")):
+        row = db.scalar(
+            select(FinanceSalaryEntry)
+            .where(
+                FinanceSalaryEntry.position_id == position_id,
+                FinanceSalaryEntry.department == dept,
+                FinanceSalaryEntry.is_current.is_(True),
+                FinanceSalaryEntry.effective_from <= as_of,
+            )
+            .order_by(FinanceSalaryEntry.effective_from.desc())
+            .limit(1)
+        )
+        if row is not None:
+            return row
+    return None
+
+
+def list_departments(db: Session) -> dict[str, Any]:
+    names = {
+        name.strip()
+        for name in db.scalars(select(OrgUnit.name)).all()
+        if (name or "").strip()
+    }
+    names.update(
+        name.strip()
+        for name in db.scalars(
+            select(OrgPerson.department).where(OrgPerson.is_active.is_(True)).distinct()
+        ).all()
+        if (name or "").strip()
+    )
+    rows = [{"name": name} for name in sorted(names, key=department_key)]
+    return {"rows": rows, "total": len(rows)}
+
+
+def _departments_by_key(db: Session) -> dict[str, str]:
+    return {department_key(row["name"]): row["name"] for row in list_departments(db)["rows"]}
+
+
+def position_departments(db: Session) -> dict[str, list[str]]:
+    rows = db.execute(
+        select(OrgPerson.position_id, OrgPerson.department)
+        .where(OrgPerson.is_active.is_(True))
+        .distinct()
+    ).all()
+    result: dict[str, set[str]] = {}
+    for position_id, department in rows:
+        if position_id and (department or "").strip():
+            result.setdefault(position_id, set()).add(department.strip())
+    return {key: sorted(value, key=department_key) for key, value in result.items()}
 
 
 def list_employees(
@@ -84,18 +153,11 @@ def list_employees(
             continue
         if department.strip() and (person is None or person.department != department.strip()):
             continue
-        salary = None
-        if person is not None and person.position_id:
-            salary = db.scalar(
-                select(FinanceSalaryEntry)
-                .where(
-                    FinanceSalaryEntry.position_id == person.position_id,
-                    FinanceSalaryEntry.is_current.is_(True),
-                    FinanceSalaryEntry.effective_from <= date.today(),
-                )
-                .order_by(FinanceSalaryEntry.effective_from.desc())
-                .limit(1)
-            )
+        salary = (
+            current_salary(db, person.position_id or "", person.department, date.today())
+            if person is not None
+            else None
+        )
         rows.append(
             {
                 "id": person.id if person is not None else "",
@@ -125,26 +187,34 @@ def list_positions(db: Session, *, limit: int = 2000) -> dict[str, Any]:
 
 def employee_salaries(db: Session, person_id: str) -> dict[str, Any]:
     person = _person(db, person_id)
+    employee = {
+        "id": person.id,
+        "fio": person.fio,
+        "position": person.position,
+        "department": person.department,
+    }
     if not person.position_id:
-        return {
-            "employee": {"id": person.id, "fio": person.fio, "position": person.position},
-            "rows": [],
-        }
+        return {"employee": employee, "rows": []}
+    departments = list(dict.fromkeys(((person.department or "").strip(), "")))
     rows = db.scalars(
         select(FinanceSalaryEntry)
-        .where(FinanceSalaryEntry.position_id == person.position_id)
+        .where(
+            FinanceSalaryEntry.position_id == person.position_id,
+            FinanceSalaryEntry.department.in_(departments),
+        )
         .order_by(
             FinanceSalaryEntry.effective_from.desc(),
             FinanceSalaryEntry.revision.desc(),
         )
     ).all()
     return {
-        "employee": {"id": person.id, "fio": person.fio, "position": person.position},
+        "employee": employee,
         "rows": [
             {
                 "id": row.id,
                 "amount": str(row.amount),
                 "currency": row.currency,
+                "department": row.department,
                 "effective_from": row.effective_from.isoformat(),
                 "revision": row.revision,
                 "is_current": row.is_current,
@@ -176,10 +246,11 @@ def employee_kpi(
         date_to=period_to,
         subject=person.fio,
         allow_stale=True,
+        department=person.department,
     )
     if result.get("tiles"):
         return result
-    profile = resolve_profile(db, person.position, as_of=as_of)
+    profile = resolve_profile(db, person.position, as_of=as_of, department=person.department)
     if profile is None:
         return result
     metrics = db.scalars(
@@ -215,6 +286,22 @@ def create_import(
     user_id: str,
     user_fio: str,
 ) -> dict[str, Any]:
+    row = start_import(
+        db, kind=kind, filename=filename, raw=raw, user_id=user_id, user_fio=user_fio
+    )
+    return process_import(db, row.id)
+
+
+def start_import(
+    db: Session,
+    *,
+    kind: str,
+    filename: str,
+    raw: bytes,
+    user_id: str,
+    user_fio: str,
+) -> FinanceImport:
+    """Store the original and an import row in «parsing»; parsing runs separately."""
     import_kind = kind.strip().lower()
     if import_kind not in IMPORT_KINDS:
         raise FinanceError("Неизвестный тип импорта")
@@ -243,13 +330,46 @@ def create_import(
         validation_json={},
     )
     db.add(row)
-    db.flush()
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def process_import_in_background(import_id: str) -> None:
+    from app.db.session import SessionLocal
+
+    with SessionLocal() as db:
+        try:
+            process_import(db, import_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("finance import failed id=%s", import_id)
+            db.rollback()
+            row = db.get(FinanceImport, import_id)
+            if row is not None and row.status == "parsing":
+                row.status = "error"
+                row.error_text = str(exc)
+                db.commit()
+
+
+def process_import(db: Session, import_id: str) -> dict[str, Any]:
+    row = get_import(db, import_id)
+    import_kind = row.kind
+    safe_name = row.original_name
+    draft: dict[str, Any] | None = None
+    parse_error = ""
     try:
+        raw = Path(row.storage_path).read_bytes()
         draft = (
             _parse_salary(db, safe_name, raw)
             if import_kind == "salary"
-            else _parse_material(db, safe_name, raw)
+            else _parse_material(db, safe_name, raw, text_cache=_ocr_cache_path(row))
         )
+    except Exception as exc:  # noqa: BLE001
+        parse_error = str(exc)
+    row = get_import(db, import_id)
+    try:
+        if draft is None:
+            raise FinanceError(parse_error or "Файл не разобран")
         validation = validate_draft(db, import_kind, draft)
         row.draft_json = draft
         row.validation_json = validation
@@ -261,7 +381,23 @@ def create_import(
         row.error_text = str(exc)
     db.commit()
     db.refresh(row)
+    if import_kind == "material_incentive" and row.status == "review" and not row.validation_json.get("errors"):
+        return _auto_confirm_material(db, row)
     return serialize_import(row)
+
+
+def _auto_confirm_material(db: Session, row: FinanceImport) -> dict[str, Any]:
+    """KPI go straight to the DB; the import stays in review only if writing fails."""
+    import_id = row.id
+    try:
+        return confirm_import(db, import_id)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        row = get_import(db, import_id)
+        row.error_text = f"KPI не записаны автоматически: {exc}"
+        db.commit()
+        db.refresh(row)
+        return serialize_import(row)
 
 
 def list_imports(
@@ -273,7 +409,212 @@ def list_imports(
     if status.strip():
         stmt = stmt.where(FinanceImport.status == status.strip())
     rows = db.scalars(stmt.limit(max(1, min(limit, 1000)))).all()
-    return {"rows": [serialize_import(row, include_draft=False) for row in rows], "total": len(rows)}
+    changes = _changes_by_import(db, rows)
+    items = []
+    for row in rows:
+        item = serialize_import(row, include_draft=False)
+        diff = changes.get(row.id)
+        item["changes"] = _changes_summary(diff) if diff is not None else None
+        items.append(item)
+    return {"rows": items, "total": len(rows)}
+
+
+def import_changes(db: Session, import_id: str) -> dict[str, Any]:
+    row = get_import(db, import_id)
+    diff = _changes_by_import(db, [row]).get(row.id)
+    if diff is None:
+        raise FinanceError("Изменения доступны после разбора файла", 409)
+    return {"import_id": row.id, "kind": row.kind, **_changes_summary(diff), **diff}
+
+
+def _changes_summary(diff: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "summary": {
+            "added": len(diff["added"]),
+            "updated": len(diff["updated"]),
+            "removed": len(diff["removed"]),
+            "unchanged": diff["unchanged"],
+            "has_baseline": diff["has_baseline"],
+        }
+    }
+
+
+def _changes_by_import(db: Session, rows: list[FinanceImport]) -> dict[str, dict[str, Any]]:
+    """Diff of each import against the state built from earlier confirmed imports.
+
+    The baseline is limited to the departments the import covers: a file for one
+    department must not report every other department as removed.
+    """
+    result: dict[str, dict[str, Any]] = {}
+    targets = [row for row in rows if row.status in {"review", "confirmed"} and row.draft_json]
+    for kind in {row.kind for row in targets}:
+        history = db.scalars(
+            select(FinanceImport)
+            .where(
+                FinanceImport.kind == kind,
+                FinanceImport.status == "confirmed",
+                FinanceImport.confirmed_at.is_not(None),
+            )
+            .order_by(FinanceImport.confirmed_at, FinanceImport.created_at)
+        ).all()
+        order = {item.id: index for index, item in enumerate(history)}
+        # Unconfirmed imports are compared with everything already written to the DB.
+        own = sorted(
+            (row for row in targets if row.kind == kind),
+            key=lambda row: order.get(row.id, len(history)),
+        )
+        state: dict[tuple[str, str], dict[str, Any]] = {}
+        folded = 0
+        for row in own:
+            stop = order.get(row.id, len(history))
+            while folded < stop:
+                state.update(_import_entries(history[folded]))
+                folded += 1
+            result[row.id] = _diff_entries(kind, state, _import_entries(row))
+    return result
+
+
+def _import_entries(row: FinanceImport) -> dict[tuple[str, str], dict[str, Any]]:
+    draft = row.draft_json or {}
+    entries: dict[tuple[str, str], dict[str, Any]] = {}
+    if row.kind == "salary":
+        for item in draft.get("rows") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("position_name") or "").strip()
+            position = str(item.get("position_id") or "") or _position_key(name)
+            if not position:
+                continue
+            department = str(item.get("department") or "").strip()
+            entries[(position, department_key(department))] = {
+                "position": name,
+                "department": department,
+                "amount": _amount_label(item.get("amount")),
+                "currency": str(item.get("currency") or "RUB").strip() or "RUB",
+                "effective_from": str(item.get("effective_from") or ""),
+            }
+        return entries
+    for item in draft.get("profiles") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("position_name") or "").strip()
+        if not name:
+            continue
+        department = str(item.get("department") or "").strip()
+        entries[(_position_key(name), department_key(department))] = {
+            "position": name,
+            "department": department,
+            "effective_from": str(draft.get("effective_from") or ""),
+            "metrics": _metric_entries(item.get("metrics")),
+        }
+    return entries
+
+
+def _metric_entries(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return []
+    metrics = []
+    for metric in value if isinstance(value, list) else []:
+        if not isinstance(metric, dict) or not str(metric.get("name") or "").strip():
+            continue
+        plan = metric.get("plan_value", metric.get("plan"))
+        metrics.append(
+            {
+                "name": str(metric["name"]).strip(),
+                "weight": int(metric.get("weight") or 0),
+                "plan": "" if plan in (None, "") else str(plan),
+            }
+        )
+    return metrics
+
+
+def _amount_label(value: Any) -> str:
+    raw = str(value or "").replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    try:
+        return f"{Decimal(raw):.2f}"
+    except (InvalidOperation, ValueError):
+        return str(value or "").strip()
+
+
+def _metric_label(metric: dict[str, Any]) -> str:
+    label = f"{metric['name']} — {metric['weight']}%"
+    return f"{label}, цель {metric['plan']}" if metric["plan"] else label
+
+
+def _entry_changes(kind: str, before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, str]]:
+    if kind == "salary":
+        changes = []
+        if before["amount"] != after["amount"]:
+            changes.append({"label": "Оклад", "before": before["amount"], "after": after["amount"]})
+        if before["currency"] != after["currency"]:
+            changes.append({"label": "Валюта", "before": before["currency"], "after": after["currency"]})
+        return changes
+    old = {_position_key(metric["name"]): metric for metric in before["metrics"]}
+    new = {_position_key(metric["name"]): metric for metric in after["metrics"]}
+    changes = []
+    for key, metric in new.items():
+        previous = old.get(key)
+        if previous is None:
+            changes.append({"label": "KPI добавлен", "before": "", "after": _metric_label(metric)})
+            continue
+        if previous["weight"] != metric["weight"]:
+            changes.append(
+                {
+                    "label": f"KPI «{metric['name']}»: вес",
+                    "before": f"{previous['weight']}%",
+                    "after": f"{metric['weight']}%",
+                }
+            )
+        if previous["plan"] != metric["plan"]:
+            changes.append(
+                {
+                    "label": f"KPI «{metric['name']}»: цель",
+                    "before": previous["plan"] or "—",
+                    "after": metric["plan"] or "—",
+                }
+            )
+    for key, metric in old.items():
+        if key not in new:
+            changes.append({"label": "KPI удалён", "before": _metric_label(metric), "after": ""})
+    return changes
+
+
+def _entry_order(entry: dict[str, Any]) -> tuple[str, str]:
+    return department_key(entry["department"]), _position_key(entry["position"])
+
+
+def _diff_entries(
+    kind: str,
+    state: dict[tuple[str, str], dict[str, Any]],
+    entries: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    scope = {department for _, department in entries}
+    baseline = {key: value for key, value in state.items() if key[1] in scope}
+    added, updated, removed = [], [], []
+    unchanged = 0
+    for key, entry in entries.items():
+        previous = baseline.get(key)
+        if previous is None:
+            added.append(entry)
+            continue
+        changes = _entry_changes(kind, previous, entry)
+        if changes:
+            updated.append({**entry, "changes": changes})
+        else:
+            unchanged += 1
+    for key, entry in baseline.items():
+        if key not in entries:
+            removed.append(entry)
+    return {
+        "added": sorted(added, key=_entry_order),
+        "updated": sorted(updated, key=_entry_order),
+        "removed": sorted(removed, key=_entry_order),
+        "unchanged": unchanged,
+        "has_baseline": bool(baseline),
+    }
 
 
 def get_import(db: Session, import_id: str) -> FinanceImport:
@@ -314,6 +655,7 @@ def confirm_import(db: Session, import_id: str) -> dict[str, Any]:
     else:
         _confirm_material(db, row)
     row.status = "confirmed"
+    row.error_text = ""
     row.confirmed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(row)
@@ -347,6 +689,40 @@ def serialize_import(row: FinanceImport, *, include_draft: bool = True) -> dict[
 def validate_draft(db: Session, kind: str, draft: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    known_departments = _departments_by_key(db)
+    items = draft.get("rows") if kind == "salary" else draft.get("profiles")
+    seen: dict[tuple[str, str], int] = {}
+    for index, item in enumerate(items or []):
+        if not isinstance(item, dict):
+            continue
+        department = str(item.get("department") or "").strip()
+        if kind == "salary" and not department:
+            errors.append(
+                {"row": index, "field": "department", "message": "Выберите подразделение"}
+            )
+        elif department and department_key(department) not in known_departments:
+            errors.append(
+                {
+                    "row": index,
+                    "field": "department",
+                    "message": f"Подразделение «{department}» не найдено в справочнике",
+                }
+            )
+        position = str(item.get("position_id") or item.get("position_name") or "").strip()
+        if position:
+            key = (department_key(position), department_key(department))
+            if key in seen:
+                errors.append(
+                    {
+                        "row": index,
+                        "field": "department",
+                        "message": (
+                            f"Должность и подразделение повторяют строку {seen[key] + 1}"
+                        ),
+                    }
+                )
+            else:
+                seen[key] = index
     if kind == "salary":
         for index, item in enumerate(draft.get("rows") or []):
             position_id = str(item.get("position_id") or "")
@@ -393,6 +769,8 @@ def _parse_salary(db: Session, name: str, raw: bytes) -> dict[str, Any]:
         select(OrgPosition).where(OrgPosition.is_active.is_(True))
     ).all()
     by_name = {_position_key(position.name): position for position in positions}
+    departments = _departments_by_key(db)
+    staffed = position_departments(db)
     effective_from = str(extracted.get("effective_from") or "")
     rows = []
     for values in extracted.get("rows") or []:
@@ -400,11 +778,16 @@ def _parse_salary(db: Session, name: str, raw: bytes) -> dict[str, Any]:
             continue
         position_name = str(values.get("position_name") or values.get("position") or "").strip()
         position = by_name.get(_position_key(position_name))
+        department = str(values.get("department_name") or values.get("department") or "").strip()
+        department = departments.get(department_key(department), department)
+        if not department and position is not None and len(staffed.get(position.id, [])) == 1:
+            department = staffed[position.id][0]
         rows.append(
             {
                 "row_id": str(uuid.uuid4()),
                 "position_id": position.id if position else "",
                 "position_name": position.name if position else position_name,
+                "department": department,
                 "amount": str(values.get("amount") or "").replace("\u00a0", " ").strip(),
                 "currency": str(values.get("currency") or "RUB").strip() or "RUB",
                 "effective_from": str(values.get("effective_from") or effective_from),
@@ -416,6 +799,7 @@ def _parse_salary(db: Session, name: str, raw: bytes) -> dict[str, Any]:
                 "row_id": str(uuid.uuid4()),
                 "position_id": "",
                 "position_name": "",
+                "department": "",
                 "amount": "",
                 "currency": "RUB",
                 "effective_from": effective_from,
@@ -424,34 +808,86 @@ def _parse_salary(db: Session, name: str, raw: bytes) -> dict[str, Any]:
     return {"rows": rows}
 
 
-def _parse_material(db: Session, name: str, raw: bytes) -> dict[str, Any]:
+def _ocr_cache_path(row: FinanceImport) -> Path:
+    return Path(row.storage_path).parent / "recognized.txt"
+
+
+def _parse_material(
+    db: Session, name: str, raw: bytes, *, text_cache: Path | None = None
+) -> dict[str, Any]:
+    """Re-parsing an import reuses the recognized text: OCR of a scan takes minutes."""
+    if text_cache is not None and text_cache.is_file():
+        text = text_cache.read_text(encoding="utf-8")
+    else:
+        try:
+            text = read_full_text(name, raw)
+        except SalaryExtractionError as exc:
+            raise FinanceError(str(exc)) from exc
+        if text_cache is not None:
+            text_cache.write_text(text, encoding="utf-8")
     try:
-        attachment = load_attachment_bytes(name, raw, ocr=True)
-    except DocumentError as exc:
+        extracted = extract_material_document(name, text)
+    except SalaryExtractionError as exc:
         raise FinanceError(str(exc)) from exc
-    text = str(attachment.get("text") or "")
-    effective = _find_date(text) or _find_date(name)
+    effective = _parse_iso_date(extracted.get("effective_from")) or _find_date(name) or _find_date(text)
     positions = db.scalars(select(OrgPosition).where(OrgPosition.is_active.is_(True))).all()
+    by_name = {_position_key(position.name): position for position in positions}
+    departments = _departments_by_key(db)
+    staffed = position_departments(db)
+    document_department = _canonical_department(departments, extracted.get("department_name"))
     profiles = []
-    folded = text.casefold().replace("ё", "е")
-    for position in positions:
-        if position.name.casefold().replace("ё", "е") not in folded:
+    for item in extracted.get("positions") or []:
+        if not isinstance(item, dict):
             continue
-        extracted = extract_position_kpis(text, position.name)
-        profiles.append(
-            {
-                "position_id": position.id,
-                "position_name": position.name,
-                "bonus_base_pct": 100,
-                "bonus_kind": "salary_times_crp_times_sum",
-                "metrics": extracted.get("metrics") or [],
-            }
+        title = str(item.get("position_name") or "").strip()
+        if not title:
+            continue
+        position = _match_position(by_name, title)
+        department = (
+            _canonical_department(departments, item.get("department_name")) or document_department
         )
+        # A regulation without a department covers the position wherever it is staffed.
+        targets = (
+            [department]
+            if department
+            else sorted(
+                {
+                    _canonical_department(departments, value)
+                    for value in staffed.get(position.id if position else "", [])
+                },
+                key=department_key,
+            )
+            or [""]
+        )
+        metrics = [
+            build_metric(
+                str(metric.get("name") or ""),
+                metric.get("weight"),
+                str(metric.get("formula") or ""),
+                index,
+                metric.get("plan"),
+            )
+            for index, metric in enumerate(item.get("metrics") or [], start=1)
+            if isinstance(metric, dict)
+        ]
+        for target in targets:
+            profiles.append(
+                {
+                    "position_id": position.id if position else "",
+                    "position_name": position.name if position else title,
+                    "source_position_name": title,
+                    "department": target,
+                    "bonus_base_pct": 100,
+                    "bonus_kind": "salary_times_crp_times_sum",
+                    "metrics": copy.deepcopy(metrics),
+                }
+            )
     if not profiles:
         profiles.append(
             {
                 "position_id": "",
                 "position_name": "",
+                "department": "",
                 "bonus_base_pct": 100,
                 "bonus_kind": "salary_times_crp_times_sum",
                 "metrics": [],
@@ -526,15 +962,23 @@ def _map_salary_matrix(matrix: list[list[Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def _canonical_department(departments: dict[str, str], value: Any) -> str:
+    raw = str(value or "").strip()
+    return departments.get(department_key(raw), raw) if raw else ""
+
+
 def _confirm_salaries(db: Session, import_row: FinanceImport) -> None:
+    departments = _departments_by_key(db)
     for item in import_row.draft_json.get("rows") or []:
         position = _position(db, str(item.get("position_id") or ""))
+        department = _canonical_department(departments, item.get("department"))
         effective_from = date.fromisoformat(str(item["effective_from"]))
         amount = Decimal(str(item["amount"]).replace(" ", "").replace(",", "."))
         previous = db.scalar(
             select(FinanceSalaryEntry)
             .where(
                 FinanceSalaryEntry.position_id == position.id,
+                FinanceSalaryEntry.department == department,
                 FinanceSalaryEntry.effective_from == effective_from,
                 FinanceSalaryEntry.is_current.is_(True),
             )
@@ -548,6 +992,7 @@ def _confirm_salaries(db: Session, import_row: FinanceImport) -> None:
             FinanceSalaryEntry(
                 id=str(uuid.uuid4()),
                 position_id=position.id,
+                department=department,
                 amount=amount,
                 currency=str(item.get("currency") or "RUB")[:8],
                 effective_from=effective_from,
@@ -562,8 +1007,10 @@ def _confirm_salaries(db: Session, import_row: FinanceImport) -> None:
 
 def _confirm_material(db: Session, import_row: FinanceImport) -> None:
     effective_from = date.fromisoformat(str(import_row.draft_json["effective_from"]))
+    departments = _departments_by_key(db)
     for item in import_row.draft_json.get("profiles") or []:
         name = str(item.get("position_name") or "").strip()
+        department = _canonical_department(departments, item.get("department"))
         current = db.scalars(
             select(PositionKpiProfile).where(
                 PositionKpiProfile.position_name == name,
@@ -572,11 +1019,13 @@ def _confirm_material(db: Session, import_row: FinanceImport) -> None:
             )
         ).all()
         for profile in current:
-            profile.effective_to = effective_from - timedelta(days=1)
+            if department_key(profile.department) == department_key(department):
+                profile.effective_to = effective_from - timedelta(days=1)
         catalog = dict(item)
         catalog.update(
             {
                 "position_name": name,
+                "department": department,
                 "effective_from": effective_from,
                 "source_import_id": import_row.id,
                 "source_title": str(import_row.draft_json.get("source_title") or import_row.original_name),
@@ -601,6 +1050,25 @@ def _position(db: Session, position_id: str) -> OrgPosition:
 
 def _position_key(value: str) -> str:
     return " ".join(value.casefold().replace("ё", "е").split())
+
+
+def _match_position(by_name: dict[str, OrgPosition], title: str) -> OrgPosition | None:
+    """Exact directory match; for «A / B» cells — the first part found in the directory."""
+    exact = by_name.get(_position_key(title))
+    if exact is not None:
+        return exact
+    for part in re.split(r"\s*/\s*", title):
+        found = by_name.get(_position_key(part))
+        if found is not None:
+            return found
+    return None
+
+
+def _parse_iso_date(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(str(value or "").strip()[:10])
+    except ValueError:
+        return None
 
 
 def _find_date(text: str) -> date | None:

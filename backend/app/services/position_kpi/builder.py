@@ -7,16 +7,19 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
 from app.models.position_kpi import (
     PositionKpiBuild,
     PositionKpiBuildMessage,
     PositionKpiMetric,
+    PositionKpiModule,
     PositionKpiProfile,
     PositionKpiSource,
 )
 from app.services.position_kpi.connect import (
+    builtin_metric_codes,
     connect_modules_to_profile,
     list_module_descriptors,
     module_source,
@@ -134,6 +137,14 @@ def build_sdk_prompt(build: PositionKpiBuild) -> str:
     lines = [
         "Ты одноразовый конструктор KPI, не публикуемый агент.",
         f"Должность пользователя: {build.position_name}. Официальная методика уже загружена Finance.",
+        *(
+            [
+                f"Сотрудник: {_subject_fio(build)}. По нему проверяй источники на живых данных, "
+                "но в код ФИО не зашивай."
+            ]
+            if _subject_fio(build)
+            else []
+        ),
         "Порядок строго такой:",
         "1) Не запрашивай и не загружай файл методики: список KPI ниже утверждён Finance.",
         "2) Не меняй названия, коды, веса и формулы каталога. Уточняй только источники плана, "
@@ -189,6 +200,7 @@ def serialize_build(db: Session, build: PositionKpiBuild) -> dict[str, Any]:
     return {
         "build_id": build.id,
         "position": build.position_name,
+        "subject_fio": _subject_fio(build),
         "status": build.status,
         "cursor_agent_id": build.cursor_agent_id,
         "extracted": build.extracted_json or {},
@@ -287,19 +299,67 @@ def _catalog_for_profile(db: Session, profile: PositionKpiProfile) -> dict[str, 
     }
 
 
-def start_build(db: Session, *, user_id: str, position: str) -> dict[str, Any]:
+def _subject_fio(build: PositionKpiBuild) -> str:
+    extracted = build.extracted_json if isinstance(build.extracted_json, dict) else {}
+    return str(extracted.get("subject_fio") or "").strip()
+
+
+def _kickoff_text(
+    fio: str, profile: PositionKpiProfile, metrics: list[dict[str, Any]], *, ready: int = 0
+) -> str:
+    who = f"{fio}, {profile.position_name}" if fio else profile.position_name
+    lines = [
+        f"Сотрудник: {who}"
+        + (f", {profile.department}" if profile.department else "")
+        + ".",
+        f"KPI утверждены Finance по «{profile.source_title or 'методике'}».",
+        *([f"Уже считаются автоматически: {ready}."] if ready else []),
+        "Нужны модули расчёта:",
+        *[f"• {item['name']} ({item['weight']}%)" for item in metrics],
+        "Пишу модули автоматического расчёта — по одному на показатель, с тестами.",
+    ]
+    return "\n".join(lines)
+
+
+def _lock_build_start(db: Session, *, user_id: str, profile_id: str) -> None:
+    """Serialize concurrent starts: the UI opens the chat twice and both requests would create a session."""
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    db.execute(
+        sql_text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"position_kpi_build:{user_id}:{profile_id}"},
+    )
+
+
+def start_build(
+    db: Session,
+    *,
+    user_id: str,
+    position: str,
+    department: str = "",
+    subject_fio: str = "",
+) -> dict[str, Any]:
     name = (position or "").strip()
     if not name:
         raise PositionKpiBuildError("Укажите должность")
-    profile = resolve_profile(db, name)
+    profile = resolve_profile(db, name, department=(department or "").strip())
     if profile is None or not (profile.source_import_id or "").strip():
         raise PositionKpiBuildError(
-            "Finance ещё не загрузил методику KPI для вашей должности.",
+            "Не загружена методика расчета KPI. Обратитесь к администратору",
             status_code=404,
         )
     catalog = _catalog_for_profile(db, profile)
     if not catalog["metrics"]:
         raise PositionKpiBuildError("В методике Finance нет показателей KPI.", status_code=409)
+    ready_codes = builtin_metric_codes(db, profile.id) | set(
+        db.scalars(
+            select(PositionKpiModule.metric_code).where(PositionKpiModule.profile_id == profile.id)
+        ).all()
+    )
+    pending = [item for item in catalog["metrics"] if item["code"] not in ready_codes]
+    if not pending:
+        raise PositionKpiBuildError("Все KPI должности уже считаются автоматически.", status_code=409)
+    _lock_build_start(db, user_id=user_id, profile_id=profile.id)
     open_rows = (
         db.execute(
             select(PositionKpiBuild)
@@ -313,9 +373,15 @@ def start_build(db: Session, *, user_id: str, position: str) -> dict[str, Any]:
         .scalars()
         .all()
     )
+    fio = (subject_fio or "").strip()
     current = [row for row in open_rows if row.profile_id == profile.id]
     if current:
-        return serialize_build(db, current[0])
+        row = current[0]
+        if fio and _subject_fio(row) != fio:
+            row.extracted_json = {**(row.extracted_json or {}), "subject_fio": fio}
+            db.commit()
+            db.refresh(row)
+        return serialize_build(db, row)
     row = PositionKpiBuild(
         id=str(uuid.uuid4()),
         user_id=user_id,
@@ -323,7 +389,8 @@ def start_build(db: Session, *, user_id: str, position: str) -> dict[str, Any]:
         status="clarifying",
         extracted_json={
             "position": profile.position_name,
-            "metrics": catalog["metrics"],
+            "subject_fio": fio,
+            "metrics": pending,
             "source_import_id": profile.source_import_id,
         },
         catalog_draft_json=catalog,
@@ -335,7 +402,7 @@ def start_build(db: Session, *, user_id: str, position: str) -> dict[str, Any]:
                 profile.summary or "",
                 *[
                     f"{item['name']} — вес {item['weight']}%. {item['formula_human']}"
-                    for item in catalog["metrics"]
+                    for item in pending
                 ],
             ]
         ).strip(),
@@ -345,11 +412,8 @@ def start_build(db: Session, *, user_id: str, position: str) -> dict[str, Any]:
         db,
         build=row,
         role="assistant",
-        content=(
-            f"Методика Finance для должности «{name}» найдена. "
-            "Создам общие модули расчёта и уточню недостающие источники плана и факта."
-        ),
-        structured={"stage": "clarifying", "profile_id": profile.id},
+        content=_kickoff_text(fio, profile, pending, ready=len(catalog["metrics"]) - len(pending)),
+        structured={"stage": "kickoff", "profile_id": profile.id},
     )
     db.commit()
     db.refresh(row)

@@ -9,7 +9,7 @@ import wallpaperUrl from '../assets/chat/wallpaper.png'
 import logoUrl from '../assets/logo.png'
 
 const STAGES = [
-  { id: 'clarifying', label: 'Уточнения' },
+  { id: 'clarifying', label: 'Источники данных' },
   { id: 'coding', label: 'Код и тесты' },
   { id: 'connected', label: 'Подключено' }
 ] as const
@@ -99,26 +99,23 @@ function liveBuildBanner(
   opts: { busy: boolean; running: boolean; status: string; waiting: boolean }
 ): { text: string; kind: 'run' | 'wait' } | null {
   if (opts.waiting) return { text: 'Нужен ваш ответ', kind: 'wait' }
-  if (opts.busy) return { text: 'Открываю методику Finance…', kind: 'run' }
+  if (opts.busy) return { text: 'Готовлю задание агенту…', kind: 'run' }
   if (!opts.running) return null
-  if (/проверяю тесты|тесты прошли|подключаю kpi|тесты не прошли/i.test(opts.status)) {
+  if (/проверяю тесты|тесты прошли|подключаю kpi|тесты не прошли|пишу модул/i.test(opts.status)) {
     return { text: opts.status, kind: 'run' }
   }
   const live = [...items].reverse().find((item): item is ToolItem => item.kind === 'tool' && !item.done)
-  if (live?.tool === 'office.read_file') return { text: 'Прикладываю положение в чат…', kind: 'run' }
-  if (live?.tool === 'excel.list_files') return { text: 'Смотрю файлы агента…', kind: 'run' }
+  const liveTool = (live?.tool || '').toLowerCase()
+  if (liveTool.startsWith('onec.') || liveTool.startsWith('outlook.')) {
+    return { text: 'Сверяю источник на живых данных…', kind: 'run' }
+  }
   if (live) return { text: 'Агент работает…', kind: 'run' }
   const done = lastTool(items)
   const tool = (done?.tool || '').toLowerCase()
-  if (tool === 'office.read_file') return { text: 'Выписываю KPI должности…', kind: 'run' }
-  if (tool === 'excel.list_files') return { text: 'Разбираю методику…', kind: 'run' }
   if (tool.includes('write') || tool === 'code.write_python') return { text: 'Пишу модуль KPI…', kind: 'run' }
   if (tool.includes('shell') || tool === 'code.run_python') return { text: 'Прогоняю тесты…', kind: 'run' }
-  if (/положение (в чате|приложено)|прикладываю положение/i.test(opts.status)) {
-    return { text: 'Выписываю KPI должности…', kind: 'run' }
-  }
   if (!isNoiseStatus(opts.status)) return { text: opts.status, kind: 'run' }
-  return { text: 'Выписываю KPI должности…', kind: 'run' }
+  return { text: 'Пишу модули расчёта…', kind: 'run' }
 }
 
 export function PositionKpiBuildPage({
@@ -247,6 +244,7 @@ export function PositionKpiBuildPage({
   const visible = (session?.messages || []).filter((item) => {
     if (item.role !== 'assistant' && item.role !== 'user') return false
     if (item.structured?.stage === 'sdk_finish') return false
+    if (item.structured?.stage === 'kickoff') return true
     if (item.role === 'assistant' && isKpiListText(item.content)) return false
     return true
   })
@@ -281,13 +279,12 @@ export function PositionKpiBuildPage({
             {'\u2039'} Назад
           </button>
           <h1 className="page-title" style={{ fontSize: 24 }}>
-            Методика KPI
+            Модули расчёта KPI
           </h1>
         </div>
         <div className="regchat-subtitle">
-          {session?.position || position
-            ? `Должность: ${session?.position || position}`
-            : 'Методика Finance'}
+          {[session?.subjectFio, session?.position || position].filter(Boolean).join(' · ') ||
+            'Методика Finance'}
         </div>
         <ol className="kpi-build-stages">
           {STAGES.map((stage, index) => (
@@ -303,8 +300,8 @@ export function PositionKpiBuildPage({
         <div className="regchat-scroll" ref={scrollRef}>
           {visible.length === 0 && !busy ? (
             <div className="regchat-hint">
-              Методика уже назначена Finance. Агент уточнит источники плана и факта,
-              затем создаст общие модули для должности.
+              KPI утверждены Finance. Агент сразу пишет модули расчёта: по одному на показатель,
+              с тестами, и подключает их к ежедневному подсчёту.
             </div>
           ) : null}
           {visible.map((message) => {

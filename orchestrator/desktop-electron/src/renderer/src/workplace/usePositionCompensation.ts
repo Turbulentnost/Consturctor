@@ -12,7 +12,8 @@ const EMPTY: PositionKpiCompensation = {
   total: null
 }
 
-export function usePositionCompensation(from: string, to: string): {
+/** Премия помесячная, как и плитки KPI должности: сервер берёт текущий месяц, календарь периода не влияет. */
+export function usePositionCompensation(): {
   compensation: PositionKpiCompensation
   loading: boolean
   unlocking: boolean
@@ -31,7 +32,7 @@ export function usePositionCompensation(from: string, to: string): {
     setCompensation(EMPTY)
     setError('')
     void api
-      .getPositionKpiCompensation(to)
+      .getPositionKpiCompensation()
       .then((next) => {
         if (alive) setCompensation(next)
       })
@@ -44,25 +45,22 @@ export function usePositionCompensation(from: string, to: string): {
     return () => {
       alive = false
     }
-  }, [to])
+  }, [])
 
-  const unlock = useCallback(
-    async (pin: string): Promise<boolean> => {
-      setUnlocking(true)
-      setError('')
-      try {
-        const next = await api.unlockPositionKpiCompensation(pin, from, to)
-        setCompensation(next)
-        return true
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : 'Не удалось показать зарплату')
-        return false
-      } finally {
-        setUnlocking(false)
-      }
-    },
-    [from, to]
-  )
+  const unlock = useCallback(async (pin: string): Promise<boolean> => {
+    setUnlocking(true)
+    setError('')
+    try {
+      const next = await api.unlockPositionKpiCompensation(pin)
+      setCompensation(next)
+      return true
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Не удалось показать зарплату')
+      return false
+    } finally {
+      setUnlocking(false)
+    }
+  }, [])
 
   const hide = useCallback(() => {
     setCompensation((current) => ({

@@ -734,6 +734,7 @@ export interface PositionKpiDaily {
 export interface PositionKpiMethodology {
   status: 'none' | 'needs_modules' | 'ready'
   position: string
+  department: string
   profileId: string
   sourceTitle: string
   effectiveFrom: string
@@ -806,6 +807,7 @@ export interface PositionKpiBuildMessage {
 export interface PositionKpiBuildSession {
   buildId: string
   position: string
+  subjectFio: string
   status: string
   cursorAgentId: string
   extracted: Record<string, unknown>

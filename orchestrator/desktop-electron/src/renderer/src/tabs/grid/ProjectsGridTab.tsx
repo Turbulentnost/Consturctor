@@ -269,18 +269,26 @@ export function ProjectsGridTab({
   const fileLabel = selected?.fileId || selected?.id || '—'
   const [openHint, setOpenHint] = useState('')
   const [launchingTurboProject, setLaunchingTurboProject] = useState(false)
-  const [launchHint, setLaunchHint] = useState('')
+  const [launchHint, setLaunchHint] = useState<{ text: string; ok: boolean } | null>(null)
+
+  useEffect(() => {
+    if (!launchHint?.ok) return
+    const timer = window.setTimeout(() => setLaunchHint(null), 6000)
+    return () => window.clearTimeout(timer)
+  }, [launchHint])
 
   const launchTurboProject = async (): Promise<void> => {
     setLaunchingTurboProject(true)
-    setLaunchHint('')
+    setLaunchHint(null)
     try {
       const result = await window.api.launchTurboProject()
       if (!result.ok) {
-        setLaunchHint(result.error || 'Не удалось открыть приложение TurboProject.')
+        setLaunchHint({ text: result.error || 'Не удалось открыть приложение TurboProject.', ok: false })
+      } else if (result.message) {
+        setLaunchHint({ text: result.message, ok: true })
       }
     } catch {
-      setLaunchHint('Не удалось открыть приложение TurboProject.')
+      setLaunchHint({ text: 'Не удалось открыть приложение TurboProject.', ok: false })
     } finally {
       setLaunchingTurboProject(false)
     }
@@ -306,17 +314,24 @@ export function ProjectsGridTab({
         setTileFilter((current) => (id === 'active' ? 'all' : toggleSimpleTile(current, id)))
       })}
       filterToolbarExtra={
-        <>
+        <div className="turbo-launch">
+          {launchHint ? (
+            <span
+              className={`turbo-launch-hint${launchHint.ok ? '' : ' error'}`}
+              title={launchHint.text}
+            >
+              {launchHint.text}
+            </span>
+          ) : null}
           <button
             type="button"
-            className="btn-primary"
+            className="btn-primary turbo-launch-btn"
             disabled={launchingTurboProject}
             onClick={() => void launchTurboProject()}
           >
             {launchingTurboProject ? 'Открываем…' : 'Открыть в приложении'}
           </button>
-          {launchHint ? <span className="spec-v04-muted">{launchHint}</span> : null}
-        </>
+        </div>
       }
       widgets={{
         filters: (

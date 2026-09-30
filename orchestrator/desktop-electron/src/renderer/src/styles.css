@@ -225,6 +225,13 @@ input {
   color: var(--text-light);
   outline: none;
 }
+.nav-toolbar.is-editing {
+  justify-content: space-between;
+}
+.nav-edit-toggle.active {
+  background: rgba(112, 160, 220, 0.28);
+  color: var(--text-light);
+}
 .sidebar.collapsed .nav-toolbar {
   justify-content: center;
   margin-bottom: 6px;
@@ -245,8 +252,30 @@ input {
 .nav-tab-row .nav-item {
   position: relative;
 }
-.nav-tab-row .nav-badge {
+.nav-editing .nav-tab-row .nav-badge {
   margin-right: 18px;
+}
+.nav-tab-row.drop-before::before,
+.nav-tab-row.drop-after::after,
+.nav-folder.drop-before::before,
+.nav-folder.drop-after::after {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(130, 191, 255, 0.95);
+  pointer-events: none;
+}
+.nav-tab-row.drop-before::before,
+.nav-folder.drop-before::before {
+  top: -3px;
+}
+.nav-tab-row.drop-after::after,
+.nav-folder.drop-after::after {
+  bottom: -3px;
 }
 .nav-drag-handle {
   position: absolute;
@@ -270,9 +299,12 @@ input {
 .nav-drag-handle svg {
   pointer-events: none;
 }
+.nav-editing .nav-drag-handle {
+  opacity: 0.5;
+}
 .nav-tab-row:hover .nav-drag-handle,
 .nav-drag-handle:focus-visible {
-  opacity: 0.72;
+  opacity: 0.85;
 }
 .nav-drag-handle:hover,
 .nav-drag-handle:focus-visible {
@@ -284,6 +316,7 @@ input {
   cursor: grabbing;
 }
 .nav-folder {
+  position: relative;
   border: 1px solid transparent;
   border-radius: 6px;
   transition: border-color 0.12s ease, background 0.12s ease;
@@ -344,10 +377,36 @@ input {
   opacity: 0;
   pointer-events: none;
 }
-.nav-folder-row:hover .nav-folder-actions,
-.nav-folder-row:focus-within .nav-folder-actions {
+.nav-editing .nav-folder-actions {
   opacity: 1;
   pointer-events: auto;
+}
+.nav-folder.dragging {
+  opacity: 0.42;
+}
+.nav-folder-grip {
+  width: 22px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  opacity: 0.7;
+}
+.nav-folder-grip svg {
+  pointer-events: none;
+}
+.nav-folder-grip:hover,
+.nav-folder-grip:focus-visible {
+  background: rgba(255, 255, 255, 0.13);
+  opacity: 1;
+  outline: none;
+}
+.nav-folder-grip:active {
+  cursor: grabbing;
 }
 .nav-folder-actions button,
 .nav-folder-editor button {
@@ -948,9 +1007,20 @@ input {
   color: #607087;
 }
 .app-root.shell-today .nav-folder-add:hover,
-.app-root.shell-today .nav-folder-add:focus-visible {
+.app-root.shell-today .nav-folder-add:focus-visible,
+.app-root.shell-today .nav-edit-toggle.active {
   background: #eef3f8;
   color: #0d3b73;
+}
+.app-root.shell-today .nav-tab-row.drop-before::before,
+.app-root.shell-today .nav-tab-row.drop-after::after,
+.app-root.shell-today .nav-folder.drop-before::before,
+.app-root.shell-today .nav-folder.drop-after::after {
+  background: #1565c0;
+}
+.app-root.shell-today .nav-folder-grip:hover,
+.app-root.shell-today .nav-folder-grip:focus-visible {
+  background: #e8f1ff;
 }
 .app-root.shell-today .nav-folder-toggle {
   color: #4d5b6b;

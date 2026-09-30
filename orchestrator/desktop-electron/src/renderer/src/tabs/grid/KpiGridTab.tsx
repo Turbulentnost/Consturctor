@@ -79,9 +79,18 @@ export function KpiGridTab(_props: {
   const [tileFilter, setTileFilter] = useState('all')
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
   const positionKpi = usePositionKpi(_props.user?.position || '')
-  const positionCompensation = usePositionCompensation(from, to)
+  const positionCompensation = usePositionCompensation()
   const [buildingMethod, setBuildingMethod] = useState(false)
   const [codeFor, setCodeFor] = useState('')
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('kpi:module-chat-state', { detail: buildingMethod }))
+    if (!buildingMethod) return
+    return () => {
+      window.dispatchEvent(new CustomEvent('kpi:module-chat-state', { detail: false }))
+    }
+  }, [buildingMethod])
+
   const periodSources = useKpiPeriodSources()
   const { board: workflowBoard } = useKpiWorkflowBoard(from, to)
   const dailySyncKeyRef = useRef('')
@@ -253,6 +262,7 @@ export function KpiGridTab(_props: {
               loading={positionKpi.loading}
               needsMethodology={positionKpi.needsBuild}
               methodologyStatus={positionKpi.methodologyStatus}
+              methodology={positionKpi.methodology}
               onCalculate={() => setBuildingMethod(true)}
               onInfo={(code) => setCodeFor(code)}
             />

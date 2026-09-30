@@ -55,13 +55,18 @@ export function usePositionKpi(position = ''): {
   const reload = useCallback(() => {
     let alive = true
     setLoading(true)
-    void Promise.allSettled([api.getPositionKpiMethodology(), api.getPositionKpi(position)])
+    const methodRequest = api.getPositionKpiMethodology()
+    void methodRequest
+      .then((value) => {
+        if (!alive) return
+        setMethodology(value)
+        setMissing(value.status === 'none')
+      })
+      .catch(() => undefined)
+    void Promise.allSettled([methodRequest, api.getPositionKpi(position)])
       .then(([methodResult, kpiResult]) => {
         if (!alive) return
-        if (methodResult.status === 'fulfilled') {
-          setMethodology(methodResult.value)
-          setMissing(methodResult.value.status === 'none')
-        } else {
+        if (methodResult.status === 'rejected') {
           setMethodology(null)
           setMissing(false)
           setError(
@@ -100,9 +105,10 @@ export function usePositionKpi(position = ''): {
     return () => window.clearTimeout(timer)
   }, [snap, reload])
 
-  const methodologyStatus = methodology?.status ?? 'none'
+  // Пока статус не пришёл (или запрос упал), «методики нет» не показываем — это неизвестность, а не отсутствие.
+  const methodologyStatus = methodology?.status ?? 'ready'
   const incomplete = methodologyStatus === 'needs_modules'
-  const needsBuild = !loading && methodologyStatus === 'needs_modules'
+  const needsBuild = methodologyStatus === 'needs_modules'
 
   return {
     snap,

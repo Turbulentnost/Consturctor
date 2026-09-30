@@ -63,7 +63,13 @@ def create_build(
         raise HTTPException(status_code=403, detail="Можно создавать модули только для своей должности")
     name = own_position
     try:
-        payload = start_build(db, user_id=auth.user_id, position=name)
+        payload = start_build(
+            db,
+            user_id=auth.user_id,
+            position=name,
+            department=(auth.department or "").strip(),
+            subject_fio=(auth.fio or "").strip(),
+        )
     except PositionKpiBuildError as exc:
         raise _http(exc) from exc
     return PositionKpiBuildOut.model_validate(payload)

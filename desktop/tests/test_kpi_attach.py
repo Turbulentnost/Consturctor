@@ -26,6 +26,18 @@ from app.sdk_agent.kpi_attach import (
 )
 
 
+def test_write_job_carries_finance_formula_and_employee() -> None:
+    jobs = kpi_write_jobs(
+        [{"name": "Входящая корреспонденция", "weight": "50", "slug": "incoming", "formula": "факт / план"}],
+        position="Офис-менеджер",
+        subject_fio="Иванова Анна Петровна",
+    )
+    prompt = jobs[0]["prompt"]
+    assert "Формула из методики Finance: факт / план" in prompt
+    assert "Сотрудник: Иванова Анна Петровна" in prompt
+    assert "{employee_fio}" in prompt
+
+
 def _write_scan_pdf_pages(path: Path, count: int) -> None:
     import fitz
 
@@ -427,6 +439,45 @@ def test_kpi_bridge_run_drops_images_after_network_fail(tmp_path: Path, monkeypa
     assert calls[0]["images"]
     assert calls[1]["images"] == []
     assert "office.read_file" in str(calls[1].get("tools"))
+
+
+def test_kpi_bridge_run_does_not_restart_finished_module(monkeypatch) -> None:
+    from threading import Event
+    from types import SimpleNamespace
+
+    sidecar_mod = _load_orch_sidecar()
+    calls: list[dict] = []
+
+    def fake_run(**kwargs):
+        calls.append(kwargs)
+        raise CursorSdkError("Cursor SDK run failed")
+
+    monkeypatch.setattr(sidecar_mod.time, "sleep", lambda *_a, **_k: None)
+    gate = SimpleNamespace(ask_question=lambda *_a, **_k: {}, bind_events=lambda *_a, **_k: None)
+    result = sidecar_mod.Sidecar()._kpi_bridge_run(
+        sidecar_mod.ActiveRun("run-1", gate, Event(), SimpleNamespace()),
+        SimpleNamespace(run=fake_run),
+        already_done=lambda: True,
+        prompt="Пиши только один модуль",
+        workflow_id="kpi-1",
+        resume_agent_id="w-1",
+    )
+    assert len(calls) == 1
+    assert result["agent_id"] == "w-1"
+
+
+def test_bare_test_filename_runs_workspace_kpi_test(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from app.tools.ac.code_execution_tools import _is_kpi_test_file, _resolve_code_file
+
+    (tmp_path / "tests").mkdir()
+    test = tmp_path / "tests" / "test_meetings.py"
+    test.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    workspace = SimpleNamespace(directory=tmp_path)
+    target = _resolve_code_file(workspace, "test_meetings.py")
+    assert target == test.resolve()
+    assert _is_kpi_test_file(workspace, target)
 
 
 def test_write_kpi_modules_retries_then_continues(tmp_path: Path, monkeypatch) -> None:

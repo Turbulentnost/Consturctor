@@ -69,6 +69,7 @@ class PositionKpiBuildMessageOut(BaseModel):
 class PositionKpiBuildOut(BaseModel):
     build_id: str
     position: str
+    subject_fio: str = ""
     status: str
     cursor_agent_id: str = ""
     extracted: dict[str, Any] = Field(default_factory=dict)

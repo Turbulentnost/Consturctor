@@ -1100,10 +1100,14 @@ export class ApiClient {
     return parseUser(data)
   }
 
-  async searchUsers(search = ''): Promise<string[]> {
+  /** onlyShown: same people as the 1C login dialog ("Показывать в списке выбора"). */
+  async searchUsers(search = '', onlyShown = false): Promise<string[]> {
+    const params: Record<string, string> = {}
+    if (search.trim()) params.search = search
+    if (onlyShown) params.only_shown = 'true'
     try {
       const data = await this.request<{ items?: unknown[] }>('GET', '/api/v1/auth/users', {
-        params: search.trim() ? { search } : undefined
+        params: Object.keys(params).length ? params : undefined
       })
       return (data.items ?? []).map((x) => String(x))
     } catch {

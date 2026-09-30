@@ -6,6 +6,7 @@ import {
   openFinanceImport,
   type FinanceImport
 } from '../financeApi'
+import { FinanceImportChangesModal } from '../components/FinanceImportChangesModal'
 import { AdminDataTable } from '../components/shared/AdminDataTable'
 import { AdminPageHeader } from '../components/shared/AdminPageHeader'
 import { AdminPageShell } from '../components/shared/AdminPageShell'
@@ -32,11 +33,48 @@ function dateTimeLabel(value: string): string {
     .replace(',', '')
 }
 
+function ChangesCell({ item, onOpen }: { item: FinanceImport; onOpen: () => void }): React.JSX.Element {
+  const changes = item.changes
+  if (!changes) return <span className="finance-changes__muted">—</span>
+  const lines = [
+    { id: 'added', label: 'Добавлено', value: changes.added },
+    { id: 'updated', label: 'Обновлено', value: changes.updated },
+    { id: 'removed', label: 'Удалено', value: changes.removed }
+  ]
+  const touched = changes.added + changes.updated + changes.removed
+  const hint = !touched
+    ? 'Без изменений'
+    : !changes.hasBaseline
+      ? 'Первая версия'
+      : item.status !== 'confirmed'
+        ? 'Если подтвердить'
+        : ''
+  return (
+    <button
+      type="button"
+      className="finance-changes-cell"
+      title="Показать, что изменилось в этой версии"
+      onClick={onOpen}
+    >
+      {lines.map((line) => (
+        <span
+          key={line.id}
+          className={`finance-changes-cell__line finance-changes-cell__line--${line.id}${line.value ? '' : ' is-zero'}`}
+        >
+          {line.label}: <strong>{line.value}</strong>
+        </span>
+      ))}
+      {hint ? <span className="finance-changes-cell__hint">{hint}</span> : null}
+    </button>
+  )
+}
+
 export function FinanceImportHistoryPage(): React.JSX.Element {
   const [items, setItems] = useState<FinanceImport[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [openingId, setOpeningId] = useState('')
+  const [changesItem, setChangesItem] = useState<FinanceImport | null>(null)
 
   async function load(silent = false): Promise<void> {
     if (!silent) setLoading(true)
@@ -97,6 +135,7 @@ export function FinanceImportHistoryPage(): React.JSX.Element {
             { id: 'kind', label: 'Тип' },
             { id: 'file', label: 'Файл' },
             { id: 'status', label: 'Статус', width: '130px' },
+            { id: 'changes', label: 'Результат', width: '170px' },
             { id: 'rows', label: 'Строк', width: '80px', align: 'right' }
           ]}
           rows={items.map((item) => [
@@ -111,10 +150,12 @@ export function FinanceImportHistoryPage(): React.JSX.Element {
               {openingId === item.id ? 'Открываю…' : item.fileName || `Импорт ${item.id}`}
             </button>,
             <span className="finance-status">{financeStatusLabel(item.status)}</span>,
+            <ChangesCell item={item} onOpen={() => setChangesItem(item)} />,
             item.rowsCount
           ])}
         />
       </section>
+      <FinanceImportChangesModal item={changesItem} onClose={() => setChangesItem(null)} />
     </AdminPageShell>
   )
 }

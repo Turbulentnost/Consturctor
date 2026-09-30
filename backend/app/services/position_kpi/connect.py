@@ -23,7 +23,11 @@ from app.models.position_kpi import (
     PositionKpiSource,
     PositionKpiSubjectFact,
 )
-from app.services.position_kpi.daily import normalize_position_name, resolve_profile
+from app.services.position_kpi.daily import (
+    department_key,
+    normalize_position_name,
+    resolve_profile,
+)
 from app.services.position_kpi.sources import SOURCES, validate_spec
 from app.services.position_kpi.extract import slug_code
 from kpi.kinds import FORMULA_KINDS, SOURCE_KINDS, SOURCE_ROLES
@@ -34,8 +38,13 @@ GENERATED_PREFIX = "kpi.generated."
 GENERATED_DIR = BACKEND_ROOT / "kpi" / "generated"
 
 
-def generated_profile_id(position: str, effective_from: date | None = None) -> str:
+def generated_profile_id(
+    position: str, effective_from: date | None = None, department: str = ""
+) -> str:
     identity = f"{normalize_position_name(position)}\n{effective_from.isoformat() if effective_from else ''}"
+    dept = department_key(department)
+    if dept:
+        identity = f"{identity}\n{dept}"
     digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:10]
     return f"generated-{digest}"
 
@@ -91,6 +100,7 @@ def validate_generated_module_payloads(
         str(metric.get("code") or "").strip()
         for metric in metrics
         if str(metric.get("code") or "").strip()
+        and not _builtin_module(metric.get("sources") if isinstance(metric.get("sources"), list) else [])
     ]
     by_code = {
         module_code(item): item
@@ -443,6 +453,164 @@ def invalidate_profile_cache(db: Session, profile_id: str) -> None:
     db.execute(delete(PositionKpiSubjectFact).where(PositionKpiSubjectFact.profile_id == profile_id))
 
 
+BUILTIN_PREFIX = "kpi.sources."
+
+
+def _metric_name_key(value: str) -> str:
+    folded = str(value or "").casefold().replace("ё", "е")
+    return " ".join(re.sub(r"[^\w]+", " ", folded).split())
+
+
+def _builtin_module(sources: list[dict[str, Any]]) -> str:
+    from app.services.position_kpi.registry import scorer_for
+
+    for source in sources:
+        if str(source.get("role") or "") != "fact":
+            continue
+        extra = source.get("extra_json") if isinstance(source.get("extra_json"), dict) else {}
+        module = str(extra.get("module") or "").strip()
+        if module.startswith(BUILTIN_PREFIX) and scorer_for(module) is not None:
+            return module
+    return ""
+
+
+def _source_dict(row: PositionKpiSource) -> dict[str, Any]:
+    return {
+        "role": row.role,
+        "kind": row.kind,
+        "title": row.title,
+        "detail": row.detail,
+        "update_rule": row.update_rule,
+        "extra_json": dict(row.extra_json or {}),
+    }
+
+
+def _builtin_bindings(
+    db: Session, profile_ids: list[str], *, position: str, department: str
+) -> list[dict[str, Any]]:
+    """Показатели с готовыми калькуляторами kpi.sources.* — их нельзя терять при замене профиля."""
+    bindings: list[dict[str, Any]] = []
+    for profile_id in profile_ids:
+        for metric in db.scalars(
+            select(PositionKpiMetric).where(PositionKpiMetric.profile_id == profile_id)
+        ).all():
+            sources = [
+                _source_dict(row)
+                for row in db.scalars(
+                    select(PositionKpiSource).where(PositionKpiSource.metric_id == metric.id)
+                ).all()
+            ]
+            if _builtin_module(sources):
+                bindings.append({"name": metric.name, "weight": metric.weight, "sources": sources})
+    from kpi.seed_pl_npo_010 import CATALOG, DEPARTMENT
+
+    if department_key(department) == department_key(DEPARTMENT):
+        for item in CATALOG:
+            if normalize_position_name(str(item["position_name"])) != normalize_position_name(position):
+                continue
+            for metric in item["metrics"]:
+                sources = [dict(source) for source in metric["sources"]]
+                if _builtin_module(sources):
+                    bindings.append(
+                        {"name": metric["name"], "weight": metric["weight"], "sources": sources}
+                    )
+    return bindings
+
+
+def _match_binding(
+    name: str, weight: int, bindings: list[dict[str, Any]], used: set[int]
+) -> dict[str, Any] | None:
+    from difflib import SequenceMatcher
+
+    key = _metric_name_key(name)
+    best: tuple[float, int] | None = None
+    for index, binding in enumerate(bindings):
+        if index in used:
+            continue
+        other = _metric_name_key(binding["name"])
+        if other == key:
+            used.add(index)
+            return binding
+        ratio = SequenceMatcher(None, key, other).ratio()
+        same_weight = int(binding.get("weight") or 0) == int(weight or 0)
+        if ratio >= 0.8 or (same_weight and ratio >= 0.55):
+            if best is None or ratio > best[0]:
+                best = (ratio, index)
+    if best is None:
+        return None
+    used.add(best[1])
+    return bindings[best[1]]
+
+
+def builtin_metric_codes(db: Session, profile_id: str) -> set[str]:
+    codes: set[str] = set()
+    for metric in db.scalars(
+        select(PositionKpiMetric).where(PositionKpiMetric.profile_id == profile_id)
+    ).all():
+        sources = [
+            _source_dict(row)
+            for row in db.scalars(
+                select(PositionKpiSource).where(PositionKpiSource.metric_id == metric.id)
+            ).all()
+        ]
+        if _builtin_module(sources):
+            codes.add(metric.code)
+    return codes
+
+
+def inherit_builtin_sources(
+    db: Session, profile_id: str, bindings: list[dict[str, Any]]
+) -> list[str]:
+    """Показатель без калькулятора получает источники готового kpi.sources.* с тем же смыслом."""
+    if not bindings:
+        return []
+    used: set[int] = set()
+    inherited: list[str] = []
+    metrics = db.scalars(
+        select(PositionKpiMetric)
+        .where(PositionKpiMetric.profile_id == profile_id)
+        .order_by(PositionKpiMetric.sort_order, PositionKpiMetric.id)
+    ).all()
+    pending: list[PositionKpiMetric] = []
+    for metric in metrics:
+        current = [
+            _source_dict(row)
+            for row in db.scalars(
+                select(PositionKpiSource).where(PositionKpiSource.metric_id == metric.id)
+            ).all()
+        ]
+        module = _builtin_module(current)
+        if module:
+            for index, binding in enumerate(bindings):
+                if _builtin_module(binding["sources"]) == module:
+                    used.add(index)
+            continue
+        pending.append(metric)
+    for metric in pending:
+        binding = _match_binding(metric.name, metric.weight, bindings, used)
+        if binding is None:
+            continue
+        db.execute(delete(PositionKpiSource).where(PositionKpiSource.metric_id == metric.id))
+        for index, source in enumerate(binding["sources"], start=1):
+            role = str(source.get("role") or "fact")
+            kind = str(source.get("kind") or "unknown")
+            db.add(
+                PositionKpiSource(
+                    id=source_row_id(metric.id, role, kind, index),
+                    metric_id=metric.id,
+                    role=role,
+                    kind=kind,
+                    title=str(source.get("title") or ""),
+                    detail=str(source.get("detail") or ""),
+                    update_rule=str(source.get("update_rule") or ""),
+                    extra_json=dict(source.get("extra_json") or {}),
+                )
+            )
+        inherited.append(metric.code)
+    db.flush()
+    return inherited
+
+
 def upsert_generated_catalog(
     db: Session,
     *,
@@ -460,23 +628,42 @@ def upsert_generated_catalog(
         effective_from = date.fromisoformat(str(effective_raw).strip())
     else:
         effective_from = None
+    department = str(catalog.get("department") or "").strip()
     profile_id = str(catalog.get("id") or "").strip()
     if not profile_id or profile_id.startswith("plnpo010-"):
-        profile_id = generated_profile_id(name, effective_from)
-    existing = resolve_profile(db, name, as_of=effective_from or date.today())
-    if (
-        effective_from is None
-        and existing is not None
-        and existing.id != profile_id
-    ):
-        _drop_profile(db, existing.id)
+        profile_id = generated_profile_id(name, effective_from, department)
+    existing = resolve_profile(
+        db,
+        name,
+        as_of=effective_from or date.today(),
+        department=department or None,
+        exact_department=bool(department),
+    )
+    same_key = db.scalars(
+        select(PositionKpiProfile.id).where(
+            PositionKpiProfile.position_name == name,
+            PositionKpiProfile.department == department,
+            PositionKpiProfile.effective_from == effective_from
+            if effective_from is not None
+            else PositionKpiProfile.effective_from.is_(None),
+            PositionKpiProfile.id != profile_id,
+        )
+    ).all()
+    replaced = list(same_key)
+    if effective_from is None and existing is not None and existing.id != profile_id:
+        replaced.append(existing.id)
+    bindings = _builtin_bindings(
+        db, [*replaced, profile_id], position=name, department=department
+    )
+    for stale_id in dict.fromkeys(replaced):
+        _drop_profile(db, stale_id)
     metrics = catalog.get("metrics") if isinstance(catalog.get("metrics"), list) else []
     _upsert(
         db,
         PositionKpiProfile,
         profile_id,
         position_name=name,
-        department=str(catalog.get("department") or ""),
+        department=department,
         status="active",
         source_code=str(catalog.get("source_code") or "methodology"),
         source_version=str(catalog.get("source_version") or "1"),
@@ -632,5 +819,7 @@ def upsert_generated_catalog(
         ).scalars():
             if row.metric_code not in keep_metric_codes:
                 db.delete(row)
+    db.flush()
+    inherit_builtin_sources(db, profile_id, bindings)
     invalidate_profile_cache(db, profile_id)
     return profile_id

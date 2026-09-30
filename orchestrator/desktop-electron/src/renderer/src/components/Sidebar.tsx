@@ -13,16 +13,21 @@ import {
   addSidebarFolder,
   deleteSidebarFolder,
   folderIdFromNode,
+  folderNodeId,
   loadSidebarLayout,
-  moveSidebarTab,
+  moveSidebarNode,
   normalizeSidebarLayout,
   renameSidebarFolder,
   saveSidebarLayout,
   tabKeyFromNode,
+  tabNodeId,
   toggleSidebarFolder,
+  type SidebarDropTarget,
   type SidebarLayout,
   type SidebarScope
 } from './sidebarFolders'
+
+type DropHint = { target: SidebarDropTarget; into: string | null }
 
 export type AdminPageKey =
   | 'overview'
@@ -228,12 +233,13 @@ export function Sidebar({
   const [navLayout, setNavLayout] = useState<SidebarLayout>(() =>
     loadSidebarLayout(currentUserId, effectiveNavScope, availableNavKeys)
   )
+  const [editMode, setEditMode] = useState(false)
   const [folderEditor, setFolderEditor] = useState<'new' | string | null>(null)
   const [folderDraft, setFolderDraft] = useState('')
-  const [draggedTab, setDraggedTab] = useState<PageKey | null>(null)
-  const [dropFolderId, setDropFolderId] = useState<string | null>(null)
+  const [draggedNode, setDraggedNode] = useState<string | null>(null)
+  const [dropHint, setDropHint] = useState<DropHint | null>(null)
   const pointerDragRef = useRef<{
-    key: PageKey
+    node: string
     pointerId: number
     startX: number
     startY: number
@@ -246,9 +252,19 @@ export function Sidebar({
     setNavLayout(next)
     saveSidebarLayout(currentUserId, effectiveNavScope, next)
     setFolderEditor(null)
-    setDraggedTab(null)
-    setDropFolderId(null)
+    setDraggedNode(null)
+    setDropHint(null)
   }, [currentUserId, effectiveNavScope, availableNavKey])
+
+  useEffect(() => {
+    if (!editMode) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || folderEditor || pointerDragRef.current) return
+      setEditMode(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [editMode, folderEditor])
 
   const persistNavLayout = (next: SidebarLayout): void => {
     const normalized = normalizeSidebarLayout(next, availableNavKeys)
@@ -286,71 +302,134 @@ export function Sidebar({
     if (folderEditor === folderId) setFolderEditor(null)
   }
 
-  const finishTabDrag = (): void => {
+  const toggleEditMode = (): void => {
+    if (editMode) {
+      setEditMode(false)
+      setFolderEditor(null)
+      return
+    }
+    if (collapsed) setCollapsed(false)
+    setEditMode(true)
+  }
+
+  const finishNodeDrag = (): void => {
     pointerDragRef.current = null
-    setDraggedTab(null)
-    setDropFolderId(null)
+    setDraggedNode(null)
+    setDropHint(null)
   }
 
-  const dropTab = (targetFolderId: string | null, key = draggedTab || ''): void => {
-    if (!itemByKey.has(key as PageKey)) return
-    persistNavLayout(moveSidebarTab(navLayout, key, targetFolderId))
-    finishTabDrag()
+  const resolveDropHint = (x: number, y: number, dragNode: string): DropHint | null => {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null
+    if (!el) return null
+    const dragIsFolder = folderIdFromNode(dragNode) !== null
+    const toRootEnd: DropHint = { target: { folderId: null, anchor: null, position: 'after' }, into: null }
+    if (el.closest('[data-nav-root-zone]')) return toRootEnd
+
+    const row = el.closest<HTMLElement>('[data-nav-node]')
+    const node = row?.dataset.navNode
+    if (row && node) {
+      const rect = row.getBoundingClientRect()
+      const before = y < rect.top + rect.height / 2
+      const headerFolderId = folderIdFromNode(node)
+      if (headerFolderId !== null) {
+        if (node === dragNode) return null
+        if (dragIsFolder) {
+          return { target: { folderId: null, anchor: node, position: before ? 'before' : 'after' }, into: null }
+        }
+        const folder = navLayout.folders.find((item) => item.id === headerFolderId)
+        const edge = rect.height / 4
+        const nearTop = y < rect.top + edge
+        const nearBottom = !folder?.expanded && y > rect.bottom - edge
+        if (nearTop || nearBottom) {
+          return { target: { folderId: null, anchor: node, position: nearTop ? 'before' : 'after' }, into: null }
+        }
+        return { target: { folderId: headerFolderId, anchor: null, position: 'after' }, into: headerFolderId }
+      }
+      const parent = row.dataset.navParent || null
+      if (parent && dragIsFolder) {
+        const parentNode = folderNodeId(parent)
+        if (parentNode === dragNode) return null
+        return { target: { folderId: null, anchor: parentNode, position: before ? 'before' : 'after' }, into: null }
+      }
+      if (node === dragNode) return null
+      return { target: { folderId: parent, anchor: node, position: before ? 'before' : 'after' }, into: null }
+    }
+
+    const folderEl = el.closest<HTMLElement>('[data-nav-folder-id]')
+    const folderId = folderEl?.dataset.navFolderId
+    if (folderId && !dragIsFolder) {
+      return { target: { folderId, anchor: null, position: 'after' }, into: folderId }
+    }
+    if (el.closest('[data-nav-root]')) return toRootEnd
+    return null
   }
 
-  const beginPointerTabDrag = (event: React.PointerEvent<HTMLElement>, key: PageKey): void => {
+  const beginPointerNodeDrag = (event: React.PointerEvent<HTMLElement>, node: string): void => {
     if (event.button !== 0) return
     event.preventDefault()
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
     pointerDragRef.current = {
-      key,
+      node,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       moved: false
     }
-    setDraggedTab(key)
+    setDraggedNode(node)
   }
 
-  const updatePointerTabDrag = (event: React.PointerEvent<HTMLElement>): void => {
+  const updatePointerNodeDrag = (event: React.PointerEvent<HTMLElement>): void => {
     const drag = pointerDragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return
     drag.moved = true
-    const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null
-    const folder = target?.closest<HTMLElement>('[data-nav-folder-id]')
-    if (folder?.dataset.navFolderId) setDropFolderId(folder.dataset.navFolderId)
-    else if (target?.closest('[data-nav-root]')) setDropFolderId('__root__')
-    else setDropFolderId(null)
+    setDropHint(resolveDropHint(event.clientX, event.clientY, drag.node))
   }
 
-  const endPointerTabDrag = (event: React.PointerEvent<HTMLElement>): void => {
+  const endPointerNodeDrag = (event: React.PointerEvent<HTMLElement>): void => {
     const drag = pointerDragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
-    const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null
-    const folder = target?.closest<HTMLElement>('[data-nav-folder-id]')
-    if (drag.moved && folder?.dataset.navFolderId) {
-      dropTab(folder.dataset.navFolderId, drag.key)
-      return
-    }
-    if (drag.moved && target?.closest('[data-nav-root]')) {
-      dropTab(null, drag.key)
-      return
-    }
-    finishTabDrag()
+    const hint = drag.moved ? resolveDropHint(event.clientX, event.clientY, drag.node) : null
+    if (hint) persistNavLayout(moveSidebarNode(navLayout, drag.node, hint.target))
+    finishNodeDrag()
   }
 
-  const renderNavTab = (item: SidebarNavItem, nested = false): React.JSX.Element => {
+  const dropMarkClass = (node: string): string => {
+    if (!dropHint || dropHint.target.anchor !== node) return ''
+    return dropHint.target.position === 'before' ? 'drop-before' : 'drop-after'
+  }
+
+  const dragHandleProps = (node: string, label: string): React.HTMLAttributes<HTMLSpanElement> => ({
+    role: 'button',
+    tabIndex: 0,
+    'aria-label': `Переместить «${label}»`,
+    title: 'Перетащите, чтобы изменить порядок или переложить в папку',
+    onPointerDown: (event) => beginPointerNodeDrag(event, node),
+    onPointerMove: updatePointerNodeDrag,
+    onPointerUp: endPointerNodeDrag,
+    onPointerCancel: finishNodeDrag,
+    onClick: (event) => event.stopPropagation()
+  })
+
+  const renderNavTab = (item: SidebarNavItem, parentFolderId: string | null = null): React.JSX.Element => {
     const isActive = item.key === active
     const isExtensionModule = 'extension' in item && Boolean(item.extension)
     const isExtensionsHub = item.key === 'extensions'
     const badge = showAdminNav ? 0 : navBadges[item.key] ?? 0
     const badgeText = badge > 99 ? '99+' : String(badge)
+    const node = tabNodeId(item.key)
     return (
       <div
         key={item.key}
-        className={['nav-tab-row', nested ? 'nav-tab-row-nested' : '', draggedTab === item.key ? 'dragging' : '']
+        data-nav-node={node}
+        data-nav-parent={parentFolderId ?? ''}
+        className={[
+          'nav-tab-row',
+          parentFolderId ? 'nav-tab-row-nested' : '',
+          draggedNode === node ? 'dragging' : '',
+          dropMarkClass(node)
+        ]
           .filter(Boolean)
           .join(' ')}
       >
@@ -377,19 +456,8 @@ export function Sidebar({
             </em>
           ) : null}
         </button>
-        {!collapsed ? (
-          <span
-            className="nav-drag-handle"
-            role="button"
-            tabIndex={0}
-            aria-label={`Переместить вкладку «${item.label}»`}
-            title="Перетащите вкладку в папку или общий список"
-            onPointerDown={(event) => beginPointerTabDrag(event, item.key)}
-            onPointerMove={updatePointerTabDrag}
-            onPointerUp={endPointerTabDrag}
-            onPointerCancel={finishTabDrag}
-            onClick={(event) => event.stopPropagation()}
-          >
+        {editMode && !collapsed ? (
+          <span className="nav-drag-handle" {...dragHandleProps(node, item.label)}>
             <GripVertical size={15} strokeWidth={2} aria-hidden />
           </span>
         ) : null}
@@ -529,21 +597,34 @@ export function Sidebar({
         )}
       </div>
 
-      <div className="nav-toolbar">
+      <div className={editMode ? 'nav-toolbar is-editing' : 'nav-toolbar'}>
+        {editMode && !collapsed ? (
+          <button
+            type="button"
+            className="nav-folder-add"
+            onClick={beginFolderCreate}
+            title="Создать папку вкладок"
+            aria-label="Создать папку вкладок"
+          >
+            <FolderPlus size={17} strokeWidth={2} aria-hidden />
+            <span>Новая папка</span>
+          </button>
+        ) : null}
         <button
           type="button"
-          className="nav-folder-add"
-          onClick={beginFolderCreate}
-          title="Создать папку вкладок"
-          aria-label="Создать папку вкладок"
+          className={editMode ? 'nav-folder-add nav-edit-toggle active' : 'nav-folder-add nav-edit-toggle'}
+          onClick={toggleEditMode}
+          aria-pressed={editMode}
+          title={editMode ? 'Завершить настройку меню (Esc)' : 'Настроить меню: порядок вкладок и папки'}
+          aria-label={editMode ? 'Завершить настройку меню' : 'Настроить меню'}
         >
-          <FolderPlus size={17} strokeWidth={2} aria-hidden />
-          {!collapsed ? <span>Новая папка</span> : null}
+          {editMode ? <Check size={16} strokeWidth={2.2} aria-hidden /> : <Pencil size={15} strokeWidth={2} aria-hidden />}
+          {editMode && !collapsed ? <span>Готово</span> : null}
         </button>
       </div>
 
       <nav
-        className={draggedTab ? 'nav nav-dragging' : 'nav'}
+        className={['nav', editMode ? 'nav-editing' : '', draggedNode ? 'nav-dragging' : ''].filter(Boolean).join(' ')}
         data-nav-root
       >
         {folderEditor === 'new' ? (
@@ -570,9 +651,12 @@ export function Sidebar({
           </div>
         ) : null}
 
-        {draggedTab ? (
+        {draggedNode && tabKeyFromNode(draggedNode) !== null && !navLayout.root.includes(draggedNode) ? (
           <div
-            className={`nav-root-drop-zone${dropFolderId === '__root__' ? ' is-over' : ''}`}
+            data-nav-root-zone
+            className={`nav-root-drop-zone${
+              dropHint && dropHint.target.folderId === null && dropHint.target.anchor === null ? ' is-over' : ''
+            }`}
           >
             В общий список
           </div>
@@ -595,7 +679,9 @@ export function Sidebar({
               className={[
                 'nav-folder',
                 containsActive ? 'has-active' : '',
-                dropFolderId === folder.id ? 'is-drop-target' : ''
+                dropHint?.into === folder.id ? 'is-drop-target' : '',
+                draggedNode === nodeId ? 'dragging' : '',
+                dropMarkClass(nodeId)
               ]
                 .filter(Boolean)
                 .join(' ')}
@@ -623,7 +709,7 @@ export function Sidebar({
                   </button>
                 </div>
               ) : (
-                <div className="nav-folder-row">
+                <div className="nav-folder-row" data-nav-node={nodeId}>
                   <button
                     type="button"
                     className="nav-folder-toggle"
@@ -640,7 +726,7 @@ export function Sidebar({
                     <Folder size={17} aria-hidden />
                     {!collapsed ? <span className="nav-folder-name">{folder.name}</span> : null}
                   </button>
-                  {!collapsed ? (
+                  {editMode && !collapsed ? (
                     <span className="nav-folder-actions">
                       <button
                         type="button"
@@ -658,6 +744,9 @@ export function Sidebar({
                       >
                         <Trash2 size={13} aria-hidden />
                       </button>
+                      <span className="nav-folder-grip" {...dragHandleProps(nodeId, folder.name)}>
+                        <GripVertical size={15} strokeWidth={2} aria-hidden />
+                      </span>
                     </span>
                   ) : null}
                 </div>
@@ -666,9 +755,13 @@ export function Sidebar({
                 <div className="nav-folder-children">
                   {folder.tabKeys.map((key) => {
                     const item = itemByKey.get(key as PageKey)
-                    return item ? renderNavTab(item, true) : null
+                    return item ? renderNavTab(item, folder.id) : null
                   })}
-                  {!folder.tabKeys.length ? <span className="nav-folder-empty">Перетащите вкладку сюда</span> : null}
+                  {!folder.tabKeys.length ? (
+                    <span className="nav-folder-empty">
+                      {editMode ? 'Перетащите вкладку сюда' : 'Пустая папка — нажмите карандаш, чтобы добавить вкладки'}
+                    </span>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -754,7 +847,16 @@ export function Sidebar({
         })}
       </div>
 
-      <button className="collapse-btn" onClick={() => setCollapsed((value) => !value)} title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}>
+      <button
+        className="collapse-btn"
+        onClick={() => {
+          if (!collapsed) {
+            setEditMode(false)
+            setFolderEditor(null)
+          }
+          setCollapsed(!collapsed)
+        }}
+        title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}>
         {collapsed ? '\u203A' : '\u2039'}
       </button>
     </aside>

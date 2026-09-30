@@ -53,9 +53,10 @@ class FinanceSalaryEntry(Base):
     __table_args__ = (
         UniqueConstraint(
             "position_id",
+            "department",
             "effective_from",
             "revision",
-            name="uq_finance_salary_position_date_revision",
+            name="uq_finance_salary_position_dept_date_revision",
         ),
     )
 
@@ -63,6 +64,8 @@ class FinanceSalaryEntry(Base):
     position_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("org_positions.id"), nullable=False, index=True
     )
+    # Empty only for rows imported before salaries required a department; read as a fallback.
+    department: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RUB")
     effective_from: Mapped[date] = mapped_column(Date, nullable=False, index=True)

@@ -15,13 +15,15 @@ class PositionKpiProfile(Base):
     __table_args__ = (
         UniqueConstraint(
             "position_name",
+            "department",
             "effective_from",
-            name="uq_position_kpi_profiles_name_effective",
+            name="uq_position_kpi_profiles_name_dept_effective",
         ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     position_name: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    # Empty department: methodology for this position in every department without its own profile.
     department: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     source_code: Mapped[str] = mapped_column(String(64), nullable=False, default="")

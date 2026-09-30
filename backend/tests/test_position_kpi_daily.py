@@ -221,6 +221,31 @@ def test_failed_scorer_skips_tile_not_response(monkeypatch) -> None:
     assert calls["protocol"] == 1
 
 
+def test_failed_source_shows_no_data_instead_of_perfect_score(monkeypatch) -> None:
+    db = _session()
+
+    def broken_odata(*_args, **_kwargs):
+        raise RuntimeError("HTTP 400: Сегмент пути Тема не найден!")
+
+    monkeypatch.setattr("app.services.onec_tools._fetch_odata_list", broken_odata)
+
+    def zero_violations(metric, ctx):
+        rows = ctx.load_for({"loader": "odata", "entity": "Document_ТД_СлужебнаяЗаписка"})
+        return {"fact_pct": 100.0 if not rows else 0.0, "score_pct": 100.0, "contrib_pct": 25.0}, "ok"
+
+    monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_packages", zero_violations)
+    monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol"))
+    monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_instructions", _scorer("instructions"))
+    monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_quality", _scorer("quality"))
+
+    result = get_or_compute_position_kpi(db, PSD, as_of=AS_OF, date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    tiles = {tile["code"]: tile for tile in result["tiles"]}
+    broken = tiles["package_on_time"]
+    assert broken["fact"] is None and broken["score"] is None and broken["contrib"] is None
+    assert "Тема" in broken["evidence"]
+    assert tiles["protocol_on_time"]["score"] == 100
+
+
 def test_refresh_recomputes(monkeypatch) -> None:
     db = _session()
     calls: dict[str, int] = {}

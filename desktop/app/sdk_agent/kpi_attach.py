@@ -441,6 +441,7 @@ def unique_kpi_jobs(rows: list[dict[str, str]]) -> list[dict[str, str]]:
                 "name": name,
                 "weight": str(row.get("weight") or "").strip(),
                 "source": str(row.get("source") or "").strip(),
+                "formula": str(row.get("formula") or "").strip(),
                 "slug": slug,
             }
         )
@@ -454,8 +455,17 @@ def kpi_write_prompt(
     weight: str,
     source: str,
     slug: str,
+    formula: str = "",
+    subject_fio: str = "",
 ) -> str:
     weight_label = f"{weight}%" if weight else "не указан"
+    formula_line = f"Формула из методики Finance: {formula[:600]}\n" if formula else ""
+    subject_line = (
+        f"Сотрудник: {subject_fio}. Сверяй источник на его живых данных, "
+        "но в код ФИО не зашивай — только {employee_fio} / ctx.subject_fio.\n"
+        if subject_fio
+        else ""
+    )
     source_label = source or (
         "не назван — план и факт только из положения, иначе score_pct=None и fact_pct=None"
     )
@@ -464,8 +474,10 @@ def kpi_write_prompt(
         "KPI уже выписаны. Не читай PDF и не повторяй список. "
         "Пиши только один модуль. Не задавай вопросы.\n"
         f"Должность: {position or 'из задания'}.\n"
+        f"{subject_line}"
         f"Показатель: {name}\n"
         f"Вес: {weight_label}\n"
+        f"{formula_line}"
         f"Откуда брать план и факт: {source_label}\n"
         f"{loader_hint}\n"
         "Источник любой: 1С, Outlook, Excel, положение, форма, ходы агента "
@@ -528,6 +540,7 @@ def kpi_write_jobs(
     source_notes: str = "",
     existing_slugs: list[str] | None = None,
     position: str = "",
+    subject_fio: str = "",
 ) -> list[dict[str, str]]:
     skip = {str(item).strip() for item in (existing_slugs or []) if str(item).strip()}
     jobs: list[dict[str, str]] = []
@@ -546,6 +559,8 @@ def kpi_write_jobs(
                     weight=item["weight"],
                     source=source,
                     slug=item["slug"],
+                    formula=item["formula"],
+                    subject_fio=subject_fio,
                 ),
             }
         )

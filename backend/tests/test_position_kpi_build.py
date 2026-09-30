@@ -171,6 +171,78 @@ def test_generated_catalog_replaces_seeded_position() -> None:
     assert db.get(PositionKpiProfile, "plnpo010-assistant") is None
 
 
+def test_dated_generated_catalog_replaces_seed_with_same_key() -> None:
+    from datetime import date
+
+    from sqlalchemy import select
+
+    db = _session()
+    seeded = db.get(PositionKpiProfile, "plnpo010-archive")
+    profile_id = upsert_generated_catalog(
+        db,
+        position="Архивариус",
+        catalog={
+            "position_name": "Архивариус",
+            "department": seeded.department,
+            "effective_from": seeded.effective_from,
+            "metrics": [
+                {
+                    "code": "receive",
+                    "name": "Приём документов",
+                    "weight": 100,
+                    "formula_kind": "needs_clarify",
+                    "formula_json": {"kind": "needs_clarify"},
+                    "sources": [],
+                }
+            ],
+        },
+    )
+    upsert_catalog(db)
+    db.commit()
+    rows = db.execute(
+        select(PositionKpiProfile).where(PositionKpiProfile.position_name == "Архивариус")
+    ).scalars().all()
+    assert [row.id for row in rows] == [profile_id]
+    assert rows[0].effective_from == date(2026, 3, 1)
+
+
+def test_finance_profile_keeps_builtin_calculators_of_seed() -> None:
+    from app.services.position_kpi.connect import builtin_metric_codes
+
+    db = _session()
+    seeded = db.get(PositionKpiProfile, "plnpo010-psd")
+    names = [
+        "Своевременность пакета к заседаниям (СД + РК)",
+        "Своевременность протоколов (СД + РК)",
+        "Реестр и контроль исполнения поручений (СД + РК)",
+        "Качество протокола и материалов (без возвратов по вине секретаря)",
+    ]
+    profile_id = upsert_generated_catalog(
+        db,
+        position=seeded.position_name,
+        catalog={
+            "position_name": seeded.position_name,
+            "department": seeded.department,
+            "effective_from": seeded.effective_from,
+            "source_import_id": "imp-1",
+            "metrics": [
+                {
+                    "code": f"doc_{index}",
+                    "name": name,
+                    "weight": 25,
+                    "formula_kind": "needs_clarify",
+                    "formula_json": {"kind": "needs_clarify"},
+                    "sources": [],
+                }
+                for index, name in enumerate(names, start=1)
+            ],
+        },
+    )
+    db.commit()
+    assert db.get(PositionKpiProfile, "plnpo010-psd") is None
+    assert builtin_metric_codes(db, profile_id) == {f"doc_{index}" for index in range(1, 5)}
+
+
 LOAD_MODULE_CODE = '''
 from datetime import date
 from typing import Any
@@ -302,6 +374,18 @@ def test_dynamic_scorer_loads_generated_module() -> None:
 
             Path(path).unlink(missing_ok=True)
             Path(path).with_name("test_orders_probe.py").unlink(missing_ok=True)
+
+
+def test_session_knows_employee_and_starts_with_kpi() -> None:
+    db = _session()
+    session = start_build(db, user_id="u-fio", position=POSITION, subject_fio="Иванова Анна Петровна")
+    assert session["subject_fio"] == "Иванова Анна Петровна"
+    kickoff = session["messages"][0]
+    assert kickoff["structured"]["stage"] == "kickoff"
+    assert "Иванова Анна Петровна" in kickoff["content"]
+    for metric in session["extracted"]["metrics"]:
+        assert metric["name"] in kickoff["content"]
+    assert "Сотрудник: Иванова Анна Петровна" in session["sdk_prompt"]
 
 
 def test_session_extracts_and_connects_tiles() -> None:
@@ -611,13 +695,38 @@ def test_connect_rejects_partial_module_set() -> None:
         raise AssertionError("partial KPI module set must not connect")
 
 
+def test_start_build_uses_employee_department_profile() -> None:
+    db = _session()
+    extracted = extract_position_kpis(SAMPLE, POSITION)
+    department_profile = upsert_generated_catalog(
+        db,
+        position=POSITION,
+        catalog={
+            "position_name": POSITION,
+            "department": "Отдел кадров",
+            "source_import_id": "finance-dept-import",
+            "source_title": "Finance department methodology",
+            "metrics": extracted["metrics"],
+        },
+        modules=[],
+    )
+    db.commit()
+
+    own = start_build(db, user_id="u-kpi", position=POSITION, department="отдел кадров")
+    other = start_build(db, user_id="u-other", position=POSITION, department="Склад")
+
+    assert own["catalog_draft"]["id"] == department_profile
+    assert own["catalog_draft"]["department"] == "Отдел кадров"
+    assert other["catalog_draft"]["department"] == ""
+
+
 def test_start_build_stops_when_finance_methodology_absent() -> None:
     db = _session()
     try:
         start_build(db, user_id="u-kpi", position="менеджер тендерного офиса")
     except Exception as exc:
         assert getattr(exc, "status_code", None) == 404
-        assert "Finance" in str(exc)
+        assert "Не загружена методика" in str(exc)
     else:
         raise AssertionError("build without Finance methodology must fail")
 

@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     lm_studio_model: str = "ministral-3-14b-instruct-2512"
     lm_studio_ocr_model: str = "ministral-3-14b-instruct-2512"
     ocr_pages_per_batch: int = 3
+    # cursor_sdk — страницы уходят в зрение локального Cursor SDK; lm_studio — старый VLM.
+    ocr_provider: str = "cursor_sdk"
+    # Пусто — берётся cursor_workflow_model.
+    cursor_ocr_model: str = ""
+    cursor_ocr_pages_per_batch: int = 2
+    cursor_ocr_parallel: int = 3
     claude_api_key: str = ""
     claudehub_base_url: str = "https://api.claudehub.fun"
     claudehub_model: str = "claude-sonnet-4.6"

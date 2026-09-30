@@ -211,7 +211,9 @@ def _login_via_erp_gateway(fio: str, password: str, client: str = DEFAULT_CLIENT
     return LoginResponse(access_token=token, user=user_out)
 
 
-def _list_fios_via_erp_gateway(search: str | None, limit: int = 200) -> list[str]:
+def _list_fios_via_erp_gateway(
+    search: str | None, limit: int = 200, only_shown: bool = False
+) -> list[str]:
     base = _auth_gateway_base()
     if not base:
         return []
@@ -219,6 +221,8 @@ def _list_fios_via_erp_gateway(search: str | None, limit: int = 200) -> list[str
     params: dict[str, str | int] = {"limit": limit}
     if search:
         params["search"] = search
+    if only_shown:
+        params["only_shown"] = "true"
     try:
         with httpx.Client(timeout=30.0) as http:
             response = http.get(url, params=params)
@@ -421,8 +425,11 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
     return LoginResponse(access_token=token, user=user_out)
 
 
-async def list_user_fios(search: str | None = None, *, limit: int = 200) -> list[str]:
-    cache_key = _fio_key(f"{search or ''}|{limit}")
+async def list_user_fios(
+    search: str | None = None, *, limit: int = 200, only_shown: bool = False
+) -> list[str]:
+    """only_shown: same people as the 1C login dialog ("Показывать в списке выбора")."""
+    cache_key = _fio_key(f"{search or ''}|{limit}|{int(only_shown)}")
     now = time.monotonic()
     cached = _fio_list_cache.get(cache_key)
     if cached is not None and now - cached[0] < _FIO_LIST_CACHE_TTL_SEC:
@@ -439,18 +446,18 @@ async def list_user_fios(search: str | None = None, *, limit: int = 200) -> list
         return items
     gateway = _auth_gateway_base()
     if gateway and not await _local_erp_reachable_quick():
-        items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit)
+        items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit, only_shown)
         if items or search:
             _fio_list_cache[cache_key] = (now, items)
             return items
     try:
-        items = await asyncio.to_thread(search_user_fios, search, limit)
+        items = await asyncio.to_thread(search_user_fios, search, limit, only_shown=only_shown)
         _fio_list_cache[cache_key] = (now, items)
         return items
     except ErpSqlError as exc:
         logger.exception("ERP SQL error listing users")
         if gateway:
-            items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit)
+            items = await asyncio.to_thread(_list_fios_via_erp_gateway, search, limit, only_shown)
             if items:
                 _fio_list_cache[cache_key] = (now, items)
                 return items

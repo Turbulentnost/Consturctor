@@ -616,8 +616,17 @@ def find_user_by_id(user_id: str) -> ErpUserRow | None:
         _release_connection(conn)
 
 
-def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
-    """Search FIO catalog in erp_pm (read-only). Empty search returns first N names."""
+def search_user_fios(
+    search: str | None = None,
+    limit: int = 200,
+    *,
+    only_shown: bool = False,
+) -> list[str]:
+    """Search FIO catalog in erp_pm (read-only). Empty search returns first N names.
+
+    only_shown: same list as the 1C login dialog ("Показывать в списке выбора", v8users.Show).
+    """
+    shown_sql = "AND v.Show = 1" if only_shown else ""
     conn = _connect()
     try:
         cur = conn.cursor()
@@ -632,12 +641,13 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
                 f"""
                 SELECT DISTINCT TOP (?) {_FIO_EXPR} AS Fio
                 FROM dbo.v8users v WITH (NOLOCK)
-                WHERE {_FIO_EXPR} LIKE ?
+                WHERE ({_FIO_EXPR} LIKE ?
                    OR {_FIO_EXPR} LIKE ?
                    OR LTRIM(RTRIM(v.Name)) LIKE ?
                    OR LTRIM(RTRIM(v.Name)) LIKE ?
                    OR LTRIM(RTRIM(v.Descr)) LIKE ?
-                   OR LTRIM(RTRIM(v.Descr)) LIKE ?
+                   OR LTRIM(RTRIM(v.Descr)) LIKE ?)
+                   {shown_sql}
                 ORDER BY Fio
                 """,
                 (limit, starts, word_starts, starts, word_starts, starts, word_starts),
@@ -648,6 +658,7 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
                 SELECT DISTINCT TOP (?) {_FIO_EXPR} AS Fio
                 FROM dbo.v8users v WITH (NOLOCK)
                 WHERE {_FIO_EXPR} <> N''
+                   {shown_sql}
                 ORDER BY Fio
                 """,
                 (limit,),

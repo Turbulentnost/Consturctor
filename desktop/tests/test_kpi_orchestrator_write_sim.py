@@ -198,6 +198,7 @@ def test_catalog_draft_recovers_rows_when_agent_list_is_not_parseable() -> None:
             "weight": "25",
             "slug": "orders_on_time",
             "source": "Документы 1С",
+            "formula": "",
         }
     ]
 
@@ -228,6 +229,7 @@ def test_catalog_draft_wins_over_sdk_narration_parsed_as_metric() -> None:
             "weight": "100",
             "slug": "tasks_closed_on_time",
             "source": "platform.tasks",
+            "formula": "",
         }
     ]
 

@@ -104,7 +104,12 @@ const api = {
     ipcRenderer.invoke('shell:openPath', filePath),
   focusOutlook: (): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('shell:focusOutlook'),
-  launchTurboProject: (): Promise<{ ok: boolean; error?: string }> =>
+  launchTurboProject: (): Promise<{
+    ok: boolean
+    autoLogin?: boolean
+    error?: string
+    message?: string
+  }> =>
     ipcRenderer.invoke('shell:launchTurboProject'),
   printToPdf: (opts: {
     html?: string

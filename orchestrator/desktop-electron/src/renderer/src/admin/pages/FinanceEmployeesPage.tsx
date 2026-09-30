@@ -24,7 +24,10 @@ export function FinanceEmployeesPage(): React.JSX.Element {
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const visibleEmployees = useMemo(
-    () => employees.filter((employee) => matchesSearch([employee.fio, employee.position], search)),
+    () =>
+      employees.filter((employee) =>
+        matchesSearch([employee.fio, employee.position, employee.department], search)
+      ),
     [employees, search]
   )
 
@@ -64,7 +67,7 @@ export function FinanceEmployeesPage(): React.JSX.Element {
         <h2 className="finance-section-title">Список сотрудников</h2>
         <AdminFilterBar
           filters={[]}
-          searchPlaceholder="Поиск по ФИО или должности"
+          searchPlaceholder="Поиск по ФИО, должности или подразделению"
           onFiltersChange={(_, value) => setSearch(value)}
         />
         {loading ? <p className="finance-message">Загрузка…</p> : null}
@@ -76,7 +79,8 @@ export function FinanceEmployeesPage(): React.JSX.Element {
           <AdminDataTable
             columns={[
               { id: 'fio', label: 'ФИО' },
-              { id: 'position', label: 'Должность' }
+              { id: 'position', label: 'Должность' },
+              { id: 'department', label: 'Подразделение' }
             ]}
             rows={visibleEmployees.map((employee) => [
               employee.id ? (
@@ -88,7 +92,8 @@ export function FinanceEmployeesPage(): React.JSX.Element {
                   {employee.fio}
                 </button>
               ) : employee.fio,
-              employee.position || '—'
+              employee.position || '—',
+              employee.department || '—'
             ])}
           />
         </div>
@@ -105,6 +110,9 @@ export function FinanceEmployeesPage(): React.JSX.Element {
               <div>
                 <h2>История окладов</h2>
                 <p>{drawerEmployee.fio}</p>
+                <p>
+                  {[drawerEmployee.position, drawerEmployee.department].filter(Boolean).join(' · ')}
+                </p>
               </div>
               <button type="button" aria-label="Закрыть" onClick={() => setDrawerEmployee(null)}>
                 <X size={20} />
@@ -116,6 +124,7 @@ export function FinanceEmployeesPage(): React.JSX.Element {
                 <article key={salary.id}>
                   <div>
                     <strong>{salary.period || 'Дата не указана'}</strong>
+                    <p>{salary.department ? `Подразделение: ${salary.department}` : 'Без подразделения — загружен до привязки, перезагрузите'}</p>
                     {salary.reason ? <p>{salary.reason}</p> : null}
                   </div>
                   <span>{salary.amount || '—'} {salary.currency}</span>

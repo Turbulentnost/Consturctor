@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { FileSpreadsheet, Upload } from 'lucide-react'
 import {
   confirmFinanceImport,
+  fetchFinanceDepartments,
+  type FinanceDepartments,
   fetchFinancePositions,
   financeStatusLabel,
   saveFinanceImportRows,
@@ -15,7 +17,11 @@ import { AdminPageHeader } from '../components/shared/AdminPageHeader'
 import { AdminPageShell } from '../components/shared/AdminPageShell'
 
 const IMPORT_CARDS: Array<{ kind: FinanceImportKind; title: string; description: string }> = [
-  { kind: 'salary', title: 'Оклады', description: 'Загрузите файл с окладами по должностям' },
+  {
+    kind: 'salary',
+    title: 'Оклады',
+    description: 'Загрузите файл с окладами по должностям и подразделениям'
+  },
   {
     kind: 'material_incentive',
     title: 'Материальное стимулирование',
@@ -41,6 +47,30 @@ function fileName(path: string): string {
   return path.split(/[\\/]/).pop() || path
 }
 
+function kpiSummary(value: FinanceRow[string]): string[] {
+  let items: unknown = value
+  if (typeof value === 'string') {
+    try {
+      items = JSON.parse(value)
+    } catch {
+      return value ? [value] : []
+    }
+  }
+  if (!Array.isArray(items) || !items.length) return ['KPI не найдены']
+  return items.map((item) => {
+    const metric = (item ?? {}) as Record<string, unknown>
+    return `${String(metric.name ?? '—')} — ${Number(metric.weight ?? 0)}%`
+  })
+}
+
+const BONUS_KINDS: Record<string, { label: string; hint: string }> = {
+  salary_times_crp_times_sum: {
+    label: 'Оклад × ЦРП × Σ KPI',
+    hint: 'Премия = оклад × целевой размер премии (ЦРП) × сумма (вес × выполнение) по показателям'
+  },
+  none: { label: 'Без премии', hint: 'Премия по KPI не начисляется' }
+}
+
 function columnLabel(column: string): string {
   const labels: Record<string, string> = {
     position: 'Должность',
@@ -49,6 +79,7 @@ function columnLabel(column: string): string {
     effective_from: 'Действует с',
     position_id: 'Должность',
     position_name: 'Должность',
+    department: 'Подразделение',
     bonus_base_pct: 'База премии, %',
     bonus_kind: 'Правило премии',
     metrics: 'KPI'
@@ -63,21 +94,38 @@ export function FinanceUploadPage(): React.JSX.Element {
   const [currentImport, setCurrentImport] = useState<FinanceImport | null>(null)
   const [draftRows, setDraftRows] = useState<FinanceRow[]>([])
   const [positions, setPositions] = useState<FinancePosition[]>([])
+  const [departments, setDepartments] = useState<FinanceDepartments>({ names: [], byPosition: {} })
   const [effectiveFrom, setEffectiveFrom] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [activity, setActivity] = useState<FinanceActivity[]>([])
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  const columns = useMemo(
-    () =>
-      Array.from(new Set(draftRows.flatMap((row) => Object.keys(row)))).filter(
-        (column) =>
-          column !== 'row_id' &&
-          !(currentImport?.kind === 'salary' && column === 'position_name')
-      ),
-    [currentImport?.kind, draftRows]
-  )
+  const columns = useMemo(() => {
+    const keys = Array.from(new Set(draftRows.flatMap((row) => Object.keys(row)))).filter(
+      (column) =>
+        column !== 'row_id' &&
+        column !== 'department' &&
+        column !== 'source_position_name' &&
+        !(currentImport?.kind === 'salary' && column === 'position_name') &&
+        !(currentImport?.kind === 'material_incentive' && column === 'position_id')
+    )
+    if (!draftRows.length) return keys
+    const positionIndex = keys.findIndex((column) => column === 'position_id' || column === 'position_name')
+    keys.splice(positionIndex + 1, 0, 'department')
+    return keys
+  }, [currentImport?.kind, draftRows])
+
+  useEffect(() => {
+    if (!currentImport || departments.names.length) return
+    let active = true
+    void fetchFinanceDepartments()
+      .then((items) => active && setDepartments(items))
+      .catch(() => active && setError('Не удалось загрузить справочник подразделений.'))
+    return () => {
+      active = false
+    }
+  }, [currentImport, departments.names.length])
 
   useEffect(() => {
     if (startedAt === null) return
@@ -132,7 +180,15 @@ export function FinanceUploadPage(): React.JSX.Element {
       }
     ])
     try {
-      const result = await uploadFinanceImport(kind, path)
+      const result = await uploadFinanceImport(kind, path, () =>
+        setActivity((previous) => [
+          ...previous,
+          {
+            time: clock(),
+            text: 'Файл принят. Распознаю все страницы через Cursor SDK — для скана это несколько минут.'
+          }
+        ])
+      )
       setActivity((previous) => [
         ...previous,
         {
@@ -178,7 +234,22 @@ export function FinanceUploadPage(): React.JSX.Element {
           { time: clock(), text: 'Проверка завершена без ошибок.', tone: 'success' }
         ])
       }
-      setMessage(`Файл «${result.fileName || fileName(path)}» обработан. Проверьте извлечённые строки.`)
+      if (result.status === 'confirmed') {
+        setActivity((previous) => [
+          ...previous,
+          {
+            time: clock(),
+            text: `KPI записаны в БД: ${result.rows.length} профилей по должностям и подразделениям.`,
+            tone: 'success'
+          }
+        ])
+        setMessage(
+          `Файл «${result.fileName || fileName(path)}» обработан, KPI записаны в БД. ` +
+            'Сотрудники увидят их на вкладке KPI и смогут запустить сборку модулей расчёта.'
+        )
+      } else {
+        setMessage(`Файл «${result.fileName || fileName(path)}» обработан. Проверьте извлечённые строки.`)
+      }
     } catch (reason) {
       setError(errorMessage(reason))
       setActivity((previous) => [
@@ -199,13 +270,16 @@ export function FinanceUploadPage(): React.JSX.Element {
 
   function selectPosition(rowIndex: number, positionId: string): void {
     const position = positions.find((item) => item.id === positionId)
+    const staffed = departments.byPosition[positionId] ?? []
     setDraftRows((previous) =>
       previous.map((row, index) =>
         index === rowIndex
           ? {
               ...row,
               position_id: positionId,
-              position_name: position?.name ?? row.position_name
+              position_name: position?.name ?? row.position_name,
+              department:
+                !row.department && staffed.length === 1 ? staffed[0] : (row.department ?? '')
             }
           : row
       )
@@ -244,6 +318,8 @@ export function FinanceUploadPage(): React.JSX.Element {
       setBusyKind(null)
     }
   }
+
+  const isConfirmed = currentImport?.status === 'confirmed'
 
   return (
     <AdminPageShell breadcrumb="" className="finance-page">
@@ -332,7 +408,7 @@ export function FinanceUploadPage(): React.JSX.Element {
             </label>
           ) : null}
           {draftRows.length ? (
-            <div className="finance-edit-table-wrap">
+            <fieldset className="finance-edit-table-wrap finance-edit-fieldset" disabled={isConfirmed}>
               <table className="finance-edit-table">
                 <thead>
                   <tr>{columns.map((column) => <th key={column}>{columnLabel(column)}</th>)}</tr>
@@ -355,6 +431,67 @@ export function FinanceUploadPage(): React.JSX.Element {
                                 </option>
                               ))}
                             </select>
+                          ) : column === 'department' ? (
+                            (() => {
+                              const value = String(row.department ?? '')
+                              const isSalary = currentImport.kind === 'salary'
+                              const staffed = isSalary
+                                ? (departments.byPosition[String(row.position_id ?? '')] ?? [])
+                                : []
+                              const others = departments.names.filter((name) => !staffed.includes(name))
+                              const renderOptions = (names: string[]) =>
+                                names.map((name) => (
+                                  <option key={name} value={name}>
+                                    {name}
+                                  </option>
+                                ))
+                              return (
+                                <select
+                                  aria-label={`Подразделение, строка ${rowIndex + 1}`}
+                                  aria-invalid={isSalary && !value}
+                                  value={value}
+                                  onChange={(event) =>
+                                    updateCell(rowIndex, 'department', event.target.value)
+                                  }
+                                >
+                                  <option value="" disabled={isSalary}>
+                                    {isSalary ? 'Выберите подразделение' : 'Все подразделения'}
+                                  </option>
+                                  {value && !departments.names.includes(value) ? (
+                                    <option value={value}>{value} (нет в справочнике)</option>
+                                  ) : null}
+                                  {staffed.length ? (
+                                    <>
+                                      <optgroup label="Где есть эта должность">
+                                        {renderOptions(staffed)}
+                                      </optgroup>
+                                      <optgroup label="Остальные">{renderOptions(others)}</optgroup>
+                                    </>
+                                  ) : (
+                                    renderOptions(others)
+                                  )}
+                                </select>
+                              )
+                            })()
+                          ) : column === 'bonus_kind' ? (
+                            <select
+                              aria-label={`${columnLabel(column)}, строка ${rowIndex + 1}`}
+                              title={BONUS_KINDS[String(row[column] ?? '')]?.hint}
+                              value={String(row[column] ?? '')}
+                              onChange={(event) => updateCell(rowIndex, column, event.target.value)}
+                            >
+                              {Object.entries(BONUS_KINDS).map(([value, kind]) => (
+                                <option key={value} value={value}>
+                                  {kind.label}
+                                </option>
+                              ))}
+                            </select>
+                          ) : column === 'metrics' ? (
+                            <ul className="finance-kpi-list">
+                              {kpiSummary(row.metrics).map((item, index) => (
+                                <li key={index}>{item}</li>
+                              ))}
+                            </ul>
                           ) : (
                             <input
                               aria-label={`${column}, строка ${rowIndex + 1}`}
@@ -368,21 +505,27 @@ export function FinanceUploadPage(): React.JSX.Element {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </fieldset>
           ) : null}
           {currentImport.errors.length ? (
             <ul className="finance-import-errors">
               {currentImport.errors.map((item, index) => <li key={index}>{item}</li>)}
             </ul>
           ) : null}
-          <div className="finance-confirmation__actions">
-            <button type="button" className="admin-outline-btn" disabled={Boolean(busyKind)} onClick={() => void saveRows()}>
-              Сохранить изменения
-            </button>
-            <button type="button" className="admin-primary-btn" disabled={Boolean(busyKind) || !draftRows.length} onClick={() => void confirm()}>
-              Подтвердить импорт
-            </button>
-          </div>
+          {isConfirmed ? (
+            <p className="finance-empty">
+              Данные записаны в БД. Чтобы изменить их, загрузите исправленный файл.
+            </p>
+          ) : (
+            <div className="finance-confirmation__actions">
+              <button type="button" className="admin-outline-btn" disabled={Boolean(busyKind)} onClick={() => void saveRows()}>
+                Сохранить изменения
+              </button>
+              <button type="button" className="admin-primary-btn" disabled={Boolean(busyKind) || !draftRows.length} onClick={() => void confirm()}>
+                Подтвердить импорт
+              </button>
+            </div>
+          )}
         </section>
       ) : null}
     </AdminPageShell>

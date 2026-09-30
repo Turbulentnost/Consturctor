@@ -66,6 +66,20 @@ def score_assistant_meetings(
     return report, text
 
 
+def score_assistant_meetings_report(
+    _metric: PositionKpiMetric, ctx: SourceBundle
+) -> tuple[dict[str, Any], str]:
+    from kpi.sources.assistant_meetings_report import compute_report_plan_fact_kpi, format_report
+
+    report = compute_report_plan_fact_kpi(
+        ctx,
+        as_of=ctx.as_of,
+        date_from=ctx.date_from,
+        date_to=ctx.date_to,
+    )
+    return report, format_report(report)
+
+
 def score_assistant_dpi(
     _metric: PositionKpiMetric, ctx: SourceBundle
 ) -> tuple[dict[str, Any], str]:
@@ -147,6 +161,7 @@ SCORERS: dict[str, Scorer] = {
     "kpi.sources.sd_rk_instructions": score_instructions,
     "kpi.sources.sd_rk_quality": score_quality,
     "kpi.sources.assistant_meetings": score_assistant_meetings,
+    "kpi.sources.assistant_meetings_report": score_assistant_meetings_report,
     "kpi.sources.assistant_dpi": score_assistant_dpi,
     "kpi.sources.assistant_orders": score_assistant_orders,
     "kpi.sources.assistant_unplanned": score_assistant_unplanned,
