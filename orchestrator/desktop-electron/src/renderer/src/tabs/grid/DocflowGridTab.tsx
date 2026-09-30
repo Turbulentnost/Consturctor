@@ -32,6 +32,7 @@ import { DocflowPaymentRequestsPanel } from './DocflowPaymentRequestsPanel'
 import { DocflowProtocolsPanel } from './DocflowProtocolsPanel'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 import './docflowGrid.css'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; tone: string }[] = [
   { id: 'correspondence', title: 'Корреспонденция', hint: 'Входящие и исходящие письма', icon: Mail, tone: 'blue' },
@@ -215,6 +216,39 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
     initialSort: { key: 'date', dir: 'desc' }
   })
   const rows = table.rows
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      journal === 'correspondence'
+        ? rows.map((row) => {
+            const stableId = row.id || `${row.number}-${row.date}`
+            const targetId = `correspondence:${stableId}`
+            return {
+              id: `docflow:${targetId}`,
+              source: 'grid:docflow:correspondence',
+              pageKey: 'docflow',
+              kind: 'entity',
+              targetId,
+              sectionId: 'correspondence',
+              title: row.comment || `Корреспонденция № ${cell(row.number)}`,
+              subtitle: [formatCorrespondenceDate(row.date), row.organization, row.direction]
+                .filter(Boolean)
+                .join(' · '),
+              keywords: [
+                row.number,
+                row.emailFrom,
+                row.emailTo,
+                row.partner,
+                row.addressee,
+                row.department,
+                row.incomingNumber,
+                kind
+              ]
+            }
+          })
+        : [],
+    [journal, rows, kind]
+  )
+  useRegisterGlobalSearch('grid:docflow:correspondence', globalSearchEntries)
   const selected = rows.find((row) => (row.id || `${row.number}-${row.date}`) === selectedId) || null
 
   return (
@@ -227,6 +261,7 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
             return (
               <button
                 key={item.id}
+                data-search-id={item.id}
                 type="button"
                 className={`docflow-nav-item${journal === item.id ? ' is-active' : ''}`}
                 onClick={() => setJournal(item.id as JournalId)}
@@ -379,6 +414,7 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
                             return (
                               <tr
                                 key={key}
+                                data-search-id={`correspondence:${key}`}
                                 className={`docflow-row${selectedId === key ? ' is-selected' : ''}`}
                                 tabIndex={0}
                                 onClick={() => setSelectedId(key)}

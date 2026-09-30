@@ -50,6 +50,12 @@ import {
   type TaskDraft
 } from './DocflowProtocolEdit'
 import { SortTh, useDocflowTable } from './docflowTableTools'
+import {
+  useRegisterGlobalSearch,
+  type GlobalSearchEntry
+} from '../../layout/globalSearch'
+
+const GLOBAL_SEARCH_SOURCE = 'grid:docflow:protocols'
 
 const FALLBACK_STATUSES: ProtocolOption[] = [
   { code: 'Подготовлен', label: 'Подготовлен' },
@@ -771,6 +777,36 @@ export function DocflowProtocolsPanel({
     query
   })
   const visible = table.rows
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      visible.map((row) => {
+        const targetId = `protocol:${row.id}`
+        return {
+          id: `docflow:${targetId}`,
+          source: GLOBAL_SEARCH_SOURCE,
+          pageKey: 'docflow',
+          kind: 'entity',
+          targetId,
+          sectionId: 'protocols',
+          title: row.topic || `Протокол № ${cell(row.number)}`,
+          subtitle: [onlyDay(row.date), row.time, row.kind, row.status].filter(Boolean).join(' · '),
+          keywords: [
+            row.number,
+            row.head,
+            row.room,
+            row.department,
+            row.project,
+            row.preparedBy,
+            row.responsible,
+            row.access,
+            row.comment,
+            ...row.participants
+          ]
+        }
+      }),
+    [visible]
+  )
+  useRegisterGlobalSearch(GLOBAL_SEARCH_SOURCE, globalSearchEntries)
 
   const filtered = Boolean(topic || head || department || room || preparedBy || project || participant || query.trim())
 
@@ -918,6 +954,7 @@ export function DocflowProtocolsPanel({
                 {visible.map((row) => (
                   <tr
                     key={row.id}
+                    data-search-id={`protocol:${row.id}`}
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}

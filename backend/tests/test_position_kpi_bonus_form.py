@@ -131,10 +131,10 @@ def test_report_column_links_to_detail_sheet() -> None:
     workbook = load_workbook(BytesIO(content))
     cover = workbook["ИЦПП"]
     link = cover["D13"].hyperlink
-    assert cover["D13"].value == "отчёт"
     assert link is not None
     assert link.location
     detail_name = link.location.split("!")[0].strip("'")
+    assert cover["D13"].value == detail_name
     detail = workbook[detail_name]
     blob = "\n".join(str(cell.value or "") for row in detail.iter_rows() for cell in row)
     assert "Совет директоров 12.09" in blob
@@ -144,6 +144,125 @@ def test_report_column_links_to_detail_sheet() -> None:
     assert detail["A2"].value == "К форме"
     assert detail["A2"].hyperlink is not None
     assert detail["A2"].hyperlink.location.startswith("'ИЦПП'")
+
+
+def test_dpi_detail_sheet_shows_plan_and_fact() -> None:
+    content = build_bonus_form_xlsx(
+        fio="Комарькова",
+        position="Помощник руководителя",
+        period_from=date(2026, 9, 1),
+        period_to=date(2026, 9, 30),
+        rows=[
+            {
+                "code": "dpi_appointment",
+                "name": "Назначение ДПИ за месяц",
+                "weight": 10,
+                "evidence": "В календаре 16/16, факт 100%",
+                "earned": 10,
+                "detail": {
+                    "plan_total": 16,
+                    "in_calendar": 16,
+                    "fact_pct": 100,
+                    "score_pct": 100,
+                    "rows": [
+                        {
+                            "number": 1,
+                            "name": "ДПИ СУП",
+                            "rule": "5 числа каждого месяца",
+                            "plan_date": "2026-09-07",
+                            "fact_date": "2026-09-08",
+                            "appointed": True,
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    workbook = load_workbook(BytesIO(content))
+    detail = workbook[workbook.sheetnames[1]]
+    blob = "\n".join(str(cell.value or "") for row in detail.iter_rows() for cell in row)
+    assert "План, шт" in blob
+    assert "В календаре, шт" in blob
+    assert "ДПИ СУП" in blob
+    assert "5 числа каждого месяца" in blob
+    assert "2026-09-07" in blob
+    assert "2026-09-08" in blob
+    assert "да" in blob
+
+
+def test_instructions_fact_cell_stays_empty() -> None:
+    content = build_bonus_form_xlsx(
+        fio="Ильченко Екатерина Александровна",
+        position=PSD,
+        period_from=date(2026, 9, 1),
+        period_to=date(2026, 9, 30),
+        rows=[
+            {
+                "code": "instructions",
+                "name": "Реестр и контроль исполнения поручений (СД + РК)",
+                "weight": 25,
+                "evidence": (
+                    "2026-09-01 — 2026-09-30: 1С 31 позиций, в Excel 31. "
+                    "Позиции 1С считаем внесёнными в файл. Файл: C:\\ActionTracker.xlsx"
+                ),
+                "earned": 25,
+                "detail": {
+                    "r_total": 31,
+                    "r24": 31,
+                    "fact_pct": 100,
+                    "score_pct": 100,
+                    "rows": [],
+                },
+            }
+        ],
+    )
+    workbook = load_workbook(BytesIO(content))
+    cover = workbook["ИЦПП"]
+    assert cover["F13"].value in (None, "")
+    detail = workbook[workbook.sheetnames[1]]
+    blob = "\n".join(str(cell.value or "") for row in detail.iter_rows() for cell in row)
+    assert "ActionTracker" not in blob
+    assert "считаем внесёнными" not in blob
+    assert "Rвсего" in blob
+
+
+def test_orders_detail_sheet_is_not_a_meeting() -> None:
+    content = build_bonus_form_xlsx(
+        fio="Акинина",
+        position="Помощник руководителя",
+        period_from=date(2026, 9, 1),
+        period_to=date(2026, 9, 30),
+        rows=[
+            {
+                "code": "orders_registration",
+                "name": "Регистрация приказов и распоряжений",
+                "weight": 10,
+                "evidence": "Приказов 1, распоряжений 0, всего 1.",
+                "earned": 10,
+                "detail": {
+                    "fact_pct": 100,
+                    "score_pct": 100,
+                    "rows": [
+                        {
+                            "kind": "order",
+                            "doc_kind": "Приказ",
+                            "number": "НП00-000322",
+                            "date": "2026-09-01",
+                            "posted": True,
+                            "content": "О назначении ответственного",
+                            "ref": "30b21e5c",
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    workbook = load_workbook(BytesIO(content))
+    detail = workbook[workbook.sheetnames[1]]
+    headers = [cell.value for cell in next(detail.iter_rows(min_row=7, max_row=7))]
+    assert headers[:5] == ["Номер", "Вид", "Содержание", "Дата", "Проведён"]
+    assert "Совещание" not in headers
+    assert "30b21e5c" not in [cell.value for row in detail.iter_rows() for cell in row]
 
 
 def test_render_lists_position_goals_for_ilchenko(monkeypatch) -> None:

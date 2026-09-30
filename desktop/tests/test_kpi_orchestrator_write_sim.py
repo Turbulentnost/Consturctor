@@ -39,12 +39,8 @@ def _write_as_orchestrator_agent(workspace: Path, slug: str, weight: str) -> Non
     module = (
         KPI_MODULE_SAMPLE.replace("orders_on_time", slug)
         .replace("fact * 50 / 100.0", f"fact * {weight} / 100.0")
-        .replace('SOURCE = {"loader": "odata"}', 'SOURCE = {"kind": "onec", "loader": "odata"}')
     )
-    test = (
-        KPI_MODULE_SAMPLE_TEST.replace("orders_on_time", slug)
-        .replace('assert extra.get("loader") == "odata"', 'assert extra.get("loader") == "odata"')
-    )
+    test = KPI_MODULE_SAMPLE_TEST.replace("orders_on_time", slug)
     (workspace / "generated" / f"{slug}.py").write_text(module, encoding="utf-8")
     (workspace / "tests" / f"test_{slug}.py").write_text(test, encoding="utf-8")
 
@@ -87,9 +83,8 @@ def test_orchestrator_write_then_pytest_and_compute(tmp_path: Path) -> None:
             return {}
 
         def load_for(self, extra):
-            assert extra.get("loader") == "odata"
-            assert extra.get("kind") == "onec"
-            assert not extra.get("entity")
+            assert extra.get("source") == "onec.odata"
+            assert extra.get("params", {}).get("entity")
             return [{"on_time": True}, {"plan": "2026-09-10", "fact": "2026-09-11"}]
 
     report = mod.compute_planirovanie_soveschaniy_organizaciya_ra_kpi(
@@ -129,7 +124,7 @@ def test_daily_pair_uses_compute_not_live_bypass(tmp_path: Path, monkeypatch) ->
     calls: list[str] = []
 
     def load_for(extra):
-        calls.append(str(extra.get("loader")))
+        calls.append(str(extra.get("source")))
         return [{"on_time": True}, {"on_time": False}]
 
     ctx = SimpleNamespace(
@@ -140,9 +135,103 @@ def test_daily_pair_uses_compute_not_live_bypass(tmp_path: Path, monkeypatch) ->
         load_for=load_for,
     )
     report = registry.run_generated_pair(mod, ctx, None)
-    assert calls == ["odata"]
+    assert calls == ["onec.odata"]
     assert report["fact_pct"] == 50.0
     assert report["contrib_pct"] == 20.0
+
+
+def test_contract_rejects_self_tested_incomplete_module(tmp_path: Path) -> None:
+    generated = tmp_path / "generated"
+    tests = tmp_path / "tests"
+    generated.mkdir()
+    tests.mkdir()
+    (generated / "__init__.py").write_text("", encoding="utf-8")
+    (generated / "broken.py").write_text(
+        "def score_broken_kpi(rows, *, as_of, date_from=None, date_to=None):\n"
+        "    return {'fact_pct': None, 'score_pct': None, 'contrib_pct': None, 'rows': []}\n",
+        encoding="utf-8",
+    )
+    (tests / "test_broken.py").write_text(
+        "from generated.broken import score_broken_kpi\n\n"
+        "def test_score():\n"
+        "    assert score_broken_kpi([], as_of=None)['fact_pct'] is None\n",
+        encoding="utf-8",
+    )
+
+    ok, output = _load_orch_sidecar()._run_kpi_slug_tests(tmp_path, "broken")
+
+    assert not ok
+    assert "SOURCE" in output
+
+
+def test_workspace_requires_every_expected_slug(tmp_path: Path) -> None:
+    _write_as_orchestrator_agent(tmp_path, SLUG, WEIGHT)
+
+    ok, output = _load_orch_sidecar()._run_kpi_workspace_tests(
+        tmp_path,
+        required_slugs=[SLUG, "missing_metric"],
+    )
+
+    assert not ok
+    assert "missing_metric" in output
+
+
+def test_catalog_draft_recovers_rows_when_agent_list_is_not_parseable() -> None:
+    rows = _load_orch_sidecar()._kpi_rows_from_session_catalog(
+        {
+            "catalog_draft": {
+                "metrics": [
+                    {
+                        "code": "orders_on_time",
+                        "name": "Приказы в срок",
+                        "weight": 25,
+                        "sources": [{"detail": "Методика"}, {"detail": "Документы 1С"}],
+                    }
+                ]
+            }
+        }
+    )
+
+    assert rows == [
+        {
+            "name": "Приказы в срок",
+            "weight": "25",
+            "slug": "orders_on_time",
+            "source": "Документы 1С",
+            "formula": "",
+        }
+    ]
+
+
+def test_catalog_draft_wins_over_sdk_narration_parsed_as_metric() -> None:
+    rows = _load_orch_sidecar()._kpi_rows_for_session(
+        {
+            "catalog_draft": {
+                "metrics": [
+                    {
+                        "code": "tasks_closed_on_time",
+                        "name": "Своевременное закрытие задач",
+                        "weight": 100,
+                        "sources": [{"detail": "platform.tasks"}],
+                    }
+                ]
+            }
+        },
+        (
+            "Читаю PDF постранично через office.read_file."
+            "Своевременное закрытие задач — 100%\nСПИСОК_ГОТОВ"
+        ),
+    )
+
+    assert rows == [
+        {
+            "name": "Своевременное закрытие задач",
+            "weight": "100",
+            "slug": "tasks_closed_on_time",
+            "source": "platform.tasks",
+            "formula": "",
+        }
+    ]
 
 
 def _load_orch_sidecar():

@@ -57,6 +57,7 @@ import { acceptPlatformTask, completePlatformTask, PlatformTaskDetail } from './
 import { ClosedOneCTasksModal } from './ClosedOneCTasksModal'
 import { onecRowImportance } from '../../workplace/onecTaskImportance'
 import { usePageSearch } from '../../layout/pageSearchContext'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 export function TasksGridTab({
   user,
@@ -83,10 +84,13 @@ export function TasksGridTab({
     () => buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows, data.platformTasks),
     [data.erpTasks, data.turboTasks, data.processRows, data.platformTasks]
   )
-  const effectiveTile: TaskTileFilter = {
-    source: (barSource as TaskSourceFilter) || tileFilter.source,
-    overdueOnly: barOverdue || tileFilter.overdueOnly
-  }
+  const effectiveTile = useMemo<TaskTileFilter>(
+    () => ({
+      source: (barSource as TaskSourceFilter) || tileFilter.source,
+      overdueOnly: barOverdue || tileFilter.overdueOnly
+    }),
+    [barSource, tileFilter.source, barOverdue, tileFilter.overdueOnly]
+  )
   const taskRows = useMemo(() => {
     const q = query.trim().toLowerCase()
     const filtered = filterTaskRows(catalog.rows, effectiveTile, catalog.erpIds, catalog.turboIds).filter(
@@ -269,6 +273,24 @@ export function TasksGridTab({
   }
   const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
   const visibleRows = groups.flatMap((group) => (collapsedGroups.has(group.key) ? [] : group.rows))
+  // groups пересобирается на каждом рендере; по ключу из id поиск не перерегистрируется зря.
+  const visibleKey = visibleRows.map((row) => row.id).join('\n')
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(() => {
+    const ids = new Set(visibleKey.split('\n'))
+    return taskRows
+      .filter((row) => ids.has(row.id))
+      .map((row) => ({
+        id: `tasks:${row.id}`,
+        source: 'grid:tasks',
+        pageKey: 'tasks',
+        kind: 'entity',
+        targetId: row.id,
+        title: row.title,
+        subtitle: [row.source, row.status, row.project].filter(Boolean).join(' · '),
+        keywords: [row.process, row.author, row.performer, row.executor, row.deadline]
+      }))
+  }, [visibleKey, taskRows])
+  useRegisterGlobalSearch('grid:tasks', globalSearchEntries)
   const effectiveId = selectedId || visibleRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
   const renderRow = (row: (typeof taskRows)[number]): React.JSX.Element => {
@@ -279,6 +301,7 @@ export function TasksGridTab({
     return (
       <tr
         key={row.id}
+        data-search-id={row.id}
         className={[
           effectiveId === row.id ? 'selected' : '',
           isNew ? 'is-new-onec' : '',

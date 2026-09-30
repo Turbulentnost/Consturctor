@@ -166,6 +166,10 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         if (requested) delete indexRef.current[requested]
         delete indexRef.current[linked]
         if (!workflowId) return
+        if (workflowId.startsWith('kpi-build-')) {
+          indexRef.current[linked] = workflowId
+          return
+        }
         // Sidecar kept a zombie slot — no new SDK run, so no tools/files/search happen.
         setEntries((prev) => {
           const entry = prev[workflowId]

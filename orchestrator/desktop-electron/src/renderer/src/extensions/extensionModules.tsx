@@ -4,6 +4,7 @@ import type { PageKey } from '../components/Sidebar'
 import type { PassportTab } from '../pages/AgentPassportPage'
 import { AssignmentsRegistryGridTab } from '../tabs/grid/AssignmentsRegistryGridTab'
 import { AgentLibraryGridTab } from '../tabs/grid/AgentLibraryGridTab'
+import { ProjectsGridTab } from '../tabs/grid/ProjectsGridTab'
 import type { ExtensionPositionFilter } from './extensionAudience'
 import {
   canUseAgentLibrary,
@@ -40,6 +41,18 @@ export type ExtensionModule = {
 }
 
 export const EXTENSION_MODULES: ExtensionModule[] = [
+  {
+    id: 'turboproject',
+    pageKey: 'projects',
+    navLabel: 'Turboproject',
+    title: 'Turboproject',
+    subtitle: 'Портфель проектов, задачи, сроки и запуск настольного приложения',
+    description:
+      'Работа с портфелем TurboProject: проекты, роли, задачи, сроки, риски и открытие установленного приложения.',
+    positionGroups: ['all'],
+    canAccess: () => true,
+    renderTab: ({ user }) => <ProjectsGridTab user={user} />
+  },
   {
     id: 'assignments_registry',
     pageKey: 'assignments_registry',

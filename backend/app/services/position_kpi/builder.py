@@ -7,15 +7,26 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
-from app.models.position_kpi import PositionKpiBuild, PositionKpiBuildMessage
+from app.models.position_kpi import (
+    PositionKpiBuild,
+    PositionKpiBuildMessage,
+    PositionKpiMetric,
+    PositionKpiModule,
+    PositionKpiProfile,
+    PositionKpiSource,
+)
 from app.services.position_kpi.connect import (
+    builtin_metric_codes,
+    connect_modules_to_profile,
     list_module_descriptors,
     module_source,
     stash_module_payloads,
-    upsert_generated_catalog,
+    validate_generated_module_payloads,
 )
+from app.services.position_kpi.daily import resolve_profile
 from app.services.position_kpi.extract import extract_position_kpis
 from app.services.position_kpi.sources import catalog as data_source_catalog
 from app.services.position_kpi.sources import describe_for_prompt
@@ -125,27 +136,26 @@ def build_sdk_prompt(build: PositionKpiBuild) -> str:
     metrics = extracted.get("metrics") if isinstance(extracted.get("metrics"), list) else []
     lines = [
         "Ты одноразовый конструктор KPI, не публикуемый агент.",
-        f"Должность пользователя: {build.position_name}. Ищи только её таблицу.",
+        f"Должность пользователя: {build.position_name}. Официальная методика уже загружена Finance.",
+        *(
+            [
+                f"Сотрудник: {_subject_fio(build)}. По нему проверяй источники на живых данных, "
+                "но в код ФИО не зашивай."
+            ]
+            if _subject_fio(build)
+            else []
+        ),
         "Порядок строго такой:",
-        "1) Если страницы положения уже в этом сообщении — не вызывай office.read_file. "
-        "Иначе один вызов office.read_file на конкретный файл .pdf "
-        "(путь вида materials/attachments/001_имя.pdf, не папка attachments). "
-        "start_page=2 — обложку пропусти. "
-        "Как только инструмент вернул vision_pages — документ уже прочитан, "
-        "второй вызов не делай. Не читай extracted.json, methodology.txt, AGENTS.md.",
-        "2) По страницам найди KPI именно этой должности. Остальные строки таблицы выкинь.",
-        "3) Если должности в документе нет — напиши это в чат и остановись. "
-        "Больше никаких инструментов, askQuestion и файлов.",
-        "4) Если KPI есть — выпиши ВСЕ показатели этой должности со всех страниц, "
-        "не только первые два. Каждый с новой строки: 1. Название — вес N%. "
-        "Последняя строка ровно СПИСОК_ГОТОВ. Не вызывай askQuestion.",
-        "5) Модули на этом шаге не пиши. Следующий шаг спрашивает, откуда план и факт, "
-        "затем отдельный агент пишет по одному slug: generated/<slug>.py и tests/test_<slug>.py. "
+        "1) Не запрашивай и не загружай файл методики: список KPI ниже утверждён Finance.",
+        "2) Не меняй названия, коды, веса и формулы каталога. Уточняй только источники плана, "
+        "факта и правила сопоставления, если их не хватает.",
+        "3) Напиши по одному slug: generated/<slug>.py и tests/test_<slug>.py. "
         "filename именно такой: это корень workspace, не папка code/. "
         "План и факт только из документа. Нет в документе — score_pct=None. "
         "Готовые модули уйдут в backend/kpi/generated.",
+        "4) Модуль общий для должности. Никогда не зашивай ФИО сотрудника в код или SOURCE. "
+        "Для персональных отборов используй ctx.subject_fio, а должность — ctx.subject_position.",
         "Не спрашивай расписание, Outlook и «когда запускать агента».",
-        "Скан office.read_file отдаёт в зрение Cursor SDK. Не ищи OCR и LM Studio.",
         "Не пиши план «сейчас прочитаю».",
         "В модуле связка: SOURCE из реестра ниже, load_<code>_rows(ctx) = ctx.load_for(SOURCE), "
         "score_<code>_kpi(rows, ...) считает KPI, "
@@ -158,11 +168,6 @@ def build_sdk_prompt(build: PositionKpiBuild) -> str:
         "",
         "Извлечённые показатели:",
     ]
-    if extracted.get("needs_vision") and not metrics:
-        lines.append(
-            "Текста нет — это скан. extracted.json не содержит KPI. "
-            "Читай PDF через office.read_file (без обложки) и ищи раздел этой должности."
-        )
     for metric in metrics:
         if not isinstance(metric, dict):
             continue
@@ -195,6 +200,7 @@ def serialize_build(db: Session, build: PositionKpiBuild) -> dict[str, Any]:
     return {
         "build_id": build.id,
         "position": build.position_name,
+        "subject_fio": _subject_fio(build),
         "status": build.status,
         "cursor_agent_id": build.cursor_agent_id,
         "extracted": build.extracted_json or {},
@@ -236,10 +242,124 @@ def _build_has_progress(build: PositionKpiBuild) -> bool:
     return False
 
 
-def start_build(db: Session, *, user_id: str, position: str) -> dict[str, Any]:
+def _catalog_for_profile(db: Session, profile: PositionKpiProfile) -> dict[str, Any]:
+    metrics = list(
+        db.scalars(
+            select(PositionKpiMetric)
+            .where(PositionKpiMetric.profile_id == profile.id)
+            .order_by(PositionKpiMetric.sort_order, PositionKpiMetric.id)
+        ).all()
+    )
+    sources = list(
+        db.scalars(
+            select(PositionKpiSource).where(
+                PositionKpiSource.metric_id.in_([item.id for item in metrics])
+            )
+        ).all()
+    ) if metrics else []
+    by_metric: dict[str, list[dict[str, Any]]] = {}
+    for source in sources:
+        by_metric.setdefault(source.metric_id, []).append(
+            {
+                "role": source.role,
+                "kind": source.kind,
+                "title": source.title,
+                "detail": source.detail,
+                "update_rule": source.update_rule,
+                "extra_json": dict(source.extra_json or {}),
+            }
+        )
+    return {
+        "id": profile.id,
+        "position_name": profile.position_name,
+        "department": profile.department,
+        "source_code": profile.source_code,
+        "source_version": profile.source_version,
+        "source_title": profile.source_title,
+        "source_import_id": profile.source_import_id,
+        "effective_from": profile.effective_from.isoformat() if profile.effective_from else None,
+        "summary": profile.summary,
+        "metrics": [
+            {
+                "id": metric.id,
+                "code": metric.code,
+                "name": metric.name,
+                "sort_order": metric.sort_order,
+                "weight": metric.weight,
+                "unit": metric.unit,
+                "plan_value": metric.plan_value,
+                "direction": metric.direction,
+                "formula_kind": metric.formula_kind,
+                "formula_json": dict(metric.formula_json or {}),
+                "formula_human": metric.formula_human,
+                "sources": by_metric.get(metric.id, []),
+            }
+            for metric in metrics
+        ],
+    }
+
+
+def _subject_fio(build: PositionKpiBuild) -> str:
+    extracted = build.extracted_json if isinstance(build.extracted_json, dict) else {}
+    return str(extracted.get("subject_fio") or "").strip()
+
+
+def _kickoff_text(
+    fio: str, profile: PositionKpiProfile, metrics: list[dict[str, Any]], *, ready: int = 0
+) -> str:
+    who = f"{fio}, {profile.position_name}" if fio else profile.position_name
+    lines = [
+        f"Сотрудник: {who}"
+        + (f", {profile.department}" if profile.department else "")
+        + ".",
+        f"KPI утверждены Finance по «{profile.source_title or 'методике'}».",
+        *([f"Уже считаются автоматически: {ready}."] if ready else []),
+        "Нужны модули расчёта:",
+        *[f"• {item['name']} ({item['weight']}%)" for item in metrics],
+        "Пишу модули автоматического расчёта — по одному на показатель, с тестами.",
+    ]
+    return "\n".join(lines)
+
+
+def _lock_build_start(db: Session, *, user_id: str, profile_id: str) -> None:
+    """Serialize concurrent starts: the UI opens the chat twice and both requests would create a session."""
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    db.execute(
+        sql_text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"position_kpi_build:{user_id}:{profile_id}"},
+    )
+
+
+def start_build(
+    db: Session,
+    *,
+    user_id: str,
+    position: str,
+    department: str = "",
+    subject_fio: str = "",
+) -> dict[str, Any]:
     name = (position or "").strip()
     if not name:
         raise PositionKpiBuildError("Укажите должность")
+    profile = resolve_profile(db, name, department=(department or "").strip())
+    if profile is None or not (profile.source_import_id or "").strip():
+        raise PositionKpiBuildError(
+            "Не загружена методика расчета KPI. Обратитесь к администратору",
+            status_code=404,
+        )
+    catalog = _catalog_for_profile(db, profile)
+    if not catalog["metrics"]:
+        raise PositionKpiBuildError("В методике Finance нет показателей KPI.", status_code=409)
+    ready_codes = builtin_metric_codes(db, profile.id) | set(
+        db.scalars(
+            select(PositionKpiModule.metric_code).where(PositionKpiModule.profile_id == profile.id)
+        ).all()
+    )
+    pending = [item for item in catalog["metrics"] if item["code"] not in ready_codes]
+    if not pending:
+        raise PositionKpiBuildError("Все KPI должности уже считаются автоматически.", status_code=409)
+    _lock_build_start(db, user_id=user_id, profile_id=profile.id)
     open_rows = (
         db.execute(
             select(PositionKpiBuild)
@@ -253,28 +373,47 @@ def start_build(db: Session, *, user_id: str, position: str) -> dict[str, Any]:
         .scalars()
         .all()
     )
-    empty = [row for row in open_rows if not _build_has_progress(row)]
-    if empty:
-        return serialize_build(db, empty[0])
+    fio = (subject_fio or "").strip()
+    current = [row for row in open_rows if row.profile_id == profile.id]
+    if current:
+        row = current[0]
+        if fio and _subject_fio(row) != fio:
+            row.extracted_json = {**(row.extracted_json or {}), "subject_fio": fio}
+            db.commit()
+            db.refresh(row)
+        return serialize_build(db, row)
     row = PositionKpiBuild(
         id=str(uuid.uuid4()),
         user_id=user_id,
         position_name=name,
-        status="awaiting_file",
-        extracted_json={},
-        catalog_draft_json={},
+        status="clarifying",
+        extracted_json={
+            "position": profile.position_name,
+            "subject_fio": fio,
+            "metrics": pending,
+            "source_import_id": profile.source_import_id,
+        },
+        catalog_draft_json=catalog,
         modules_json=[],
+        profile_id=profile.id,
+        source_text="\n".join(
+            [
+                profile.source_title or "Методика расчёта KPI",
+                profile.summary or "",
+                *[
+                    f"{item['name']} — вес {item['weight']}%. {item['formula_human']}"
+                    for item in pending
+                ],
+            ]
+        ).strip(),
     )
     db.add(row)
     _add_message(
         db,
         build=row,
         role="assistant",
-        content=(
-            f"Загрузите положение о мотивации для должности «{name}». "
-            "Подойдёт PDF, в том числе скан — страницы прочитает модель Cursor."
-        ),
-        structured={"stage": "awaiting_file"},
+        content=_kickoff_text(fio, profile, pending, ready=len(catalog["metrics"]) - len(pending)),
+        structured={"stage": "kickoff", "profile_id": profile.id},
     )
     db.commit()
     db.refresh(row)
@@ -308,89 +447,11 @@ def attach_files(
     build_id: str,
     files: list[tuple[str, bytes]],
 ) -> dict[str, Any]:
-    build = _get(db, user_id, build_id)
-    if not files:
-        raise PositionKpiBuildError("Приложите файл методики")
-    build.status = "extracting"
-    texts: list[str] = []
-    names: list[str] = []
-    need_vision = False
-    for name, raw in files:
-        names.append(Path(name).name)
-        text, mode = _load_document(name, raw)
-        if text:
-            texts.append(text)
-        if mode == "scan":
-            need_vision = True
-    source = "\n\n".join(part for part in texts if part).strip()
-    build.source_text = source
-    extracted: dict[str, Any] = {}
-    if source:
-        extracted = extract_position_kpis(source, build.position_name)
-        _apply_extract(build, extracted)
-    else:
-        build.status = "clarifying"
-        build.extracted_json = {}
-    merged = dict(build.extracted_json or {})
-    merged["attachments"] = names
-    if need_vision:
-        merged["needs_vision"] = True
-    build.extracted_json = merged
-    extracted = merged
-    _add_message(
-        db,
-        build=build,
-        role="user",
-        content="Загружена методика",
-        structured={"attachments": names, "needs_vision": need_vision},
+    del db, user_id, build_id, files
+    raise PositionKpiBuildError(
+        "Загружать методику может только Finance. Используйте назначенную методику.",
+        status_code=403,
     )
-    if extracted.get("needs_position_choice"):
-        positions = extracted.get("positions") or []
-        _add_message(
-            db,
-            build=build,
-            role="assistant",
-            content=(
-                "В файле несколько должностей. Напишите, какой раздел разбирать: "
-                + ", ".join(str(item) for item in positions)
-            ),
-            structured={"needs_position_choice": True, "positions": positions, "quickAnswers": positions},
-        )
-    elif extracted.get("metrics"):
-        metrics = extracted["metrics"]
-        listing = "\n".join(
-            f"• {item.get('name')} — вес {item.get('weight')}%" for item in metrics if isinstance(item, dict)
-        )
-        _add_message(
-            db,
-            build=build,
-            role="assistant",
-            content=f"Нашла показатели должности «{build.position_name}»:\n{listing}\n\nДальше уточню, откуда брать план и факт по каждому.",
-            structured={"metrics": metrics, "stage": "clarifying"},
-        )
-    elif need_vision:
-        _add_message(
-            db,
-            build=build,
-            role="assistant",
-            content=(
-                f"Файл получен. Прочитаю положение без обложки и найду KPI должности "
-                f"«{build.position_name}». Если её в документе нет — сразу скажу, "
-                "без лишних инструментов. Если есть — выпишу показатели и напишу модули в kpi."
-            ),
-            structured={"stage": "clarifying", "needs_vision": True, "attachments": names},
-        )
-    else:
-        _add_message(
-            db,
-            build=build,
-            role="assistant",
-            content="В тексте не удалось однозначно выделить KPI. Опишите показатели или приложите другой файл.",
-            structured={"metrics": []},
-        )
-    db.commit()
-    db.refresh(build)
-    return serialize_build(db, build)
 
 
 def persist_turn(
@@ -402,14 +463,10 @@ def persist_turn(
     files: list[tuple[str, bytes]] | None = None,
 ) -> dict[str, Any]:
     if files:
-        session = attach_files(db, user_id=user_id, build_id=build_id, files=files)
-        build = _get(db, user_id, build_id)
-        if message.strip():
-            _add_message(db, build=build, role="user", content=message.strip())
-            db.commit()
-            db.refresh(build)
-            session = serialize_build(db, build)
-        return session
+        raise PositionKpiBuildError(
+            "Файлы методики принимает только Finance.",
+            status_code=403,
+        )
     build = _get(db, user_id, build_id)
     text = (message or "").strip()
     if not text:
@@ -457,9 +514,7 @@ def finish_sdk(
     if cursor_agent_id:
         build.cursor_agent_id = cursor_agent_id
     if catalog_draft:
-        merged = dict(build.catalog_draft_json or {})
-        merged.update(catalog_draft)
-        build.catalog_draft_json = merged
+        logger.info("Ignoring SDK catalog draft for Finance-owned KPI profile %s", build.profile_id)
     if modules:
         build.modules_json = stash_module_payloads(modules)
         build.status = "testing"
@@ -533,9 +588,7 @@ def connect_build(
 ) -> dict[str, Any]:
     build = _get(db, user_id, build_id)
     if catalog_draft:
-        merged = dict(build.catalog_draft_json or {})
-        merged.update(catalog_draft)
-        build.catalog_draft_json = merged
+        logger.info("Ignoring user catalog draft for Finance-owned KPI profile %s", build.profile_id)
     incoming = [item for item in (modules or []) if isinstance(item, dict) and module_source(item)]
     if not incoming:
         incoming = [
@@ -544,13 +597,37 @@ def connect_build(
             if isinstance(item, dict) and module_source(item)
         ]
     catalog = dict(build.catalog_draft_json or {})
-    catalog.setdefault("position_name", build.position_name)
+    if incoming:
+        try:
+            validate_generated_module_payloads(catalog, incoming)
+        except ValueError as exc:
+            build.status = "clarifying"
+            _add_message(
+                db,
+                build=build,
+                role="assistant",
+                content=f"Методику не подключила. {exc}",
+                structured={"stage": "module_invalid", "needs_continue": True},
+            )
+            db.commit()
+            raise PositionKpiBuildError(str(exc)) from exc
+    elif not build.profile_id:
+        raise PositionKpiBuildError("Нет готовых модулей KPI для подключения")
+    else:
+        described = list_module_descriptors(db, build.profile_id)
+        if not described:
+            raise PositionKpiBuildError("Нет готовых модулей KPI для подключения")
+        build.modules_json = described
+        build.status = "connected"
+        db.commit()
+        db.refresh(build)
+        return serialize_build(db, build)
     # Черновик сессии сохраняем до публикации, чтобы откат ошибки источника его не стёр.
     db.commit()
     try:
-        profile_id = upsert_generated_catalog(
+        profile_id = connect_modules_to_profile(
             db,
-            position=build.position_name,
+            profile_id=build.profile_id,
             catalog=catalog,
             modules=incoming,
         )

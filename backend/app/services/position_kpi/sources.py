@@ -346,10 +346,24 @@ def load(spec: dict[str, Any], ctx: SourceBundle) -> list[dict[str, Any]]:
         return _rows(source.loader(ctx, params))
     except Exception as exc:  # noqa: BLE001 — нет данных лучше, чем падение всей плитки
         logger.warning("kpi source %s failed: %s", source.name, exc)
+        note = getattr(ctx, "note_failure", None)
+        if callable(note):
+            note(source.name, exc)
         return []
 
 
 LEGACY_LOADERS = frozenset({"outlook", "protocols", "cards", "odata", "files"})
+
+
+def _odata_entity_names() -> set[str]:
+    """Snapshot names, or the live 1C catalog when the snapshot file is absent. Empty set = unknown."""
+    try:
+        from app.services.onec_tools import _cached_catalog_names
+
+        return {name.casefold() for name in _cached_catalog_names()}
+    except Exception:  # noqa: BLE001
+        logger.warning("odata catalog unavailable for KPI source check", exc_info=True)
+        return set()
 
 
 def validate_spec(spec: dict[str, Any] | None) -> dict[str, list[str]]:
@@ -384,16 +398,11 @@ def validate_spec(spec: dict[str, Any] | None) -> dict[str, list[str]]:
                 errors.append(f"{name}.{key}: подстановки {{{var}}} нет. Есть: {', '.join(TEMPLATE_VARS)}.")
     if name == "onec.odata" and str(params.get("entity") or "").strip():
         entity = str(params["entity"]).strip()
-        try:
-            from app.services.odata_local_catalog import get_structure
-
-            structure = get_structure(entity)
-        except Exception:  # noqa: BLE001
-            structure = None
+        known = _odata_entity_names()
+        if not known:
             warnings.append("Каталог OData недоступен, имя документа не проверено.")
-        else:
-            if structure is None:
-                errors.append(f"onec.odata: документа «{entity}» нет в каталоге OData 1С.")
+        elif entity.casefold() not in known:
+            errors.append(f"onec.odata: документа «{entity}» нет в каталоге OData 1С.")
     if name == "files.xlsx":
         path = str(params.get("file") or "").strip()
         if path and not path.startswith("\\\\") and "{" not in path:

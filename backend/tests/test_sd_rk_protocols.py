@@ -106,7 +106,7 @@ def test_august_plan_fact_all_on_time():
     assert "ПСД_001_О_180" not in numbers
 
 
-def test_draft_and_future_meeting_not_in_denominator():
+def test_open_meeting_counts_until_deadline_future_stays_out():
     events = [
         {"subject": "Еженедельное совещание с ревизионной комиссией", "start": "2026-09-15T10:00:00"},
         {"subject": "Еженедельное совещание с ревизионной комиссией", "start": "2026-09-22T14:00:00"},
@@ -139,11 +139,89 @@ def test_draft_and_future_meeting_not_in_denominator():
     ]
     report = score_protocol_kpi(events, protocols, as_of=date(2026, 9, 21))
     due = [row for row in report["rows"] if row["due"]]
-    assert len(due) == 1
-    assert due[0]["protocol_number"] == "РК__001_О_038"
-    assert due[0]["on_time"] is True
+    assert {row["plan_date"] for row in due} == {"2026-09-15", "2026-09-22"}
+    issued = next(row for row in due if row["plan_date"] == "2026-09-15")
+    assert issued["protocol_number"] == "РК__001_О_038"
+    assert issued["on_time"] is True
+    still_open = next(row for row in due if row["plan_date"] == "2026-09-22")
+    assert still_open["issued"] is False
+    assert still_open["on_time"] is True
     pending = [row for row in report["rows"] if not row["due"]]
-    assert {row["plan_date"] for row in pending} == {"2026-09-22", "2026-09-30"}
+    assert {row["plan_date"] for row in pending} == {"2026-09-30"}
+    assert report["fact_pct"] == 100.0
+
+
+def test_month_slice_ignores_previous_month():
+    events = [
+        {"subject": "Еженедельное совещание с ревизионной комиссией", "start": "2026-08-25T14:00:00"},
+        {"subject": "Еженедельное совещание с ревизионной комиссией", "start": "2026-09-25T14:00:00"},
+    ]
+    protocols = [
+        {
+            "number": "РК__001_О_035",
+            "date": "2026-08-25",
+            "posted": True,
+            "status": "Закрыт",
+            "meeting_topic": "Еженедельное совещание с ревизионной комиссией",
+        }
+    ]
+    report = score_protocol_kpi(
+        events,
+        protocols,
+        as_of=date(2026, 9, 24),
+        date_from=date(2026, 9, 1),
+        date_to=date(2026, 9, 30),
+    )
+    assert [row["plan_date"] for row in report["rows"]] == ["2026-09-25"]
+    assert report["plan_source"] == "outlook"
+    assert report["p_total"] == 1
+    assert report["p_on_time"] == 1
+    assert report["fact_pct"] == 100.0
+
+
+def test_empty_calendar_uses_protocols_of_the_month():
+    protocols = [
+        {
+            "number": "РК__001_О_036",
+            "date": "2026-09-01",
+            "posted": True,
+            "status": "Закрыт",
+            "meeting_topic": "Еженедельное совещание с ревизионной комиссией",
+        },
+        {
+            "number": "РК__001_О_039",
+            "date": "2026-09-22",
+            "posted": True,
+            "status": "НаИсполнении",
+            "meeting_topic": "Еженедельное совещание с ревизионной комиссией",
+        },
+        {
+            "number": "ПСД_001_О_226",
+            "date": "2026-09-30",
+            "posted": False,
+            "status": "Подготовлен",
+            "needs_review": True,
+            "meeting_topic": "Совет директоров по ГК",
+        },
+        {
+            "number": "РК__001_О_035",
+            "date": "2026-08-25",
+            "posted": True,
+            "status": "Закрыт",
+            "meeting_topic": "Еженедельное совещание с ревизионной комиссией",
+        },
+    ]
+    report = score_protocol_kpi(
+        [],
+        protocols,
+        as_of=date(2026, 9, 24),
+        date_from=date(2026, 9, 1),
+        date_to=date(2026, 9, 30),
+    )
+    assert report["plan_source"] == "protocols"
+    assert {row["plan_date"] for row in report["rows"] if row["due"]} == {"2026-09-01", "2026-09-22"}
+    assert report["p_total"] == 2
+    assert report["fact_pct"] == 100.0
 
 
 def test_late_protocol_fails_gate():

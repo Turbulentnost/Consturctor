@@ -91,6 +91,31 @@ def cursor_sdk_error_text(
     return "Cursor SDK run failed"
 
 
+def is_complete_kpi_list_answer(text: str) -> bool:
+    """Accept a complete KPI list even when the SDK reports a late transport error."""
+    blob = str(text or "")
+    if re.search(r"generated/|score_\w+_kpi|def\s+score_", blob):
+        return False
+    lines = blob.splitlines()
+    try:
+        done_at = next(
+            index
+            for index, line in enumerate(lines)
+            if re.fullmatch(r"\s*СПИСОК_ГОТОВ\s*", line)
+        )
+    except StopIteration:
+        return False
+    weighted = re.compile(r"\s*(?:(?:\d+[\).]|[-*•])\s*)?.+\d{1,3}\s*%")
+    numbered = re.compile(r"\s*(?:\d+[\).]|[-*•])\s*\S")
+    count = 0
+    for line in lines[:done_at]:
+        if numbered.match(line) and not weighted.match(line):
+            return False
+        if weighted.match(line):
+            count += 1
+    return count > 0
+
+
 SdkEventCallback = Callable[[dict[str, Any]], None]
 
 
@@ -465,6 +490,17 @@ class CursorSdkBridge:
                 or "".join(answer_parts).strip()
             )
             if status == "error":
+                if (
+                    (mode or "").strip().casefold() == "kpi"
+                    and stop_on_kpi_list
+                    and is_complete_kpi_list_answer(answer)
+                ):
+                    return {
+                        "answer": answer,
+                        "status": "ok",
+                        "run_id": run_id,
+                        "agent_id": agent_id,
+                    }
                 raise CursorSdkError(
                     cursor_sdk_error_text(
                         status=status,
@@ -702,6 +738,8 @@ class CursorSdkBridge:
         box: dict[str, Any] = {"result": None, "error": None}
         tool_limit = float(tool_timeout_seconds(tool, args))
         started_at = time.monotonic()
+        # Confirmation can wait on a person. The tool budget starts after it.
+        phase: dict[str, Any] = {"invoke": False, "t0": 0.0}
 
         def work() -> None:
             try:
@@ -730,6 +768,8 @@ class CursorSdkBridge:
                     ):
                         box["result"] = self.skipped_tool_result(tool)
                         return
+                phase["t0"] = time.monotonic()
+                phase["invoke"] = True
                 result = invoke_sdk_tool(tool, args)
                 if self._is_skipped(request_id) or (
                     should_stop is not None and should_stop()
@@ -776,13 +816,19 @@ class CursorSdkBridge:
                 )
                 self._clear_active(request_id)
                 return
-            if time.monotonic() - started_at >= tool_limit:
+            if phase["invoke"]:
+                elapsed = time.monotonic() - float(phase["t0"])
+                limit = tool_limit
+            else:
+                elapsed = time.monotonic() - started_at
+                limit = max(tool_limit, 600.0)
+            if elapsed >= limit:
                 send_result(
                     {
                         "type": "tool_result",
                         "requestId": request_id,
                         "ok": False,
-                        "error": f"Инструмент {tool} не ответил за {int(tool_limit)} с",
+                        "error": f"Инструмент {tool} не ответил за {int(limit)} с",
                     }
                 )
                 self._clear_active(request_id)
@@ -842,7 +888,10 @@ class CursorSdkBridge:
         raw_bytes = len(raw.encode("utf-8", errors="replace"))
         if result.get("externalized") and isinstance(result.get("result_file"), str):
             return result
-        if not self._should_externalize_result(result, raw_bytes):
+        journal_extract = tool in {"onec.erp_assignments", "onec.meeting_protocols"} and not result.get(
+            "error"
+        )
+        if not journal_extract and not self._should_externalize_result(result, raw_bytes):
             return result
         base = Path(cwd).resolve()
         out_dir = base / "tool_results"
@@ -855,13 +904,20 @@ class CursorSdkBridge:
             return result
         target.write_text(raw, encoding="utf-8")
         rel_path = target.relative_to(base).as_posix()
+        next_step = EXTERNALIZED_NEXT_STEP
+        if tool in {"onec.erp_assignments", "onec.meeting_protocols"}:
+            next_step = (
+                "Не читай result_file и не открывай tool_results. "
+                "После обеих выборок один раз вызови excel.write_action_tracker "
+                "с filename=ActionTracker.xlsx. Строки не передавай: инструмент запишет все карточки сам."
+            )
         return {
             "summary": self._result_summary(result),
             "tool": tool,
             "result_file": rel_path,
             "result_bytes": raw_bytes,
             "externalized": True,
-            "next_step": EXTERNALIZED_NEXT_STEP,
+            "next_step": next_step,
         }
 
     @staticmethod

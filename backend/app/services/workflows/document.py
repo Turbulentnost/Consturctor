@@ -111,13 +111,15 @@ def load_attachment_bytes(name: str, raw: bytes, *, ocr: bool = True) -> dict:
             f"{file_name}: слишком большой файл ({len(raw) // (1024 * 1024)} МБ). "
             f"Лимит — {MAX_FILE_BYTES // (1024 * 1024)} МБ."
         )
+    ocr_error = ""
     if suffix == ".pdf":
-        try:
-            text = _read_pdf_bytes(raw, ocr=ocr)
-        except DocumentError:
-            text = ""
-        if not text.strip() and ocr:
-            text = _ocr_visual(file_name, raw)
+        if ocr:
+            text, ocr_error = _ocr_pdf(file_name, raw)
+        else:
+            try:
+                text = _read_pdf_bytes(raw, ocr=False)
+            except DocumentError:
+                text = ""
         kind = "text"
         mime = "application/pdf"
     elif suffix == ".docx":
@@ -142,11 +144,14 @@ def load_attachment_bytes(name: str, raw: bytes, *, ocr: bool = True) -> dict:
         kind = "binary"
         mime = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
     text = (text or "").strip()
+    extracted = bool(text)
     if not text:
         text = f"[файл {file_name}: текст не извлечён, исходный файл сохранён]"
     return {
         "name": file_name,
         "text": text,
+        "text_extracted": extracted,
+        "ocr_error": ocr_error,
         "kind": kind,
         "mime_type": mime,
         "data_b64": "",
@@ -226,6 +231,21 @@ def _ocr_visual(name: str, raw: bytes) -> str:
             ascii(str(exc)),
         )
         return ""
+
+
+def _ocr_pdf(name: str, raw: bytes) -> tuple[str, str]:
+    """PDF text with OCR of scanned pages; returns (text, error)."""
+    try:
+        from app.services.ocr_extract import extract_pdf_text
+
+        return (extract_pdf_text(name, raw) or "").strip(), ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pdf ocr failed name=%s detail=%s", ascii(name), ascii(str(exc)))
+        try:
+            layer = _read_pdf_text_layer(raw)
+        except Exception:  # noqa: BLE001
+            layer = ""
+        return layer, str(exc)
 
 
 def _load_image(name: str, raw: bytes, suffix: str, *, ocr: bool = True) -> dict:

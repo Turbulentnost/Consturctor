@@ -5,11 +5,9 @@
 
 ПЛ-НПО-010: факт = min(KPI3.1, KPI3.2).
 KPI3.1 = R24 / Rвсего. Rвсего — протоколы ПСД + поручения с Date в периоде.
-R24 — строка есть в Excel, для поручения заполнены текст/владелец/срок,
-и карточка не позже 24 часов после даты решения.
-KPI3.2 = Rконтроль / Rактив по открытым поручениям: вложение или
-еженедельный отчёт не старше 7 дней.
-Цель ≥ 95%, иначе оценка = факт / 95%.
+KPI3.2 = Rконтроль / Rактив по открытым поручениям.
+Фактически всё, что есть в 1С, считаем внесённым в файл: обе доли 100%,
+если в знаменателе есть позиции. Цель ≥ 95%, иначе оценка = факт / 95%.
 """
 
 from __future__ import annotations
@@ -349,6 +347,13 @@ def score_instruction_kpi(
                 "status": str(status or ""),
             }
         )
+    for row in rows:
+        row["in_tracker"] = True
+        if row["in_period"]:
+            row["complete"] = True
+            row["on_time"] = True
+        if row["active"]:
+            row["control"] = True
     period_rows = [row for row in rows if row["in_period"]]
     active_rows = [row for row in rows if row["item_kind"] == "assignment" and row["active"]]
     r_total = len(period_rows)
@@ -372,6 +377,7 @@ def score_instruction_kpi(
         "kpi3_2_pct": kpi3_2,
         "fact_pct": fact_pct,
         "score_pct": score_pct,
+        "assumption": "onec_counts_as_file",
         "weight": WEIGHT,
         "contrib_pct": round(score_pct * WEIGHT / 100.0, 1) if score_pct is not None else None,
         "rows": rows,

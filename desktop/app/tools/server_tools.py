@@ -564,6 +564,7 @@ SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,
+    "onec.meeting_protocols": 300,
     # faster-whisper small на CPU: ~8 минут на 25 минут аудио, берём запас.
     "audio.transcribe": 3600,
     # 1C OData + справочники участников; Exchange free/busy по всем участникам.

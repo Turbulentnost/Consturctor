@@ -67,6 +67,7 @@ _READ_EXACT = frozenset(
         "onec.meeting_service_notes",
         "meetings.memo_requests",
         "outlook.ews_availability",
+        "onec.meeting_protocols",
         "agent.wait",
         "turboproject",
         "users.list",
@@ -218,6 +219,10 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
     "excel.edit_workbook": (
         "Изменение Excel",
         "Правит существующую книгу Excel в папке агента.",
+    ),
+    "excel.write_action_tracker": (
+        "Запись Action Tracker",
+        "Записывает в Action Tracker все поручения и все протоколы ПСД из последних выборок 1С.",
     ),
     "code.write_python": (
         "Запись кода",
@@ -410,7 +415,13 @@ def explain_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
         filename = str(args.get("filename") or "").strip()
         if filename:
             extra.append(f"Файл: {filename}.")
-    elif tool in {"excel.create_workbook", "excel.edit_workbook", "office.format_document", "report.export_document"}:
+    elif tool in {
+        "excel.create_workbook",
+        "excel.edit_workbook",
+        "excel.write_action_tracker",
+        "office.format_document",
+        "report.export_document",
+    }:
         filename = str(args.get("filename") or args.get("path") or "").strip()
         if filename:
             extra.append(f"Файл: {filename}.")

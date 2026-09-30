@@ -13,10 +13,13 @@ def fetch_odata_list(
     number: str = "",
     ref_key: str = "",
     path: str = "",
+    resolve_navigation: bool | None = None,
 ) -> dict[str, Any]:
     from app.tools import runtime_api
 
     args: dict[str, Any] = {"top": max(1, min(200, int(top or 30)))}
+    if resolve_navigation is not None:
+        args["resolve_navigation"] = bool(resolve_navigation)
     if path:
         args["path"] = path
         if entity:

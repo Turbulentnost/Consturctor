@@ -100,7 +100,7 @@ export function FioSuggest({
       const onLoginScreen = publicOnly || !api.getToken()
       try {
         if (onLoginScreen) {
-          const names = await api.searchUsers(search)
+          const names = await api.searchUsers(search, undefined, true)
           results = names.map((fio) => ({
             id: '',
             fio,

@@ -2,15 +2,15 @@ from app.core.jwt import create_access_token, validate_token
 from app.services.profile_overrides import apply_profile_overrides, lookup_profile_overrides
 
 
-def test_komarkova_is_assistant_manager() -> None:
+def test_komarkova_is_office_manager() -> None:
     department, position = apply_profile_overrides(
         "Комаркова Анастасия Эдуардовна",
         "Тендерный офис",
         "менеджер тендерного офиса",
     )
-    assert position == "Помощник руководителя"
+    assert position == "Офис-менеджер"
     assert department == "Управление делами"
-    assert lookup_profile_overrides("Комарькова А.Э.")[1] == "Помощник руководителя"
+    assert lookup_profile_overrides("Комарькова А.Э.")[1] == "Офис-менеджер"
 
 
 def test_ilchenko_is_board_assistant() -> None:
@@ -26,5 +26,5 @@ def test_jwt_overrides_stale_position() -> None:
         department="Тендерный офис",
     )
     auth = validate_token(token)
-    assert auth.position == "Помощник руководителя"
+    assert auth.position == "Офис-менеджер"
     assert auth.department == "Управление делами"

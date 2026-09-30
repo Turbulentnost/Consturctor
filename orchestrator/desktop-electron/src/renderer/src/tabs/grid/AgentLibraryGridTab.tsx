@@ -16,6 +16,7 @@ import { StandardTabChrome } from './TabChromeGrid'
 import { DEFAULT_AGENT_LIBRARY_LAYOUT } from './useTabChromeLayout'
 import './agentLibraryGrid.css'
 import { usePageSearch } from '../../layout/pageSearchContext'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 function normSearch(value: string): string {
   return (value || '').trim().toLowerCase().replace(/ё/g, 'е')
@@ -76,6 +77,7 @@ function AgentLibraryTile({
   entry,
   busy,
   variant,
+  searchId,
   onOpenInfo,
   onAdd,
   onRemove
@@ -83,6 +85,7 @@ function AgentLibraryTile({
   entry: AgentLibraryEntry
   busy: boolean
   variant: 'catalog' | 'adopted'
+  searchId: string
   onOpenInfo: () => void
   onAdd?: () => void
   onRemove?: () => void
@@ -92,6 +95,7 @@ function AgentLibraryTile({
   const createdAt = formatCreatedAt(entry.createdAt)
   return (
     <article
+      data-search-id={searchId}
       className={`agent-library-tile agent-library-tile--clickable${variant === 'adopted' ? ' agent-library-tile--adopted' : ''}`}
       role="button"
       tabIndex={0}
@@ -307,6 +311,32 @@ export function AgentLibraryGridTab({
     () => adopted.filter((entry) => matchesSearch(entry, query)),
     [adopted, query]
   )
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      [
+        ...filteredCatalog.map((entry) => ({
+          entry,
+          targetId: `catalog:${entry.workflowId}`,
+          variant: 'Каталог'
+        })),
+        ...filteredAdopted.map((entry) => ({
+          entry,
+          targetId: `adopted:${entry.adoptedWorkflowId || entry.workflowId}`,
+          variant: 'Мои агенты'
+        }))
+      ].map(({ entry, targetId, variant }) => ({
+        id: `agent_library:${targetId}`,
+        source: 'grid:agent_library',
+        pageKey: 'agent_library',
+        kind: 'entity',
+        targetId,
+        title: entry.title,
+        subtitle: [variant, agentPurposeLabel(entry.purpose), entry.ownerFio].filter(Boolean).join(' · '),
+        keywords: [entry.description, entry.goal, entry.triggerSummary, entry.author, ...entry.tools]
+      })),
+    [filteredCatalog, filteredAdopted]
+  )
+  useRegisterGlobalSearch('grid:agent_library', globalSearchEntries)
 
   async function handleAdd(entry: AgentLibraryEntry): Promise<void> {
     setBusyId(entry.workflowId)
@@ -411,6 +441,7 @@ export function AgentLibraryGridTab({
                           key={entry.workflowId}
                           entry={entry}
                           variant="catalog"
+                          searchId={`catalog:${entry.workflowId}`}
                           busy={busyId === entry.workflowId}
                           onOpenInfo={() => setInfo({ entry, variant: 'catalog' })}
                           onAdd={() => void handleAdd(entry)}
@@ -437,6 +468,7 @@ export function AgentLibraryGridTab({
                           key={entry.adoptedWorkflowId || entry.workflowId}
                           entry={entry}
                           variant="adopted"
+                          searchId={`adopted:${entry.adoptedWorkflowId || entry.workflowId}`}
                           busy={busyId === (entry.adoptedWorkflowId || entry.workflowId)}
                           onOpenInfo={() => setInfo({ entry, variant: 'adopted' })}
                           onRemove={() => void handleRemove(entry)}

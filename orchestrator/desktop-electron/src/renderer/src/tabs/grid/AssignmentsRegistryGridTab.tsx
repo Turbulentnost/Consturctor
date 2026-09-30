@@ -33,6 +33,7 @@ import {
   resolveClosureAgentWorkflowId
 } from '../../workplace/assignmentClosureAgent'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 import './extensionsGrid.css'
 import './registryGrid.css'
 
@@ -320,6 +321,21 @@ export function AssignmentsRegistryGridTab({
     }
     return list
   }, [rowsHydrated, tileFilter, columnFilters, pageQuery])
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      filteredRows.map((row) => ({
+        id: `assignments_registry:${row.id}`,
+        source: 'grid:assignments_registry',
+        pageKey: 'assignments_registry',
+        kind: 'entity',
+        targetId: row.id,
+        title: [row.number, row.topic].filter(Boolean).join(' · '),
+        subtitle: [row.status, row.manager, row.fullRemediationDue].filter(Boolean).join(' · '),
+        keywords: registryRowSearchValues(row)
+      })),
+    [filteredRows]
+  )
+  useRegisterGlobalSearch('grid:assignments_registry', globalSearchEntries)
 
   const [reportLinesLoading, setReportLinesLoading] = useState(false)
   useEffect(() => {

@@ -497,8 +497,13 @@ DAILY_ASSIGNMENT_HINT = (
     "Call onec.meeting_protocols meeting_kind=sd psd_mark=true review_only=false "
     "include_closed=true. PSD mark means the number starts with ПСД; "
     "the tool returns the whole series, including closed. "
-    "Write every returned assignment and every returned protocol into Action Tracker. "
-    "WORK_RESULT counts must equal the tool counts. Do not keep only open cards."
+    "Then call excel.write_action_tracker filename=ActionTracker.xlsx once. "
+    "Do not pass rows. Do not Read result_file or tool_results JSON. "
+    "Do not call excel.read_workbook or office.read_file. Do not open images, "
+    "attachments, or the existing ActionTracker.xlsx. "
+    "The tool writes every assignment and every PSD protocol. "
+    "WORK_RESULT counts must equal that tool's assignments and protocols. "
+    "Do not call excel.create_workbook or excel.edit_workbook for this journal."
 )
 
 CALENDAR_CONTROL_HINT = (
@@ -815,14 +820,18 @@ def _whitelist_tool_names(record: Any) -> list[str]:
                 continue
             add(step.get("tool") or step.get("tool_name"))
             add_all(step.get("tool_candidates"))
-    if names and any(
-        item in seen
-        for item in (
-            "onec.download_artifact",
-            "excel.read_workbook",
-            "onec.erp_assignments",
-            "onec.list_attachments",
-            "onec.read_attachment",
+    if (
+        names
+        and "excel.write_action_tracker" not in seen
+        and any(
+            item in seen
+            for item in (
+                "onec.download_artifact",
+                "excel.read_workbook",
+                "onec.erp_assignments",
+                "onec.list_attachments",
+                "onec.read_attachment",
+            )
         )
     ):
         add("office.read_file")
@@ -1527,18 +1536,25 @@ class HitlGate:
                 kind=self._kind,
             )
         )
-        self._append_wait_event(
-            {
-                "type": "hitl",
-                "tool": tool,
-                "title": _tool_wait_title(tool),
-                "text": f"Нужно подтверждение: {tool}",
-                "requestId": request_id,
-                "arguments": _safe_args(args),
-                "confirm_only": True,
-                "status": "pending",
-            }
-        )
+        # History flush talks to the API and must not sit in front of the
+        # approval wait: a slow PATCH was eating the tool timeout before the
+        # write started.
+        threading.Thread(
+            target=self._append_wait_event,
+            args=(
+                {
+                    "type": "hitl",
+                    "tool": tool,
+                    "title": _tool_wait_title(tool),
+                    "text": f"Нужно подтверждение: {tool}",
+                    "requestId": request_id,
+                    "arguments": _safe_args(args),
+                    "confirm_only": True,
+                    "status": "pending",
+                },
+            ),
+            daemon=True,
+        ).start()
         try:
             return box.get()
         finally:
@@ -1546,7 +1562,6 @@ class HitlGate:
                 self._hitl.pop(request_id, None)
 
     def resolve_hitl(self, request_id: str, approved: bool) -> None:
-        self._mark_wait_event(request_id, approved=approved)
         with self._lock:
             box = self._hitl.get(request_id)
         if box is not None:
@@ -1554,6 +1569,7 @@ class HitlGate:
                 box.put_nowait(approved)
             except queue.Full:
                 pass
+        self._mark_wait_event(request_id, approved=approved)
 
     def ask_question(
         self,

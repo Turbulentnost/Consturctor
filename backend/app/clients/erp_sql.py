@@ -616,8 +616,17 @@ def find_user_by_id(user_id: str) -> ErpUserRow | None:
         _release_connection(conn)
 
 
-def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
-    """Search FIO catalog in erp_pm (read-only). Empty search returns first N names."""
+def search_user_fios(
+    search: str | None = None,
+    limit: int = 200,
+    *,
+    only_shown: bool = False,
+) -> list[str]:
+    """Search FIO catalog in erp_pm (read-only). Empty search returns first N names.
+
+    only_shown: same list as the 1C login dialog ("Показывать в списке выбора", v8users.Show).
+    """
+    shown_sql = "AND v.Show = 1" if only_shown else ""
     conn = _connect()
     try:
         cur = conn.cursor()
@@ -632,12 +641,13 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
                 f"""
                 SELECT DISTINCT TOP (?) {_FIO_EXPR} AS Fio
                 FROM dbo.v8users v WITH (NOLOCK)
-                WHERE {_FIO_EXPR} LIKE ?
+                WHERE ({_FIO_EXPR} LIKE ?
                    OR {_FIO_EXPR} LIKE ?
                    OR LTRIM(RTRIM(v.Name)) LIKE ?
                    OR LTRIM(RTRIM(v.Name)) LIKE ?
                    OR LTRIM(RTRIM(v.Descr)) LIKE ?
-                   OR LTRIM(RTRIM(v.Descr)) LIKE ?
+                   OR LTRIM(RTRIM(v.Descr)) LIKE ?)
+                   {shown_sql}
                 ORDER BY Fio
                 """,
                 (limit, starts, word_starts, starts, word_starts, starts, word_starts),
@@ -648,6 +658,7 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
                 SELECT DISTINCT TOP (?) {_FIO_EXPR} AS Fio
                 FROM dbo.v8users v WITH (NOLOCK)
                 WHERE {_FIO_EXPR} <> N''
+                   {shown_sql}
                 ORDER BY Fio
                 """,
                 (limit,),
@@ -808,6 +819,8 @@ class ErpStaffAssignment:
     hr_department: str
     staff_folder: str
     staff_unit: str
+    position_id: str = ""
+    person_id: str = ""
 
 
 def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
@@ -847,7 +860,9 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
             """
             ;WITH latest AS (
                 SELECT
+                    CONVERT(varchar(64), p._IDRRef, 2) AS PersonId,
                     CAST(p._Description AS nvarchar(256)) AS Person,
+                    CONVERT(varchar(64), pos._IDRRef, 2) AS PositionId,
                     CAST(pos._Description AS nvarchar(256)) AS Position,
                     CAST(hr._Description AS nvarchar(256)) AS HrDept,
                     CAST(folder._Description AS nvarchar(256)) AS StaffFolder,
@@ -871,7 +886,7 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
                   AND t._Fld43774 > '2002-01-01'
                   AND LTRIM(RTRIM(ISNULL(s._Description, N''))) <> N''
             )
-            SELECT Person, Position, HrDept, StaffFolder, StaffUnit
+            SELECT PersonId, Person, PositionId, Position, HrDept, StaffFolder, StaffUnit
             FROM latest
             WHERE rn = 1
               AND LTRIM(RTRIM(ISNULL(Person, N''))) <> N''
@@ -880,6 +895,8 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
         staff = [
             ErpStaffAssignment(
                 fio=(row.Person or "").strip(),
+                person_id=(row.PersonId or "").strip().upper(),
+                position_id=(row.PositionId or "").strip().upper(),
                 position=(row.Position or "").strip(),
                 hr_department=(row.HrDept or "").strip(),
                 staff_folder=(row.StaffFolder or "").strip(),

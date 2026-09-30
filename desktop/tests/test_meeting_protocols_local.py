@@ -90,9 +90,41 @@ def test_psd_mark_reads_every_page() -> None:
         )
 
     assert mock_request.call_count == 2
-    second_path = mock_request.call_args_list[1][1]["json"]["arguments"]["path"]
+    first_args = mock_request.call_args_list[0][1]["json"]["arguments"]
+    second_args = mock_request.call_args_list[1][1]["json"]["arguments"]
+    second_path = second_args["path"]
+    assert "$expand" not in first_args["path"]
+    assert first_args["resolve_navigation"] is False
     assert "$skip=100" in second_path
+    assert "Ref_Key" in second_path
+    assert "$expand" not in second_path
     assert "startswith(Number,'ПСД')" in result["filter"]
     assert result["count"] == 105
     assert result["psd_mark"] is True
+    assert result["truncated"] is False
+
+
+def test_psd_mark_retries_a_short_first_page() -> None:
+    def row(index: int) -> dict:
+        return {
+            "Ref_Key": f"{index:08d}-0000-0000-0000-000000000001",
+            "Number": f"ПСД_001_О_{index}",
+            "Date": "2024-01-01T00:00:00",
+            "Posted": True,
+            "Статус": "Закрыт",
+        }
+
+    pages = [
+        {"ok": True, "result": {"value": [row(1), row(2)], "summary": "short"}},
+        {"ok": True, "result": {"value": [row(i) for i in range(100)], "summary": "full"}},
+        {"ok": True, "result": {"value": [row(200)], "summary": "tail"}},
+    ]
+    with patch("app.tools.runtime_api.request", side_effect=pages) as mock_request:
+        result = invoke_tool(
+            "onec.meeting_protocols",
+            {"meeting_kind": "sd", "psd_mark": True},
+        )
+
+    assert mock_request.call_count == 3
+    assert result["count"] == 101
     assert result["truncated"] is False

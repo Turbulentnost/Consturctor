@@ -29,13 +29,10 @@ def daily_assignment_runtime_tools() -> list[str]:
     return [
         "users.current",
         "excel.list_files",
-        "excel.read_workbook",
-        "excel.create_workbook",
-        "excel.edit_workbook",
+        "excel.write_action_tracker",
         "onec.erp_assignments",
         "onec.meeting_protocols",
         "onec.erp_assignments_write",
-        "office.read_file",
     ]
 
 
@@ -78,19 +75,6 @@ def daily_assignment_playbook_draft() -> dict[str, Any]:
                 "data_expectation": "xlsx Action Tracker в рабочей папке, если он уже есть",
                 "done_when": "Список файлов получен",
                 "on_empty": "Файла нет — создать после выборки 1С",
-            },
-            {
-                "id": "s3",
-                "title": "Прочитать Action Tracker, если файл есть",
-                "required": False,
-                "system": "desktop",
-                "entity": "spreadsheet",
-                "operation": "read",
-                "tool": "excel.read_workbook",
-                "required_params": ["filename"],
-                "data_expectation": "Строки журнала: Источник=номер АСТ00 или ПСД, статус, срок",
-                "done_when": "Строки прочитаны либо файла нет",
-                "on_empty": "Считать источником 1С, затем заполнить файл",
             },
             {
                 "id": "s4",
@@ -151,38 +135,28 @@ def daily_assignment_playbook_draft() -> dict[str, Any]:
             },
             {
                 "id": "s6",
-                "title": "Создать Action Tracker, если файла нет",
-                "required": False,
-                "system": "desktop",
-                "entity": "spreadsheet",
-                "operation": "export",
-                "tool": "excel.create_workbook",
-                "required_params": ["filename"],
-                "data_expectation": (
-                    "ActionTracker.xlsx: строки поручений АСТ00 и протоколов ПСД. "
-                    "Источник = номер АСТ00 или ПСД_*"
-                ),
-                "done_when": "Файл создан из s4 и s5",
-                "on_empty": "Если обе выборки пустые — только шапка колонок",
-            },
-            {
-                "id": "s7",
-                "title": "Записать поручения и протоколы ПСД в Action Tracker",
+                "title": "Записать обе выборки в Action Tracker",
                 "required": True,
                 "system": "desktop",
                 "entity": "spreadsheet",
-                "operation": "update",
-                "tool": "excel.edit_workbook",
+                "operation": "export",
+                "tool": "excel.write_action_tracker",
                 "required_params": ["filename"],
+                "proven_call": {
+                    "tool": "excel.write_action_tracker",
+                    "arguments": {"filename": "ActionTracker.xlsx"},
+                },
                 "data_expectation": (
-                    "В трекере все поручения из s4 и все протоколы ПСД из s5. "
-                    "Новые строки добавить, существующие обновить по номеру. Не удалять лишние без нужды"
+                    "Один вызов без списка строк. Инструмент сам читает последние "
+                    "tool_results поручений и протоколов и пишет все карточки в ActionTracker.xlsx. "
+                    "count в ответе равен числу поручений и числу протоколов."
                 ),
-                "done_when": "Файл содержит обе выборки",
-                "on_empty": "Менять было нечего — шаг пропустить",
+                "done_when": "Файл содержит все поручения s4 и все протоколы s5",
+                "on_empty": "Если обе выборки пустые — файл только с шапкой",
+                "on_error": "Не собирай строки сам и не открывай JSON. Повтори тот же вызов.",
             },
             {
-                "id": "s8",
+                "id": "s7",
                 "title": "Запись в 1С только при расхождении",
                 "required": False,
                 "system": "onec",
@@ -213,11 +187,12 @@ def daily_assignment_instructions() -> str:
         "(meeting_kind=sd, psd_mark=true, review_only=false, include_closed=true). "
         "Пометка ПСД = номер начинается с «ПСД». Не снимай все открытые/просроченные протоколы, "
         "не бери РК и СПГ.\n"
-        "Excel: excel.list_files один раз. Если файл есть — excel.read_workbook, затем "
-        "excel.edit_workbook: допиши/обнови все поручения и все протоколы ПСД. "
-        "Число строк в трекере равно count ответа инструмента: не оставляй только открытые "
-        "карточки и не обрезай серию ПСД.\n"
-        "Если файла нет — excel.create_workbook из обеих выборок.\n"
+        "Excel: после обеих выборок один вызов `excel.write_action_tracker` "
+        "(filename=ActionTracker.xlsx). Строки не передавай. JSON result_file не открывай "
+        "и не читай страницами: инструмент сам записывает все поручения и все протоколы ПСД. "
+        "Число строк в ответе равно count выборок. Не читай старый ActionTracker.xlsx, "
+        "картинки и вложения. Не вызывай excel.read_workbook, excel.create_workbook, "
+        "excel.edit_workbook и office.read_file.\n"
         "Запись в 1С только onec.erp_assignments_write после подтверждения и только если есть что менять.\n"
         "Запрещено: Task, OCR, onec.erp_tasks_*, action=tasks, onec.odata_get, "
         "карточки по одной, Outlook, фильтр only_open по поручениям, "
@@ -263,7 +238,11 @@ def apply_daily_assignment_config(
     local["playbook"] = playbook
     local["playbook_draft"] = {**draft, "run_inputs": []}
     local["runtime"] = str(local.get("runtime") or "mcp")
+    allowed = set(daily_assignment_runtime_tools())
     local["tools"] = daily_assignment_runtime_tools()
+    invoked = local.get("live_tools_invoked")
+    if isinstance(invoked, list):
+        local["live_tools_invoked"] = [name for name in invoked if name in allowed]
     local["ui_mode"] = "chat"
     return local
 

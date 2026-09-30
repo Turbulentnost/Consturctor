@@ -11,6 +11,8 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test:global-search": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/renderer/src/layout/globalSearchRanking.test.mjs",
+    "test:sidebar-folders": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/renderer/src/components/sidebarFolders.test.mjs",
     "pack": "python scripts/build_installer.py --dir",
     "dist": "python scripts/build_installer.py",
     "dist:electron": "electron-vite build && electron-builder"

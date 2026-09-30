@@ -33,7 +33,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.db.session import SessionLocal, init_db
 from app.models.user import AppUser
 from app.models.workflow import Workflow
-from app.services.app_users import is_admin_user
+from app.services.admin_access import resolve_admin_access
 from app.services.triggers.service import workflow_is_deleted
 
 TITLE = "Проверка поручений к закрытию"
@@ -122,7 +122,7 @@ def _find_user(db, query: str) -> AppUser | None:
 
 def _first_admin(db) -> AppUser | None:
     for user in db.query(AppUser).order_by(AppUser.created_at.asc()).all():
-        if is_admin_user(user.fio or ""):
+        if resolve_admin_access(db, user.id) is not None:
             return user
     return None
 

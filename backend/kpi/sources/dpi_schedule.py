@@ -136,10 +136,20 @@ def _cell_date(value: Any) -> date | None:
     return None
 
 
+def _marked_red(cell: Any) -> bool:
+    """Красная заливка или красный шрифт: строку не берём в план."""
+    fill = getattr(cell, "fill", None)
+    fill_rgb = getattr(getattr(fill, "fgColor", None), "rgb", None)
+    if isinstance(fill_rgb, str) and fill_rgb.upper().endswith("FF0000"):
+        return True
+    font_rgb = getattr(getattr(getattr(cell, "font", None), "color", None), "rgb", None)
+    return isinstance(font_rgb, str) and font_rgb.upper().endswith("FF0000")
+
+
 def load_workbook_sheet(path: Path, year: int = 2026) -> list[dict[str, Any]]:
     from openpyxl import load_workbook
 
-    workbook = load_workbook(path, data_only=True)
+    workbook = load_workbook(path, data_only=False)
     sheet = None
     for name in workbook.sheetnames:
         if str(year) in name:
@@ -163,6 +173,7 @@ def load_workbook_sheet(path: Path, year: int = 2026) -> list[dict[str, Any]]:
             if parsed_date:
                 facts[month] = parsed_date.isoformat()
         owner = str(sheet.cell(index, 18).value or sheet.cell(index, 17).value or "").strip()
+        excluded = any(_marked_red(sheet.cell(index, col)) for col in range(1, 7))
         rows.append(
             {
                 "number": int(number),
@@ -170,6 +181,7 @@ def load_workbook_sheet(path: Path, year: int = 2026) -> list[dict[str, Any]]:
                 "participants": str(sheet.cell(index, 3).value or "").strip(),
                 "owner": owner,
                 "rule": rule_text,
+                "excluded": excluded,
                 **parsed,
                 "excel_fact": facts,
             }

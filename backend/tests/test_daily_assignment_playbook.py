@@ -38,6 +38,11 @@ def test_apply_config_lists_all_assignments_and_psd_protocols() -> None:
     assert "psd_mark=true" in playbook.get("instructions", "").casefold()
     assert "include_all=true" in playbook.get("instructions", "")
     assert "onec.meeting_protocols" in (local.get("tools") or [])
+    assert "excel.write_action_tracker" in (local.get("tools") or [])
+    assert "excel.edit_workbook" not in (local.get("tools") or [])
+    assert "excel.read_workbook" not in (local.get("tools") or [])
+    assert "office.read_file" not in (local.get("tools") or [])
+    assert steps["s6"]["tool"] == "excel.write_action_tracker"
 
 
 def test_meeting_config_applies_daily_assignment() -> None:

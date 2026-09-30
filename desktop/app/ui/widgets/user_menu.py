@@ -26,7 +26,7 @@ _STATUS_COLORS = {
 }
 _DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
 _HEADER_POSITION_OVERRIDES: tuple[tuple[str, str], ...] = (
-    ("комарков", "Помощник руководителя"),
+    ("комарков", "Офис-менеджер"),
     ("мангасарян", "Помощник Председателя совета директоров"),
 )
 

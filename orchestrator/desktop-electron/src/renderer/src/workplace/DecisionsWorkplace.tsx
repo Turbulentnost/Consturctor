@@ -26,6 +26,7 @@ import { agentAccentStyle } from './agentAccent'
 import { useWorkplacePeriod } from './workplacePeriod'
 import { isoTimestampInWorkplacePeriod } from './workplacePeriodFilter'
 import { currentWeekRange } from './kpiPeriod'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../layout/globalSearch'
 
 function pad(value: number): string {
   return String(value).padStart(2, '0')
@@ -899,6 +900,43 @@ export function DecisionsTab({
         return sort === 'due_desc' ? rightAt.localeCompare(leftAt) : leftAt.localeCompare(rightAt)
       })
   }, [results, query, processId, due, sort, today, fromDay, toDay])
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () => [
+      ...visibleTools.map((item) => {
+        const agent = agents.find((entry) => entry.workflowId === item.workflowId)
+        const targetId = `decision:${item.id}`
+        return {
+          id: `decisions:${targetId}`,
+          source: 'workplace:decisions',
+          pageKey: 'decisions' as const,
+          kind: 'entity' as const,
+          targetId,
+          title: item.title,
+          subtitle: [toolStatusLabel(item), agent?.name || item.agentName, priorityLabel(item)]
+            .filter(Boolean)
+            .join(' · '),
+          keywords: [item.tool, item.intent, item.result, item.workflowId, item.runId, ...sourceChips(item)]
+        }
+      }),
+      ...visibleResults.map((item) => {
+        const targetId = `result:${item.workflowId}:${item.runId}`
+        return {
+          id: `decisions:${targetId}`,
+          source: 'workplace:decisions',
+          pageKey: 'decisions' as const,
+          kind: 'entity' as const,
+          targetId,
+          title: item.agentName,
+          subtitle: [runStatusLabel(item.status), item.at ? humanWhen(parseIso(item.at) || new Date(item.at)) : '']
+            .filter(Boolean)
+            .join(' · '),
+          keywords: [item.text, item.workflowId, item.runId, ...item.meetings.map((meeting) => meeting.title)]
+        }
+      })
+    ],
+    [visibleTools, visibleResults, agents]
+  )
+  useRegisterGlobalSearch('workplace:decisions', globalSearchEntries)
 
   const dueMonthLabel = dueAnchor.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
   const dueCells = useMemo(() => {
@@ -1210,6 +1248,7 @@ export function DecisionsTab({
                   return (
                     <button
                       key={item.id}
+                      data-search-id={`decision:${item.id}`}
                       type="button"
                       className={`wp-decision-pick${selectedItem ? ' selected' : ''}${due.overdue && item.status === 'pending' ? ' overdue' : ''}`}
                       style={agentAccentStyle(item.workflowId)}
@@ -1309,6 +1348,7 @@ export function DecisionsTab({
                   <p className="wp-decision-time">{item.at ? humanWhen(parseIso(item.at) || new Date(item.at)) : ''}</p>
                   <div className="wp-actions wp-decision-actions">
                     <button
+                      data-search-id={`result:${item.workflowId}:${item.runId}`}
                       className="btn-ghost"
                       type="button"
                       onClick={() => onOpenRun(item.workflowId, item.agentName, item.runId)}

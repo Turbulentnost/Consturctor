@@ -193,6 +193,24 @@ def _metric_from_item(item: str, index: int) -> dict[str, Any]:
     }
 
 
+def build_metric(name: str, weight: Any, formula: str, index: int, plan: Any = None) -> dict[str, Any]:
+    """Metric from an already structured table row (name, weight, calculation method)."""
+    title = (name or "").strip() or f"Показатель {index}"
+    try:
+        pct = int(round(float(str(weight).replace("%", "").replace(",", ".").strip())))
+    except (TypeError, ValueError):
+        pct = 0
+    item = f"{title}\n{formula or ''}".strip()
+    if plan not in (None, ""):
+        item += f"\nЦель: {plan}"
+    metric = _metric_from_item(item, index)
+    metric["name"] = title[:512]
+    metric["code"] = slug_code(title, index)
+    metric["weight"] = min(max(pct, 0), 100)
+    metric["formula_human"] = (formula or title)[:800]
+    return metric
+
+
 def split_position_blocks(text: str) -> list[tuple[str, str]]:
     matches = list(_POSITION_HEAD.finditer(text or ""))
     if not matches:

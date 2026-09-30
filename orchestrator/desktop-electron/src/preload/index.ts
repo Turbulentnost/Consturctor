@@ -62,6 +62,8 @@ const api = {
     url: string
     defaultName?: string
     token?: string | null
+    temporary?: boolean
+    openAfter?: boolean
   }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
     ipcRenderer.invoke('api:download', opts),
   createWorkflow: <T = unknown>(opts: {
@@ -102,6 +104,13 @@ const api = {
     ipcRenderer.invoke('shell:openPath', filePath),
   focusOutlook: (): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('shell:focusOutlook'),
+  launchTurboProject: (): Promise<{
+    ok: boolean
+    autoLogin?: boolean
+    error?: string
+    message?: string
+  }> =>
+    ipcRenderer.invoke('shell:launchTurboProject'),
   printToPdf: (opts: {
     html?: string
     landscape?: boolean

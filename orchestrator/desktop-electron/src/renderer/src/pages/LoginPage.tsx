@@ -59,7 +59,7 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
   }, [busy])
 
   useEffect(() => {
-    void api.searchUsers('').catch(() => undefined)
+    void api.searchUsers('', undefined, true).catch(() => undefined)
   }, [])
 
   async function submit(): Promise<void> {

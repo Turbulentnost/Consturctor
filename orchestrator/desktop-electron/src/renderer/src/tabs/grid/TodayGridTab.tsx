@@ -110,8 +110,18 @@ function TodayTaskTitle({
   )
 }
 
-function TodayWindow({ children }: { children: React.ReactNode }): React.JSX.Element {
-  return <div className="today-grid-window">{children}</div>
+function TodayWindow({
+  children,
+  searchId
+}: {
+  children: React.ReactNode
+  searchId?: string
+}): React.JSX.Element {
+  return (
+    <div className="today-grid-window" data-search-id={searchId}>
+      {children}
+    </div>
+  )
 }
 
 /** Цветовая маркировка строк — как в «Реестре поручений». */
@@ -523,7 +533,7 @@ export function TodayGridTab({
   const todayWidgets = useMemo(
     () => ({
       plan: (
-        <TodayWindow>
+        <TodayWindow searchId="plan">
           <TodayPlanPanel
             periodDay={periodDay}
             userId={user.id || ''}
@@ -533,12 +543,12 @@ export function TodayGridTab({
         </TodayWindow>
       ),
       results: (
-        <TodayWindow>
+        <TodayWindow searchId="results">
           <TodayResultsPanel periodDay={periodDay} userId={user.id} />
         </TodayWindow>
       ),
       outlook: (
-        <TodayWindow>
+        <TodayWindow searchId="outlook">
           <TodayOutlookMailPanel
             rows={outlookMail.rows}
             user={user}
@@ -556,7 +566,7 @@ export function TodayGridTab({
         </TodayWindow>
       ),
       onec: (
-        <TodayWindow>
+        <TodayWindow searchId="onec">
         <MiniTableCard
           title="Задачи на сегодня"
           tableClassName={
@@ -719,7 +729,7 @@ export function TodayGridTab({
         </TodayWindow>
       ),
       events: (
-        <TodayWindow>
+        <TodayWindow searchId="events">
         <MiniTableCard
           title="Предстоящие события"
           loading={data.sourcesLoading}
@@ -735,7 +745,7 @@ export function TodayGridTab({
         </TodayWindow>
       ),
       decisions: (
-        <TodayWindow>
+        <TodayWindow searchId="decisions">
         <SpecPanel
           title="Подготовленные решения"
           extra={

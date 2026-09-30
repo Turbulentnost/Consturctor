@@ -111,3 +111,43 @@ export function WorkplaceGlobalRangePicker(): React.JSX.Element {
     </div>
   )
 }
+
+/** Месячный период для KPI: выбор месяца всегда раскрывается в его полные границы. */
+export function WorkplaceGlobalMonthPicker(): React.JSX.Element {
+  const { from, to, setRange } = useWorkplacePeriod()
+  const month = (to || from || new Date().toISOString()).slice(0, 7)
+
+  const monthRange = useCallback((value: string): { from: string; to: string } | null => {
+    if (!/^\d{4}-\d{2}$/.test(value)) return null
+    const [yearText, monthText] = value.split('-')
+    const year = Number(yearText)
+    const monthNumber = Number(monthText)
+    const lastDay = new Date(year, monthNumber, 0).getDate()
+    return {
+      from: `${value}-01`,
+      to: `${value}-${String(lastDay).padStart(2, '0')}`
+    }
+  }, [])
+
+  useEffect(() => {
+    const fullMonth = monthRange(month)
+    if (fullMonth && (from !== fullMonth.from || to !== fullMonth.to)) setRange(fullMonth)
+  }, [from, month, monthRange, setRange, to])
+
+  const selectMonth = (value: string): void => {
+    const fullMonth = monthRange(value)
+    if (fullMonth) setRange(fullMonth)
+  }
+
+  return (
+    <div className="workplace-global-period">
+      <input
+        className="workplace-month-picker"
+        type="month"
+        value={month}
+        aria-label="Месяц отчёта"
+        onChange={(event) => selectMonth(event.target.value)}
+      />
+    </div>
+  )
+}

@@ -19,7 +19,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.clients.erp_sql import ErpOrgDept, ErpStaffAssignment
-from app.models.org import OrgMember, OrgUnit
+from app.models.org import OrgMember, OrgPerson, OrgPosition, OrgUnit
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,8 @@ class MemberRow:
     position: str
     unit_id: str
     department: str
+    position_id: str = ""
+    person_id: str = ""
 
 
 def build_units(departments: Iterable[ErpOrgDept]) -> tuple[list[UnitRow], set[str]]:
@@ -109,6 +111,8 @@ def build_members(
             position=item.position,
             unit_id=unit.id if unit else "",
             department=unit.name if unit else (item.hr_department or item.staff_folder),
+            position_id=item.position_id,
+            person_id=item.person_id,
         )
     for unit in units:
         key = fio_key(unit.head_fio)
@@ -119,6 +123,8 @@ def build_members(
                 position="Руководитель",
                 unit_id=unit.id,
                 department=unit.name,
+                position_id="",
+                person_id="",
             )
     return list(members.values())
 
@@ -136,6 +142,49 @@ def sync_org_structure(db: Session) -> dict[str, int | str]:
         units, dead_names = build_units(departments)
         members = build_members(staff, units, dead_names, logins)
         now = datetime.now(timezone.utc)
+        positions = {m.position_id: m.position for m in members if m.position_id}
+        for existing in db.execute(select(OrgPosition)).scalars():
+            existing.is_active = existing.id in positions
+            existing.synced_at = now
+        for position_id, name in positions.items():
+            position = db.get(OrgPosition, position_id)
+            if position is None:
+                db.add(
+                    OrgPosition(
+                        id=position_id,
+                        name=name,
+                        is_active=True,
+                        synced_at=now,
+                    )
+                )
+            else:
+                position.name = name
+                position.is_active = True
+                position.synced_at = now
+        db.flush()
+        active_people = {m.person_id: m for m in members if m.person_id}
+        for existing in db.execute(select(OrgPerson)).scalars():
+            existing.is_active = existing.id in active_people
+            existing.synced_at = now
+        for person_id, member in active_people.items():
+            person = db.get(OrgPerson, person_id)
+            values = {
+                "fio": member.fio,
+                "fio_key": fio_key(member.fio),
+                "user_id": member.user_id,
+                "position_id": member.position_id or None,
+                "position": member.position,
+                "unit_id": member.unit_id,
+                "department": member.department,
+                "is_active": True,
+                "synced_at": now,
+            }
+            if person is None:
+                db.add(OrgPerson(id=person_id, **values))
+            else:
+                for field, value in values.items():
+                    setattr(person, field, value)
+        db.flush()
         db.execute(delete(OrgMember))
         db.execute(delete(OrgUnit))
         db.add_all(
@@ -145,8 +194,10 @@ def sync_org_structure(db: Session) -> dict[str, int | str]:
             OrgMember(
                 fio_key=fio_key(m.fio),
                 fio=m.fio,
+                person_id=m.person_id or None,
                 user_id=m.user_id,
                 position=m.position,
+                position_id=m.position_id or None,
                 unit_id=m.unit_id,
                 department=m.department,
                 synced_at=now,

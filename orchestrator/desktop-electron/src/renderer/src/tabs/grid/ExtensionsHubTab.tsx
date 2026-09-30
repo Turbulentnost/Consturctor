@@ -13,6 +13,7 @@ import { NavIcon } from '../../layout/navIcons'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import './extensionsGrid.css'
 import { textMatchesPageSearch, usePageSearch } from '../../layout/pageSearchContext'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 export function ExtensionsHubTab({
   user,
@@ -36,6 +37,21 @@ export function ExtensionsHubTab({
       ),
     [positionFilter, pageQuery]
   )
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      visibleExtensions.map((extension) => ({
+        id: `extensions:${extension.id}`,
+        source: 'grid:extensions',
+        pageKey: 'extensions',
+        kind: 'entity',
+        targetId: extension.id,
+        title: extension.title,
+        subtitle: extension.description || 'Расширение',
+        keywords: [extension.id, ...(extension.positionGroups || [])]
+      })),
+    [visibleExtensions]
+  )
+  useRegisterGlobalSearch('grid:extensions', globalSearchEntries)
 
   return (
     <OrchSlotMain spanAll heavyEmbed>
@@ -78,7 +94,7 @@ export function ExtensionsHubTab({
               const pinned = isPinned(ext.id)
               const mod = EXTENSION_MODULE_BY_ID[ext.id]
               return (
-                <li key={ext.id} className="extensions-hub-card wp-card">
+                <li key={ext.id} className="extensions-hub-card wp-card" data-search-id={ext.id}>
                   <div className="extensions-hub-card-body">
                     <div className="extensions-hub-card-head">
                       <span className="extensions-hub-card-icon" title="Иконка на левой панели">

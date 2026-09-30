@@ -63,6 +63,15 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
   useEffect(() => {
     const unsubscribe = agentClient.onEvent((event: AgentEvent) => {
       const runId = event.runId
+      if (event.type === 'run_adopted') {
+        const linked = String(event.linkedRunId || '')
+        if (!linked || !runId || runId !== activeRunRef.current) return
+        // Sidecar kept the already running duplicate; its open questions are replayed right after this event.
+        activeRunRef.current = linked
+        if (lastCommandRef.current) lastCommandRef.current = { ...lastCommandRef.current, id: linked }
+        setState((s) => ({ ...s, activeRunId: linked, status: 'Агент работает…' }))
+        return
+      }
       const matches = activeRunRef.current !== null && (!runId || runId === activeRunRef.current)
       if (!matches) return
       const outcome = applyAgentEvent(stateRef.current, event)

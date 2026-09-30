@@ -3,11 +3,11 @@ import { createPortal } from 'react-dom'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/types'
 import { FioSuggest } from '../../components/FioSuggest'
-import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
+import { StandardTabChrome } from './TabChromeGrid'
 import { DEFAULT_KPI_LAYOUT } from './useTabChromeLayout'
 import type { UserProfile } from '../../api/types'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
-import { SpecPanel, SpecPill, SpecProgress } from '../../workplace/specV04Components'
+import { SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { SpecIconSearch } from '../../workplace/specV04Icons'
 import { setKpiExportSnapshot } from '../../workplace/kpiExportSnapshot'
@@ -24,12 +24,12 @@ import type { WorkplaceKpiCard } from '../../workplace/workplaceKpiTypes'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
 import { useKpiProtection, writeKpiUnlock } from '../../workplace/kpiProtection'
+import { usePositionCompensation } from '../../workplace/usePositionCompensation'
 import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel } from './KpiEmployeePanel'
 import { KpiMetricCodeModal } from './KpiMetricCodeModal'
-import { KpiPeriodDynamicsChart } from './KpiPeriodDynamicsChart'
-import { KpiProblemZonesTable } from './KpiProblemZonesTable'
 import './kpiGrid.css'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 const LOADING_TILES: SpecSummaryTile[] = [
   { id: 'tasks', label: 'Выполнение задач', value: '—', tone: 'orange' },
@@ -87,8 +87,18 @@ export function KpiGridTab(_props: {
   const [inMoney, setInMoney] = useState(true)
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
   const positionKpi = usePositionKpi(_props.user?.position || '')
+  const positionCompensation = usePositionCompensation()
   const [buildingMethod, setBuildingMethod] = useState(false)
   const [codeFor, setCodeFor] = useState('')
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('kpi:module-chat-state', { detail: buildingMethod }))
+    if (!buildingMethod) return
+    return () => {
+      window.dispatchEvent(new CustomEvent('kpi:module-chat-state', { detail: false }))
+    }
+  }, [buildingMethod])
+
   const periodSources = useKpiPeriodSources()
   const { board: workflowBoard } = useKpiWorkflowBoard(from, to)
   const dailySyncKeyRef = useRef('')
@@ -114,6 +124,21 @@ export function KpiGridTab(_props: {
       [row.name, row.code, row.process, row.status].some((value) => value.toLowerCase().includes(q))
     )
   }, [dashboard, agentQuery, tileFilter])
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      agents.map((row) => ({
+        id: `kpi:${row.id}`,
+        source: 'grid:kpi',
+        pageKey: 'kpi',
+        kind: 'entity',
+        targetId: row.id,
+        title: row.name,
+        subtitle: [row.process, row.status].filter(Boolean).join(' · '),
+        keywords: [row.code, String(row.completionPct), String(row.slaPct), String(row.automationPct)]
+      })),
+    [agents]
+  )
+  useRegisterGlobalSearch('grid:kpi', globalSearchEntries)
 
   useEffect(() => {
     setKpiExportSnapshot({ from, to, data: dashboard })
@@ -194,6 +219,16 @@ export function KpiGridTab(_props: {
     setGateDismissed(true)
   }
 
+  useEffect(() => {
+    const openBonusForm = (): void => {
+      setPerson((current) => current.trim() || selfFio)
+      setFormNote('')
+      setFormOpen(true)
+    }
+    window.addEventListener('kpi:open-bonus-form', openBonusForm)
+    return () => window.removeEventListener('kpi:open-bonus-form', openBonusForm)
+  }, [selfFio])
+
   const downloadForm = async (): Promise<void> => {
     if (formBusy) return
     setFormBusy(true)
@@ -215,12 +250,6 @@ export function KpiGridTab(_props: {
     } finally {
       setFormBusy(false)
     }
-  }
-
-  const openForm = (): void => {
-    setPerson((current) => current.trim() || selfFio)
-    setFormNote('')
-    setFormOpen(true)
   }
 
   if (buildingMethod) {
@@ -253,26 +282,42 @@ export function KpiGridTab(_props: {
       tabId="kpi"
       userId={_props.user?.id || ''}
       defaults={DEFAULT_KPI_LAYOUT}
+      hideGlobalPeriod
       labels={{
-        side: 'KPI сотрудника',
-        botB: 'Нагрузка: сотрудник vs ИИ',
-        botC: 'Динамика показателей',
-        botA: 'Проблемные зоны',
         main: 'KPI ИИ-агентов'
       }}
-      chromeTiles={summaryTilesAsChrome(tiles, tileFilter === 'all' ? null : tileFilter, (id) =>
-        setTileFilter((current) => toggleSimpleTile(current, id))
-      )}
       widgets={{
+        tiles: (
+          <div className="kpi-two-tier-tiles">
+            <KpiEmployeePanel
+              variant="bar"
+              metrics={positionKpi.metrics}
+              compensation={positionCompensation.compensation}
+              compensationLoading={positionCompensation.loading}
+              compensationUnlocking={positionCompensation.unlocking}
+              compensationError={positionCompensation.error}
+              onUnlockCompensation={positionCompensation.unlock}
+              onHideCompensation={positionCompensation.hide}
+              loading={positionKpi.loading}
+              needsMethodology={positionKpi.needsBuild}
+              methodologyStatus={positionKpi.methodologyStatus}
+              methodology={positionKpi.methodology}
+              onCalculate={() => setBuildingMethod(true)}
+              onInfo={(code) => setCodeFor(code)}
+            />
+            <SpecSummaryTiles
+              tiles={tiles}
+              activeId={tileFilter === 'all' ? null : tileFilter}
+              onSelect={(id) => setTileFilter((current) => toggleSimpleTile(current, id))}
+              className="kpi-agent-top-tiles"
+            />
+          </div>
+        ),
         filters: (
         <>
-        <div className="kpi-form-toolbar">
-          <button className="btn-primary kpi-form-download" type="button" onClick={openForm}>
-            Скачать форму
-          </button>
-          <span className="spec-v04-muted">Индивидуальные целевые показатели за месяц выбранного периода</span>
-          {protection.enabled ? (
-            unlocked ? (
+        {protection.enabled ? (
+          <div className="kpi-form-toolbar">
+            {unlocked ? (
               <span className="kpi-protect-badge">
                 Суммы в рублях открыты
                 <button type="button" className="kpi-protect-lock" onClick={() => writeKpiUnlock(userId, null)}>
@@ -283,9 +328,9 @@ export function KpiGridTab(_props: {
               <button className="spec-btn-outline kpi-protect-open" type="button" onClick={() => setGateOpen(true)}>
                 Ввести пароль KPI
               </button>
-            )
-          ) : null}
-        </div>
+            )}
+          </div>
+        ) : null}
         {showGate
           ? createPortal(
               <div className="kpi-form-modal" role="dialog" aria-modal="true" aria-labelledby="kpi-gate-title">
@@ -384,16 +429,6 @@ export function KpiGridTab(_props: {
           : null}
         </>
         ),
-        side: (
-          <KpiEmployeePanel
-            metrics={positionKpi.metrics}
-            loading={positionKpi.loading}
-            needsMethodology={!positionKpi.loading && (positionKpi.needsBuild || !positionKpi.metrics.length)}
-            onCalculate={() => setBuildingMethod(true)}
-            onDetails={() => _props.onOpenProcesses?.()}
-            onInfo={(code) => setCodeFor(code)}
-          />
-        ),
         main: (
         <div className="kpi-dash-main-wrap">
         <div className="spec-table-toolbar kpi-dash-table-toolbar">
@@ -443,7 +478,7 @@ export function KpiGridTab(_props: {
                   </tr>
                 ) : null}
                 {agents.map((row) => (
-                  <tr key={row.id}>
+                  <tr key={row.id} data-search-id={row.id}>
                     <td>
                       <div className="kpi-dash-agent-name">
                         <strong>{row.name}</strong>
@@ -467,47 +502,6 @@ export function KpiGridTab(_props: {
         </div>
         </div>
         ),
-        botA: <KpiProblemZonesTable zones={dashboard?.problemZones ?? []} loading={loading} />,
-        botB: (
-        <SpecPanel title="Нагрузка: сотрудник vs ИИ">
-          <div className="kpi-widget-fill">
-            <div className="kpi-compare-legend">
-              <span className="emp">Сотрудник (ч)</span>
-              <span className="ai">ИИ (ч)</span>
-            </div>
-            <div className="kpi-compare-chart kpi-compare-chart--dense">
-              {(dashboard?.workloadCompare ?? []).map((row) => {
-                const max = Math.max(row.employee, row.ai, 1)
-                return (
-                  <div key={row.id} className="kpi-compare-row">
-                    <span className="kpi-compare-label">{row.label}</span>
-                    <div className="kpi-compare-track">
-                      <i className="emp" style={{ width: `${(row.employee / max) * 100}%` }} title={`${row.employee} ч`} />
-                      <i className="ai" style={{ width: `${(row.ai / max) * 100}%` }} title={`${row.ai} ч`} />
-                    </div>
-                    <span className="kpi-compare-values">
-                      <em className="emp">{row.employee}</em>
-                      <span className="kpi-compare-sep">/</span>
-                      <em className="ai">{row.ai}</em>
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        </SpecPanel>
-        ),
-        botC: (
-        <SpecPanel title={dashboard?.dynamics.title ?? 'Динамика показателей'}>
-          <div className="kpi-widget-fill">
-            {dashboard?.dynamics ? (
-              <KpiPeriodDynamicsChart dynamics={dashboard.dynamics} />
-            ) : loading ? (
-              <p className="spec-v04-muted">Загружаем…</p>
-            ) : null}
-          </div>
-        </SpecPanel>
-        )
       }}
     />
     </>

@@ -231,6 +231,7 @@ function ReportSection({
       {rows.map((row) => (
         <article
           key={row.id}
+          data-search-id={row.id}
           className={[
             'registry-report-card',
             `tone-${row.tone}`,
@@ -531,6 +532,7 @@ export function AssignmentsRegistryTable({
               return (
                 <tr
                   key={row.id}
+                  data-search-id={row.id}
                   className={[
                     `registry-tr tone-${row.tone}`,
                     selected ? 'is-selected' : '',
