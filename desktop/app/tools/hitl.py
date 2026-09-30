@@ -31,6 +31,7 @@ _NEVER_CONFIRM = frozenset(
     {
         "notify.send",
         "notify",
+        "chat.send_direct",
         "code.write_python",
         "code.run_python",
         "report.export_document",

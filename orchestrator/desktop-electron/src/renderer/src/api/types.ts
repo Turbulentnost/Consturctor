@@ -647,6 +647,8 @@ export interface ChatMessage {
   text: string
   clientId: string
   createdAt: string
+  editedAt: string
+  deleted: boolean
   receipt: string
   attachments: ChatAttachment[]
   agent: AgentSharePayload | null

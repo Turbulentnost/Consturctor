@@ -361,11 +361,15 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             "подразделение, проект, кабинет, вид совещания, время), «Присутствующие», "
             "«Повестка совещания», «Решения» и «Поставленные задачи» (задача, исполнитель, срок). "
             "action=update с ref_key перезаписывает черновик «Подготовлен» (проведённый не трогает). "
+            "action=next с source_ref_key — протокол следующего совещания на основе прошлого: шапка, "
+            "присутствующие и повестка копируются, задачи переносятся на контроль исполнения, дата — "
+            "date или «Дата следующего совещания» прошлого протокола; явные поля перекрывают копию. "
             "ФИО передавай как в 1С — сервер сам найдёт ссылки. Требует подтверждения человека. Сервер."
         ),
         _schema(
             {
-                "action": _prop("string", "create | update | probe", default="create"),
+                "action": _prop("string", "create | update | next | probe", default="create"),
+                "source_ref_key": _prop("string", "Ref_Key прошлого протокола (только для action=next)"),
                 "ref_key": _prop("string", "Ref_Key существующего протокола (только для action=update)"),
                 "topic": _prop("string", "Тема совещания как в справочнике «Темы совещаний» 1С"),
                 "date": _prop("string", "Дата совещания YYYY-MM-DD"),
@@ -388,7 +392,7 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 ),
                 "comment": _prop("string", "Комментарий к протоколу"),
             },
-            ["date"],
+            ["action"],
         ),
     ),
     (
@@ -460,6 +464,23 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "workflow_id": _prop("string", "id агента. Пусто - текущий"),
             },
             ["user_id", "title"],
+        ),
+    ),
+    (
+        "chat.send_direct",
+        (
+            "Личное сообщение в чат Constructor от имени владельца агента (с пометкой «[ИИ-агент]»). "
+            "Получатель — user_id из users.list или ФИО как в 1С/протоколе. Если ФИО не найдено или "
+            "неоднозначно, сообщение не уходит, в ответе note — зафиксируй пробел. "
+            "Подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "user_id": _prop("string", "id получателя из users.list"),
+                "fio": _prop("string", "ФИО получателя, если id нет"),
+                "text": _prop("string", "Текст сообщения"),
+            },
+            ["text"],
         ),
     ),
 ]

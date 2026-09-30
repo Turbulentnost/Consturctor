@@ -830,8 +830,10 @@ def handle_protocol_write(
         return probe_protocol_write(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
     if action == "update":
         return _update_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
+    if action == "next":
+        return _next_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
     if action != "create":
-        raise ProtocolWriteError("action: create | update | probe")
+        raise ProtocolWriteError("action: create | update | next | probe")
     body, meta = build_protocol_create_body(
         args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
@@ -857,6 +859,95 @@ def handle_protocol_write(
         "body": body,
         "source": "odata",
     }
+
+
+_NEXT_SKIP_ARGS = frozenset({"action", "ref_key", "Ref_Key", "source_ref_key", "erp_document_id"})
+
+
+def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    """Create-args for the next meeting built from read_protocol_form() of the previous one.
+
+    Header, attendees and agenda are copied; previous tasks are carried over for execution
+    control and the agenda gets a control item for them. Decisions stay with the old protocol.
+    """
+    form = previous.get("form") if isinstance(previous.get("form"), dict) else {}
+    number = _clean(previous.get("number"))
+    prev_day = _clean(form.get("date"))
+    day = _clean(_first(overrides, "date", "meeting_date")) or _clean(form.get("next_meeting_date"))
+    if not day:
+        raise ProtocolWriteError(
+            f"В прошлом протоколе{(' ' + number) if number else ''} не указана дата следующего совещания — "
+            "передай date (YYYY-MM-DD)"
+        )
+    tasks = [
+        {key: task.get(key) for key in ("text", "executor", "due", "priority", "note", "item")}
+        for task in form.get("tasks") or []
+        if isinstance(task, dict) and _clean(task.get("text"))
+    ]
+    agenda = [
+        {"question": _clean(row.get("question")), "responsible": _clean(row.get("responsible"))}
+        for row in form.get("agenda") or []
+        if isinstance(row, dict) and _clean(row.get("question"))
+    ]
+    control = f"Контроль исполнения поручений протокола {number}".strip() if number else ""
+    if tasks and control and not any(row["question"] == control for row in agenda):
+        agenda.append({"question": control, "responsible": _clean(form.get("responsible"))})
+    basis = f"Подготовлен на основе протокола {number}" + (f" от {prev_day}" if prev_day else "")
+    args: dict[str, Any] = {
+        "topic": form.get("topic"),
+        "theme_key": form.get("theme_key"),
+        "date": day,
+        "time_start": form.get("time_start"),
+        "time_end": form.get("time_end"),
+        "leader": form.get("leader"),
+        "responsible": form.get("responsible"),
+        "room": form.get("room"),
+        "room_key": form.get("room_key"),
+        "department": form.get("department"),
+        "project": form.get("project"),
+        "access": form.get("access"),
+        "meeting_type": form.get("meeting_type"),
+        "participants": list(form.get("participants") or []),
+        "agenda": agenda,
+        "tasks": tasks,
+        "report_period_from": prev_day or day,
+        "report_period_to": day,
+        "comment": basis,
+    }
+    for key, value in overrides.items():
+        if key in _NEXT_SKIP_ARGS or value in (None, "", [], {}):
+            continue
+        args[key] = value
+    extra = _clean(overrides.get("comment"))
+    if extra and basis not in extra:
+        args["comment"] = f"{basis}\n{extra}"
+    return args
+
+
+def _next_protocol(
+    args: dict[str, Any],
+    *,
+    actor_fio: str = "",
+    actor_onec_ref: str = "",
+) -> dict[str, Any]:
+    source = _clean(_first(args, "source_ref_key", "ref_key", "Ref_Key", "erp_document_id"))
+    if not _looks_like_guid(source):
+        raise ProtocolWriteError(
+            "Для action=next нужен source_ref_key прошлого протокола (Ref_Key из onec.meeting_protocols)"
+        )
+    previous = read_protocol_form(source)
+    create_args = next_protocol_args(previous, args)
+    result = handle_protocol_write(
+        {**create_args, "action": "create"}, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
+    )
+    result["source_ref_key"] = source
+    result["source_number"] = _clean(previous.get("number"))
+    result["carried_tasks"] = len(create_args.get("tasks") or [])
+    result["summary"] = (
+        f"{result.get('summary') or 'Создан протокол'}; на основе {result['source_number'] or source}, "
+        f"перенесено задач: {result['carried_tasks']}"
+    )
+    return result
 
 
 def _update_protocol(

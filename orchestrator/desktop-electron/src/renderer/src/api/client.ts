@@ -490,6 +490,8 @@ export function parseChatMessage(value: unknown): ChatMessage {
     text: decoded.text,
     clientId: String(data.clientId ?? data.client_id ?? ''),
     createdAt: String(data.createdAt ?? data.created_at ?? ''),
+    editedAt: String(data.editedAt ?? data.edited_at ?? ''),
+    deleted: Boolean(data.deleted),
     receipt: String(data.receipt ?? 'delivered'),
     attachments: files.map((item) => {
       const row = asRecord(item)

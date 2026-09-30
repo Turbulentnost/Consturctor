@@ -119,7 +119,7 @@ def download_file(
     if row is None:
         raise HTTPException(status_code=404, detail="Файл не найден")
     message = db.get(ChatMessage, row.message_id)
-    if message is None:
+    if message is None or message.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Файл не найден")
     member = db.execute(
         select(ChatThreadMember).where(

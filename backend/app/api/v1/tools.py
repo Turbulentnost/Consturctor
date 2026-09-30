@@ -56,6 +56,7 @@ _USERS_TOOLS = frozenset(
         "users.subordinates",
         "users.list",
         "notify.send",
+        "chat.send_direct",
     }
 )
 _AUDIO_TOOLS = frozenset({"audio.transcribe"})
@@ -407,6 +408,7 @@ def _invoke_users_tool(
     resolve the caller without an active SSE run.
     """
     from app.services.workflows.cursor_tools import (
+        _invoke_chat_send_direct,
         _invoke_notify_send,
         _invoke_users_current,
         _invoke_users_list,
@@ -423,6 +425,8 @@ def _invoke_users_tool(
             return _invoke_users_subordinates(arguments)
         if tool_name == "users.list":
             return _invoke_users_list(arguments)
+        if tool_name == "chat.send_direct":
+            return _invoke_chat_send_direct(arguments)
         return _invoke_notify_send(arguments)
     finally:
         clear_tool_context()

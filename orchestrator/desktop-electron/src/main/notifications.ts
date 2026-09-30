@@ -343,6 +343,8 @@ export class NotificationGuard {
     }
     if (
       kind === 'chat_message' ||
+      kind === 'chat_message_updated' ||
+      kind === 'chat_message_deleted' ||
       kind === 'thread_opened' ||
       kind === 'chat_receipt' ||
       kind === 'presence' ||

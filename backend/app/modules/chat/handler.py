@@ -8,7 +8,13 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.user import AppUser
 from app.modules.chat.crypto import decrypt_text
-from app.modules.chat.domain.messages import add_message, mark_read, member_ids
+from app.modules.chat.domain.messages import (
+    add_message,
+    delete_message,
+    edit_message,
+    mark_read,
+    member_ids,
+)
 from app.modules.chat.domain.presence import set_activity
 from app.modules.chat.domain.threads import find_dm, open_dm
 from app.modules.chat.models import ChatSupportTicket, ChatThread
@@ -28,6 +34,10 @@ def handle_command(db: Session, command: dict[str, Any]) -> list[dict[str, Any]]
     client_id = str(command.get("client_id") or "")
     if kind == "send_message":
         return _send(db, user_id, client_id, command)
+    if kind == "edit_message":
+        return _edit(db, user_id, command)
+    if kind == "delete_message":
+        return _delete(db, user_id, command)
     if kind == "mark_read":
         return _read(db, user_id, command)
     if kind == "set_activity":
@@ -118,6 +128,37 @@ def _send(db: Session, user_id: str, client_id: str, command: dict[str, Any]) ->
         }
     ]
     return events
+
+
+def _edit(db: Session, user_id: str, command: dict[str, Any]) -> list[dict[str, Any]]:
+    message = edit_message(
+        db,
+        message_id=str(command.get("message_id") or ""),
+        user_id=user_id,
+        text=str(command.get("text") or ""),
+    )
+    return [
+        {
+            "type": "chat_message_updated",
+            "user_ids": member_ids(db, message.thread_id),
+            "thread_id": message.thread_id,
+            "message_id": message.id,
+            "text": decrypt_text(message.text or ""),
+            "edited_at": message.edited_at.isoformat() if message.edited_at else None,
+        }
+    ]
+
+
+def _delete(db: Session, user_id: str, command: dict[str, Any]) -> list[dict[str, Any]]:
+    message = delete_message(db, message_id=str(command.get("message_id") or ""), user_id=user_id)
+    return [
+        {
+            "type": "chat_message_deleted",
+            "user_ids": member_ids(db, message.thread_id),
+            "thread_id": message.thread_id,
+            "message_id": message.id,
+        }
+    ]
 
 
 def _read(db: Session, user_id: str, command: dict[str, Any]) -> list[dict[str, Any]]:
