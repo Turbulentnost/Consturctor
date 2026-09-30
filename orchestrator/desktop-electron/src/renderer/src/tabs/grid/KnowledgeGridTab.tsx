@@ -11,6 +11,7 @@ import { GridFilterBar } from './gridFilters'
 import { usePageSearch } from '../../layout/pageSearchContext'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 export function KnowledgeGridTab({
   user
@@ -71,6 +72,21 @@ export function KnowledgeGridTab({
       return true
     })
   }, [catalog, query, tileFilter, periodFrom, periodTo])
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      visibleCatalog.map((row) => ({
+        id: `knowledge:${row.id}`,
+        source: 'grid:knowledge',
+        pageKey: 'knowledge',
+        kind: 'entity',
+        targetId: row.id,
+        title: row.name,
+        subtitle: [row.type, row.section, row.process].filter(Boolean).join(' · '),
+        keywords: [row.author, row.project, row.version, row.updated]
+      })),
+    [visibleCatalog]
+  )
+  useRegisterGlobalSearch('grid:knowledge', globalSearchEntries)
   const selected = visibleCatalog.find((c) => c.id === (selectedId || visibleCatalog[0]?.id))
 
   const tiles: SpecSummaryTile[] = useMemo(
@@ -162,7 +178,12 @@ export function KnowledgeGridTab({
                 </tr>
               ) : null}
               {visibleCatalog.map((row) => (
-                <tr key={row.id} className={selected?.id === row.id ? 'selected' : ''} onClick={() => setSelectedId(row.id)}>
+                <tr
+                  key={row.id}
+                  data-search-id={row.id}
+                  className={selected?.id === row.id ? 'selected' : ''}
+                  onClick={() => setSelectedId(row.id)}
+                >
                   <td>
                     <strong>{row.name}</strong>
                   </td>

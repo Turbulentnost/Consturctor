@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.clients.erp_sql import ErpOrgDept, ErpStaffAssignment
 from app.db.base import Base
-from app.models.org import OrgMember, OrgUnit
+from app.models.org import OrgMember, OrgPosition, OrgUnit
 from app.models.platform_task import PlatformTask, PlatformTaskFile
 from app.models.user import AppUser
 from app.services import org_structure, platform_tasks
@@ -25,8 +25,17 @@ def _dept(dept_id: str, name: str, parent: str = "", head: str = "") -> ErpOrgDe
     return ErpOrgDept(id=dept_id, name=name, parent_id=parent, head_fio=head)
 
 
-def _staff(fio: str, dept: str, position: str = "Специалист") -> ErpStaffAssignment:
-    return ErpStaffAssignment(fio=fio, position=position, hr_department=dept, staff_folder=dept, staff_unit=position)
+def _staff(
+    fio: str, dept: str, position: str = "Специалист", position_id: str = ""
+) -> ErpStaffAssignment:
+    return ErpStaffAssignment(
+        fio=fio,
+        position=position,
+        hr_department=dept,
+        staff_folder=dept,
+        staff_unit=position,
+        position_id=position_id,
+    )
 
 
 DEPARTMENTS = [
@@ -40,7 +49,12 @@ DEPARTMENTS = [
 ]
 STAFF = [
     _staff(ME, "Сектор по внедрению искусственного интеллекта", "Руководитель сектора"),
-    _staff(KOMARKOVA, "Сектор по внедрению искусственного интеллекта", "Промпт-инженер"),
+    _staff(
+        KOMARKOVA,
+        "Сектор по внедрению искусственного интеллекта",
+        "Промпт-инженер",
+        "POSITION-PROMPT",
+    ),
     _staff(PEER, "Отдел продаж", "Начальник отдела"),
     _staff("Маркетолог Старый Отделович", "(ликв.) Отдел маркетинга"),
     _staff("Конструктор Внутри Папки", "Конструкторское бюро"),
@@ -61,6 +75,7 @@ def test_liquidated_units_and_their_people_are_dropped() -> None:
     assert "Конструктор Внутри Папки" not in members
     assert "Упразднённый Сотрудник Иванович" not in members
     assert members[KOMARKOVA].unit_id == "AI" and members[KOMARKOVA].user_id
+    assert members[KOMARKOVA].position_id == "POSITION-PROMPT"
     # Председатель не в штате, но руководит подразделениями — добавлен как сотрудник.
     assert members[CHAIRMAN].unit_id in {"ROOT", "AUA"}
 
@@ -68,7 +83,7 @@ def test_liquidated_units_and_their_people_are_dropped() -> None:
 @pytest.fixture()
 def db():
     engine = create_engine("sqlite://", future=True)
-    tables = [t.__table__ for t in (AppUser, OrgUnit, OrgMember, PlatformTask, PlatformTaskFile)]
+    tables = [t.__table__ for t in (AppUser, OrgUnit, OrgPosition, OrgMember, PlatformTask, PlatformTaskFile)]
     Base.metadata.create_all(engine, tables=tables)
     session = sessionmaker(bind=engine, future=True)()
     units, dead = org_structure.build_units(DEPARTMENTS)

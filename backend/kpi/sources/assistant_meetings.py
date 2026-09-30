@@ -1,9 +1,8 @@
 """Планирование совещаний помощника руководителя.
 
-Показатель «Планирование заседаний» — план-фактный отчёт 1С за месяц,
-руководитель Донцова Анна Егоровна, вид совещания «Плановое», «Отчетное» или «Селектор».
-Каждый протокол этого отчёта поставлен по итогу: план равен факту, нарушений нет.
-Шкала ПЛ-НПО-010 остаётся на случай нарушений: меньше 5 → 100%, от 5 до 8 → 50%, больше 8 → 0%.
+Показатель «Планирование заседаний» остановлен до уточнения независимого
+источника плана, источника факта и правила их сопоставления. Протоколы 1С
+можно показать как наблюдаемый факт, но нельзя одновременно считать планом.
 
 Функции select_plan / score_meetings_schedule_kpi ниже обслуживают
 другой показатель: внеплановые совещания по служебным запискам.
@@ -11,7 +10,9 @@
 
 from __future__ import annotations
 
+import calendar
 import re
+from collections import Counter
 from datetime import date, datetime
 from typing import Any
 
@@ -498,6 +499,63 @@ def _report_kind(row: dict[str, Any]) -> bool:
     return kind in {item.casefold() for item in REPORT_KINDS}
 
 
+def _table_numbers(row: dict[str, Any], table: str, field: str) -> set[int]:
+    values: set[int] = set()
+    for item in _as_rows(row.get(table)):
+        try:
+            value = int(item.get(field) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            values.add(value)
+    return values
+
+
+def _schedule_dates(
+    row: dict[str, Any],
+    *,
+    date_from: date,
+    date_to: date,
+) -> tuple[list[date], str | None]:
+    """Expand a 1C meeting-topic schedule inside the requested period."""
+    if _deleted(row) or row.get("РасписаниеЗадано") is not True or not _report_kind(row):
+        return [], None
+
+    schedule_start = parse_day(row.get("ДатаНачала"))
+    schedule_end = parse_day(row.get("ДатаКонца")) or parse_day(row.get("ДатаЗакрытияТемы"))
+    start = max(date_from, schedule_start) if schedule_start else date_from
+    end = min(date_to, schedule_end) if schedule_end else date_to
+    if end < start:
+        return [], None
+
+    allowed_months = _table_numbers(row, "ПовторениеПоМесяцам", "Месяц")
+    weekdays = _table_numbers(row, "ПовторениеПоДнямНедели", "День")
+    day_of_month = int(row.get("ДеньВМесяце") or 0)
+    nth_weekday = int(row.get("ДеньНеделиВМесяце") or 0)
+
+    planned: list[date] = []
+    cursor = start
+    while cursor <= end:
+        if allowed_months and cursor.month not in allowed_months:
+            cursor = cursor.fromordinal(cursor.toordinal() + 1)
+            continue
+        if weekdays:
+            if cursor.isoweekday() in weekdays:
+                planned.append(cursor)
+        elif day_of_month:
+            if cursor.day == min(day_of_month, calendar.monthrange(cursor.year, cursor.month)[1]):
+                planned.append(cursor)
+        elif nth_weekday:
+            week_number = (cursor.day - 1) // 7 + 1
+            if cursor.isoweekday() == nth_weekday and week_number == int(row.get("КоличествоПовторов") or 1):
+                planned.append(cursor)
+        cursor = cursor.fromordinal(cursor.toordinal() + 1)
+
+    if not weekdays and not day_of_month and not nth_weekday:
+        return [], "Расписание включено, но правило повторения не распознано."
+    return planned, None
+
+
 def score_plan_fact_kpi(
     themes: list[dict[str, Any]] | None,
     protocols: list[dict[str, Any]] | None,
@@ -506,15 +564,31 @@ def score_plan_fact_kpi(
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> dict[str, Any]:
-    """Протоколы отчёта: план равен факту, совещание поставлено по итогу."""
+    """Compare independent schedule counts with protocol counts by meeting topic."""
     start = date_from or as_of
     end = date_to or as_of
-    names = {
-        str(row.get("Ref_Key") or "").strip(): _text(row.get("Description") or row.get("name"))
-        for row in _as_rows(themes)
-        if str(row.get("Ref_Key") or "").strip()
-    }
-    grouped: dict[str, dict[str, Any]] = {}
+    if end < start:
+        start, end = end, start
+
+    names: dict[str, str] = {}
+    plan_counts: Counter[str] = Counter()
+    plan_dates: dict[str, list[str]] = {}
+    schedule_errors: list[dict[str, str]] = []
+    for row in _as_rows(themes):
+        theme_id = str(row.get("Ref_Key") or "").strip()
+        if not theme_id:
+            continue
+        name = _text(row.get("Description") or row.get("name"))
+        names[theme_id] = name
+        dates, error = _schedule_dates(row, date_from=start, date_to=end)
+        if error:
+            schedule_errors.append({"theme_id": theme_id, "name": name, "error": error})
+            continue
+        if dates:
+            plan_counts[theme_id] += len(dates)
+            plan_dates[theme_id] = [item.isoformat() for item in dates]
+
+    fact_counts: Counter[str] = Counter()
     for row in _as_rows(protocols):
         if _deleted(row) or not _report_kind(row):
             continue
@@ -522,49 +596,49 @@ def score_plan_fact_kpi(
         if not _in_period(day, start, end):
             continue
         theme_id = str(row.get("ТемаСовещания_Key") or row.get("theme_id") or "").strip()
-        bucket = grouped.setdefault(
-            theme_id or str(row.get("Number") or ""),
-            {"name": "", "fact_count": 0},
-        )
-        bucket["fact_count"] += 1
-        title = names.get(theme_id) or _text(row.get("theme") or row.get("Description"))
-        if title:
-            bucket["name"] = title
+        if theme_id:
+            fact_counts[theme_id] += 1
+            names.setdefault(theme_id, _text(row.get("theme") or row.get("Description")))
+
     rows: list[dict[str, Any]] = []
+    plan_total = 0
     fact_total = 0
-    for item in grouped.values():
-        fact = int(item["fact_count"])
+    violations = 0
+    for theme_id in sorted(plan_counts, key=lambda item: (names.get(item) or "", item)):
+        plan = int(plan_counts[theme_id])
+        fact = int(fact_counts[theme_id])
+        missed = max(plan - fact, 0)
+        plan_total += plan
         fact_total += fact
+        violations += missed
         rows.append(
             {
-                "name": item["name"],
-                "plan_count": fact,
+                "theme_id": theme_id,
+                "name": names.get(theme_id) or "",
+                "plan_count": plan,
                 "fact_count": fact,
-                "missed": 0,
+                "missed": missed,
+                "plan_dates": plan_dates.get(theme_id) or [],
             }
         )
-    rows.sort(key=lambda item: str(item["name"]))
-    violations = 0
-    if fact_total:
-        fact_pct = 100.0
-        score = violation_score(violations)
-        contrib = round(score * WEIGHT / 100.0, 1)
-    else:
-        fact_pct = None
-        score = None
-        contrib = None
-        violations = None  # type: ignore[assignment]
+    score = violation_score(violations) if plan_total and not schedule_errors else None
+    fact_pct = round(min(fact_total, plan_total) * 100.0 / plan_total, 1) if plan_total else None
     return {
         "as_of": as_of.isoformat() if isinstance(as_of, date) else str(as_of or ""),
         "date_from": start.isoformat() if isinstance(start, date) else "",
         "date_to": end.isoformat() if isinstance(end, date) else "",
-        "plan_total": fact_total,
+        "plan_total": plan_total,
         "fact_total": fact_total,
-        "violations": violations,
+        "extra_fact_total": sum(
+            count for theme_id, count in fact_counts.items() if theme_id not in plan_counts
+        ),
+        "violations": violations if plan_total else None,
         "fact_pct": fact_pct,
         "score_pct": score,
         "weight": WEIGHT,
-        "contrib_pct": contrib,
+        "contrib_pct": round(score * WEIGHT / 100.0, 1) if score is not None else None,
+        "needs_clarify": bool(schedule_errors),
+        "schedule_errors": schedule_errors,
         "rows": rows,
     }
 
@@ -580,11 +654,16 @@ def compute_meetings_schedule_kpi(
     if start is None or end is None:
         start = end = as_of
     leader = _leader_key(ctx)
-    themes = _page(
+    all_themes = _page(
         ctx,
         entity=THEME_ENTITY,
-        filt=f"Руководитель_Key eq guid'{leader}' and DeletionMark eq false",
+        filt="DeletionMark eq false",
     )
+    themes = [
+        row
+        for row in all_themes
+        if str(row.get("Руководитель_Key") or "").strip().casefold() == leader.casefold()
+    ]
     protocols = _page(
         ctx,
         entity=PROTOCOL_ENTITY,
@@ -599,11 +678,16 @@ def compute_meetings_schedule_kpi(
 
 
 def format_plan_fact_report(report: dict[str, Any]) -> str:
-    total = report.get("fact_total") or 0
+    if report.get("needs_clarify"):
+        return (
+            "KPI не рассчитан: в 1С есть активное расписание с неподдерживаемым "
+            "правилом повторения. Нельзя подменять его выдуманным планом."
+        )
+    total = report.get("plan_total") or 0
     if not total:
         return (
-            "В план-факте совещаний Донцовой за период нет протоколов "
-            "видов «Плановое», «Отчетное», «Селектор»."
+            "В расписаниях тем совещаний Донцовой за период нет плановых встреч; "
+            "KPI не рассчитан."
         )
     lines = [f"{'план':<6} {'факт':<6} {'откл':<6} тема"]
     for row in report.get("rows") or []:

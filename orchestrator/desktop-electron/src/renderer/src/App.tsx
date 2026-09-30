@@ -6,7 +6,7 @@ import { MessengerPage } from './pages/MessengerPage'
 import { api } from './api/client'
 import { agentClient } from './api/agent'
 import { clearAvatarCache, loadUserAvatar } from './api/avatars'
-import type { ChatThread, DirectoryUser, LoginResult, UserProfile } from './api/types'
+import type { ChatThread, LoginResult, UserProfile } from './api/types'
 import {
   clearComCredentials,
   comCredentials,
@@ -31,10 +31,10 @@ import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
 import { FilesPage } from './pages/FilesPage'
 import { OrchGridShell } from './layout/OrchGridShell'
 import { PageSearchProvider } from './layout/pageSearchContext'
+import { GlobalSearchProvider } from './layout/globalSearch'
 import type { WorkplaceTabKey } from './layout/tabRegistry'
 import { ProcessesGridTab } from './tabs/grid/ProcessesGridTab'
 import { TasksGridTab } from './tabs/grid/TasksGridTab'
-import { ProjectsGridTab } from './tabs/grid/ProjectsGridTab'
 import { MailGridTab } from './tabs/grid/MailGridTab'
 import { DocflowGridTab } from './tabs/grid/DocflowGridTab'
 import { CreateOneCTaskPage } from './tabs/grid/CreateOneCTaskPage'
@@ -71,6 +71,10 @@ import { UsersPage } from './admin/pages/UsersPage'
 import { AiAgentsPage } from './admin/pages/AiAgentsPage'
 import { KnowledgeBasePage } from './admin/pages/KnowledgeBasePage'
 import { SettingsPage } from './admin/pages/SettingsPage'
+import { FinanceEmployeesPage } from './admin/pages/FinanceEmployeesPage'
+import { FinanceUploadPage } from './admin/pages/FinanceUploadPage'
+import { FinanceImportHistoryPage } from './admin/pages/FinanceImportHistoryPage'
+import { resolveAdminPanel } from './admin/adminPanels'
 
 const ADMIN_TAB_KEYS: PageKey[] = [
   'overview',
@@ -80,6 +84,9 @@ const ADMIN_TAB_KEYS: PageKey[] = [
   'users',
   'ai_agents',
   'knowledge_base',
+  'finance_employees',
+  'finance_upload',
+  'finance_import_history',
   'settings'
 ]
 
@@ -87,7 +94,6 @@ const WORKPLACE_TAB_KEYS: WorkplaceTabKey[] = [
   'today',
   'processes',
   'tasks',
-  'projects',
   'mail',
   'docflow',
   'meetings',
@@ -141,16 +147,6 @@ function isOrchestratorToken(token: string): boolean {
   }
 }
 
-function fioKey(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ')
-}
-
-function fioEquals(left: string, right: string): boolean {
-  const a = fioKey(left)
-  const b = fioKey(right)
-  return Boolean(a) && Boolean(b) && (a === b || a.startsWith(b) || b.startsWith(a))
-}
-
 function isAdminTabKey(key: PageKey): boolean {
   return ADMIN_TAB_KEYS.includes(key)
 }
@@ -171,14 +167,6 @@ function windowTitle(view: View, signedIn: boolean): string {
   if (view.kind === 'history') return `История: ${view.title || 'агент'} — ${APP_TITLE}`
   if (view.kind === 'schedule') return `Расписание: ${view.title || 'агент'} — ${APP_TITLE}`
   return APP_TITLE
-}
-
-function findExistingChat(threads: ChatThread[], name: string, peerId?: string): ChatThread | undefined {
-  if (peerId) {
-    const byPeer = threads.find((item) => item.kind !== 'support' && item.peerId === peerId)
-    if (byPeer) return byPeer
-  }
-  return threads.find((item) => item.kind !== 'support' && fioEquals(item.title, name))
 }
 
 function DebugSourcesLifetime(): null {
@@ -433,7 +421,9 @@ function AppShell(): React.JSX.Element {
       const detail = (event as CustomEvent<{ key?: string; intent?: WorkplaceTabIntent }>).detail || {}
       const key = String(detail.key || '')
       if (!key) return
-      if ((WORKPLACE_TAB_KEYS as string[]).includes(key) || (ADMIN_TAB_KEYS as string[]).includes(key)) {
+      const panel = resolveAdminPanel(user)
+      const isAllowedAdminPage = panel?.pages.includes(key as PageKey) ?? false
+      if ((WORKPLACE_TAB_KEYS as string[]).includes(key) || isAllowedAdminPage) {
         setTabIntent(detail.intent ?? null)
         setLastTab(key as PageKey)
         setView({ kind: 'tab', key: key as PageKey })
@@ -441,7 +431,7 @@ function AppShell(): React.JSX.Element {
     }
     window.addEventListener(ORCH_OPEN_TAB, onOpenTab)
     return () => window.removeEventListener(ORCH_OPEN_TAB, onOpenTab)
-  }, [])
+  }, [user])
 
   useEffect(() => {
     const stopUnsub = window.api.onNotificationStop?.((payload) => {
@@ -513,10 +503,12 @@ function AppShell(): React.JSX.Element {
     }
   }, [runs.entries])
   function setModeForUser(profile: UserProfile): void {
-    const mode = profile.isAdmin ? 'admin' : 'user'
+    const panel = resolveAdminPanel(profile)
+    const mode = panel ? 'admin' : 'user'
+    const key: PageKey = panel?.defaultTab ?? 'today'
     setAdminViewMode(mode)
-    setLastTab(mode === 'admin' ? 'overview' : 'today')
-    setView({ kind: 'tab', key: mode === 'admin' ? 'overview' : 'today' })
+    setLastTab(key)
+    setView({ kind: 'tab', key })
   }
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = '', typedLogin = ''): void {
@@ -572,8 +564,10 @@ function AppShell(): React.JSX.Element {
   }
 
   function switchAdminView(mode: 'admin' | 'user'): void {
-    setAdminViewMode(mode)
-    const key: PageKey = mode === 'admin' ? 'overview' : 'today'
+    const panel = resolveAdminPanel(user)
+    const nextMode = mode === 'admin' && panel ? 'admin' : 'user'
+    setAdminViewMode(nextMode)
+    const key: PageKey = nextMode === 'admin' ? panel!.defaultTab : 'today'
     setLastTab(key)
     setView({ kind: 'tab', key })
   }
@@ -586,86 +580,6 @@ function AppShell(): React.JSX.Element {
   function openChat(thread: ChatThread): void {
     setView({ kind: 'chat', thread })
     setChatRefreshAt(Date.now())
-  }
-
-  async function openChatByFio(fio: string, picked?: DirectoryUser): Promise<void> {
-    const name = (picked?.fio || fio).trim()
-    if (!name) return
-    const me = user
-    if (me && (picked?.id === me.id || name.toLowerCase() === me.fio.trim().toLowerCase())) return
-    try {
-      const threads = await api.listChatThreads()
-      const existing = findExistingChat(threads, name, picked?.id)
-      if (existing) {
-        openChat(existing)
-        return
-      }
-      let match = picked && picked.id ? picked : null
-      if (!match?.id) {
-        const users = await api.listDirectoryUsers(name)
-        match =
-          users.find((item) => fioEquals(item.fio, name) && item.id && item.id !== me?.id) ||
-          users.find((item) => item.id && item.id !== me?.id) ||
-          null
-      }
-      if (!match?.id) {
-        openChat({
-          id: `dm:local-${name}`,
-          kind: 'dm',
-          title: name,
-          position: picked?.position || '',
-          preview: '',
-          lastMessageAt: '',
-          unread: 0,
-          pinned: false,
-          peerId: picked?.id || '',
-          activityStatus: 'offline',
-          online: false,
-          ticketStatus: '',
-          avatarUrl: picked?.avatarUrl || null
-        })
-        return
-      }
-      try {
-        await api.openDirectChat(match.id)
-      } catch {
-        /* local dialog */
-      }
-      const next = (await api.listChatThreads()).find((item) => item.peerId === match.id)
-      openChat(
-        next || {
-          id: `dm:${match.id}`,
-          kind: 'dm',
-          title: match.fio || name,
-          position: match.position,
-          preview: '',
-          lastMessageAt: '',
-          unread: 0,
-          pinned: false,
-          peerId: match.id,
-          activityStatus: match.activityStatus,
-          online: match.online,
-          ticketStatus: '',
-          avatarUrl: match.avatarUrl
-        }
-      )
-    } catch {
-      openChat({
-        id: `dm:local-${name}`,
-        kind: 'dm',
-        title: name,
-        position: '',
-        preview: '',
-        lastMessageAt: '',
-        unread: 0,
-        pinned: false,
-        peerId: '',
-        activityStatus: 'offline',
-        online: false,
-        ticketStatus: '',
-        avatarUrl: null
-      })
-    }
   }
 
   function openSupport(): void {
@@ -710,7 +624,8 @@ function AppShell(): React.JSX.Element {
   }
 
   const activeUser = user
-  const isAdminMode = Boolean(activeUser.isAdmin && adminViewMode === 'admin')
+  const activeAdminPanel = resolveAdminPanel(activeUser)
+  const isAdminMode = Boolean(activeAdminPanel && adminViewMode === 'admin')
   const activeKey: PageKey | null =
     view.kind === 'tab'
       ? view.key
@@ -856,7 +771,10 @@ function AppShell(): React.JSX.Element {
     if (view.kind === 'schedule') {
       return <AgentSchedulePage workflowId={view.workflowId} title={view.title} published={Boolean(view.published)} onBack={() => setView({ kind: 'tab', key: lastTab })} onNext={() => setView({ kind: 'tab', key: lastTab })} />
     }
-    if (!isAdminTabKey(view.key)) {
+    if (!isAdminTabKey(view.key) || !activeAdminPanel?.pages.includes(view.key)) {
+      const fallback = activeAdminPanel?.defaultTab ?? 'today'
+      if (fallback === 'today') return renderUserContent()
+      if (fallback === 'finance_employees') return <FinanceEmployeesPage />
       return <OverviewPage />
     }
     switch (view.key) {
@@ -876,8 +794,14 @@ function AppShell(): React.JSX.Element {
         return <KnowledgeBasePage />
       case 'settings':
         return <SettingsPage />
+      case 'finance_employees':
+        return <FinanceEmployeesPage />
+      case 'finance_upload':
+        return <FinanceUploadPage />
+      case 'finance_import_history':
+        return <FinanceImportHistoryPage />
       default:
-        return <OverviewPage />
+        return activeAdminPanel?.defaultTab === 'finance_employees' ? <FinanceEmployeesPage /> : <OverviewPage />
     }
   }
 
@@ -887,8 +811,6 @@ function AppShell(): React.JSX.Element {
         return <ProcessesGridTab user={activeUser} navProcessTab={tabIntent?.processTab} onOpen={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
       case 'tasks':
         return <TasksGridTab user={activeUser} navTaskFilter={tabIntent?.taskFilter} />
-      case 'projects':
-        return <ProjectsGridTab user={activeUser} />
       case 'mail':
         return <MailGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
       case 'docflow':
@@ -1017,6 +939,14 @@ function AppShell(): React.JSX.Element {
         <WorkplacePeriodProvider>
         <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
           <DebugSourcesLifetime />
+          <GlobalSearchProvider
+            onChoose={(target) => {
+              setAdminViewMode('user')
+              setTabIntent({ searchTarget: target })
+              setLastTab(target.pageKey)
+              setView({ kind: 'tab', key: target.pageKey })
+            }}
+          >
           <WithExtensionNav>
             {(pinnedExtensionNav) =>
               workplaceShellKey ? (
@@ -1061,12 +991,12 @@ function AppShell(): React.JSX.Element {
                 setView({ kind: 'tab', key })
               }}
               onOpenThread={openChat}
-              onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
+              searchTarget={tabIntent?.searchTarget}
               onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
               onOpenAgent={openFromInbox}
               onStopRun={(workflowId, runId) => runs.cancel(workflowId, runId)}
               isRunLive={() => true}
-              canSwitchAdminView={Boolean(activeUser.isAdmin)}
+              canSwitchAdminView={Boolean(activeAdminPanel)}
               onSwitchAdminView={switchAdminView}
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
             >
@@ -1081,18 +1011,20 @@ function AppShell(): React.JSX.Element {
               active={activeKey}
               light={false}
               showAdminNav={isAdminMode}
+              adminPageKeys={activeAdminPanel?.pages}
+              adminTitle={activeAdminPanel?.title}
+              navScope={activeAdminPanel ? `admin:${activeAdminPanel.key}` : 'user'}
               pinnedExtensionNav={pinnedExtensionNav}
               activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
               currentUserId={activeUser.id || ''}
               onNavigate={(key) => {
-                if (isAdminMode && !isAdminTabKey(key)) return
+                if (isAdminMode && !activeAdminPanel?.pages.includes(key)) return
                 if (!isAdminMode && !isWorkplaceTabKey(key) && key !== 'settings') return
                 setTabIntent(null)
                 setLastTab(key)
                 setView({ kind: 'tab', key })
               }}
               onOpenThread={openChat}
-              onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
               refreshAt={chatRefreshAt}
             />
             <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
@@ -1109,7 +1041,7 @@ function AppShell(): React.JSX.Element {
                     onStopRun={(workflowId, runId) => runs.cancel(workflowId, runId)}
                     isRunLive={() => true}
                     onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
-                    canSwitchAdminView={Boolean(activeUser.isAdmin)}
+                    canSwitchAdminView={Boolean(activeAdminPanel)}
                     onSwitchAdminView={switchAdminView}
                     variant={isAdminMode ? 'admin' : 'default'}
                   />
@@ -1123,6 +1055,7 @@ function AppShell(): React.JSX.Element {
               )
             }
           </WithExtensionNav>
+          </GlobalSearchProvider>
         </SpecV04SourcesProvider>
         </WorkplacePeriodProvider>
       </GridDataRefreshProvider>

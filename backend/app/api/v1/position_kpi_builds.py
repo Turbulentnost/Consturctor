@@ -17,7 +17,6 @@ from app.schemas.position_kpi import (
 )
 from app.services.position_kpi.builder import (
     PositionKpiBuildError,
-    attach_files,
     connect_build,
     finish_sdk,
     get_build,
@@ -58,7 +57,11 @@ def create_build(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PositionKpiBuildOut:
-    name = ((body.position if body else "") or position or auth.position or "").strip()
+    own_position = (auth.position or "").strip()
+    requested = ((body.position if body else "") or position or "").strip()
+    if requested and requested.casefold() != own_position.casefold():
+        raise HTTPException(status_code=403, detail="Можно создавать модули только для своей должности")
+    name = own_position
     try:
         payload = start_build(db, user_id=auth.user_id, position=name)
     except PositionKpiBuildError as exc:
@@ -86,12 +89,11 @@ async def upload_build_files(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PositionKpiBuildOut:
-    files = await _files_from_request(request)
-    try:
-        payload = attach_files(db, user_id=auth.user_id, build_id=build_id, files=files)
-    except PositionKpiBuildError as exc:
-        raise _http(exc) from exc
-    return PositionKpiBuildOut.model_validate(payload)
+    del build_id, request, auth, db
+    raise HTTPException(
+        status_code=403,
+        detail="Методики KPI загружает Finance; пользовательские файлы запрещены",
+    )
 
 
 @router.post("/{build_id}/turns", response_model=PositionKpiBuildOut)
@@ -101,17 +103,16 @@ async def create_build_turn(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PositionKpiBuildOut:
-    files = await _files_from_request(request)
     content_type = (request.headers.get("content-type") or "").lower()
-    message = ""
     if "multipart/form-data" in content_type:
-        form = await request.form()
-        raw = form.get("message")
-        if raw is not None and not hasattr(raw, "filename"):
-            message = str(raw or "")
-    else:
-        body = PositionKpiBuildTurnIn.model_validate(await request.json())
-        message = body.message
+        raise HTTPException(
+            status_code=403,
+            detail="Файлы методики принимает только Finance",
+        )
+    files: list[tuple[str, bytes]] = []
+    message = ""
+    body = PositionKpiBuildTurnIn.model_validate(await request.json())
+    message = body.message
     try:
         payload = persist_turn(
             db,

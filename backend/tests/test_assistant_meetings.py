@@ -8,6 +8,7 @@ from openpyxl import load_workbook
 from kpi.sources.assistant_meetings import (
     SHEET_HEADERS,
     compute_meetings_schedule_kpi,
+    score_plan_fact_kpi,
     score_meetings_schedule_kpi,
     violation_score,
     write_meetings_report_xlsx,
@@ -140,7 +141,7 @@ def test_memo_outside_month_is_not_plan():
     assert report["score_pct"] is None
 
 
-def test_compute_reads_dontsova_plan_fact():
+def test_plan_fact_uses_monthly_topic_schedule_and_protocol_count():
     class _Ctx:
         date_from = START
         date_to = END
@@ -150,7 +151,18 @@ def test_compute_reads_dontsova_plan_fact():
             if entity == "Catalog_Пользователи":
                 return [{"Ref_Key": "leader", "Description": "Донцова Анна Егоровна"}]
             if entity == "Catalog_ТД_ТемыСовещаний":
-                return [{"Ref_Key": "t1", "Description": "Еженедельное совещание"}]
+                return [
+                    {
+                        "Ref_Key": "t1",
+                        "Description": "Еженедельное совещание",
+                        "Руководитель_Key": "leader",
+                        "DeletionMark": False,
+                        "РасписаниеЗадано": True,
+                        "ВидСовещания": "Отчетное",
+                        "ДеньВМесяце": 4,
+                        "ПовторениеПоМесяцам": [{"Месяц": 9}],
+                    }
+                ]
             assert entity == "Document_ТД_Протокол"
             return [
                 {
@@ -174,13 +186,82 @@ def test_compute_reads_dontsova_plan_fact():
             ]
 
     report = compute_meetings_schedule_kpi(_Ctx(), as_of=AS_OF)
-    assert report["plan_total"] == 2
+    assert report["plan_total"] == 1
     assert report["fact_total"] == 2
     assert report["violations"] == 0
     assert report["fact_pct"] == 100.0
     assert report["score_pct"] == 100.0
     assert report["rows"][0]["name"] == "Еженедельное совещание"
+    assert report["rows"][0]["plan_count"] == 1
+    assert report["rows"][0]["fact_count"] == 2
     assert report["contrib_pct"] == 40.0
+    assert report["needs_clarify"] is False
+
+
+def test_weekday_schedule_counts_missing_protocols_by_topic():
+    themes = [
+        {
+            "Ref_Key": "weekly",
+            "Description": "Пятничная планёрка",
+            "DeletionMark": False,
+            "РасписаниеЗадано": True,
+            "ВидСовещания": "Отчетное",
+            "ПовторениеПоДнямНедели": [{"День": 5}],
+            "ПовторениеПоМесяцам": [{"Месяц": 9}],
+        }
+    ]
+    protocols = [
+        {
+            "ТемаСовещания_Key": "weekly",
+            "Date": day,
+            "DeletionMark": False,
+            "ВидСовещания": "Отчетное",
+        }
+        for day in ("2026-09-04T10:00:00", "2026-09-11T10:00:00")
+    ]
+
+    report = score_plan_fact_kpi(
+        themes,
+        protocols,
+        as_of=AS_OF,
+        date_from=START,
+        date_to=END,
+    )
+
+    assert report["plan_total"] == 4
+    assert report["fact_total"] == 2
+    assert report["violations"] == 2
+    assert report["fact_pct"] == 50.0
+    assert report["score_pct"] == 100.0
+    assert report["rows"][0]["plan_dates"] == [
+        "2026-09-04",
+        "2026-09-11",
+        "2026-09-18",
+        "2026-09-25",
+    ]
+
+
+def test_active_unknown_schedule_does_not_invent_plan():
+    report = score_plan_fact_kpi(
+        [
+            {
+                "Ref_Key": "unknown",
+                "Description": "Неразобранное расписание",
+                "DeletionMark": False,
+                "РасписаниеЗадано": True,
+                "ВидСовещания": "Отчетное",
+            }
+        ],
+        [],
+        as_of=AS_OF,
+        date_from=START,
+        date_to=END,
+    )
+
+    assert report["plan_total"] == 0
+    assert report["score_pct"] is None
+    assert report["needs_clarify"] is True
+    assert report["schedule_errors"][0]["theme_id"] == "unknown"
 
 
 def test_excel_sheet_uses_unplanned_columns(tmp_path: Path) -> None:

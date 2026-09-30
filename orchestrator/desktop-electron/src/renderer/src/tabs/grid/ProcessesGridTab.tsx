@@ -30,6 +30,7 @@ import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions
 import { applyMeetingDoneToRow, isMeetingRowId } from '../../workplace/meetingCompletion'
 import { useMeetingCompletion } from '../../workplace/useMeetingCompletion'
 import { formatRunWhen, historySourceLabel, historyStatusLabel, historyStatusTone } from '../../pages/historyDetail'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 const DETAIL_TABS = [
   { id: 'general', label: 'Общее' },
@@ -304,6 +305,21 @@ export function ProcessesGridTab({
       ),
     [rows, meetingCompletion.revision, meetingCompletion.isDone]
   )
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      displayRows.map((row) => ({
+        id: `processes:${row.id}`,
+        source: 'grid:processes',
+        pageKey: 'processes',
+        kind: 'entity',
+        targetId: row.id,
+        title: decodeMimeHeader(row.name),
+        subtitle: [row.type, row.project, row.status].filter(Boolean).join(' · '),
+        keywords: [row.code, row.source, row.taskToday, row.deadline]
+      })),
+    [displayRows]
+  )
+  useRegisterGlobalSearch('grid:processes', globalSearchEntries)
   const tabCounts = useMemo(() => countProcessRowsByTab(allRows), [allRows])
   const [selectedId, setSelectedId] = useState('')
   const effectiveId = selectedId || displayRows[0]?.id || ''
@@ -404,7 +420,7 @@ export function ProcessesGridTab({
         ),
         main: (
         <div className="orch-process-main">
-        <div className="spec-table-toolbar orch-process-tabs">
+        <div className="spec-table-toolbar orch-process-tabs" data-search-id={tab}>
           <SpecTableTabs tabs={tabs} active={tab} onChange={setTab} />
           <select className="wp-select orch-process-tabs-sort" defaultValue="priority">
             <option value="priority">Сортировка: По приоритету</option>
@@ -443,6 +459,7 @@ export function ProcessesGridTab({
               {displayRows.map((row) => (
                 <tr
                   key={row.id}
+                  data-search-id={row.id}
                   className={effectiveId === row.id ? 'selected' : ''}
                   onClick={() => setSelectedId(row.id)}
                 >

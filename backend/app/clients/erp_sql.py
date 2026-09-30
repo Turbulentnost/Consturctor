@@ -808,6 +808,8 @@ class ErpStaffAssignment:
     hr_department: str
     staff_folder: str
     staff_unit: str
+    position_id: str = ""
+    person_id: str = ""
 
 
 def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
@@ -847,7 +849,9 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
             """
             ;WITH latest AS (
                 SELECT
+                    CONVERT(varchar(64), p._IDRRef, 2) AS PersonId,
                     CAST(p._Description AS nvarchar(256)) AS Person,
+                    CONVERT(varchar(64), pos._IDRRef, 2) AS PositionId,
                     CAST(pos._Description AS nvarchar(256)) AS Position,
                     CAST(hr._Description AS nvarchar(256)) AS HrDept,
                     CAST(folder._Description AS nvarchar(256)) AS StaffFolder,
@@ -871,7 +875,7 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
                   AND t._Fld43774 > '2002-01-01'
                   AND LTRIM(RTRIM(ISNULL(s._Description, N''))) <> N''
             )
-            SELECT Person, Position, HrDept, StaffFolder, StaffUnit
+            SELECT PersonId, Person, PositionId, Position, HrDept, StaffFolder, StaffUnit
             FROM latest
             WHERE rn = 1
               AND LTRIM(RTRIM(ISNULL(Person, N''))) <> N''
@@ -880,6 +884,8 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
         staff = [
             ErpStaffAssignment(
                 fio=(row.Person or "").strip(),
+                person_id=(row.PersonId or "").strip().upper(),
+                position_id=(row.PositionId or "").strip().upper(),
                 position=(row.Position or "").strip(),
                 hr_department=(row.HrDept or "").strip(),
                 staff_folder=(row.StaffFolder or "").strip(),

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import logging
 import re
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +34,9 @@ GENERATED_PREFIX = "kpi.generated."
 GENERATED_DIR = BACKEND_ROOT / "kpi" / "generated"
 
 
-def generated_profile_id(position: str) -> str:
-    digest = hashlib.sha1(normalize_position_name(position).encode("utf-8")).hexdigest()[:10]
+def generated_profile_id(position: str, effective_from: date | None = None) -> str:
+    identity = f"{normalize_position_name(position)}\n{effective_from.isoformat() if effective_from else ''}"
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:10]
     return f"generated-{digest}"
 
 
@@ -76,6 +79,79 @@ def module_source(item: dict[str, Any]) -> str:
 
 def module_code(item: dict[str, Any]) -> str:
     return str(item.get("code") or item.get("metric_code") or "").strip()
+
+
+def validate_generated_module_payloads(
+    catalog: dict[str, Any],
+    modules: list[dict[str, Any]],
+) -> None:
+    """Не допускает публикацию частичного или несовместимого набора калькуляторов."""
+    metrics = [item for item in (catalog.get("metrics") or []) if isinstance(item, dict)]
+    required = [
+        str(metric.get("code") or "").strip()
+        for metric in metrics
+        if str(metric.get("code") or "").strip()
+    ]
+    by_code = {
+        module_code(item): item
+        for item in modules
+        if isinstance(item, dict) and module_code(item)
+    }
+    missing = [code for code in required if code not in by_code]
+    if missing:
+        raise ValueError("Не созданы калькуляторы KPI: " + ", ".join(missing))
+    if not required:
+        raise ValueError("В методике нет показателей KPI для подключения")
+
+    errors: list[str] = []
+    for code in required:
+        item = by_code[code]
+        source_text = module_source(item)
+        tests = str(item.get("tests") or item.get("test_text") or "").strip()
+        if not source_text:
+            errors.append(f"{code}: пустой исходник")
+            continue
+        if not tests:
+            errors.append(f"{code}: нет теста")
+        try:
+            tree = ast.parse(source_text, filename=f"{code}.py")
+        except SyntaxError as exc:
+            errors.append(f"{code}: синтаксическая ошибка, строка {exc.lineno}: {exc.msg}")
+            continue
+        functions = {
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        expected = {
+            f"load_{code}_rows",
+            f"score_{code}_kpi",
+            f"compute_{code}_kpi",
+        }
+        absent = sorted(expected - functions)
+        if absent:
+            errors.append(f"{code}: нет функций {', '.join(absent)}")
+        declared: dict[str, Any] | None = None
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if not any(isinstance(target, ast.Name) and target.id == "SOURCE" for target in targets):
+                continue
+            try:
+                value = ast.literal_eval(node.value)
+            except (ValueError, TypeError, SyntaxError):
+                value = None
+            if isinstance(value, dict):
+                declared = value
+            break
+        if declared is None:
+            errors.append(f"{code}: SOURCE должен быть статическим словарём")
+            continue
+        source_check = validate_spec(declared)
+        errors.extend(f"{code}: {message}" for message in source_check["errors"])
+    if errors:
+        raise ValueError("Модули KPI не готовы: " + " ".join(errors))
 
 
 def _drop_loaded_module(module_name: str) -> None:
@@ -225,6 +301,83 @@ def persist_generated_modules(
     return write_generated_modules(prepared)
 
 
+def connect_modules_to_profile(
+    db: Session,
+    *,
+    profile_id: str,
+    catalog: dict[str, Any],
+    modules: list[dict[str, Any]],
+) -> str:
+    """Attach calculators to a Finance-owned profile without changing its methodology."""
+    profile = db.get(PositionKpiProfile, profile_id)
+    if profile is None or not (profile.source_import_id or "").strip():
+        raise ValueError("Модули можно подключить только к методике, подтверждённой Finance")
+    validate_generated_module_payloads(catalog, modules)
+    metrics = list(
+        db.scalars(
+            select(PositionKpiMetric).where(PositionKpiMetric.profile_id == profile_id)
+        ).all()
+    )
+    by_code = {metric.code: metric for metric in metrics}
+    unknown = sorted(
+        code for code in (module_code(item) for item in modules) if code and code not in by_code
+    )
+    if unknown:
+        raise ValueError("В официальной методике нет KPI: " + ", ".join(unknown))
+
+    stored = persist_generated_modules(db, profile_id, modules)
+    source_errors: list[str] = []
+    for item in stored:
+        code = str(item.get("metric_code") or "").strip()
+        module = str(item.get("module") or "").strip()
+        metric = by_code.get(code)
+        if metric is None or not module:
+            continue
+        facts = list(
+            db.scalars(
+                select(PositionKpiSource).where(
+                    PositionKpiSource.metric_id == metric.id,
+                    PositionKpiSource.role == "fact",
+                )
+            ).all()
+        )
+        if not facts:
+            fact = PositionKpiSource(
+                id=source_row_id(metric.id, "fact", "unknown", 1),
+                metric_id=metric.id,
+                role="fact",
+                kind="unknown",
+                title="Факт",
+                detail="",
+                update_rule="",
+                extra_json={},
+            )
+            db.add(fact)
+            facts = [fact]
+        declared = declared_source(module)
+        spec = {key: value for key, value in declared.items() if key != "module"}
+        check = validate_spec(spec)
+        source_errors.extend(f"«{metric.name}»: {error}" for error in check["errors"])
+        registry = SOURCES.get(str(spec.get("source") or "").strip())
+        target = facts[0]
+        extra = dict(target.extra_json or {})
+        extra.update({key: value for key, value in declared.items() if key != "module"})
+        extra["module"] = module
+        extra["validation"] = {
+            "ok": not check["errors"],
+            "errors": check["errors"],
+            "warnings": check["warnings"],
+        }
+        target.extra_json = extra
+        if registry is not None:
+            target.kind = registry.kind
+    if source_errors:
+        raise ValueError("Модули не знают, откуда брать данные: " + " ".join(source_errors))
+    invalidate_profile_cache(db, profile_id)
+    db.flush()
+    return profile_id
+
+
 def list_module_descriptors(db: Session, profile_id: str) -> list[dict[str, Any]]:
     rows = db.execute(
         select(PositionKpiModule)
@@ -300,11 +453,22 @@ def upsert_generated_catalog(
     name = str(position or catalog.get("position_name") or catalog.get("position") or "").strip()
     if not name:
         raise ValueError("Не указана должность")
+    effective_raw = catalog.get("effective_from")
+    if isinstance(effective_raw, date):
+        effective_from = effective_raw
+    elif str(effective_raw or "").strip():
+        effective_from = date.fromisoformat(str(effective_raw).strip())
+    else:
+        effective_from = None
     profile_id = str(catalog.get("id") or "").strip()
     if not profile_id or profile_id.startswith("plnpo010-"):
-        profile_id = generated_profile_id(name)
-    existing = resolve_profile(db, name)
-    if existing is not None and existing.id != profile_id:
+        profile_id = generated_profile_id(name, effective_from)
+    existing = resolve_profile(db, name, as_of=effective_from or date.today())
+    if (
+        effective_from is None
+        and existing is not None
+        and existing.id != profile_id
+    ):
         _drop_profile(db, existing.id)
     metrics = catalog.get("metrics") if isinstance(catalog.get("metrics"), list) else []
     _upsert(
@@ -317,7 +481,9 @@ def upsert_generated_catalog(
         source_code=str(catalog.get("source_code") or "methodology"),
         source_version=str(catalog.get("source_version") or "1"),
         source_title=str(catalog.get("source_title") or "Методика расчёта KPI"),
-        effective_from=None,
+        effective_from=effective_from,
+        effective_to=None,
+        source_import_id=str(catalog.get("source_import_id") or ""),
         summary=str(catalog.get("summary") or ""),
     )
     db.flush()
@@ -340,7 +506,7 @@ def upsert_generated_catalog(
         salary_max=None,
         currency="RUB",
         bonus_kind=str(catalog.get("bonus_kind") or "none"),
-        bonus_base_pct=100,
+        bonus_base_pct=int(catalog.get("bonus_base_pct") or 100),
         bonus_human=str(catalog.get("bonus_human") or ""),
         payout_json=[],
         notes=str(catalog.get("notes") or ""),

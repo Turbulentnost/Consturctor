@@ -176,6 +176,7 @@ function installBrowserApi(): void {
     openFile: async () => [],
     openPath: async () => ({ ok: false, error: 'Только в Electron' }),
     focusOutlook: async () => ({ ok: false, error: 'Только в Electron' }),
+    launchTurboProject: async () => ({ ok: false, error: 'Только в Electron' }),
     printToPdf: async () => ({ ok: false, error: 'Только в Electron' }),
     printPreview: async () => ({ ok: false, error: 'Только в Electron' }),
     printDialog: async () => ({ ok: false, error: 'Только в Electron' }),

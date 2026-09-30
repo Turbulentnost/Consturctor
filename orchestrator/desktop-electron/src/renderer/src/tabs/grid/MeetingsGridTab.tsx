@@ -783,6 +783,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
             selectedId={selected ? meetingInstanceKey(selected) : ''}
             onSelectMeeting={(m) => setSelectedId(meetingInstanceKey(m))}
             showDetailsModal={false}
+            registerGlobalSearch
             protocolMarks={protocolMarks}
           />
         </div>

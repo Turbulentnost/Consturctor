@@ -41,7 +41,9 @@ import {
   type IntervalUnit,
   type AgentKpi,
   type PositionKpiBuildSession,
+  type PositionKpiCompensation,
   type PositionKpiDaily,
+  type PositionKpiMethodology,
   type PositionKpiTile,
   type PositionKpiBuildMessage,
   type PositionKpiMetricDetail,
@@ -117,20 +119,6 @@ function normalizeFioKey(value: string): string {
   return (value || '').toLowerCase().replace(/[ьъ\u0301]/g, '')
 }
 
-const LOCAL_ADMIN_FIO_KEYS = new Set([
-  'уставицкий андрей алексеевич',
-  'жалыбин максим дмитриевич',
-  'жалыбин максим димитриевич'
-])
-
-function localAdminFioKey(value: string): string {
-  return normalizeFioKey(value).replace(/ё/g, 'е').replace(/\s+/g, ' ').trim()
-}
-
-function isLocalAdminFio(value: string): boolean {
-  return LOCAL_ADMIN_FIO_KEYS.has(localAdminFioKey(value))
-}
-
 const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
   {
     needle: 'комарков',
@@ -158,7 +146,8 @@ function parseUser(data: Record<string, unknown>): UserProfile {
   const fio = String(data.fio ?? '')
   const role = String(data.role ?? '')
   const adminFlag = data.is_admin ?? data.isAdmin
-  const isAdmin = adminFlag === true || role === 'admin' || isLocalAdminFio(fio)
+  const isAdmin = adminFlag === true || role === 'admin'
+  const rawAdminPages = data.admin_pages ?? data.adminPages
   return applyProfileOverrides({
     id: String(data.id ?? ''),
     fio,
@@ -167,6 +156,8 @@ function parseUser(data: Record<string, unknown>): UserProfile {
     position: String(data.position ?? ''),
     role: isAdmin ? 'admin' : role || 'user',
     isAdmin,
+    adminPanel: String(data.admin_panel ?? data.adminPanel ?? '').trim() || null,
+    adminPages: Array.isArray(rawAdminPages) ? rawAdminPages.map(String) : [],
     avatarUrl: optionalUrl(data.avatarUrl) ?? optionalUrl(data.avatar_url),
     canChangeDepartment:
       (data.canChangeDepartment as boolean) ?? (data.can_change_department as boolean) ?? true,
@@ -334,6 +325,47 @@ function parsePositionKpiDaily(raw: Record<string, unknown> | null | undefined):
     cached: Boolean(data.cached),
     stale: Boolean(data.stale),
     tiles
+  }
+}
+
+function parsePositionKpiMethodology(
+  raw: Record<string, unknown> | null | undefined
+): PositionKpiMethodology {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const rawStatus = String(data.status ?? 'none')
+  const status: PositionKpiMethodology['status'] =
+    rawStatus === 'ready' || rawStatus === 'needs_modules' ? rawStatus : 'none'
+  return {
+    status,
+    position: String(data.position ?? ''),
+    profileId: String(data.profile_id ?? data.profileId ?? ''),
+    sourceTitle: String(data.source_title ?? data.sourceTitle ?? ''),
+    effectiveFrom: String(data.effective_from ?? data.effectiveFrom ?? ''),
+    metrics: (Array.isArray(data.metrics) ? data.metrics : []).map((item) => {
+      const row = asRecord(item)
+      return {
+        code: String(row.code ?? ''),
+        name: String(row.name ?? ''),
+        weight: asNullableNumber(row.weight) ?? 0,
+        formulaHuman: String(row.formula_human ?? row.formulaHuman ?? ''),
+        moduleReady: Boolean(row.module_ready ?? row.moduleReady)
+      }
+    })
+  }
+}
+
+function parsePositionKpiCompensation(
+  raw: Record<string, unknown> | null | undefined
+): PositionKpiCompensation {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  return {
+    available: Boolean(data.available),
+    unlocked: Boolean(data.unlocked),
+    currency: String(data.currency ?? 'RUB'),
+    effectiveFrom: String(data.effective_from ?? data.effectiveFrom ?? ''),
+    salary: asNullableNumber(data.salary),
+    bonus: asNullableNumber(data.bonus),
+    total: asNullableNumber(data.total)
   }
 }
 
@@ -2351,6 +2383,35 @@ export class ApiClient {
     return parsePositionKpiDaily(data ?? {})
   }
 
+  async getPositionKpiMethodology(): Promise<PositionKpiMethodology> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      '/api/v1/position-kpi/methodology',
+      { timeoutMs: 30_000 }
+    )
+    return parsePositionKpiMethodology(data ?? {})
+  }
+
+  async getPositionKpiCompensation(to = ''): Promise<PositionKpiCompensation> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/compensation', {
+      params: { to: to || undefined },
+      timeoutMs: 30_000
+    })
+    return parsePositionKpiCompensation(data ?? {})
+  }
+
+  async unlockPositionKpiCompensation(pin: string, from = '', to = ''): Promise<PositionKpiCompensation> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      '/api/v1/position-kpi/compensation/unlock',
+      {
+        body: { pin, period_from: from || null, period_to: to || null },
+        timeoutMs: 60_000
+      }
+    )
+    return parsePositionKpiCompensation(data ?? {})
+  }
+
   async getPositionKpiMetric(position: string, code: string): Promise<PositionKpiMetricDetail> {
     const data = await this.request<Record<string, unknown>>(
       'GET',
@@ -2478,6 +2539,81 @@ export class ApiClient {
 
   async adminSettings(): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>('GET', '/api/v1/admin/settings')
+  }
+
+  // ---------- Admin finance panel ----------
+  async adminFinanceEmployees(): Promise<unknown> {
+    return this.request<unknown>('GET', '/api/v1/admin/finance/employees')
+  }
+
+  async adminFinancePositions(): Promise<unknown> {
+    return this.request<unknown>('GET', '/api/v1/admin/finance/positions')
+  }
+
+  async adminFinanceEmployeeKpi(employeeId: string): Promise<unknown> {
+    return this.request<unknown>(
+      'GET',
+      `/api/v1/admin/finance/employees/${encodeURIComponent(employeeId)}/kpi`
+    )
+  }
+
+  async adminFinanceEmployeeSalaries(employeeId: string): Promise<unknown> {
+    return this.request<unknown>(
+      'GET',
+      `/api/v1/admin/finance/employees/${encodeURIComponent(employeeId)}/salaries`
+    )
+  }
+
+  async adminFinanceImports(): Promise<unknown> {
+    return this.request<unknown>('GET', '/api/v1/admin/finance/imports')
+  }
+
+  async adminFinanceImport(importId: string): Promise<unknown> {
+    return this.request<unknown>(
+      'GET',
+      `/api/v1/admin/finance/imports/${encodeURIComponent(importId)}`
+    )
+  }
+
+  async uploadAdminFinanceImport(
+    kind: 'salary' | 'material_incentive',
+    filePath: string
+  ): Promise<unknown> {
+    const response = await window.api.upload<unknown>({
+      endpoint: `/api/v1/admin/finance/imports?kind=${encodeURIComponent(kind)}`,
+      filePath,
+      fieldName: 'file',
+      token: this.resolveToken(),
+      timeoutMs: 180_000
+    })
+    if (!response.ok) throw new ApiError(response.error || 'Не удалось загрузить файл', response.status)
+    return response.data ?? {}
+  }
+
+  async patchAdminFinanceImport(importId: string, body: unknown): Promise<unknown> {
+    return this.request<unknown>(
+      'PATCH',
+      `/api/v1/admin/finance/imports/${encodeURIComponent(importId)}`,
+      { body }
+    )
+  }
+
+  async confirmAdminFinanceImport(importId: string): Promise<unknown> {
+    return this.request<unknown>(
+      'POST',
+      `/api/v1/admin/finance/imports/${encodeURIComponent(importId)}/confirm`
+    )
+  }
+
+  async downloadAdminFinanceImport(
+    importId: string,
+    defaultName = 'finance-import.xlsx'
+  ): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> {
+    return window.api.download({
+      url: `/api/v1/admin/finance/imports/${encodeURIComponent(importId)}/file`,
+      defaultName,
+      token: this.resolveToken()
+    })
   }
 }
 

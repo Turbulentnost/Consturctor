@@ -2,6 +2,15 @@ from app.models.user import AppUser
 from app.models.agent_run import AgentRun
 from app.models.calendar_overlay import CalendarOverlay
 from app.models.notification import Notification
+from app.models.finance import FinanceImport, FinanceSalaryEntry
+from app.models.org import (
+    AdminPanelAssignment,
+    AdminUserPanelAssignment,
+    OrgMember,
+    OrgPerson,
+    OrgPosition,
+    OrgUnit,
+)
 from app.models.orchestrator import UserOrchestrator
 from app.models.regulation import RegulationDocument, RoleMatchRun
 from app.models.trigger import AgentTrigger
@@ -24,6 +33,14 @@ __all__ = [
     "AgentRun",
     "CalendarOverlay",
     "Notification",
+    "FinanceImport",
+    "FinanceSalaryEntry",
+    "OrgUnit",
+    "OrgPosition",
+    "OrgPerson",
+    "OrgMember",
+    "AdminPanelAssignment",
+    "AdminUserPanelAssignment",
     "UserOrchestrator",
     "RegulationDocument",
     "RoleMatchRun",

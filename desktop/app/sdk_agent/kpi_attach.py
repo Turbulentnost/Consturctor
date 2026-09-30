@@ -12,7 +12,8 @@ from app.tools.ac.readable_files import IMAGE_SUFFIXES, PDF_SUFFIXES
 
 _DOC_SUFFIXES = PDF_SUFFIXES | IMAGE_SUFFIXES
 _KPI_ROW = re.compile(
-    r"^\s*(?:\d+[\).]|[-*•])\s*(.+?)(?:\s*[—\-–]\s*|\s+)(?:вес\s*)?(\d{1,3})\s*%",
+    r"(?:^|[.!?]\s*)(?:(?:\d+[\).]|[-*•])\s*)?([^.!?]+?)"
+    r"(?:\s*[—\-–]\s*|\s+)(?:вес\s*)?(\d{1,3})\s*%",
     re.IGNORECASE,
 )
 _TRANSLIT = {

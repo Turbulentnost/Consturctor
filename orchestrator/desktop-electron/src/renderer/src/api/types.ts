@@ -5,6 +5,8 @@ export interface UserProfile {
   position: string
   role: string
   isAdmin: boolean
+  adminPanel: string | null
+  adminPages: string[]
   /** Логин 1С (v8users.Name) → Outlook: {nameMail}@turbo-don.ru */
   nameMail: string
   avatarUrl: string | null
@@ -727,6 +729,31 @@ export interface PositionKpiDaily {
   cached: boolean
   stale: boolean
   tiles: PositionKpiTile[]
+}
+
+export interface PositionKpiMethodology {
+  status: 'none' | 'needs_modules' | 'ready'
+  position: string
+  profileId: string
+  sourceTitle: string
+  effectiveFrom: string
+  metrics: Array<{
+    code: string
+    name: string
+    weight: number
+    formulaHuman: string
+    moduleReady: boolean
+  }>
+}
+
+export interface PositionKpiCompensation {
+  available: boolean
+  unlocked: boolean
+  currency: string
+  effectiveFrom: string
+  salary: number | null
+  bonus: number | null
+  total: number | null
 }
 
 export interface PositionKpiDataSourceInfo {

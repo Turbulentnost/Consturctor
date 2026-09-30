@@ -232,6 +232,7 @@ export function SpecTableTabs({
       {tabs.map((tab) => (
         <button
           key={tab.id}
+          data-search-id={tab.id}
           type="button"
           className={active === tab.id ? 'active' : ''}
           onClick={() => onChange(tab.id)}

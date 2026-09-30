@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     admin,
+    admin_finance,
     agents,
     auth,
     calendar,
@@ -25,6 +26,7 @@ api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(auth.router, prefix="/api/v1")
 api_router.include_router(admin.router, prefix="/api/v1")
+api_router.include_router(admin_finance.router, prefix="/api/v1")
 api_router.include_router(llm.router, prefix="/api/v1")
 api_router.include_router(regulations.router, prefix="/api/v1")
 api_router.include_router(agents.router, prefix="/api/v1")

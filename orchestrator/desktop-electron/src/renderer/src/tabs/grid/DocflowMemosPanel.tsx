@@ -4,6 +4,12 @@ import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import { loadMemoCard, loadMemoPage, type MemoCard, type MemoRow } from '../../workplace/fetchDocflowMemos'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
+import {
+  useRegisterGlobalSearch,
+  type GlobalSearchEntry
+} from '../../layout/globalSearch'
+
+const GLOBAL_SEARCH_SOURCE = 'grid:docflow:memos'
 
 function cell(value: string): string {
   return value.trim() || '—'
@@ -212,6 +218,25 @@ export function DocflowMemosPanel({
     initialSort: { key: 'date', dir: 'desc' }
   })
   const visible = table.rows
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      visible.map((row) => {
+        const targetId = `memo:${row.id}`
+        return {
+          id: `docflow:${targetId}`,
+          source: GLOBAL_SEARCH_SOURCE,
+          pageKey: 'docflow',
+          kind: 'entity',
+          targetId,
+          sectionId: 'memos',
+          title: row.subject || `Служебная записка № ${cell(row.number)}`,
+          subtitle: [dateOrDash(row.date), row.fromWhom, row.status].filter(Boolean).join(' · '),
+          keywords: [row.number, row.department, row.due, ...row.assignees]
+        }
+      }),
+    [visible]
+  )
+  useRegisterGlobalSearch(GLOBAL_SEARCH_SOURCE, globalSearchEntries)
 
   const onScroll = (): void => {
     const node = scrollRef.current
@@ -321,6 +346,7 @@ export function DocflowMemosPanel({
                 {visible.map((row) => (
                   <tr
                     key={row.id}
+                    data-search-id={`memo:${row.id}`}
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}

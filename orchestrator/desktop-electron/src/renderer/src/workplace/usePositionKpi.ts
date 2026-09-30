@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client'
-import { ApiError, type PositionKpiDaily } from '../api/types'
+import { ApiError, type PositionKpiDaily, type PositionKpiMethodology } from '../api/types'
 import type { WorkplaceKpiEmployeeMetric } from './workplaceKpiTypes'
 
 function formatPct(value: number | null): string {
@@ -34,16 +34,6 @@ export function positionTilesToEmployeeMetrics(snap: PositionKpiDaily): Workplac
   })
 }
 
-export function positionKpiNeedsBuild(opts: {
-  loading: boolean
-  missing: boolean
-  snap: PositionKpiDaily | null
-}): boolean {
-  if (opts.loading) return false
-  if (opts.missing) return true
-  return !opts.snap || opts.snap.tiles.length === 0
-}
-
 export function usePositionKpi(position = ''): {
   snap: PositionKpiDaily | null
   metrics: WorkplaceKpiEmployeeMetric[]
@@ -52,34 +42,47 @@ export function usePositionKpi(position = ''): {
   missing: boolean
   incomplete: boolean
   needsBuild: boolean
+  methodology: PositionKpiMethodology | null
+  methodologyStatus: PositionKpiMethodology['status']
   reload: () => void
 } {
   const [snap, setSnap] = useState<PositionKpiDaily | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [missing, setMissing] = useState(false)
+  const [methodology, setMethodology] = useState<PositionKpiMethodology | null>(null)
 
   const reload = useCallback(() => {
     let alive = true
     setLoading(true)
-    void api
-      .getPositionKpi(position)
-      .then((next) => {
+    void Promise.allSettled([api.getPositionKpiMethodology(), api.getPositionKpi(position)])
+      .then(([methodResult, kpiResult]) => {
         if (!alive) return
-        setSnap(next)
-        setMissing(false)
-        setError('')
-      })
-      .catch((err: unknown) => {
-        if (!alive) return
-        if (err instanceof ApiError && err.status === 404) {
-          setSnap(null)
-          setMissing(true)
-          setError('')
-          return
+        if (methodResult.status === 'fulfilled') {
+          setMethodology(methodResult.value)
+          setMissing(methodResult.value.status === 'none')
+        } else {
+          setMethodology(null)
+          setMissing(false)
+          setError(
+            methodResult.reason instanceof Error
+              ? methodResult.reason.message
+              : 'Не удалось проверить методику KPI'
+          )
         }
-        setMissing(false)
-        setError(err instanceof Error ? err.message : 'Не удалось загрузить KPI должности')
+        if (kpiResult.status === 'fulfilled') {
+          setSnap(kpiResult.value)
+          if (methodResult.status === 'fulfilled') setError('')
+        } else if (kpiResult.reason instanceof ApiError && kpiResult.reason.status === 404) {
+          setSnap(null)
+        } else {
+          setSnap(null)
+          setError(
+            kpiResult.reason instanceof Error
+              ? kpiResult.reason.message
+              : 'Не удалось загрузить KPI должности'
+          )
+        }
       })
       .finally(() => {
         if (alive) setLoading(false)
@@ -97,8 +100,9 @@ export function usePositionKpi(position = ''): {
     return () => window.clearTimeout(timer)
   }, [snap, reload])
 
-  const incomplete = Boolean(snap) && snap!.tiles.length === 0
-  const needsBuild = positionKpiNeedsBuild({ loading, missing, snap })
+  const methodologyStatus = methodology?.status ?? 'none'
+  const incomplete = methodologyStatus === 'needs_modules'
+  const needsBuild = !loading && methodologyStatus === 'needs_modules'
 
   return {
     snap,
@@ -108,6 +112,8 @@ export function usePositionKpi(position = ''): {
     missing,
     incomplete,
     needsBuild,
+    methodology,
+    methodologyStatus,
     reload
   }
 }

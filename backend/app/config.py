@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480
+    # Temporary employee compensation PIN. Override in backend/.env for non-demo use.
+    salary_pin: str = "1111"
 
     api_host: str = "0.0.0.0"
     api_port: int = 7812
@@ -73,6 +75,7 @@ class Settings(BaseSettings):
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
     platform_task_storage_dir: Path = BACKEND_ROOT / "storage" / "platform_tasks"
+    finance_storage_dir: Path = BACKEND_ROOT / "storage" / "finance"
 
     # IMAP (server-side tools only; desktop never executes imap.*)
     imap_host: str = ""
@@ -135,5 +138,6 @@ settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.platform_task_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.finance_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.onec_artifact_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.dok_inbox_cache_dir.mkdir(parents=True, exist_ok=True)

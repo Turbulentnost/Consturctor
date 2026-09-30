@@ -174,15 +174,9 @@ export const DEFAULT_PROCESS_LAYOUT: LayoutItem[] = [
   { i: 'botB', x: 8, y: 7, w: 8, h: 5, minW: 4, minH: 2, maxW: 16, maxH: 6 }
 ]
 
-/**
- * 8×6 (col×row): side 2×2, botB/botC 2×1, main 8×3, botA 8×1 — сумма рядов = 6.
- */
+/** KPI: таблица на всю ширину под двумя фиксированными рядами плиток. */
 export const DEFAULT_KPI_LAYOUT: LayoutItem[] = [
-  { i: 'side', x: 0, y: 0, w: 2, h: 2, minW: 2, minH: 2, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
-  { i: 'botB', x: 2, y: 0, w: 2, h: 1, minW: 2, minH: 1, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
-  { i: 'botC', x: 4, y: 0, w: 2, h: 1, minW: 2, minH: 1, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
-  { i: 'main', x: 0, y: 2, w: 8, h: 3, minW: 4, minH: 2, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
-  { i: 'botA', x: 0, y: 5, w: 8, h: 1, minW: 6, minH: 1, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS }
+  { i: 'main', x: 0, y: 0, w: 8, h: 6, minW: 4, minH: 2, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS }
 ]
 
 export const DEFAULT_DECISIONS_LAYOUT: LayoutItem[] = [
@@ -198,6 +192,9 @@ function storageKey(tabId: string, userId: string): string {
   }
   if (tabId === 'agent_library') {
     return `${TAB_CHROME_STORAGE_KEY}:agent_library-v1:${uid}`
+  }
+  if (tabId === 'kpi') {
+    return `${TAB_CHROME_STORAGE_KEY}:kpi-v4:${uid}`
   }
   return `${TAB_CHROME_STORAGE_KEY}:${tabId}:${uid}`
 }

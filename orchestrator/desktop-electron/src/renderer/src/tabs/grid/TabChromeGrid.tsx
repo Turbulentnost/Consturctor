@@ -3,7 +3,7 @@ import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/lega
 import 'react-grid-layout/css/styles.css'
 import { SpecSummaryTiles } from '../../workplace/specV04Components'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
-import { WorkplaceGlobalRangePicker } from '../../workplace/workplacePeriod'
+import { WorkplaceGlobalMonthPicker, WorkplaceGlobalRangePicker } from '../../workplace/workplacePeriod'
 import {
   STANDARD_TAB_LABELS,
   TAB_CHROME_COLS,
@@ -471,6 +471,16 @@ export function StandardTabChrome({
   )
   const chrome = useTabChromeLayout(tabId, userId, layoutDefaults)
   const filterNode = widgets.filters
+  useEffect(() => {
+    if (tabId !== 'kpi') return
+    const toggleEdit = (): void => chrome.setEditMode((value) => !value)
+    window.addEventListener('kpi:toggle-widget-edit', toggleEdit)
+    return () => window.removeEventListener('kpi:toggle-widget-edit', toggleEdit)
+  }, [tabId, chrome.setEditMode])
+  useEffect(() => {
+    if (tabId !== 'kpi') return
+    window.dispatchEvent(new CustomEvent('kpi:widget-edit-state', { detail: chrome.editMode }))
+  }, [tabId, chrome.editMode])
   const mergedLabels = useMemo(() => {
     const next = { ...STANDARD_TAB_LABELS, ...labels }
     for (const tile of chromeTiles || []) {
@@ -502,19 +512,21 @@ export function StandardTabChrome({
       ) : null}
       <div className="tab-chrome-filters-bar">
         <div className="tab-chrome-filters-wrap">
-          {hideGlobalPeriod ? null : <WorkplaceGlobalRangePicker />}
+          {hideGlobalPeriod ? null : tabId === 'kpi' ? <WorkplaceGlobalMonthPicker /> : <WorkplaceGlobalRangePicker />}
           {filterNode}
           {filterToolbarExtra ? (
             <div className="tab-chrome-filters-extra">{filterToolbarExtra}</div>
           ) : null}
-          <TabChromeToolbar
-            editMode={chrome.editMode}
-            onToggleEdit={() => chrome.setEditMode((value) => !value)}
-            onReset={chrome.resetLayout}
-            basketIds={chrome.basketIds}
-            labels={mergedLabels}
-            onRestore={chrome.restoreFromBasket}
-          />
+          {tabId === 'kpi' ? null : (
+            <TabChromeToolbar
+              editMode={chrome.editMode}
+              onToggleEdit={() => chrome.setEditMode((value) => !value)}
+              onReset={chrome.resetLayout}
+              basketIds={chrome.basketIds}
+              labels={mergedLabels}
+              onRestore={chrome.restoreFromBasket}
+            />
+          )}
         </div>
       </div>
       <TabChromeGrid

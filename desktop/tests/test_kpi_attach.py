@@ -5,6 +5,7 @@ from pathlib import Path
 from app.sdk_agent.bridge import (
     CursorSdkError,
     cursor_sdk_error_text,
+    is_complete_kpi_list_answer,
     is_transient_cursor_error,
 )
 from app.sdk_agent.kpi_attach import (
@@ -84,6 +85,19 @@ def test_unasked_kpi_rows_skips_names_already_in_questions() -> None:
 def test_parse_kpi_rows_without_space_after_number() -> None:
     rows = parse_kpi_rows("1.Планирование заседаний — вес 40%\n2.Назначение ДПИ — вес 10%")
     assert [item["weight"] for item in rows] == ["40", "10"]
+
+
+def test_parse_kpi_rows_accepts_unnumbered_weighted_line() -> None:
+    rows = parse_kpi_rows("Своевременное закрытие задач — 100%\nСПИСОК_ГОТОВ")
+    assert rows == [{"name": "Своевременное закрытие задач", "weight": "100"}]
+
+
+def test_parse_kpi_rows_drops_narration_before_unnumbered_line() -> None:
+    rows = parse_kpi_rows(
+        "Сначала найду инструмент и имя файла."
+        "Своевременное закрытие задач — 100%\nСПИСОК_ГОТОВ"
+    )
+    assert rows == [{"name": "Своевременное закрытие задач", "weight": "100"}]
 
 
 def test_kpi_slug_transliterates_russian_name() -> None:
@@ -370,6 +384,19 @@ def test_transient_cursor_errors() -> None:
     assert (
         cursor_sdk_error_text(status="error", answer="", error_events=[])
         == "Cursor SDK run failed"
+    )
+
+
+def test_complete_kpi_list_survives_late_sdk_error() -> None:
+    assert is_complete_kpi_list_answer(
+        "1. Своевременное закрытие задач — вес 100%\nСПИСОК_ГОТОВ"
+    )
+    assert is_complete_kpi_list_answer(
+        "Своевременное закрытие задач — 100%\nСПИСОК_ГОТОВ"
+    )
+    assert not is_complete_kpi_list_answer("Network request failed")
+    assert not is_complete_kpi_list_answer(
+        "1. Своевременное закрытие задач\nСПИСОК_ГОТОВ"
     )
 
 

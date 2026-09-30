@@ -10,24 +10,12 @@ from app.config import settings
 from app.db.session import SessionLocal
 from app.models.user import AppUser
 from app.schemas.auth import UserOut
+from app.services.admin_access import get_admin_access
 from app.services.profile_overrides import apply_profile_overrides, lookup_profile_overrides
 
 logger = logging.getLogger(__name__)
 
 DEPARTMENT_CHANGE_COOLDOWN = timedelta(days=14)
-ADMIN_FIO_KEYS = {
-    "уставицкий андрей алексеевич",
-    "жалыбин максим дмитриевич",
-    "жалыбин максим димитриевич",
-}
-
-
-def _fio_key(value: str) -> str:
-    return " ".join((value or "").casefold().replace("ё", "е").split())
-
-
-def is_admin_user(fio: str) -> bool:
-    return _fio_key(fio) in ADMIN_FIO_KEYS
 
 
 def _avatar_version(user: AppUser) -> str:
@@ -75,7 +63,8 @@ def department_change_state(user: AppUser) -> tuple[bool, datetime | None]:
 
 def to_user_out(user: AppUser) -> UserOut:
     can_change, available_at = department_change_state(user)
-    is_admin = is_admin_user(user.fio)
+    admin_access = get_admin_access(user.id)
+    is_admin = admin_access is not None
     department, position = apply_profile_overrides(
         user.fio, user.department or "", user.position or ""
     )
@@ -86,6 +75,8 @@ def to_user_out(user: AppUser) -> UserOut:
         position=position,
         role="admin" if is_admin else "user",
         is_admin=is_admin,
+        admin_panel=admin_access.panel_key if admin_access else None,
+        admin_pages=list(admin_access.pages) if admin_access else [],
         avatar_url=avatar_url_for(user),
         can_change_department=can_change,
         department_change_available_at=available_at,

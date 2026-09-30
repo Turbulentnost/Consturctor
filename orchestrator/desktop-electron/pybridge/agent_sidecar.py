@@ -1024,6 +1024,39 @@ def _session_text_blob(session: dict[str, Any] | None) -> str:
     return "\n".join(parts)
 
 
+def _kpi_rows_from_session_catalog(session: dict[str, Any] | None) -> list[dict[str, str]]:
+    draft = (session or {}).get("catalog_draft")
+    if not isinstance(draft, dict):
+        draft = (session or {}).get("catalogDraft")
+    rows: list[dict[str, str]] = []
+    for metric in (draft or {}).get("metrics") or []:
+        if not isinstance(metric, dict):
+            continue
+        name = str(metric.get("name") or "").strip()
+        if len(name) < 3:
+            continue
+        sources = metric.get("sources")
+        source = ""
+        if isinstance(sources, list) and sources and isinstance(sources[-1], dict):
+            source = str(sources[-1].get("detail") or "").strip()
+        rows.append(
+            {
+                "name": name,
+                "weight": str(metric.get("weight") or ""),
+                "slug": str(metric.get("code") or "").strip(),
+                "source": source,
+            }
+        )
+    return rows
+
+
+def _kpi_rows_for_session(
+    session: dict[str, Any] | None, agent_answer: str
+) -> list[dict[str, str]]:
+    """Prefer the backend extraction; SDK narration must not rename KPI metrics."""
+    return _kpi_rows_from_session_catalog(session) or parse_kpi_rows(agent_answer)
+
+
 def _catalog_draft_from_kpi(
     *,
     session: dict[str, Any] | None,
@@ -1037,23 +1070,7 @@ def _catalog_draft_from_kpi(
     if not found:
         found = parse_kpi_rows(blob)
     if not found:
-        draft = (session or {}).get("catalog_draft") if isinstance((session or {}).get("catalog_draft"), dict) else {}
-        for metric in (draft or {}).get("metrics") or []:
-            if not isinstance(metric, dict):
-                continue
-            name = str(metric.get("name") or "").strip()
-            if len(name) < 3:
-                continue
-            found.append(
-                {
-                    "name": name,
-                    "weight": str(metric.get("weight") or ""),
-                    "slug": str(metric.get("code") or "").strip(),
-                    "source": str((metric.get("sources") or [{}])[-1].get("detail") or "")
-                    if isinstance(metric.get("sources"), list) and metric.get("sources")
-                    else "",
-                }
-            )
+        found = _kpi_rows_from_session_catalog(session)
     if not found:
         for slug in _existing_kpi_slugs(run_cwd):
             found.append({"name": slug, "weight": "", "slug": slug})
@@ -3457,7 +3474,18 @@ class Sidecar:
         position: str,
         rows: list[dict[str, str]],
         source_notes: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[str]]:
+        all_jobs = kpi_write_jobs(
+            rows,
+            source_notes=source_notes,
+            existing_slugs=[],
+            position=position,
+        )
+        required_slugs = [
+            str(job.get("slug") or "").strip()
+            for job in all_jobs
+            if str(job.get("slug") or "").strip()
+        ]
         jobs = kpi_write_jobs(
             rows,
             source_notes=source_notes,
@@ -3537,7 +3565,7 @@ class Sidecar:
                 ok, pytest_out = _run_kpi_slug_tests(run_cwd, slug)
             if not ok and pytest_out.strip():
                 answer = f"{answer}\n\n{slug}: тесты не прошли\n{pytest_out.strip()[:1500]}".strip()
-        return answer, writer_id
+        return answer, writer_id, required_slugs
 
     def _rewrite_kpi_until_tests_pass(
         self,
@@ -3614,8 +3642,24 @@ class Sidecar:
         agent_id = str(session.get("cursor_agent_id") or "").strip()
         _promote_kpi_artifacts(run_cwd)
         modules = _collect_kpi_modules(run_cwd)
-        session_modules = session.get("modules") if isinstance(session.get("modules"), list) else []
-        if session_modules and _kpi_artifacts_ready(run_cwd):
+        draft = session.get("catalog_draft")
+        if not isinstance(draft, dict):
+            draft = session.get("catalogDraft")
+        draft_metrics = draft.get("metrics") if isinstance(draft, dict) else []
+        required_from_session = {
+            str(metric.get("code") or "").strip()
+            for metric in (draft_metrics or [])
+            if isinstance(metric, dict) and str(metric.get("code") or "").strip()
+        }
+        existing_module_slugs = {
+            str(item.get("metric_code") or "").strip()
+            for item in modules
+            if str(item.get("metric_code") or "").strip()
+        }
+        artifacts_complete = not required_from_session or required_from_session.issubset(
+            existing_module_slugs
+        )
+        if modules and artifacts_complete and _kpi_artifacts_ready(run_cwd):
             emit(
                 {
                     "type": "event",
@@ -3710,7 +3754,7 @@ class Sidecar:
             or session.get("cursor_agent_id")
             or ""
         ).strip()
-        kpi_tools = sdk_kpi_tool_specs(read_file=True, write=False, run=False)
+        kpi_tools = sdk_kpi_tool_specs(read_file=bool(copied), write=False, run=False)
         try:
             result = self._kpi_bridge_run(
                 active,
@@ -3769,7 +3813,7 @@ class Sidecar:
                     return True
             return False
 
-        rows = parse_kpi_rows(answer)
+        rows = _kpi_rows_for_session(session, answer)
         if (
             not rows
             and not modules
@@ -3804,7 +3848,10 @@ class Sidecar:
             agent_id = str(result.get("agent_id") or agent_id).strip()
             modules = _collect_kpi_modules(run_cwd)
             rows = parse_kpi_rows(answer)
+        if not rows:
+            rows = _kpi_rows_from_session_catalog(session)
         source_notes = ""
+        required_slugs: list[str] = []
         if rows and not _kpi_position_missing(answer) and not active.stop.is_set():
             emit(
                 {
@@ -3817,7 +3864,7 @@ class Sidecar:
             if asked:
                 answer = f"{answer}\n\n{asked}".strip()
             source_notes = _kpi_source_notes(active)
-            answer, writer_id = self._write_kpi_modules(
+            answer, writer_id, required_slugs = self._write_kpi_modules(
                 active=active,
                 bridge=bridge,
                 run_cwd=run_cwd,
@@ -3840,9 +3887,17 @@ class Sidecar:
                     "payload": {"type": "status", "text": "Проверяю тесты модуля…"},
                 }
             )
-            pytest_ok, pytest_out = _run_kpi_workspace_tests(run_cwd)
+            pytest_ok, pytest_out = _run_kpi_workspace_tests(
+                run_cwd,
+                required_slugs=required_slugs,
+            )
         else:
-            pytest_ok, pytest_out = True, ""
+            pytest_ok = not required_slugs
+            pytest_out = (
+                ""
+                if pytest_ok
+                else "Не созданы обязательные KPI-модули: " + ", ".join(required_slugs)
+            )
         if pytest_out.strip():
             answer = f"{answer}\n\nТесты конструктора:\n{pytest_out.strip()[:2000]}".strip()
         catalog = _catalog_draft_from_kpi(
@@ -5331,11 +5386,118 @@ def _kpi_slug_ready(run_cwd: Path, slug: str) -> bool:
 
 
 def _existing_kpi_slugs(run_cwd: Path) -> list[str]:
-    return [
-        str(item.get("metric_code") or "").strip()
-        for item in _collect_kpi_modules(run_cwd)
-        if str(item.get("metric_code") or "").strip() and str(item.get("tests") or "").strip()
-    ]
+    ready: list[str] = []
+    for item in _collect_kpi_modules(run_cwd):
+        slug = str(item.get("metric_code") or "").strip()
+        if not slug or not str(item.get("tests") or "").strip():
+            continue
+        ok, _output = _run_kpi_slug_tests(run_cwd, slug)
+        if ok:
+            ready.append(slug)
+    return ready
+
+
+_KPI_CONTRACT_SCRIPT = r"""
+import importlib
+import sys
+from datetime import date
+
+slug = sys.argv[1]
+mod = importlib.import_module(f"generated.{slug}")
+source = getattr(mod, "SOURCE", None)
+if not isinstance(source, dict):
+    raise AssertionError("SOURCE must be a dict")
+source_name = str(source.get("source") or "").strip()
+if not source_name:
+    raise AssertionError("SOURCE.source is required; legacy loader/kind is unsupported")
+params = source.get("params", {})
+if params is not None and not isinstance(params, dict):
+    raise AssertionError("SOURCE.params must be a dict")
+
+load_fn = getattr(mod, f"load_{slug}_rows", None)
+score_fn = getattr(mod, f"score_{slug}_kpi", None)
+compute_fn = getattr(mod, f"compute_{slug}_kpi", None)
+for label, fn in (("load", load_fn), ("score", score_fn), ("compute", compute_fn)):
+    if not callable(fn):
+        raise AssertionError(f"required function is missing: {label}_{slug}")
+
+class FakeCtx:
+    as_of = date(2026, 9, 22)
+    date_from = date(2026, 9, 1)
+    date_to = date(2026, 9, 30)
+
+    def __init__(self):
+        self.calls = []
+        self._metric_extra = {}
+
+    def extra_for(self, *_args, **_kwargs):
+        return {}
+
+    def load_for(self, extra):
+        if not isinstance(extra, dict):
+            raise AssertionError("ctx.load_for expects a SOURCE dict")
+        if not str(extra.get("source") or "").strip():
+            raise AssertionError("load_* passed a source without the source key")
+        self.calls.append(extra)
+        return []
+
+ctx = FakeCtx()
+rows = load_fn(ctx)
+if not isinstance(rows, list):
+    raise AssertionError("load_*_rows must return a list")
+
+def check_report(label, report):
+    if not isinstance(report, dict):
+        raise AssertionError(f"{label} must return a dict")
+    missing = {"fact_pct", "score_pct", "contrib_pct", "rows"} - set(report)
+    if missing:
+        raise AssertionError(f"{label} is missing fields: {sorted(missing)}")
+    if not isinstance(report.get("rows"), list):
+        raise AssertionError(f"{label}.rows must be a list")
+
+score = score_fn(
+    rows,
+    as_of=ctx.as_of,
+    date_from=ctx.date_from,
+    date_to=ctx.date_to,
+)
+check_report("score", score)
+computed = compute_fn(
+    ctx,
+    as_of=ctx.as_of,
+    date_from=ctx.date_from,
+    date_to=ctx.date_to,
+)
+check_report("compute", computed)
+if not ctx.calls:
+    raise AssertionError("compute/load did not call ctx.load_for(SOURCE)")
+"""
+
+
+def _run_kpi_contract_check(run_cwd: Path, slug: str) -> tuple[bool, str]:
+    root = Path(run_cwd)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(root), str(_backend_kpi_root().parent), env.get("PYTHONPATH") or ""]
+    )
+    from app.tools.ac.code_execution_tools import pytest_command_prefix
+    from app.tools.ac.process_run import run_captured
+
+    try:
+        completed = run_captured(
+            [*pytest_command_prefix(), "-c", _KPI_CONTRACT_SCRIPT, slug],
+            cwd=str(root),
+            env=env,
+            timeout=60,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Проверка runtime-контракта не запустилась: {exc!r}"
+    output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    if completed.timed_out:
+        return False, output or "Проверка runtime-контракта превысила 60 секунд"
+    if completed.exit_code != 0:
+        return False, "Runtime-контракт backend не выполнен:\n" + output
+    return True, output or "runtime contract passed"
 
 
 def _run_kpi_slug_tests(run_cwd: Path, slug: str) -> tuple[bool, str]:
@@ -5373,7 +5535,11 @@ def _run_kpi_slug_tests(run_cwd: Path, slug: str) -> tuple[bool, str]:
     if completed.exit_code != 0:
         log("kpi slug pytest failed: " + _ascii(output[:800]))
         return False, output
-    return True, output or "passed"
+    contract_ok, contract_output = _run_kpi_contract_check(root, name)
+    if not contract_ok:
+        log("kpi slug contract failed: " + _ascii(contract_output[:800]))
+        return False, contract_output
+    return True, "\n".join(part for part in (output, contract_output) if part).strip() or "passed"
 
 
 def _promote_kpi_artifacts(run_cwd: Path) -> None:
@@ -5388,10 +5554,26 @@ def _pytest_argv() -> list[str]:
     return [*pytest_command_prefix(), "-m", "pytest", "tests", "-q"]
 
 
-def _run_kpi_workspace_tests(run_cwd: Path) -> tuple[bool, str]:
+def _run_kpi_workspace_tests(
+    run_cwd: Path,
+    *,
+    required_slugs: list[str] | None = None,
+) -> tuple[bool, str]:
     root = Path(run_cwd)
     _promote_kpi_artifacts(root)
     modules = _collect_kpi_modules(root)
+    found = {
+        str(item.get("metric_code") or "").strip()
+        for item in modules
+        if str(item.get("metric_code") or "").strip()
+    }
+    missing_required = [
+        slug
+        for slug in dict.fromkeys(required_slugs or [])
+        if slug and slug not in found
+    ]
+    if missing_required:
+        return False, "Не созданы обязательные KPI-модули: " + ", ".join(missing_required)
     if modules and any(not str(item.get("tests") or "").strip() for item in modules):
         missing = ", ".join(
             str(item.get("metric_code") or "")
@@ -5425,6 +5607,13 @@ def _run_kpi_workspace_tests(run_cwd: Path) -> tuple[bool, str]:
     if completed.exit_code != 0:
         log("kpi pytest failed: " + _ascii(output[:800]))
         return False, output
+    for item in modules:
+        slug = str(item.get("metric_code") or "").strip()
+        if not slug:
+            continue
+        contract_ok, contract_output = _run_kpi_contract_check(root, slug)
+        if not contract_ok:
+            return False, f"{slug}: {contract_output}"
     return True, output or "passed"
 
 

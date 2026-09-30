@@ -16,6 +16,7 @@ import {
   ScrollText,
   Rocket,
   Settings,
+  Upload,
   Users,
   Workflow,
   type LucideIcon
@@ -52,7 +53,10 @@ const PAGE_ICONS: Record<PageKey, LucideIcon> = {
   launch_calendar: Rocket,
   users: Users,
   ai_agents: Bot,
-  knowledge_base: Library
+  knowledge_base: Library,
+  finance_employees: Users,
+  finance_upload: Upload,
+  finance_import_history: History
 }
 
 export function NavIcon({ page }: { page: PageKey }): React.JSX.Element {

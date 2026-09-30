@@ -44,22 +44,42 @@ def month_bounds(year: int, month: int) -> tuple[date, date]:
     return date(year, month, 1), date(year, month, last)
 
 
-def resolve_profile(db: Session, position: str) -> PositionKpiProfile | None:
+def resolve_profile(
+    db: Session, position: str, *, as_of: date | None = None
+) -> PositionKpiProfile | None:
     name = str(position or "").strip()
     if not name:
         return None
-    exact = db.execute(
+    target_day = as_of or date.today()
+    exact_rows = db.execute(
         select(PositionKpiProfile).where(PositionKpiProfile.position_name == name)
-    ).scalar_one_or_none()
+    ).scalars().all()
+    exact = _profile_for_day(exact_rows, target_day)
     if exact is not None:
         return exact
     wanted = normalize_position_name(name)
     if not wanted:
         return None
-    for row in db.execute(select(PositionKpiProfile)).scalars():
-        if normalize_position_name(row.position_name) == wanted:
-            return row
-    return None
+    normalized = [
+        row
+        for row in db.execute(select(PositionKpiProfile)).scalars()
+        if normalize_position_name(row.position_name) == wanted
+    ]
+    return _profile_for_day(normalized, target_day)
+
+
+def _profile_for_day(
+    rows: list[PositionKpiProfile], target_day: date
+) -> PositionKpiProfile | None:
+    eligible = [
+        row
+        for row in rows
+        if (row.effective_from is None or row.effective_from <= target_day)
+        and (row.effective_to is None or row.effective_to >= target_day)
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda row: row.effective_from or date.min)
 
 
 def load_outlook_events(date_from: date, date_to: date) -> list[dict[str, Any]]:
@@ -562,10 +582,10 @@ def read_position_kpi_snapshot(
     subject: str = "",
 ) -> dict[str, Any] | None:
     """Только кэш, без расчёта. None — снимка ещё нет."""
-    profile = resolve_profile(db, position)
+    as_of = as_of or date.today()
+    profile = resolve_profile(db, position, as_of=as_of)
     if profile is None:
         return None
-    as_of = as_of or date.today()
     if date_from is None or date_to is None:
         date_from, date_to = month_bounds(as_of.year, as_of.month)
     return _cached_snapshot(
@@ -591,10 +611,10 @@ def get_or_compute_position_kpi(
     subject: str = "",
 ) -> dict[str, Any]:
     """KPI должности. subject — ФИО сотрудника: модули общие, а цифры и кэш у каждого свои."""
-    profile = resolve_profile(db, position)
+    as_of = as_of or date.today()
+    profile = resolve_profile(db, position, as_of=as_of)
     if profile is None:
         raise PositionKpiNotFound(str(position or "").strip())
-    as_of = as_of or date.today()
     if date_from is None or date_to is None:
         date_from, date_to = month_bounds(as_of.year, as_of.month)
     key = subject_key(subject)

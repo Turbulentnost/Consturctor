@@ -22,6 +22,12 @@ import {
   type AssignmentStatus
 } from '../../workplace/fetchDocflowAssignments'
 import { SortTh, useDocflowTable } from './docflowTableTools'
+import {
+  useRegisterGlobalSearch,
+  type GlobalSearchEntry
+} from '../../layout/globalSearch'
+
+const GLOBAL_SEARCH_SOURCE = 'grid:docflow:assignments'
 
 const FALLBACK_STATUSES: AssignmentStatus[] = [
   { code: 'Создано', label: 'Создано' },
@@ -360,6 +366,36 @@ export function DocflowAssignmentsPanel({
     query
   })
   const visible = table.rows
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      visible.map((row) => {
+        const targetId = `assignment:${row.id}`
+        return {
+          id: `docflow:${targetId}`,
+          source: GLOBAL_SEARCH_SOURCE,
+          pageKey: 'docflow',
+          kind: 'entity',
+          targetId,
+          sectionId: 'assignments',
+          title: row.topic || `Поручение № ${cell(row.number)}`,
+          subtitle: [day(row.date), row.status, row.head, row.due ? `срок ${day(row.due)}` : '']
+            .filter(Boolean)
+            .join(' · '),
+          keywords: [
+            row.number,
+            row.basis,
+            row.organization,
+            row.reporter,
+            row.secretary,
+            row.priority,
+            ...row.executors,
+            ...row.lines.flatMap((line) => [line.text, line.executor, line.priority, line.due])
+          ]
+        }
+      }),
+    [visible]
+  )
+  useRegisterGlobalSearch(GLOBAL_SEARCH_SOURCE, globalSearchEntries)
 
   const filtered = Boolean(head || executor || organization || reporter || priority || overdueOnly || query.trim())
 
@@ -481,6 +517,7 @@ export function DocflowAssignmentsPanel({
                 {visible.map((row) => (
                   <tr
                     key={row.id}
+                    data-search-id={`assignment:${row.id}`}
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}

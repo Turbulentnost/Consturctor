@@ -7,7 +7,7 @@ interface AdminPageShellProps {
 export function AdminPageShell({ breadcrumb, children, className = '' }: AdminPageShellProps): React.JSX.Element {
   return (
     <div className={`admin-page ${className}`.trim()}>
-      <div className="admin-breadcrumb">{breadcrumb}</div>
+      {breadcrumb ? <div className="admin-breadcrumb">{breadcrumb}</div> : null}
       {children}
     </div>
   )

@@ -9,26 +9,17 @@ import wallpaperUrl from '../assets/chat/wallpaper.png'
 import logoUrl from '../assets/logo.png'
 
 const STAGES = [
-  { id: 'awaiting_file', label: 'Документ' },
-  { id: 'extracting', label: 'Разбор KPI' },
   { id: 'clarifying', label: 'Уточнения' },
   { id: 'coding', label: 'Код и тесты' },
   { id: 'connected', label: 'Подключено' }
 ] as const
 
 const STAGE_RANK: Record<string, number> = {
-  awaiting_file: 0,
-  extracting: 1,
-  clarifying: 2,
-  coding: 3,
-  testing: 3,
-  connected: 4,
-  error: 2
-}
-
-interface PendingFile {
-  path: string
-  name: string
+  clarifying: 0,
+  coding: 1,
+  testing: 1,
+  connected: 2,
+  error: 0
 }
 
 function attachmentsOf(structured: Record<string, unknown>): string[] {
@@ -108,7 +99,7 @@ function liveBuildBanner(
   opts: { busy: boolean; running: boolean; status: string; waiting: boolean }
 ): { text: string; kind: 'run' | 'wait' } | null {
   if (opts.waiting) return { text: 'Нужен ваш ответ', kind: 'wait' }
-  if (opts.busy) return { text: 'Загружаю методику…', kind: 'run' }
+  if (opts.busy) return { text: 'Открываю методику Finance…', kind: 'run' }
   if (!opts.running) return null
   if (/проверяю тесты|тесты прошли|подключаю kpi|тесты не прошли/i.test(opts.status)) {
     return { text: opts.status, kind: 'run' }
@@ -143,12 +134,10 @@ export function PositionKpiBuildPage({
 }): React.JSX.Element {
   const [session, setSession] = useState<PositionKpiBuildSession | null>(null)
   const [input, setInput] = useState('')
-  const [attachments, setAttachments] = useState<PendingFile[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const startedSdk = useRef('')
-  const lastFilePaths = useRef<string[]>([])
   const sessionRef = useRef<PositionKpiBuildSession | null>(null)
   const agent = useAgentSession({
     onResult: () => {
@@ -186,14 +175,11 @@ export function PositionKpiBuildPage({
     if (node) node.scrollTop = node.scrollHeight
   }, [session?.messages, agent.items, busy, agent.running])
 
-  const needsChoice = Boolean(session?.extracted?.needs_position_choice)
-  const attachedHere = lastFilePaths.current.length > 0
   const canStartSdk =
     Boolean(session?.buildId) &&
-    attachedHere &&
-    !needsChoice &&
+    Boolean(session?.sdkPrompt) &&
     session?.status !== 'connected' &&
-    session?.status !== 'awaiting_file'
+    session?.status !== 'error'
 
   useEffect(() => {
     if (!canStartSdk || !session) return
@@ -205,7 +191,7 @@ export function PositionKpiBuildPage({
       buildId: session.buildId,
       workflowId: `kpi-build-${session.buildId}`,
       prompt: session.sdkPrompt,
-      filePaths: lastFilePaths.current
+      filePaths: []
     })
   }, [agent, canStartSdk, session])
 
@@ -227,47 +213,22 @@ export function PositionKpiBuildPage({
       buildId: session.buildId,
       workflowId: `kpi-build-${session.buildId}`,
       prompt: session.sdkPrompt,
-      filePaths: lastFilePaths.current
+      filePaths: []
     })
   }
 
-  async function pickFiles(): Promise<void> {
-    const paths = await window.api.openFile({
-      title: 'Выберите методику расчёта',
-      filters: [{ name: 'Документы', extensions: ['pdf', 'docx', 'xlsx', 'md', 'txt'] }],
-      properties: ['openFile', 'multiSelections']
-    })
-    setAttachments((prev) => {
-      const seen = new Set(prev.map((item) => item.path))
-      const next = [...prev]
-      for (const path of paths) {
-        if (seen.has(path)) continue
-        next.push({ path, name: path.split(/[\\/]/).pop() || path })
-      }
-      return next
-    })
-  }
-
-  async function send(message: string, files: PendingFile[]): Promise<void> {
+  async function send(message: string): Promise<void> {
     if (!session?.buildId) return
     const text = message.trim()
-    if (!text && !files.length) return
+    if (!text) return
     setBusy(true)
     setError('')
     setInput('')
-    setAttachments([])
     try {
       let next = session
-      if (files.length) {
-        lastFilePaths.current = files.map((item) => item.path)
-        next = await api.uploadPositionKpiBuildFiles(
-          session.buildId,
-          files.map((item) => item.path)
-        )
-      }
       const pending = agent.pendingQuestion
-      if (pending && (text || files.length)) {
-        agent.answer(pending.requestId, text || 'файл', files.map((item) => item.path))
+      if (pending && text) {
+        agent.answer(pending.requestId, text)
       }
       if (text && !pending) {
         next = await api.sendPositionKpiBuildTurn(session.buildId, text)
@@ -281,7 +242,7 @@ export function PositionKpiBuildPage({
     }
   }
 
-  const rank = STAGE_RANK[session?.status || 'awaiting_file'] ?? 0
+  const rank = STAGE_RANK[session?.status || 'clarifying'] ?? 0
   const ready = session?.status === 'connected'
   const visible = (session?.messages || []).filter((item) => {
     if (item.role !== 'assistant' && item.role !== 'user') return false
@@ -309,8 +270,7 @@ export function PositionKpiBuildPage({
       !agent.running &&
       !waiting &&
       !busy &&
-      session &&
-      session.status !== 'awaiting_file'
+      session
   )
 
   return (
@@ -327,7 +287,7 @@ export function PositionKpiBuildPage({
         <div className="regchat-subtitle">
           {session?.position || position
             ? `Должность: ${session?.position || position}`
-            : 'Загрузите положение о мотивации'}
+            : 'Методика Finance'}
         </div>
         <ol className="kpi-build-stages">
           {STAGES.map((stage, index) => (
@@ -343,8 +303,8 @@ export function PositionKpiBuildPage({
         <div className="regchat-scroll" ref={scrollRef}>
           {visible.length === 0 && !busy ? (
             <div className="regchat-hint">
-              Приложите PDF с системой мотивации. Прочитаем без обложки, найдём KPI вашей
-              должности, уточним план и факт, затем сохраним модули в kpi.
+              Методика уже назначена Finance. Агент уточнит источники плана и факта,
+              затем создаст общие модули для должности.
             </div>
           ) : null}
           {visible.map((message) => {
@@ -376,7 +336,7 @@ export function PositionKpiBuildPage({
                         <button
                           key={answer}
                           className="regchat-quick-chip"
-                          onClick={() => void send(answer, [])}
+                          onClick={() => void send(answer)}
                         >
                           {answer}
                         </button>
@@ -393,7 +353,7 @@ export function PositionKpiBuildPage({
             pendingQuestion={agent.pendingQuestion}
             pendingHitl={agent.pendingHitl}
             emptyHint=""
-            allowQuestionFiles
+            allowQuestionFiles={false}
             hideRunningStatus
             onAnswer={(requestId, value, filePaths) => agent.answer(requestId, value, filePaths)}
             onHitl={agent.respondHitl}
@@ -441,43 +401,19 @@ export function PositionKpiBuildPage({
         </div>
       ) : (
         <div className="regchat-composer">
-          {attachments.length ? (
-            <div className="regchat-pending">
-              {attachments.map((file) => (
-                <span key={file.path} className="regchat-pending-chip">
-                  {file.name}
-                  <button
-                    className="regchat-pending-remove"
-                    onClick={() => setAttachments((prev) => prev.filter((item) => item.path !== file.path))}
-                    aria-label="Убрать файл"
-                  >
-                    {'\u00D7'}
-                  </button>
-                </span>
-              ))}
-            </div>
-          ) : null}
           <div className="regchat-input-row">
-            <button
-              className="regchat-attach-btn"
-              onClick={() => void pickFiles()}
-              disabled={composerLocked}
-              title="Приложить файлы"
-            >
-              {'\uD83D\uDCCE'}
-            </button>
             <textarea
               value={input}
               placeholder={
                 waiting
                   ? 'Выберите вариант выше или напишите ответ…'
-                  : 'Ответьте на вопрос или приложите PDF методики…'
+                  : 'Ответьте на вопрос агента…'
               }
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
-                  if (!composerLocked) void send(input, attachments)
+                  if (!composerLocked) void send(input)
                 }
               }}
               disabled={composerLocked}
@@ -486,7 +422,7 @@ export function PositionKpiBuildPage({
             <button
               className="btn-primary"
               style={{ width: 120 }}
-              onClick={() => void send(input, attachments)}
+              onClick={() => void send(input)}
               disabled={composerLocked}
             >
               Отправить

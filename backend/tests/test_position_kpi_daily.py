@@ -102,7 +102,7 @@ def test_office_manager_returns_empty_tiles_and_does_not_load_sources(monkeypatc
     assert db.query(PositionKpiDailyFact).count() == 1
 
 
-def test_assistant_scores_meetings_schedule_only(monkeypatch) -> None:
+def test_assistant_skips_meetings_schedule_until_sources_are_clarified(monkeypatch) -> None:
     db = _session()
     monkeypatch.setattr(
         daily_mod,
@@ -155,9 +155,7 @@ def test_assistant_scores_meetings_schedule_only(monkeypatch) -> None:
         date_from=PERIOD_FROM,
         date_to=PERIOD_TO,
     )
-    assert [tile["code"] for tile in result["tiles"]] == ["meetings_schedule"]
-    assert result["tiles"][0]["score"] == 100
-    assert result["tiles"][0]["fact"] == 100
+    assert result["tiles"] == []
 
 
 def test_unknown_position_raises() -> None:

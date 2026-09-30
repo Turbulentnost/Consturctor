@@ -17,6 +17,7 @@ from app.services.position_kpi.builder import (
 )
 from app.services.position_kpi.connect import generated_profile_id, upsert_generated_catalog
 from app.services.position_kpi.daily import get_or_compute_position_kpi
+from app.services.position_kpi.extract import extract_position_kpis
 from app.services.position_kpi.registry import scorer_for
 from kpi.seed_pl_npo_010 import upsert_catalog
 
@@ -50,11 +51,52 @@ def format_report(report: dict[str, Any]) -> str:
 '''
 
 
+def _complete_module(metric: dict) -> dict[str, str]:
+    code = str(metric["code"])
+    source = f'''
+from datetime import date
+
+SOURCE = {{"source": "platform.tasks", "params": {{"role": "assignee"}}}}
+
+def load_{code}_rows(ctx):
+    return [row for row in (ctx.load_for(SOURCE) or []) if isinstance(row, dict)]
+
+def score_{code}_kpi(rows, *, as_of: date, date_from=None, date_to=None):
+    items = [row for row in (rows or []) if isinstance(row, dict)]
+    total = len(items)
+    ok = sum(1 for row in items if row.get("ok"))
+    fact = round(100.0 * ok / total, 1) if total else None
+    return {{"fact_pct": fact, "score_pct": fact, "contrib_pct": fact, "rows": items}}
+
+def compute_{code}_kpi(ctx, *, as_of: date, date_from=None, date_to=None):
+    rows = load_{code}_rows(ctx)
+    return score_{code}_kpi(rows, as_of=as_of, date_from=date_from, date_to=date_to)
+'''
+    return {
+        "metric_code": code,
+        "module": f"kpi.generated.{code}",
+        "code_text": source,
+        "tests": "def test_contract_placeholder():\n    assert True\n",
+    }
+
+
 def _session() -> Session:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(bind=engine)
     db = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)()
     upsert_catalog(db)
+    extracted = extract_position_kpis(SAMPLE, POSITION)
+    upsert_generated_catalog(
+        db,
+        position=POSITION,
+        catalog={
+            "position_name": POSITION,
+            "source_import_id": "finance-test-import",
+            "source_title": "Finance test methodology",
+            "metrics": extracted["metrics"],
+        },
+        modules=[],
+    )
     db.commit()
     return db
 
@@ -189,38 +231,6 @@ def test_run_generated_pair_is_load_then_score() -> None:
     assert report["fact_pct"] == 100.0
 
 
-def test_run_generated_pair_is_load_then_score() -> None:
-    from types import SimpleNamespace
-
-    from app.services.position_kpi.registry import run_generated_pair
-
-    calls: list[str] = []
-
-    def load_fn(ctx):
-        calls.append(f"load:{ctx.as_of.isoformat()}")
-        return [{"ok": True}]
-
-    def score_fn(rows, *, as_of, date_from=None, date_to=None):
-        calls.append(f"score:{len(rows)}")
-        return {"fact_pct": 100.0, "score_pct": 100.0, "contrib_pct": 10.0, "rows": rows}
-
-    mod = SimpleNamespace(
-        SOURCE={"loader": "odata"},
-        load_demo_rows=load_fn,
-        score_demo_kpi=score_fn,
-    )
-    ctx = SimpleNamespace(
-        as_of=date(2026, 9, 22),
-        date_from=date(2026, 9, 1),
-        date_to=date(2026, 9, 30),
-        extra_for=lambda *_a, **_k: {},
-        load_for=lambda extra: (_ for _ in ()).throw(AssertionError("pair must use load_*")),
-    )
-    report = run_generated_pair(mod, ctx, None)
-    assert calls == ["load:2026-09-22", "score:1"]
-    assert report["fact_pct"] == 100.0
-
-
 def test_dynamic_scorer_uses_module_loader(monkeypatch) -> None:
     from app.services.position_kpi import connect as connect_mod
     from app.services.position_kpi.daily import SourceBundle
@@ -299,25 +309,13 @@ def test_session_extracts_and_connects_tiles() -> None:
     auth = AuthContext(user_id="u-kpi", position=POSITION)
     session = start_build(db, user_id=auth.user_id, position=POSITION)
     build_id = session["build_id"]
-    uploaded = attach_files(
-        db,
-        user_id=auth.user_id,
-        build_id=build_id,
-        files=[("motivation.txt", SAMPLE.encode("utf-8"))],
-    )
-    assert uploaded["status"] == "clarifying"
-    assert uploaded["extracted"]["metrics"]
+    assert session["status"] == "clarifying"
+    assert session["extracted"]["metrics"]
     connected = connect_build(
         db,
         user_id=auth.user_id,
         build_id=build_id,
-        modules=[
-            {
-                "metric_code": uploaded["extracted"]["metrics"][0]["code"],
-                "module": "kpi.generated.orders_on_time",
-                "code_text": MODULE_CODE,
-            }
-        ],
+        modules=[_complete_module(metric) for metric in session["extracted"]["metrics"]],
     )
     assert connected["status"] == "connected"
     assert connected["profile_id"] == generated_profile_id(POSITION)
@@ -340,44 +338,23 @@ def test_session_extracts_and_connects_tiles() -> None:
             Path(path).unlink(missing_ok=True)
 
 
-def test_scan_pdf_does_not_call_lm_studio(monkeypatch) -> None:
-    def boom(*_args, **_kwargs):
-        raise AssertionError("LM Studio OCR must not run for KPI build")
-
-    monkeypatch.setattr("app.services.regulation.pdf_ocr.extract_pdf_scan", boom)
-    monkeypatch.setattr(
-        "app.services.workflows.document._read_pdf_bytes_ocr",
-        lambda raw: (_ for _ in ()).throw(AssertionError("hidden OCR fallback")),
-    )
+def test_user_cannot_upload_methodology_file() -> None:
     db = _session()
     session = start_build(db, user_id="u-kpi", position=POSITION)
-    uploaded = attach_files(
-        db,
-        user_id="u-kpi",
-        build_id=session["build_id"],
-        files=[("scan.pdf", b"%PDF-1.4 scan without text layer")],
-    )
-    assert uploaded["status"] == "clarifying"
-    assert uploaded["extracted"].get("needs_vision") is True
-    assert uploaded["extracted"].get("attachments") == ["scan.pdf"]
-    assert any("Cursor" in (item.get("content") or "") for item in uploaded["messages"])
-    prompt = uploaded["sdk_prompt"]
-    assert "office.read_file" in prompt
-    assert "start_page=2" in prompt
-    assert "не папка attachments" in prompt
-    assert "vision_pages" in prompt
-    assert "второй вызов" in prompt
-    assert "уже в этом сообщении" in prompt
-    assert POSITION in prompt
-    assert "Текста нет" in prompt
-    assert "Больше никаких инструментов" in prompt
-    assert "backend/kpi/generated" in prompt
-    assert "спросит конструктор" not in prompt
-    assert "карточками" not in prompt
-    assert "Не вызывай askQuestion." in prompt
-    assert "СПИСОК_ГОТОВ" in prompt
-    assert "не только первые два" in prompt
-    assert "откуда план и факт" in prompt
+    try:
+        attach_files(
+            db,
+            user_id="u-kpi",
+            build_id=session["build_id"],
+            files=[("scan.pdf", b"%PDF-1.4 scan without text layer")],
+        )
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 403
+    else:
+        raise AssertionError("user methodology upload must be forbidden")
+    assert "не загружай файл методики" in session["sdk_prompt"]
+    assert "ctx.subject_fio" in session["sdk_prompt"]
+    assert "office.read_file" not in session["sdk_prompt"]
 
 
 def test_api_create_build_uses_jwt_position() -> None:
@@ -391,8 +368,56 @@ def test_api_create_build_uses_jwt_position() -> None:
         db=db,
     )
     assert out.position == POSITION
-    assert out.status == "awaiting_file"
+    assert out.status == "clarifying"
     assert out.messages
+
+
+def test_api_rejects_build_for_another_position() -> None:
+    from fastapi import HTTPException
+
+    from app.api.v1 import position_kpi_builds as api
+    from app.schemas.position_kpi import PositionKpiBuildCreate
+
+    db = _session()
+    try:
+        api.create_build(
+            body=PositionKpiBuildCreate(position="Чужая должность"),
+            position="",
+            auth=AuthContext(user_id="u-api", position=POSITION),
+            db=db,
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("cross-position build must be forbidden")
+
+
+def test_methodology_status_distinguishes_modules() -> None:
+    from app.api.v1.position_kpi import read_methodology_status
+
+    db = _session()
+    auth = AuthContext(user_id="u-kpi", position=POSITION)
+    before = read_methodology_status(auth=auth, db=db)
+    assert before["status"] == "needs_modules"
+    session = start_build(db, user_id=auth.user_id, position=POSITION)
+    connected = connect_build(
+        db,
+        user_id=auth.user_id,
+        build_id=session["build_id"],
+        modules=[_complete_module(metric) for metric in session["extracted"]["metrics"]],
+    )
+    try:
+        after = read_methodology_status(auth=auth, db=db)
+        assert after["status"] == "ready"
+        assert all(item["module_ready"] for item in after["metrics"])
+    finally:
+        _unlink(
+            [
+                str(item.get("path") or "")
+                for item in connected.get("modules") or []
+                if isinstance(item, dict)
+            ]
+        )
 
 
 def test_start_build_resumes_open_session() -> None:
@@ -404,7 +429,7 @@ def test_start_build_resumes_open_session() -> None:
     assert other["build_id"] != first["build_id"]
 
 
-def test_start_build_does_not_resume_session_with_file() -> None:
+def test_start_build_resumes_progressed_finance_session() -> None:
     from app.models.position_kpi import PositionKpiBuild
 
     db = _session()
@@ -412,12 +437,10 @@ def test_start_build_does_not_resume_session_with_file() -> None:
     row = db.get(PositionKpiBuild, progressed["build_id"])
     assert row is not None
     row.status = "clarifying"
-    row.extracted_json = {"attachments": ["motivation.pdf"], "needs_vision": True}
     db.commit()
     again = start_build(db, user_id="u-kpi", position=POSITION)
-    assert again["build_id"] != progressed["build_id"]
-    assert again["status"] == "awaiting_file"
-    assert not (again.get("extracted") or {}).get("attachments")
+    assert again["build_id"] == progressed["build_id"]
+    assert again["status"] == "clarifying"
 
 
 def test_empty_state_flags_match_ui() -> None:
@@ -543,25 +566,12 @@ def test_module_source_is_stored_for_the_position() -> None:
 def test_reconnect_keeps_module_without_resending_source() -> None:
     db = _session()
     session = start_build(db, user_id="u-kpi", position=POSITION)
-    uploaded = attach_files(
-        db,
-        user_id="u-kpi",
-        build_id=session["build_id"],
-        files=[("motivation.txt", SAMPLE.encode("utf-8"))],
-    )
-    code = uploaded["extracted"]["metrics"][0]["code"]
     finished = finish_sdk(
         db,
         user_id="u-kpi",
         build_id=session["build_id"],
         answer="Модуль готов.",
-        modules=[
-            {
-                "metric_code": code,
-                "module": "kpi.generated.orders_on_time",
-                "code_text": MODULE_CODE,
-            }
-        ],
+        modules=[_complete_module(metric) for metric in session["extracted"]["metrics"]],
         connect=True,
     )
     assert finished["status"] == "connected"
@@ -584,26 +594,38 @@ def test_reconnect_keeps_module_without_resending_source() -> None:
         _unlink([str(path) for path in paths])
 
 
-def test_finish_sdk_stops_when_position_absent() -> None:
-    db = _session()
-    session = start_build(db, user_id="u-kpi", position="менеджер тендерного офиса")
-    finished = finish_sdk(
-        db,
-        user_id="u-kpi",
-        build_id=session["build_id"],
-        answer="В положении нет KPI этой должности — только управление делами.",
-        events=[],
-        modules=[],
-    )
-    assert finished["status"] == "clarifying"
-    stages = [item["structured"].get("stage") for item in finished["messages"]]
-    assert "not_found" in stages
-    assert "incomplete" not in stages
-
-
-def test_finish_sdk_keeps_catalog_loaders() -> None:
+def test_connect_rejects_partial_module_set() -> None:
     db = _session()
     session = start_build(db, user_id="u-kpi", position=POSITION)
+
+    try:
+        connect_build(
+            db,
+            user_id="u-kpi",
+            build_id=session["build_id"],
+            modules=[_complete_module(session["extracted"]["metrics"][0])],
+        )
+    except Exception as exc:
+        assert "Не созданы калькуляторы KPI" in str(exc)
+    else:
+        raise AssertionError("partial KPI module set must not connect")
+
+
+def test_start_build_stops_when_finance_methodology_absent() -> None:
+    db = _session()
+    try:
+        start_build(db, user_id="u-kpi", position="менеджер тендерного офиса")
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 404
+        assert "Finance" in str(exc)
+    else:
+        raise AssertionError("build without Finance methodology must fail")
+
+
+def test_finish_sdk_cannot_replace_finance_catalog() -> None:
+    db = _session()
+    session = start_build(db, user_id="u-kpi", position=POSITION)
+    official = session["catalog_draft"]
     catalog = {
         "position_name": POSITION,
         "metrics": [
@@ -652,9 +674,7 @@ def test_finish_sdk_keeps_catalog_loaders() -> None:
         modules=[],
         catalog_draft=catalog,
     )
-    metrics = finished["catalog_draft"]["metrics"]
-    assert metrics[0]["sources"][0]["extra_json"]["loader"] == "odata"
-    assert metrics[0]["sources"][0]["kind"] == "onec"
+    assert finished["catalog_draft"] == official
 
 
 def test_long_kpi_slug_source_ids_fit_varchar_64() -> None:

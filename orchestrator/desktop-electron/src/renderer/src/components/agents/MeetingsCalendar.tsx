@@ -12,11 +12,13 @@ import {
   type CalendarView
 } from '../../utils/calendar'
 import {
+  formatMeetingStamp,
   isOutlookFolderOwner,
   meetingInstanceKey,
   parseMeetingTime,
   type MeetingEvent
 } from '../../utils/outlookMeetings'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 const HEADER = 40
 const HOUR_H = 56
@@ -39,6 +41,7 @@ interface MeetingsCalendarProps {
   selectedId?: string
   onSelectMeeting?: (meeting: MeetingEvent) => void
   showDetailsModal?: boolean
+  registerGlobalSearch?: boolean
   /** meeting.id → протокол 1С, если для совещания он уже создан. */
   protocolMarks?: ReadonlyMap<string, { number: string }>
 }
@@ -70,7 +73,16 @@ function positioned(meetings: MeetingEvent[]): Positioned[] {
 }
 
 export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Element {
-  const { view, anchor, meetings, loading, error, ownerName, showDetailsModal = true } = props
+  const {
+    view,
+    anchor,
+    meetings,
+    loading,
+    error,
+    ownerName,
+    showDetailsModal = true,
+    registerGlobalSearch = false
+  } = props
   const [selected, setSelected] = useState<MeetingEvent | null>(null)
   const selectMeeting = (meeting: MeetingEvent): void => {
     props.onSelectMeeting?.(meeting)
@@ -87,6 +99,37 @@ export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Elemen
     const start = mondayOf(anchor)
     return Array.from({ length: 7 }, (_, i) => addDays(start, i))
   }, [view, anchor])
+  const renderedItems = useMemo(() => {
+    if (!registerGlobalSearch) return []
+    if (view !== 'month') {
+      return items.filter((item) => days.some((day) => sameDay(item.start, day)))
+    }
+    const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1)
+    const start = mondayOf(first)
+    return Array.from({ length: 42 }, (_, index) => addDays(start, index)).flatMap((day) =>
+      items.filter((item) => sameDay(item.start, day)).slice(0, 3)
+    )
+  }, [registerGlobalSearch, view, items, days, anchor])
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      renderedItems.map(({ meeting }) => {
+        const targetId = meetingInstanceKey(meeting)
+        return {
+          id: `meetings:${targetId}`,
+          source: 'calendar:meetings',
+          pageKey: 'meetings',
+          kind: 'entity',
+          targetId,
+          title: meeting.subject || 'Совещание',
+          subtitle: [formatMeetingStamp(meeting.start), meeting.location, meeting.organizer]
+            .filter(Boolean)
+            .join(' · '),
+          keywords: [meeting.attendees, meeting.owner, meeting.end]
+        }
+      }),
+    [renderedItems]
+  )
+  useRegisterGlobalSearch('calendar:meetings', globalSearchEntries)
 
   return (
     <div className="run-calendar meetings-calendar">
@@ -369,6 +412,7 @@ function MeetingBlock({ item, style, onClick, compact, protocolNumber }: Meeting
     .join('\n')
   return (
     <div
+      data-search-id={meetingInstanceKey(item.meeting)}
       className={
         protocolNumber != null
           ? compact

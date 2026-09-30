@@ -12,15 +12,24 @@ class PositionKpiProfile(Base):
     """Норма KPI должности (не факт сотрудника)."""
 
     __tablename__ = "position_kpi_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "position_name",
+            "effective_from",
+            name="uq_position_kpi_profiles_name_effective",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    position_name: Mapped[str] = mapped_column(String(512), nullable=False, unique=True, index=True)
+    position_name: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
     department: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     source_code: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     source_version: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     source_title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     effective_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source_import_id: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

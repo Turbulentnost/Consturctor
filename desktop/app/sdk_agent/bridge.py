@@ -91,6 +91,31 @@ def cursor_sdk_error_text(
     return "Cursor SDK run failed"
 
 
+def is_complete_kpi_list_answer(text: str) -> bool:
+    """Accept a complete KPI list even when the SDK reports a late transport error."""
+    blob = str(text or "")
+    if re.search(r"generated/|score_\w+_kpi|def\s+score_", blob):
+        return False
+    lines = blob.splitlines()
+    try:
+        done_at = next(
+            index
+            for index, line in enumerate(lines)
+            if re.fullmatch(r"\s*СПИСОК_ГОТОВ\s*", line)
+        )
+    except StopIteration:
+        return False
+    weighted = re.compile(r"\s*(?:(?:\d+[\).]|[-*•])\s*)?.+\d{1,3}\s*%")
+    numbered = re.compile(r"\s*(?:\d+[\).]|[-*•])\s*\S")
+    count = 0
+    for line in lines[:done_at]:
+        if numbered.match(line) and not weighted.match(line):
+            return False
+        if weighted.match(line):
+            count += 1
+    return count > 0
+
+
 SdkEventCallback = Callable[[dict[str, Any]], None]
 
 
@@ -465,6 +490,17 @@ class CursorSdkBridge:
                 or "".join(answer_parts).strip()
             )
             if status == "error":
+                if (
+                    (mode or "").strip().casefold() == "kpi"
+                    and stop_on_kpi_list
+                    and is_complete_kpi_list_answer(answer)
+                ):
+                    return {
+                        "answer": answer,
+                        "status": "ok",
+                        "run_id": run_id,
+                        "agent_id": agent_id,
+                    }
                 raise CursorSdkError(
                     cursor_sdk_error_text(
                         status=status,

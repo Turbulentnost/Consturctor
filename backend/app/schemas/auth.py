@@ -16,6 +16,8 @@ class UserOut(BaseModel):
     position: str = ""
     role: str = "user"
     is_admin: bool = False
+    admin_panel: str | None = None
+    admin_pages: list[str] = Field(default_factory=list)
     """Логин 1С (v8users.Name) для почты Outlook: {name_mail}@turbo-don.ru"""
     name_mail: str = ""
     avatar_url: str | None = None
