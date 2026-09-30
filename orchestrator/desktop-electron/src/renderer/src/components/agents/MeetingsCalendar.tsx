@@ -174,34 +174,85 @@ interface GridProps {
   protocolMarks?: ReadonlyMap<string, { number: string }>
 }
 
-function groupMeetingsByHour(items: Positioned[]): Positioned[][] {
-  const buckets = new Map<string, Positioned[]>()
-  const order: string[] = []
-  for (const item of items) {
-    const key = `${item.start.getFullYear()}-${item.start.getMonth()}-${item.start.getDate()}:${item.start.getHours()}`
-    if (!buckets.has(key)) {
-      buckets.set(key, [])
-      order.push(key)
-    }
-    buckets.get(key)!.push(item)
+/** Hour rows [from, to) the card covers on its start day: at least one, up to the hour the meeting ends in. */
+function hourSpan(item: Positioned): { from: number; to: number } {
+  const from = item.start.getHours()
+  let to = from + 1
+  const end = item.end
+  if (end && end.getTime() > item.start.getTime()) {
+    to = sameDay(end, item.start)
+      ? end.getHours() + (end.getMinutes() || end.getSeconds() ? 1 : 0)
+      : 24
   }
-  return order.map((key) =>
-    [...buckets.get(key)!].sort((a, b) => a.start.getTime() - b.start.getTime())
-  )
+  return { from, to: Math.min(24, Math.max(from + 1, to)) }
+}
+
+interface Placed {
+  item: Positioned
+  dayIndex: number
+  from: number
+  to: number
+  lane: number
+  lanes: number
+  stack: number
+}
+
+/**
+ * Cards starting in the same hour stack vertically; a multi-hour card goes last in its stack
+ * and stretches down, so anything else overlapping it gets a separate lane.
+ */
+function layoutDay(dayItems: Positioned[], dayIndex: number): Placed[] {
+  const rows = dayItems
+    .map((item) => ({ item, ...hourSpan(item) }))
+    .sort(
+      (a, b) =>
+        a.from - b.from || a.to - a.from - (b.to - b.from) || a.item.start.getTime() - b.item.start.getTime()
+    )
+  const placed: Placed[] = []
+  let cluster: Placed[] = []
+  let lanes: { from: number; to: number }[][] = []
+  let clusterEnd = -1
+  const flush = (): void => {
+    for (const p of cluster) p.lanes = lanes.length
+    placed.push(...cluster)
+    cluster = []
+    lanes = []
+  }
+  for (const row of rows) {
+    if (row.from >= clusterEnd) flush()
+    const multi = row.to - row.from > 1
+    let lane = lanes.findIndex((occupants) =>
+      occupants.every(
+        (x) => x.to <= row.from || row.to <= x.from || (x.from === row.from && x.to - x.from === 1)
+      )
+    )
+    if (lane < 0) {
+      lane = lanes.length
+      lanes.push([])
+    }
+    const stack = lanes[lane].filter((x) => x.from === row.from).length
+    lanes[lane].push({ from: row.from, to: row.to })
+    cluster.push({ item: row.item, dayIndex, from: row.from, to: row.to, lane, lanes: 1, stack })
+    clusterEnd = Math.max(clusterEnd, multi ? row.to : row.from + 1)
+  }
+  flush()
+  return placed
 }
 
 function WeekGrid({ days, items, onSelect, protocolMarks }: GridProps): React.JSX.Element {
-  const hours = items.map((item) => item.start.getHours())
-  const startHour = Math.min(8, ...(hours.length ? hours : [8]))
-  let endHour = Math.max(20, ...(hours.length ? hours.map((h) => h + 1) : [20]))
+  const placed = days.flatMap((day, dayIndex) =>
+    layoutDay(
+      items.filter((item) => sameDay(item.start, day)),
+      dayIndex
+    )
+  )
+  const startHour = Math.min(8, ...(placed.length ? placed.map((p) => p.from) : [8]))
+  let endHour = Math.max(20, ...(placed.length ? placed.map((p) => p.to) : [20]))
   endHour = Math.min(24, Math.max(endHour, startHour + 1))
   const hourList = Array.from({ length: Math.max(1, endHour - startHour) }, (_, i) => startHour + i)
   const hourHeight = hourList.map((hour) => {
     let max = 1
-    for (const day of days) {
-      const n = items.filter((item) => sameDay(item.start, day) && item.start.getHours() === hour).length
-      if (n > max) max = n
-    }
+    for (const p of placed) if (p.from === hour && p.stack + 1 > max) max = p.stack + 1
     return Math.max(HOUR_H, max * (CARD_H + CARD_GAP) + 6)
   })
   const hourTop = hourHeight.reduce<number[]>((acc, h, i) => {
@@ -210,8 +261,8 @@ function WeekGrid({ days, items, onSelect, protocolMarks }: GridProps): React.JS
   }, [])
   const width = GUTTER + days.length * COL_MIN
   const height = HEADER + hourHeight.reduce((sum, h) => sum + h, 0)
+  const rowTop = (index: number): number => (index >= hourList.length ? height : hourTop[index])
   const today = new Date()
-  const groups = groupMeetingsByHour(items)
 
   const hourLines: React.JSX.Element[] = []
   hourList.forEach((hour, index) => {
@@ -258,29 +309,28 @@ function WeekGrid({ days, items, onSelect, protocolMarks }: GridProps): React.JS
         )
       })}
       {hourLines}
-      {groups.map((group) => {
-        const sample = group[0]
-        const dayIndex = days.findIndex((d) => sameDay(d, sample.start))
-        if (dayIndex < 0) return null
-        const hourIndex = sample.start.getHours() - startHour
+      {placed.map((p, index) => {
+        const hourIndex = p.from - startHour
         if (hourIndex < 0 || hourIndex >= hourList.length) return null
-        const x = GUTTER + dayIndex * COL_MIN + 4
-        const baseY = hourTop[hourIndex] + 4
-        const w = Math.max(72, COL_MIN - 10)
-        return group.map((item, index) => (
+        const laneW = (COL_MIN - 10) / p.lanes
+        const top = hourTop[hourIndex] + 4 + p.stack * (CARD_H + CARD_GAP)
+        const multi = p.to - p.from > 1
+        const bottom = rowTop(p.to - startHour) - 4
+        return (
           <MeetingBlock
-            key={`${item.meeting.id}-${item.start.toISOString()}-${index}`}
-            item={item}
+            key={`${p.item.meeting.id}-${p.item.start.toISOString()}-${index}`}
+            item={p.item}
             style={{
-              left: x,
-              top: baseY + index * (CARD_H + CARD_GAP),
-              width: w,
-              height: CARD_H
+              left: GUTTER + p.dayIndex * COL_MIN + 4 + p.lane * laneW,
+              top,
+              width: p.lanes > 1 ? laneW - 2 : laneW,
+              height: multi ? Math.max(CARD_H, bottom - top) : CARD_H
             }}
+            showEnd={multi}
             onClick={onSelect}
-            protocolNumber={protocolMarks?.get(meetingInstanceKey(item.meeting))?.number}
+            protocolNumber={protocolMarks?.get(meetingInstanceKey(p.item.meeting))?.number}
           />
-        ))
+        )
       })}
     </div>
   )
@@ -347,6 +397,7 @@ interface MeetingBlockProps {
   style: React.CSSProperties
   onClick: (meeting: MeetingEvent) => void
   compact?: boolean
+  showEnd?: boolean
   protocolNumber?: string
 }
 
@@ -357,7 +408,7 @@ function meetingBlockColors(item: Positioned, now = new Date()): { bg: string; b
   return { bg: STATUS_STYLE.meeting.bg, border: STATUS_STYLE.meeting.border }
 }
 
-function MeetingBlock({ item, style, onClick, compact, protocolNumber }: MeetingBlockProps): React.JSX.Element {
+function MeetingBlock({ item, style, onClick, compact, showEnd, protocolNumber }: MeetingBlockProps): React.JSX.Element {
   const meta = meetingBlockColors(item)
   const tip = [
     item.meeting.subject,
@@ -386,7 +437,8 @@ function MeetingBlock({ item, style, onClick, compact, protocolNumber }: Meeting
       }}
     >
       <div className="cal-event-title">
-        {timeLabel(item.start)}&nbsp;&nbsp;{item.meeting.subject}
+        {timeLabel(item.start)}
+        {showEnd && item.end ? `–${timeLabel(item.end)}` : ''}&nbsp;&nbsp;{item.meeting.subject}
       </div>
       {!compact && (
         <div className="cal-event-sub">{clip(item.meeting.location || item.meeting.organizer || 'Совещание', 42)}</div>
