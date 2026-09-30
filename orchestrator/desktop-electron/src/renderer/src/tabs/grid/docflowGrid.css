@@ -70,6 +70,7 @@
 
 .docflow-nav-item strong {
   font-size: 13px;
+  line-height: 1.25;
   color: #102033;
 }
 
@@ -669,6 +670,66 @@
 .docflow-end {
   padding: 14px 16px;
   font-size: 12px;
+}
+
+/* Разделы карточки протокола — как вкладки формы в 1С. */
+.docflow-card-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.docflow-card-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  border-radius: 9px;
+  background: #fff;
+  font-size: 12px;
+  color: #5b6b80;
+  cursor: pointer;
+}
+
+.docflow-card-tabs button.is-active {
+  border-color: rgba(21, 101, 192, 0.45);
+  background: #eef4fd;
+  color: #1565c0;
+  font-weight: 600;
+}
+
+.docflow-card-tabs button b {
+  font-size: 11px;
+  font-weight: 600;
+  color: #5b6b80;
+}
+
+.docflow-card-tabs button em {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(198, 40, 40, 0.12);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  color: #9b1c1c;
+}
+
+.docflow-files {
+  margin-top: 6px;
+}
+
+.docflow-files span {
+  font-size: 11.5px;
+  color: #1565c0;
+}
+
+.docflow-table td.docflow-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .docflow-placeholder-icon {
