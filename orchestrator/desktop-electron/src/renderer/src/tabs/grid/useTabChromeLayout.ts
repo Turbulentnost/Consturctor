@@ -90,7 +90,8 @@ export const STANDARD_TAB_LABELS: Record<string, string> = {
   botA: 'Нижний блок A',
   botB: 'Нижний блок B',
   botC: 'Нижний блок C',
-  calendar: 'Календарь'
+  calendar: 'Календарь',
+  rail: 'Период и календари'
 }
 
 export type TabChromeMeta = {
@@ -109,6 +110,15 @@ export type TabChromePersist = {
 export const DEFAULT_STANDARD_LAYOUT: LayoutItem[] = [
   { i: 'main', x: 0, y: 0, w: 12, h: 12, minW: 6, minH: 4, maxW: 16, maxH: 12 },
   { i: 'side', x: 12, y: 0, w: 4, h: 12, minW: 4, minH: 4, maxW: 16, maxH: 12 }
+]
+
+/**
+ * Совещания: слева период и календари, справа сетка. Карточки совещания в раскладке
+ * нет — она открывается рядом с блоком, как в Google Calendar.
+ */
+export const DEFAULT_MEETINGS_LAYOUT: LayoutItem[] = [
+  { i: 'rail', x: 0, y: 0, w: 3, h: 12, minW: 2, minH: 6, maxW: 6, maxH: 12 },
+  { i: 'main', x: 3, y: 0, w: 13, h: 12, minW: 5, minH: 4, maxW: 16, maxH: 12 }
 ]
 
 export const DEFAULT_WIDE_MAIN_LAYOUT: LayoutItem[] = [
@@ -198,6 +208,10 @@ function storageKey(tabId: string, userId: string): string {
   }
   if (tabId === 'agent_library') {
     return `${TAB_CHROME_STORAGE_KEY}:agent_library-v1:${uid}`
+  }
+  if (tabId === 'meetings') {
+    // v3 — правая карточка уехала во всплывающее окно, сетка заняла её место.
+    return `${TAB_CHROME_STORAGE_KEY}:meetings-v3:${uid}`
   }
   return `${TAB_CHROME_STORAGE_KEY}:${tabId}:${uid}`
 }

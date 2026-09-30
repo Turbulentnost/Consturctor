@@ -840,6 +840,7 @@ def _free_busy_blocks(
             "start": begin.isoformat(sep="T", timespec="seconds"),
             "end": finish.isoformat(sep="T", timespec="seconds"),
             "location": "",
+            "importance": 1,
             "calendar_owner": person,
             "own_calendar": False,
             "organizer": "",
@@ -2006,6 +2007,10 @@ def _collect_calendar_events(
         except Exception as exc:
             _log_progress(f"step=item_skip progress={checked_count}: {exc}")
             continue
+        try:
+            importance = int(getattr(event, "Importance", 1) or 0)
+        except Exception:
+            importance = 1
         events.append(
             {
                 "entry_id": entry_id,
@@ -2013,6 +2018,7 @@ def _collect_calendar_events(
                 "start": _iso_com_datetime(event_start),
                 "end": _iso_com_datetime(event_end),
                 "location": location,
+                "importance": importance,
                 "calendar_owner": calendar_owner,
                 "own_calendar": bool(own_calendar),
                 "organizer": _read_guarded_property(event, PR_SENT_REPRESENTING_NAME_W),
