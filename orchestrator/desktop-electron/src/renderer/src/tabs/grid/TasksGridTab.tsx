@@ -42,10 +42,14 @@ import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter
 import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { NewOneCTaskMark } from '../../workplace/specV04Components'
 import {
+  DOCFLOW_GROUP_ORDER,
   DOCFLOW_KIND_LABEL,
   DOCFLOW_KIND_TONE,
+  docflowGroupKey,
+  docflowGroupLabel,
   docflowPrimaryAction,
   docflowTaskKind,
+  type DocflowGroupKey,
   type DocflowTaskKind
 } from '../../workplace/docflowTaskKind'
 import { isPlatformTaskMine, needsPlatformReview } from '../../workplace/platformTasks'
@@ -53,25 +57,6 @@ import { acceptPlatformTask, completePlatformTask, PlatformTaskDetail } from './
 import { ClosedOneCTasksModal } from './ClosedOneCTasksModal'
 import { onecRowImportance } from '../../workplace/onecTaskImportance'
 import { usePageSearch } from '../../layout/pageSearchContext'
-
-/** Разделы списка: сначала то, что исполняет сам, ознакомление — в конце. */
-const TASK_GROUP_ORDER = [
-  'execute',
-  'approve',
-  'confirm',
-  'check',
-  'consider',
-  'resolution',
-  'question',
-  'other',
-  'acquaint'
-] as const
-
-type TaskGroupKey = (typeof TASK_GROUP_ORDER)[number]
-
-function taskGroupLabel(key: TaskGroupKey): string {
-  return key === 'other' ? 'Прочие задачи' : DOCFLOW_KIND_LABEL[key]
-}
 
 export function TasksGridTab({
   user,
@@ -233,20 +218,15 @@ export function TasksGridTab({
       })
       .finally(() => setClosingId(''))
   }
-  const groupOf = (row: (typeof taskRows)[number]): TaskGroupKey => {
-    const kind = kindOf(row)
-    if (!kind) return 'other'
-    return kind === 'acquaint_result' ? 'acquaint' : kind
-  }
-  const groups = TASK_GROUP_ORDER.map((key) => ({
+  const groups = DOCFLOW_GROUP_ORDER.map((key) => ({
     key,
-    rows: taskRows.filter((row) => groupOf(row) === key)
+    rows: taskRows.filter((row) => docflowGroupKey(kindOf(row)) === key)
   })).filter((group) => group.rows.length)
   const acquaintRows = groups.find((group) => group.key === 'acquaint')?.rows ?? []
   const acquaintTargets = acquaintRows.filter((row) => rowAction(row)?.id === 'acquaint')
   // Ознакомление свёрнуто: его много и оно не требует работы, остальные разделы открыты.
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<TaskGroupKey>>(() => new Set(['acquaint']))
-  const toggleGroup = (key: TaskGroupKey): void => {
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<DocflowGroupKey>>(() => new Set(['acquaint']))
+  const toggleGroup = (key: DocflowGroupKey): void => {
     setCollapsedGroups((current) => {
       const next = new Set(current)
       if (next.has(key)) next.delete(key)
@@ -525,7 +505,7 @@ export function TasksGridTab({
                         <div className="spec-group-head">
                           <button type="button" className="spec-group-toggle" aria-expanded={open}>
                             {open ? <ChevronDown size={16} aria-hidden /> : <ChevronRight size={16} aria-hidden />}
-                            {taskGroupLabel(group.key)}
+                            {docflowGroupLabel(group.key)}
                             <em>{group.rows.length}</em>
                           </button>
                           {bulkReady ? (

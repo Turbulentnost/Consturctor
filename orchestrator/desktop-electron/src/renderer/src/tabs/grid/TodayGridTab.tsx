@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
@@ -35,7 +35,14 @@ import {
   applyTodayKpiTileClick,
   EMPTY_TODAY_KPI_TILE
 } from '../../workplace/tileFilters'
-import { docflowKindActions, docflowTaskKind } from '../../workplace/docflowTaskKind'
+import {
+  DOCFLOW_GROUP_ORDER,
+  docflowGroupKey,
+  docflowGroupLabel,
+  docflowKindActions,
+  docflowTaskKind,
+  type DocflowGroupKey
+} from '../../workplace/docflowTaskKind'
 import { runDocflowAction } from '../../workplace/taskSourceActions'
 import { taskActionContextFromTaskRow } from '../../workplace/taskSourceKind'
 import type { DocflowUiAction } from '../../workplace/taskSourceActions'
@@ -134,12 +141,21 @@ function todayRowTone(status: string, deadline: string, urgent?: boolean): Today
   return 'neutral'
 }
 
+/** Раздел задачи в виджете: вид из Документооборота, остальное — «Прочие». */
+function todayGroupKey(row: SpecTaskRow): DocflowGroupKey {
+  const kind =
+    row.sourceKind === 'docflow' ? row.docflowKind ?? docflowTaskKind(row.step, row.taskName) : null
+  return docflowGroupKey(kind)
+}
+
 function MiniTableCard({
   title,
   columns,
   rows,
   rowTones,
   rowClassNames,
+  rowGroups,
+  closedGroups,
   onRowClick,
   loading,
   error,
@@ -155,6 +171,10 @@ function MiniTableCard({
   rowTones?: TodayRowTone[]
   /** Дополнительные классы строк (по индексам rows). */
   rowClassNames?: (string | undefined)[]
+  /** Название раздела для каждой строки; строки должны идти разделами подряд. */
+  rowGroups?: string[]
+  /** Разделы, свёрнутые при открытии. */
+  closedGroups?: string[]
   /** Клик по строке: открыть карточку записи. */
   onRowClick?: (index: number) => void
   loading?: boolean
@@ -165,6 +185,61 @@ function MiniTableCard({
   headerAction?: React.ReactNode
   tableClassName?: string
 }): React.JSX.Element {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(closedGroups || []))
+  const groups = useMemo(() => {
+    if (!rowGroups) return []
+    const out: { label: string; indexes: number[] }[] = []
+    rows.forEach((_, index) => {
+      const label = rowGroups[index] || ''
+      const last = out[out.length - 1]
+      if (last && last.label === label) last.indexes.push(index)
+      else out.push({ label, indexes: [index] })
+    })
+    return out
+  }, [rows, rowGroups])
+
+  const renderRow = (cells: React.ReactNode[], index: number): React.JSX.Element => {
+    const tone = rowTones?.[index]
+    const className = [
+      tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : '',
+      rowClassNames?.[index] || '',
+      onRowClick ? 'today-tr-clickable' : ''
+    ]
+      .filter(Boolean)
+      .join(' ')
+    return (
+      <tr
+        key={index}
+        className={className || undefined}
+        tabIndex={onRowClick ? 0 : undefined}
+        onClick={onRowClick ? () => onRowClick(index) : undefined}
+        onKeyDown={
+          onRowClick
+            ? (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onRowClick(index)
+                }
+              }
+            : undefined
+        }
+      >
+        {cells.map((cell, cellIndex) => (
+          <td key={cellIndex}>{cell}</td>
+        ))}
+      </tr>
+    )
+  }
+
+  const toggleGroup = (label: string): void => {
+    setCollapsed((current) => {
+      const next = new Set(current)
+      if (next.has(label)) next.delete(label)
+      else next.add(label)
+      return next
+    })
+  }
+
   const body = ((): React.ReactNode => {
     if (loading && !rows.length) {
       return (
@@ -184,36 +259,22 @@ function MiniTableCard({
         </tr>
       )
     }
-    return rows.map((cells, index) => {
-      const tone = rowTones?.[index]
-      const className = [
-        tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : '',
-        rowClassNames?.[index] || '',
-        onRowClick ? 'today-tr-clickable' : ''
-      ]
-        .filter(Boolean)
-        .join(' ')
+    if (!groups.length) return rows.map(renderRow)
+    return groups.map((group) => {
+      const open = !collapsed.has(group.label)
       return (
-        <tr
-          key={index}
-          className={className || undefined}
-          tabIndex={onRowClick ? 0 : undefined}
-          onClick={onRowClick ? () => onRowClick(index) : undefined}
-          onKeyDown={
-            onRowClick
-              ? (event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    onRowClick(index)
-                  }
-                }
-              : undefined
-          }
-        >
-          {cells.map((cell, cellIndex) => (
-            <td key={cellIndex}>{cell}</td>
-          ))}
-        </tr>
+        <Fragment key={group.label}>
+          <tr className="today-group-row" onClick={() => toggleGroup(group.label)}>
+            <td colSpan={columns.length}>
+              <button type="button" className="today-group-toggle" aria-expanded={open}>
+                {open ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+                {group.label}
+                <em>{group.indexes.length}</em>
+              </button>
+            </td>
+          </tr>
+          {open ? group.indexes.map((index) => renderRow(rows[index], index)) : null}
+        </Fragment>
       )
     })
   })()
@@ -374,8 +435,14 @@ export function TodayGridTab({
       }
       return isDocflowToMe(row)
     })
-    return [...platformRows, ...onecRows]
+    // Раскладываем по видам задач: строки одного раздела должны идти подряд.
+    const all = [...platformRows, ...onecRows]
+    return DOCFLOW_GROUP_ORDER.flatMap((key) => all.filter((row) => todayGroupKey(row) === key))
   }, [data.erpTasks, data.platformTasks, onecFromMe, erpFio, periodDay])
+  const taskGroupLabels = useMemo(
+    () => taskRows.map((row) => docflowGroupLabel(todayGroupKey(row))),
+    [taskRows]
+  )
   const meetingRows = useMemo(() => {
     return data.meetings
       .filter((meeting) => {
@@ -553,6 +620,8 @@ export function TodayGridTab({
           }
           emptyExtra={onecReconnectBlock}
           columns={onecFromMe ? ['Задача', 'Исполнитель', 'Статус'] : ['Задача', 'Статус']}
+          rowGroups={taskGroupLabels}
+          closedGroups={['Ознакомление']}
           rowTones={taskRows.map((row) => todayRowTone(row.status, row.deadline, row.urgent))}
           rowClassNames={taskRows.map((row) =>
             row.platform

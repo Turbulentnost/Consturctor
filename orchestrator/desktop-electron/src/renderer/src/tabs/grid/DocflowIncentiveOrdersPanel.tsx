@@ -71,17 +71,17 @@ function optionsOf(
   return [...names].sort((left, right) => left.localeCompare(right, 'ru')).map((name) => ({ value: name, label: name }))
 }
 
+/** «Не утвержден»/«Не согласован» — отказ, «На утверждении»/«На согласовании» — ещё в работе. */
+function statusTone(status: string): string {
+  if (status.startsWith('Не ') || status === 'Отклонен') return 'is-bad'
+  if (status.startsWith('На ')) return 'is-wait'
+  if (status) return 'is-ok'
+  return 'is-muted'
+}
+
 function StatusPill({ row }: { row: Pick<IncentiveOrderRow, 'status' | 'cancelled'> }): React.JSX.Element {
   const status = row.status
-  const tone = row.cancelled
-    ? 'is-muted'
-    : status === 'Исполнен' || status === 'Зарегистрирован'
-      ? 'is-ok'
-      : status === 'Отклонен' || status === 'Не утвержден'
-        ? 'is-bad'
-        : status === 'На согласовании'
-          ? 'is-wait'
-          : 'is-muted'
+  const tone = row.cancelled ? 'is-muted' : statusTone(status)
   const Icon = tone === 'is-bad' ? XCircle : tone === 'is-ok' ? CheckCircle2 : Circle
   return (
     <span className={`docflow-pill ${tone}`}>
@@ -156,7 +156,11 @@ function IncentiveOrderCardView({ row }: { row: IncentiveOrderRow }): React.JSX.
         <section className="docflow-card-block">
           <h4>Согласование</h4>
           <dl className="docflow-detail-list">
-            <Fact label="Статус" value={row.status} />
+            <Fact label="Состояние" value={row.status} />
+            <Fact label="Регистрация" value={row.registration} />
+            <Fact label="Согласование" value={row.approval} />
+            <Fact label="Утверждение" value={row.confirmation} />
+            <Fact label="Исполнение" value={row.performance} />
             <Fact label="Утверждающий руководитель" value={row.approver} />
             <Fact label="Контролирующий руководитель" value={row.controller} />
             <Fact label="Ответственный" value={row.responsible} />

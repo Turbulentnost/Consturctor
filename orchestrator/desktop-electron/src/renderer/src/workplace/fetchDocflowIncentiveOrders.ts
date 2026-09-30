@@ -7,7 +7,12 @@ export type IncentiveOrderRow = {
   id: string
   number: string
   date: string
+  /** Состояние документа в ДО — последняя пройденная стадия. */
   status: string
+  registration: string
+  approval: string
+  confirmation: string
+  performance: string
   organization: string
   department: string
   responsible: string
@@ -65,6 +70,10 @@ function mapRow(raw: Record<string, unknown>): IncentiveOrderRow {
     number: str(raw.number),
     date: str(raw.date),
     status: str(raw.status),
+    registration: str(raw.registration),
+    approval: str(raw.approval),
+    confirmation: str(raw.confirmation),
+    performance: str(raw.performance),
     organization: str(raw.organization),
     department: str(raw.department),
     responsible: str(raw.responsible),
