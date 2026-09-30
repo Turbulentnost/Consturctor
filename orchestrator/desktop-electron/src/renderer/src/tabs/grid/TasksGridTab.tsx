@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Archive, ChevronDown, ChevronRight } from 'lucide-react'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
@@ -53,6 +53,25 @@ import { acceptPlatformTask, completePlatformTask, PlatformTaskDetail } from './
 import { ClosedOneCTasksModal } from './ClosedOneCTasksModal'
 import { onecRowImportance } from '../../workplace/onecTaskImportance'
 import { usePageSearch } from '../../layout/pageSearchContext'
+
+/** Разделы списка: сначала то, что исполняет сам, ознакомление — в конце. */
+const TASK_GROUP_ORDER = [
+  'execute',
+  'approve',
+  'confirm',
+  'check',
+  'consider',
+  'resolution',
+  'question',
+  'other',
+  'acquaint'
+] as const
+
+type TaskGroupKey = (typeof TASK_GROUP_ORDER)[number]
+
+function taskGroupLabel(key: TaskGroupKey): string {
+  return key === 'other' ? 'Прочие задачи' : DOCFLOW_KIND_LABEL[key]
+}
 
 export function TasksGridTab({
   user,
@@ -214,14 +233,27 @@ export function TasksGridTab({
       })
       .finally(() => setClosingId(''))
   }
-  const isAcquaintRow = (row: (typeof taskRows)[number]): boolean => {
+  const groupOf = (row: (typeof taskRows)[number]): TaskGroupKey => {
     const kind = kindOf(row)
-    return kind === 'acquaint' || kind === 'acquaint_result'
+    if (!kind) return 'other'
+    return kind === 'acquaint_result' ? 'acquaint' : kind
   }
-  const mainRows = taskRows.filter((row) => !isAcquaintRow(row))
-  const acquaintRows = taskRows.filter(isAcquaintRow)
+  const groups = TASK_GROUP_ORDER.map((key) => ({
+    key,
+    rows: taskRows.filter((row) => groupOf(row) === key)
+  })).filter((group) => group.rows.length)
+  const acquaintRows = groups.find((group) => group.key === 'acquaint')?.rows ?? []
   const acquaintTargets = acquaintRows.filter((row) => rowAction(row)?.id === 'acquaint')
-  const [acquaintOpen, setAcquaintOpen] = useState(false)
+  // Ознакомление свёрнуто: его много и оно не требует работы, остальные разделы открыты.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<TaskGroupKey>>(() => new Set(['acquaint']))
+  const toggleGroup = (key: TaskGroupKey): void => {
+    setCollapsedGroups((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
   const [bulkProgress, setBulkProgress] = useState('')
   const acquaintAll = async (): Promise<void> => {
     const targets = [...acquaintTargets]
@@ -256,7 +288,7 @@ export function TasksGridTab({
     }
   }
   const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
-  const visibleRows = acquaintOpen ? [...mainRows, ...acquaintRows] : mainRows
+  const visibleRows = groups.flatMap((group) => (collapsedGroups.has(group.key) ? [] : group.rows))
   const effectiveId = selectedId || visibleRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
   const renderRow = (row: (typeof taskRows)[number]): React.JSX.Element => {
@@ -482,36 +514,42 @@ export function TasksGridTab({
                   </td>
                 </tr>
               ) : null}
-              {mainRows.map(renderRow)}
-              {acquaintRows.length ? (
-                <tr className="spec-group-row" onClick={() => setAcquaintOpen((open) => !open)}>
-                  <td colSpan={9}>
-                    <div className="spec-group-head">
-                      <button type="button" className="spec-group-toggle" aria-expanded={acquaintOpen}>
-                        {acquaintOpen ? <ChevronDown size={16} aria-hidden /> : <ChevronRight size={16} aria-hidden />}
-                        Ознакомление
-                        <em>{acquaintRows.length}</em>
-                      </button>
-                      {acquaintTargets.length ? (
-                        <button
-                          type="button"
-                          className="spec-row-action"
-                          disabled={Boolean(bulkProgress) || Boolean(closingId)}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            void acquaintAll()
-                          }}
-                        >
-                          {bulkProgress
-                            ? `Ознакомление ${bulkProgress}…`
-                            : `Ознакомиться со всеми (${acquaintTargets.length})`}
-                        </button>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ) : null}
-              {acquaintOpen ? acquaintRows.map(renderRow) : null}
+              {groups.map((group) => {
+                const open = !collapsedGroups.has(group.key)
+                // Скопом закрывается только ознакомление: остальное требует решения по каждой задаче.
+                const bulkReady = group.key === 'acquaint' ? acquaintTargets.length : 0
+                return (
+                  <Fragment key={group.key}>
+                    <tr className="spec-group-row" onClick={() => toggleGroup(group.key)}>
+                      <td colSpan={9}>
+                        <div className="spec-group-head">
+                          <button type="button" className="spec-group-toggle" aria-expanded={open}>
+                            {open ? <ChevronDown size={16} aria-hidden /> : <ChevronRight size={16} aria-hidden />}
+                            {taskGroupLabel(group.key)}
+                            <em>{group.rows.length}</em>
+                          </button>
+                          {bulkReady ? (
+                            <button
+                              type="button"
+                              className="spec-row-action"
+                              disabled={Boolean(bulkProgress) || Boolean(closingId)}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void acquaintAll()
+                              }}
+                            >
+                              {bulkProgress
+                                ? `Ознакомление ${bulkProgress}…`
+                                : `Ознакомиться со всеми (${bulkReady})`}
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                    {open ? group.rows.map(renderRow) : null}
+                  </Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>
