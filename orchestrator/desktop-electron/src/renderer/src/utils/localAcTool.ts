@@ -1,6 +1,14 @@
 import type { UserProfile } from '../api/types'
 import { formatIpcInvokeError, sidecarAckFailureMessage, type SidecarAck } from './sidecarAck'
+import { outlookMailStoreId } from './outlookMail'
 import { onecComInvokeArgs } from '../workplace/userContext'
+
+function withMailStore(input: Record<string, unknown>): Record<string, unknown> {
+  const entryId = String(input.entry_id || '').trim()
+  if (!entryId || input.store_id) return input
+  const storeId = outlookMailStoreId(entryId)
+  return storeId ? { ...input, store_id: storeId } : input
+}
 
 const DEFAULT_TIMEOUT_MS = 180_000
 
@@ -74,8 +82,11 @@ export function invokeLocalAcTool(
         })
       }
     })
-    const payload =
-      toolName.startsWith('onec.') ? onecComInvokeArgs(input, user) : input
+    const payload = toolName.startsWith('onec.')
+      ? onecComInvokeArgs(input, user)
+      : toolName.startsWith('outlook.')
+        ? withMailStore(input)
+        : input
     void window.agent
       .invokeAcTool({ requestId, tool: toolName, input: payload })
       .then((ack) => {

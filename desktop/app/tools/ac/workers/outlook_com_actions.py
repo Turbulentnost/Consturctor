@@ -937,8 +937,106 @@ def _resolve_mail_folder_specs(folder_value: object) -> list[tuple[str, int, str
     )
 
 
+def _profile_mail_addresses(namespace: Any) -> set[str]:
+    """SMTP-адреса учётных записей текущего профиля Outlook (в нижнем регистре)."""
+    found: set[str] = set()
+    try:
+        for account in namespace.Accounts:
+            address = _safe_str(getattr(account, "SmtpAddress", "")).strip().casefold()
+            if address:
+                found.add(address)
+    except Exception as exc:
+        _log_progress(f"step=profile_accounts skipped: {exc}")
+    try:
+        user = namespace.CurrentUser.AddressEntry.GetExchangeUser()
+        address = _safe_str(getattr(user, "PrimarySmtpAddress", "")).strip().casefold()
+        if address:
+            found.add(address)
+    except Exception:
+        pass
+    return found
+
+
+def _mailbox_local_part(address: str) -> str:
+    text = (address or "").strip().casefold()
+    if "@" not in text:
+        return ""
+    return re.sub(r"[._\-]", "", text.split("@")[0])
+
+
+def _mailbox_matches(address: str, mailbox: str) -> bool:
+    left = (address or "").strip().casefold()
+    right = (mailbox or "").strip().casefold()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    # Адрес из логина почты не совпадает с SMTP буква в букву: testii@… и test_ii@…,
+    # а также другой домен того же ящика.
+    local = _mailbox_local_part(left)
+    return bool(local) and local == _mailbox_local_part(right)
+
+
+OL_PRIMARY_EXCHANGE_MAILBOX = 0
+
+
+def _mailbox_folder(namespace: Any, mailbox: str, folder_id: int) -> tuple[Any, str]:
+    """Папка ящика mailbox: ящик в списке Outlook → учётная запись профиля → общий доступ.
+
+    Ящик профиля вместо запрошенного не подставляется: иначе все видят почту того,
+    под чьим профилем запущен Outlook. Список ящиков читается и без связи с Exchange.
+    """
+    if not mailbox:
+        return _default_folder(namespace, folder_id), "own"
+    _ensure_mapi_logon(namespace)
+    try:
+        for store in namespace.Stores:
+            label = _safe_str(getattr(store, "DisplayName", "")).strip()
+            if not _mailbox_matches(label, mailbox):
+                continue
+            try:
+                folder = store.GetDefaultFolder(folder_id)
+            except Exception:
+                continue
+            if folder is not None:
+                try:
+                    primary = int(getattr(store, "ExchangeStoreType", -1)) == OL_PRIMARY_EXCHANGE_MAILBOX
+                except Exception:
+                    primary = False
+                return folder, "own" if primary else "store"
+    except Exception as exc:
+        _log_progress(f"step=mailbox_stores skipped: {exc}")
+    if any(_mailbox_matches(item, mailbox) for item in _profile_mail_addresses(namespace)):
+        return _default_folder(namespace, folder_id), "own"
+    try:
+        recipient = namespace.CreateRecipient(mailbox)
+        recipient.Resolve()
+        resolved = bool(recipient.Resolved)
+    except Exception as exc:
+        raise OutlookAccessError(
+            f"Ящик {mailbox} не найден в адресной книге Outlook этого компьютера ({exc})"
+        ) from exc
+    if not resolved:
+        raise OutlookAccessError(f"Ящик {mailbox} не найден в адресной книге Outlook этого компьютера")
+    try:
+        folder = namespace.GetSharedDefaultFolder(recipient, folder_id)
+    except Exception as exc:
+        raise OutlookAccessError(
+            f"Outlook на этом компьютере открыт под другим пользователем, "
+            f"а к ящику {mailbox} нет доступа ({exc})"
+        ) from exc
+    if folder is None:
+        raise OutlookAccessError(
+            f"Outlook на этом компьютере открыт под другим пользователем, а к ящику {mailbox} нет доступа"
+        )
+    return folder, "shared"
+
+
 def search_mail(input_data: dict) -> dict:
-    """Безопасно прочитать входящие/отправленные письма Outlook без изменений."""
+    """Безопасно прочитать входящие/отправленные письма Outlook без изменений.
+
+    mailbox — адрес ящика вошедшего пользователя; пусто — ящик профиля Outlook.
+    """
     _log_progress("step=load_pywin32 start")
     days = _clamp_int(input_data.get("days"), DEFAULT_DAYS, 1, MAX_DAYS)
     max_results = _clamp_int(
@@ -960,6 +1058,7 @@ def search_mail(input_data: dict) -> dict:
         forward=False,
     )
     folder_specs = _resolve_mail_folder_specs(input_data.get("folder"))
+    mailbox = _safe_str(input_data.get("mailbox") or "").strip().casefold()
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -971,10 +1070,20 @@ def search_mail(input_data: dict) -> dict:
 
         results = []
         scanned_count = 0
+        access = ""
         for folder_name, folder_id, sort_field, date_attr, direction in folder_specs:
-            _log_progress(f"step=get_mail_folder start folder={folder_name}")
-            folder_obj = _default_folder(namespace, folder_id)
-            _log_progress(f"step=get_mail_folder ok folder={folder_name}")
+            _log_progress(f"step=get_mail_folder start folder={folder_name} mailbox={mailbox}")
+            try:
+                folder_obj, status = _mailbox_folder(namespace, mailbox, folder_id)
+            except OutlookAccessError:
+                # «Отправленные» общего ящика часто закрыты при открытых «Входящих».
+                if direction == "sent" and access:
+                    _log_progress(f"step=get_mail_folder skipped folder={folder_name}")
+                    continue
+                raise
+            access = access or status
+            _log_progress(f"step=get_mail_folder ok folder={folder_name} access={status}")
+            store_id = _safe_str(getattr(folder_obj, "StoreID", "")).strip()
             _log_progress(f"step=get_items start folder={folder_name}")
             messages = folder_obj.Items
             _log_progress(f"step=get_items ok folder={folder_name}")
@@ -993,6 +1102,9 @@ def search_mail(input_data: dict) -> dict:
                 max_results=max_results - len(results),
                 max_scan_items=max_scan_items,
             )
+            if store_id and access != "own":
+                for item in folder_results:
+                    item["store_id"] = store_id
             scanned_count += folder_scanned
             results.extend(folder_results)
             if len(results) >= max_results:
@@ -1008,6 +1120,8 @@ def search_mail(input_data: dict) -> dict:
             "count": len(results),
             "scanned_count": scanned_count,
             "source": "outlook_com",
+            "mailbox": mailbox,
+            "mailbox_access": access,
             "folder": _safe_str(input_data.get("folder") or DEFAULT_FOLDER),
             "folders": [item[0] for item in folder_specs],
             "range_start": start_at.isoformat(),
@@ -2105,12 +2219,19 @@ def _mail_attachment_names(message: Any) -> list[dict[str, str]]:
     return names
 
 
-def _resolve_mail_item(namespace: Any, entry_id: str) -> Any:
-    """Найти письмо Outlook по EntryID и дать понятную ошибку, если оно недоступно."""
+def _resolve_mail_item(namespace: Any, entry_id: str, store_id: str = "") -> Any:
+    """Найти письмо Outlook по EntryID и дать понятную ошибку, если оно недоступно.
+
+    store_id нужен письмам из общего ящика: без него Outlook ищет только в ящике профиля.
+    """
     if not entry_id:
         raise OutlookComError("ENTRY_ID_REQUIRED: нужен entry_id письма")
     try:
-        item = namespace.GetItemFromID(entry_id)
+        item = (
+            namespace.GetItemFromID(entry_id, store_id)
+            if store_id
+            else namespace.GetItemFromID(entry_id)
+        )
     except Exception as exc:
         raise OutlookAccessError(f"Не удалось открыть письмо по entry_id: {exc}") from exc
     if item is None:
@@ -2165,7 +2286,9 @@ def fetch_mail_message(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         payload = _mail_detail_payload(message, include_body=True)
         payload["source"] = "outlook_com"
         return payload
@@ -2181,7 +2304,9 @@ def mark_mail_read(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         try:
             message.UnRead = unread
             message.Save()
@@ -2303,7 +2428,9 @@ def display_mail_message(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         if mode == "reply":
             draft = message.Reply()
         elif mode == "reply_all":
@@ -2363,7 +2490,9 @@ def save_mail_message(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         subject = _decode_mime_header(getattr(message, "Subject", ""))
         base_dir = Path(save_dir) if save_dir else Path(tempfile.gettempdir()) / "Constructor" / "outlook" / "messages"
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -2417,7 +2546,9 @@ def save_mail_attachment(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         attachments = getattr(message, "Attachments", None)
         if attachments is None:
             raise OutlookAccessError("У письма нет вложений")

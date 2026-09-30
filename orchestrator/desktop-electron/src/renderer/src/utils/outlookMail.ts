@@ -15,6 +15,21 @@ export function skipOutlookCom(): boolean {
   return flag === '1' || flag === 'true' || flag === 'yes'
 }
 
+/** entry_id → StoreID писем общего ящика: без StoreID Outlook ищет письмо только в ящике профиля. */
+const mailStoreIds = new Map<string, string>()
+
+export function outlookMailStoreId(entryId: string): string {
+  return mailStoreIds.get(entryId.trim()) || ''
+}
+
+function rememberMailStores(messages: Record<string, unknown>[]): void {
+  for (const msg of messages) {
+    const entryId = String(msg.entry_id || '').trim()
+    const storeId = String(msg.store_id || '').trim()
+    if (entryId && storeId) mailStoreIds.set(entryId, storeId)
+  }
+}
+
 function requestOutlookMail(range: {
   date?: string
   dateFrom?: string
@@ -22,6 +37,7 @@ function requestOutlookMail(range: {
   folder?: string
   maxResults?: number
   query?: string
+  mailbox?: string
 }): Promise<{
   ok: boolean
   messages: Record<string, unknown>[]
@@ -52,11 +68,13 @@ function requestOutlookMail(range: {
       if (String(payload.requestId || '') !== requestId) return
       if (payload.ok) {
         const raw = Array.isArray(payload.messages) ? payload.messages : []
+        const messages = raw.filter(
+          (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
+        )
+        rememberMailStores(messages)
         finish({
           ok: true,
-          messages: raw.filter(
-            (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
-          ),
+          messages,
           source: String(payload.source || 'outlook_com')
         })
       } else {
@@ -74,13 +92,14 @@ function requestOutlookMail(range: {
       dateTo: range.dateTo,
       folder: range.folder || 'Inbox',
       maxResults: range.maxResults ?? 50,
-      query: range.query
+      query: range.query,
+      mailbox: range.mailbox || ''
     })
   })
 }
 
 const MAIL_FETCH_MAX_DAYS = 90
-const MAIL_CACHE_KEY = 'orchOutlookMail:v1'
+const MAIL_CACHE_KEY = 'orchOutlookMail:v2'
 
 interface OutlookMailCache {
   day: string
@@ -142,6 +161,7 @@ export async function ensureOutlookMailRange(
       cache.dateTo === toKey &&
       cache.folder === folder
     ) {
+      rememberMailStores(cache.messages)
       return { ok: true, messages: cache.messages, cached: true }
     }
   }
@@ -150,7 +170,8 @@ export async function ensureOutlookMailRange(
     dateFrom: fromKey,
     dateTo: toKey,
     folder,
-    maxResults: options.maxResults ?? 120
+    maxResults: options.maxResults ?? 120,
+    mailbox: box
   })
   if (result.ok && fromKey && toKey) {
     writeMailCache({

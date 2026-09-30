@@ -20,7 +20,7 @@ import { useTodayKpiData } from '../../workplace/useTodayKpiData'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
 import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecSessionHints'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
-import { erpActorFio } from '../../workplace/userContext'
+import { erpActorFio, outlookMailboxAddress } from '../../workplace/userContext'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
 import { parseMeetingTime } from '../../utils/outlookMeetings'
 import { sameDay } from '../../utils/calendar'
@@ -411,7 +411,7 @@ export function TodayGridTab({
   const outlookFromMe = kpiTiles.outlookFromMe
   const projectAsManager = kpiTiles.projectAsManager
   const canvasRef = useRef<HTMLDivElement | null>(null)
-  const outlookMail = useTodayOutlookMail(periodDay)
+  const outlookMail = useTodayOutlookMail(periodDay, outlookMailboxAddress(user))
   const preparedDecisions = useTodayPreparedDecisions(periodDay, user.id)
   const projectTasks = useTodayProjectTasks(periodDay, data)
   const erpFio = erpActorFio(user)

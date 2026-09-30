@@ -53,6 +53,9 @@ export type OrchestratorMailLoad = {
   imapStatus: string
 }
 
+export const OUTLOOK_NO_MAILBOX =
+  'Не определён почтовый ящик пользователя (логин почты в профиле) — письма Outlook не загружаются'
+
 const PROBE_TTL_MS = 600_000
 let probeCache: { at: number; day: string; mailbox: string; result: MailProbeResult } | null = null
 
@@ -344,6 +347,8 @@ export async function loadOrchestratorMail(
       error: 'Outlook COM отключён (VITE_SKIP_OUTLOOK_COM)',
       source: ''
     }
+  } else if (!outlookMailbox.trim()) {
+    comWeek = { ok: false, messages: [], error: OUTLOOK_NO_MAILBOX, source: '' }
   } else {
     const ensured = await ensureOutlookMailRange(
       outlookMailbox,
@@ -396,7 +401,7 @@ export async function loadOrchestratorMail(
   const sourceLabel = probe.imapPrimary || (!comRows.length && imapRows.length)
     ? `IMAP: ${imapBox || 'ящик пользователя'}`
     : comWeek.ok
-      ? comWeek.source || `outlook_mail (${range.dateFrom}…${range.dateTo}, All)`
+      ? `Outlook: ${outlookMailbox}`
       : comError || (outlookMailbox ? `Outlook: ${outlookMailbox}` : 'outlook_mail')
 
   return {

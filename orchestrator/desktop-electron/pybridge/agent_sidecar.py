@@ -4954,6 +4954,9 @@ class Sidecar:
         query = command.get("query")
         if query is not None and str(query).strip():
             input_data["query"] = str(query).strip()
+        mailbox = str(command.get("mailbox") or "").strip()
+        if mailbox:
+            input_data["mailbox"] = mailbox
 
         def _work() -> None:
             try:
@@ -4974,6 +4977,8 @@ class Sidecar:
                         "ok": True,
                         "messages": messages if isinstance(messages, list) else [],
                         "source": output.get("source") or "outlook_com",
+                        "mailbox": output.get("mailbox") or "",
+                        "mailboxAccess": output.get("mailbox_access") or "",
                         "rangeStart": output.get("range_start") or "",
                         "rangeEnd": output.get("range_end") or "",
                     }
