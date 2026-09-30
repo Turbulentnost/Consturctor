@@ -8,6 +8,8 @@ export type ProtocolRow = {
   number: string
   date: string
   time: string
+  timeStart: string
+  timeEnd: string
   status: string
   statusCode: string
   closed: boolean
@@ -64,9 +66,12 @@ export type ProtocolFile = {
 
 /** Отметки о выполнении у задач протокола в 1С нет: есть срок, из него и статус. */
 export type ProtocolTask = {
+  /** LineNumber строки в 1С — по нему сервер узнаёт строку при правке. */
+  line: number
   n: number
   text: string
   responsible: string
+  responsibleKey: string
   author: string
   setAt: string
   due: string
@@ -76,6 +81,19 @@ export type ProtocolTask = {
   sent: boolean
   note: string
   files: ProtocolFile[]
+  /** docflow — задача Документооборота (только чтение), erp — строка таблицы протокола. */
+  source: 'docflow' | 'erp'
+  executed: boolean
+}
+
+/** Карандаш видит только тот, кто подготовил протокол; reason — почему правка сейчас закрыта. */
+export type ProtocolEditAccess = {
+  author: boolean
+  allowed: boolean
+  reason: string
+  controlBlock: string
+  assignedBlock: string
+  accessOptions: string[]
 }
 
 export type ProtocolCard = {
@@ -95,18 +113,27 @@ export type ProtocolCard = {
   }[]
   controlTasks: ProtocolTask[]
   assignedTasks: ProtocolTask[]
+  /** Задачи ДО по протоколу-основанию — верхний список вкладки «Задачи для контроля» в 1С. */
+  controlDocflow: ProtocolTask[]
+  /** Задачи ДО по этому протоколу. */
+  assignedDocflow: ProtocolTask[]
+  baseProtocol: { id: string; number: string } | null
+  docflowNote: string
   files: ProtocolFile[]
   periodDone: ProtocolPlanRow[]
   periodPlan: ProtocolPlanRow[]
   planFact: ProtocolPlanRow[]
+  edit: ProtocolEditAccess
   stats: {
     decisions: number
     decisionsDone: number
     decisionsCancelled: number
     controlTasks: number
     controlOverdue: number
+    controlDone: number
     assignedTasks: number
     assignedOverdue: number
+    assignedDone: number
     files: number
   }
 }
@@ -135,6 +162,8 @@ function mapRow(raw: Record<string, unknown>): ProtocolRow {
     number: str(raw.number),
     date: str(raw.date),
     time: str(raw.time),
+    timeStart: str(raw.time_start),
+    timeEnd: str(raw.time_end),
     status: str(raw.status),
     statusCode: str(raw.status_code),
     closed: Boolean(raw.closed),
@@ -170,9 +199,11 @@ function mapFiles(value: unknown): ProtocolFile[] {
 
 function mapTask(item: Record<string, unknown>): ProtocolTask {
   return {
+    line: Number(item.line) || 0,
     n: Number(item.n) || 0,
     text: str(item.text),
     responsible: str(item.responsible),
+    responsibleKey: str(item.responsible_key),
     author: str(item.author),
     setAt: str(item.set_at),
     due: str(item.due),
@@ -181,7 +212,9 @@ function mapTask(item: Record<string, unknown>): ProtocolTask {
     priority: str(item.priority),
     sent: Boolean(item.sent),
     note: str(item.note),
-    files: mapFiles(item.files)
+    files: mapFiles(item.files),
+    source: item.source === 'docflow' ? 'docflow' : 'erp',
+    executed: Boolean(item.executed)
   }
 }
 
@@ -243,6 +276,7 @@ export async function loadProtocolCard(user: UserProfile | null, id: string): Pr
   if (!res.ok) throw new Error(res.error || 'Не удалось открыть протокол')
   const payload = rec(res.result)
   const stats = rec(payload.stats)
+  const edit = rec(payload.edit)
   const card: ProtocolCard = {
     protocol: mapRow(rec(payload.protocol)),
     agenda: list(payload.agenda).map((item) => ({
@@ -266,21 +300,93 @@ export async function loadProtocolCard(user: UserProfile | null, id: string): Pr
     })),
     controlTasks: list(payload.control_tasks).map(mapTask),
     assignedTasks: list(payload.assigned_tasks).map(mapTask),
+    controlDocflow: list(payload.control_docflow).map(mapTask),
+    assignedDocflow: list(payload.assigned_docflow).map(mapTask),
+    baseProtocol: payload.base_protocol
+      ? { id: str(rec(payload.base_protocol).id), number: str(rec(payload.base_protocol).number) }
+      : null,
+    docflowNote: str(payload.docflow_note),
     files: mapFiles(payload.files),
     periodDone: list(payload.period_done).map(mapPlan),
     periodPlan: list(payload.period_plan).map(mapPlan),
     planFact: list(payload.plan_fact).map(mapPlan),
+    edit: {
+      author: Boolean(edit.author),
+      allowed: Boolean(edit.allowed),
+      reason: str(edit.reason),
+      controlBlock: str(edit.control_block),
+      assignedBlock: str(edit.assigned_block),
+      accessOptions: Array.isArray(edit.access_options) ? edit.access_options.map(str).filter(Boolean) : []
+    },
     stats: {
       decisions: Number(stats.decisions) || 0,
       decisionsDone: Number(stats.decisions_done) || 0,
       decisionsCancelled: Number(stats.decisions_cancelled) || 0,
       controlTasks: Number(stats.control_tasks) || 0,
       controlOverdue: Number(stats.control_overdue) || 0,
+      controlDone: Number(stats.control_done) || 0,
       assignedTasks: Number(stats.assigned_tasks) || 0,
       assignedOverdue: Number(stats.assigned_overdue) || 0,
+      assignedDone: Number(stats.assigned_done) || 0,
       files: Number(stats.files) || 0
     }
   }
   cardCache.set(id, card)
   return card
+}
+
+export function forgetProtocolCard(id: string): void {
+  cardCache.delete(id)
+}
+
+/** Поля шапки в том виде, как их принимает onec.meeting_protocol_write action=edit. */
+export type ProtocolEditFields = Partial<
+  Record<
+    | 'topic'
+    | 'meeting_type'
+    | 'time_start'
+    | 'time_end'
+    | 'next_meeting_date'
+    | 'leader'
+    | 'responsible'
+    | 'room'
+    | 'access'
+    | 'department'
+    | 'project'
+    | 'comment',
+    string
+  >
+>
+
+/** line = 0 — новая строка; отправленные исполнителю строки сервер оставляет как есть. */
+export type ProtocolEditTask = {
+  line: number
+  n: number
+  text: string
+  responsible: string
+  responsible_key?: string
+  due: string
+  priority: string
+  note: string
+}
+
+/** Правку сервер пропускает только автору черновика (ФИО из токена = «Подготовил»). */
+export async function saveProtocolEdit(
+  id: string,
+  change: { fields: ProtocolEditFields; controlTasks?: ProtocolEditTask[]; assignedTasks?: ProtocolEditTask[] }
+): Promise<string> {
+  const res = await api.invokeServerTool(
+    'onec.meeting_protocol_write',
+    {
+      action: 'edit',
+      ref_key: id,
+      fields: change.fields,
+      ...(change.controlTasks ? { control_tasks: change.controlTasks } : {}),
+      ...(change.assignedTasks ? { assigned_tasks: change.assignedTasks } : {})
+    },
+    180_000
+  )
+  forgetProtocolCard(id)
+  if (!res.ok) throw new Error(res.error || 'Не удалось сохранить протокол в 1С')
+  return str(rec(res.result).summary) || 'Протокол сохранён в 1С'
 }

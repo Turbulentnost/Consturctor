@@ -15,16 +15,21 @@ import {
   MessagesSquare,
   Paperclip,
   PenLine,
+  Pencil,
+  Save,
   Search,
   Tag,
   Users,
+  X,
   XCircle
 } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import {
+  forgetProtocolCard,
   loadProtocolCard,
   loadProtocolPage,
+  saveProtocolEdit,
   type ProtocolCard,
   type ProtocolFile,
   type ProtocolOption,
@@ -32,6 +37,18 @@ import {
   type ProtocolRow,
   type ProtocolTask
 } from '../../workplace/fetchDocflowProtocols'
+import {
+  changedFields,
+  headerDraft,
+  PeopleList,
+  ProtocolHeaderForm,
+  TaskEditor,
+  taskDrafts,
+  taskPayload,
+  tasksChanged,
+  type HeaderDraft,
+  type TaskDraft
+} from './DocflowProtocolEdit'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 
 const FALLBACK_STATUSES: ProtocolOption[] = [
@@ -172,15 +189,21 @@ function TaskList({ tasks, empty }: { tasks: ProtocolTask[]; empty: string }): R
         <li key={`${task.n}-${index}`} value={task.n || index + 1} className={task.overdue ? 'is-overdue' : ''}>
           <p>{task.text || '—'}</p>
           <div>
-            <span className={`docflow-pill ${task.overdue ? 'is-bad' : 'is-wait'}`}>
-              {task.overdue ? <AlertTriangle size={11} aria-hidden /> : <Circle size={11} aria-hidden />}
+            <span className={`docflow-pill ${task.executed ? 'is-ok' : task.overdue ? 'is-bad' : 'is-wait'}`}>
+              {task.executed ? (
+                <CheckCircle2 size={11} aria-hidden />
+              ) : task.overdue ? (
+                <AlertTriangle size={11} aria-hidden />
+              ) : (
+                <Circle size={11} aria-hidden />
+              )}
               {task.status}
             </span>
             {task.responsible ? <span>{task.responsible}</span> : null}
             {task.due ? <span className={task.overdue ? 'is-overdue' : ''}>срок {onlyDay(task.due)}</span> : null}
             {task.setAt ? <span>поставлена {onlyDay(task.setAt)}</span> : null}
             {task.priority ? <span>{task.priority}</span> : null}
-            {task.sent ? <span>отправлена исполнителю</span> : null}
+            {task.sent && task.source === 'erp' ? <span>отправлена исполнителю</span> : null}
             {task.author ? <span>автор {task.author}</span> : null}
           </div>
           <FileChips files={task.files} />
@@ -188,6 +211,41 @@ function TaskList({ tasks, empty }: { tasks: ProtocolTask[]; empty: string }): R
         </li>
       ))}
     </ol>
+  )
+}
+
+function taskCounts(tasks: ProtocolTask[]): string {
+  if (!tasks.length) return 'нет'
+  const done = tasks.filter((task) => task.executed).length
+  const overdue = tasks.filter((task) => task.overdue).length
+  return [String(tasks.length), done ? `выполнено ${done}` : '', overdue ? `просрочено ${overdue}` : ''].filter(Boolean).join(' · ')
+}
+
+/** Верхний список вкладки в форме 1С — задачи Документооборота; строки таблицы протокола — ниже. */
+function DocflowTaskBlock({
+  title,
+  tasks,
+  empty,
+  note
+}: {
+  title: string
+  tasks: ProtocolTask[]
+  empty: string
+  note: string
+}): React.JSX.Element {
+  return (
+    <section className="docflow-card-block">
+      <h4>
+        <ListChecks size={14} aria-hidden /> {title}
+        <span>{taskCounts(tasks)}</span>
+      </h4>
+      {note ? (
+        <p className="docflow-status docflow-status-error">
+          <AlertTriangle size={12} aria-hidden /> {note}
+        </p>
+      ) : null}
+      <TaskList tasks={tasks} empty={empty} />
+    </section>
   )
 }
 
@@ -228,10 +286,121 @@ function PlanBlock({ title, rows }: { title: string; rows: ProtocolPlanRow[] }):
 
 type CardTab = 'main' | 'agenda' | 'control' | 'assigned' | 'decisions' | 'attendees' | 'plan' | 'files'
 
-function ProtocolCardView({ card }: { card: ProtocolCard }): React.JSX.Element {
-  const { protocol: row, agenda, decisions, controlTasks, assignedTasks, files, periodDone, periodPlan, planFact, stats } = card
+type Notice = { tone: 'ok' | 'error'; text: string }
+
+function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () => Promise<void> }): React.JSX.Element {
+  const {
+    protocol: row,
+    agenda,
+    decisions,
+    controlTasks,
+    assignedTasks,
+    controlDocflow,
+    assignedDocflow,
+    baseProtocol,
+    docflowNote,
+    files,
+    periodDone,
+    periodPlan,
+    planFact,
+    stats,
+    edit
+  } = card
   const [tab, setTab] = useState<CardTab>('main')
+  const [editing, setEditing] = useState(false)
+  const [header, setHeader] = useState<HeaderDraft>(() => headerDraft(row))
+  const [controlDraft, setControlDraft] = useState<TaskDraft[]>([])
+  const [assignedDraft, setAssignedDraft] = useState<TaskDraft[]>([])
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState<Notice | null>(null)
   const planRows = periodDone.length + periodPlan.length + planFact.length
+  const people = useMemo(() => {
+    const names = [
+      row.head,
+      row.responsible,
+      row.preparedBy,
+      ...row.participants,
+      ...[...assignedTasks, ...assignedDocflow, ...controlDocflow].map((task) => task.responsible)
+    ]
+    return [...new Set(names.map((name) => name.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right, 'ru'))
+  }, [row, assignedTasks, assignedDocflow, controlDocflow])
+  const baseLabel = baseProtocol ? `№ ${baseProtocol.number || 'протокола-основания'}` : ''
+  const controlDocflowBlock = (
+    <DocflowTaskBlock
+      title={`Документооборот · по протоколу ${baseLabel || '-основанию'}`}
+      tasks={controlDocflow}
+      note={baseProtocol ? docflowNote : ''}
+      empty={
+        baseProtocol
+          ? `В Документообороте нет задач по протоколу ${baseLabel}.`
+          : 'У протокола нет протокола-основания — задач с прошлого совещания на контроле нет.'
+      }
+    />
+  )
+  const assignedDocflowBlock = (
+    <DocflowTaskBlock
+      title="Документооборот · по этому протоколу"
+      tasks={assignedDocflow}
+      note={docflowNote}
+      empty="В Документооборот задачи по этому протоколу ещё не отправлены."
+    />
+  )
+
+  const startEdit = (): void => {
+    if (!edit.allowed) {
+      setNotice({ tone: 'error', text: edit.reason || 'Этот протокол сейчас нельзя править' })
+      return
+    }
+    setHeader(headerDraft(row))
+    setControlDraft(taskDrafts(controlTasks))
+    setAssignedDraft(taskDrafts(assignedTasks))
+    setNotice(null)
+    setEditing(true)
+    if (tab !== 'main' && tab !== 'control' && tab !== 'assigned') setTab('main')
+  }
+
+  const cancelEdit = (): void => {
+    setEditing(false)
+    setNotice(null)
+  }
+
+  const save = async (): Promise<void> => {
+    const head = changedFields(row, header)
+    const control = taskPayload(controlDraft)
+    const assigned = taskPayload(assignedDraft)
+    const problem = head.error || control.error || assigned.error
+    if (problem) {
+      setNotice({ tone: 'error', text: problem })
+      if (control.error) setTab('control')
+      else if (assigned.error) setTab('assigned')
+      else setTab('main')
+      return
+    }
+    const change = {
+      fields: head.fields,
+      controlTasks: !edit.controlBlock && tasksChanged(controlTasks, controlDraft) ? control.tasks : undefined,
+      assignedTasks: !edit.assignedBlock && tasksChanged(assignedTasks, assignedDraft) ? assigned.tasks : undefined
+    }
+    if (!Object.keys(change.fields).length && !change.controlTasks && !change.assignedTasks) {
+      setEditing(false)
+      setNotice({ tone: 'ok', text: 'Изменений нет' })
+      return
+    }
+    setSaving(true)
+    setNotice(null)
+    try {
+      const summary = await saveProtocolEdit(row.id, change)
+      setEditing(false)
+      setNotice({ tone: 'ok', text: summary })
+      await onSaved().catch(() =>
+        setNotice({ tone: 'ok', text: `${summary}. Перечитать карточку не удалось — откройте протокол заново` })
+      )
+    } catch (err) {
+      setNotice({ tone: 'error', text: err instanceof Error ? err.message : 'Не удалось сохранить протокол в 1С' })
+    } finally {
+      setSaving(false)
+    }
+  }
   // Разделы повторяют вкладки формы протокола в 1С; пустые не показываем, кроме задач.
   const tabs: { id: CardTab; label: string; icon: React.ReactNode; count?: number; overdue?: number }[] = [
     { id: 'main', label: 'Основное', icon: <ClipboardList size={12} aria-hidden /> },
@@ -267,8 +436,39 @@ function ProtocolCardView({ card }: { card: ProtocolCard }): React.JSX.Element {
             {row.time ? ` · ${row.time}` : ''}
           </p>
         </div>
-        <StatusPill row={row} />
+        <div className="docflow-detail-actions">
+          <StatusPill row={row} />
+          {editing ? (
+            <>
+              <button type="button" className="docflow-edit-btn is-primary" disabled={saving} onClick={() => void save()}>
+                <Save size={14} aria-hidden /> {saving ? 'Сохраняем…' : 'Сохранить'}
+              </button>
+              <button type="button" className="docflow-edit-btn" disabled={saving} title="Отменить правку" onClick={cancelEdit}>
+                <X size={14} aria-hidden />
+              </button>
+            </>
+          ) : edit.author ? (
+            <button
+              type="button"
+              className={`docflow-edit-btn${edit.allowed ? '' : ' is-locked'}`}
+              title={edit.allowed ? 'Редактировать протокол' : edit.reason}
+              aria-label="Редактировать протокол"
+              onClick={startEdit}
+            >
+              <Pencil size={14} aria-hidden />
+            </button>
+          ) : null}
+        </div>
       </header>
+      {notice ? (
+        <p className={`docflow-edit-notice${notice.tone === 'error' ? ' is-error' : ''}`}>
+          {notice.text}
+          <button type="button" className="docflow-retry" onClick={() => setNotice(null)}>
+            ×
+          </button>
+        </p>
+      ) : null}
+      {editing ? <PeopleList people={people} /> : null}
       {row.topic ? <p className="docflow-side-subject">{row.topic}</p> : null}
       {row.secret ? (
         <p className="docflow-secret-note">
@@ -291,7 +491,10 @@ function ProtocolCardView({ card }: { card: ProtocolCard }): React.JSX.Element {
         ))}
       </nav>
       <div className="docflow-side-scroll">
-        {tab === 'main' ? (
+        {tab === 'main' && editing ? (
+          <ProtocolHeaderForm row={row} draft={header} accessOptions={edit.accessOptions} disabled={saving} onChange={setHeader} />
+        ) : null}
+        {tab === 'main' && !editing ? (
           <section className="docflow-card-block">
             <h4>Основное</h4>
             <dl className="docflow-detail-list">
@@ -329,30 +532,44 @@ function ProtocolCardView({ card }: { card: ProtocolCard }): React.JSX.Element {
             </ol>
           </section>
         ) : null}
-        {tab === 'control' ? (
+        {tab === 'control' ? controlDocflowBlock : null}
+        {tab === 'assigned' ? assignedDocflowBlock : null}
+        {tab === 'control' && editing ? (
+          <TaskEditor
+            title="Задачи для контроля · таблица протокола"
+            drafts={controlDraft}
+            assigned={false}
+            block={edit.controlBlock}
+            disabled={saving}
+            onChange={setControlDraft}
+          />
+        ) : null}
+        {tab === 'assigned' && editing ? (
+          <TaskEditor
+            title="Поставленные задачи · таблица протокола"
+            drafts={assignedDraft}
+            assigned
+            block={edit.assignedBlock}
+            disabled={saving}
+            onChange={setAssignedDraft}
+          />
+        ) : null}
+        {tab === 'control' && !editing && controlTasks.length ? (
           <section className="docflow-card-block">
             <h4>
-              <ListChecks size={14} aria-hidden /> Задачи для контроля
-              <span>
-                {stats.controlTasks
-                  ? `${stats.controlTasks}${stats.controlOverdue ? ` · просрочено ${stats.controlOverdue}` : ''}`
-                  : 'нет'}
-              </span>
+              <ListChecks size={14} aria-hidden /> Таблица протокола в 1С
+              <span>{taskCounts(controlTasks)}</span>
             </h4>
-            <TaskList tasks={controlTasks} empty="В протоколе нет задач для контроля." />
+            <TaskList tasks={controlTasks} empty="" />
           </section>
         ) : null}
-        {tab === 'assigned' ? (
+        {tab === 'assigned' && !editing && assignedTasks.length ? (
           <section className="docflow-card-block">
             <h4>
-              <ListChecks size={14} aria-hidden /> Поставленные задачи
-              <span>
-                {stats.assignedTasks
-                  ? `${stats.assignedTasks}${stats.assignedOverdue ? ` · просрочено ${stats.assignedOverdue}` : ''}`
-                  : 'нет'}
-              </span>
+              <ListChecks size={14} aria-hidden /> Таблица протокола в 1С
+              <span>{taskCounts(assignedTasks)}</span>
             </h4>
-            <TaskList tasks={assignedTasks} empty="На совещании задачи не поставлены." />
+            <TaskList tasks={assignedTasks} empty="" />
           </section>
         ) : null}
         {tab === 'decisions' ? (
@@ -588,6 +805,13 @@ export function DocflowProtocolsPanel({
       })
   }
 
+  const refreshCard = async (id: string): Promise<void> => {
+    forgetProtocolCard(id)
+    const fresh = await loadProtocolCard(user, id)
+    setRows((prev) => prev.map((item) => (item.id === id ? fresh.protocol : item)))
+    if (cardForRef.current === id) setCard(fresh)
+  }
+
   const resetFilters = (): void => {
     setTopic('')
     setHead('')
@@ -744,7 +968,7 @@ export function DocflowProtocolsPanel({
             </button>
           </p>
         ) : card ? (
-          <ProtocolCardView key={card.protocol.id} card={card} />
+          <ProtocolCardView key={card.protocol.id} card={card} onSaved={() => refreshCard(card.protocol.id)} />
         ) : null}
       </aside>
     </div>

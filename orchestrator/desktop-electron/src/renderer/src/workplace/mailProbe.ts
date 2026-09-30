@@ -5,6 +5,7 @@ import {
   fetchImapSearch,
   fetchImapStatus,
   formatImapStatusLine,
+  imapMailboxLogin,
   isImapStubMode,
   nextDayKey
 } from '../utils/imapMail'
@@ -53,7 +54,7 @@ export type OrchestratorMailLoad = {
 }
 
 const PROBE_TTL_MS = 600_000
-let probeCache: { at: number; day: string; result: MailProbeResult } | null = null
+let probeCache: { at: number; day: string; mailbox: string; result: MailProbeResult } | null = null
 
 const RE_PREFIX = /^(re|fw|fwd|ответ|пересл)\s*:\s*/i
 
@@ -227,10 +228,12 @@ export async function probeMailToday(
   options?: { comToday?: Record<string, unknown>[]; comOk?: boolean; comError?: string }
 ): Promise<MailProbeResult> {
   const day = dayKeyLocal(now)
+  const mailbox = imapMailboxLogin()
   if (
     !options?.comToday &&
     probeCache &&
     probeCache.day === day &&
+    probeCache.mailbox === mailbox &&
     Date.now() - probeCache.at < PROBE_TTL_MS
   ) {
     return probeCache.result
@@ -295,7 +298,7 @@ export async function probeMailToday(
     imapToday,
     comToday
   }
-  probeCache = { at: Date.now(), day, result }
+  probeCache = { at: Date.now(), day, mailbox, result }
   return result
 }
 
@@ -389,8 +392,9 @@ export async function loadOrchestratorMail(
     comRows
   })
 
-  const sourceLabel = probe.imapPrimary
-    ? `imap (primary, today extras=${probe.extrasCount})`
+  const imapBox = imapWeek.login || imapMailboxLogin()
+  const sourceLabel = probe.imapPrimary || (!comRows.length && imapRows.length)
+    ? `IMAP: ${imapBox || 'ящик пользователя'}`
     : comWeek.ok
       ? comWeek.source || `outlook_mail (${range.dateFrom}…${range.dateTo}, All)`
       : comError || (outlookMailbox ? `Outlook: ${outlookMailbox}` : 'outlook_mail')

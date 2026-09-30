@@ -9,6 +9,7 @@ from __future__ import annotations
 import email
 import os
 import ssl
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from email import policy
 from typing import Any
@@ -56,6 +57,15 @@ _OMTO_MESSAGES: dict[int, dict[str, Any]] = {
 }
 
 
+IMAP_NO_USER_MAILBOX = (
+    "IMAP: нет логина почты или пароля сеанса — войдите в программу с паролем. "
+    "Общий ящик сервера пользователям не показывается."
+)
+
+# Логин и пароль ящика пользователя на время одного вызова; None — сервисный ящик из .env.
+_mailbox_login: ContextVar[tuple[str, str] | None] = ContextVar("imap_mailbox_login", default=None)
+
+
 class ImapToolError(RuntimeError):
     pass
 
@@ -64,18 +74,36 @@ def imap_configured() -> bool:
     return bool(settings.imap_host and settings.imap_username and settings.imap_password)
 
 
-def invoke_imap(tool: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+def invoke_imap(
+    tool: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    user_login: str | None = None,
+    user_password: str | None = None,
+    personal: bool = False,
+) -> dict[str, Any]:
+    """personal=True — письма для экрана пользователя: только его ящик, без подстановки сервисного."""
     args = arguments if isinstance(arguments, dict) else {}
-    handlers = REAL_HANDLERS if imap_configured() else STUB_HANDLERS
+    login = (user_login or "").strip()
+    secret = user_password or ""
+    if personal and settings.imap_host:
+        if not login or not secret:
+            raise ImapToolError(IMAP_NO_USER_MAILBOX)
+        handlers = REAL_HANDLERS
+    else:
+        handlers = REAL_HANDLERS if imap_configured() else STUB_HANDLERS
     handler = handlers.get(tool)
     if handler is None:
         raise ImapToolError(f"Неизвестный IMAP-инструмент: {tool}")
+    token = _mailbox_login.set((login, secret) if personal and settings.imap_host else None)
     try:
         return handler(args)
     except ImapToolError:
         raise
     except Exception as exc:  # noqa: BLE001
         raise ImapToolError(str(exc)) from exc
+    finally:
+        _mailbox_login.reset(token)
 
 
 def _uid(args: dict[str, Any]) -> int:
@@ -120,11 +148,13 @@ def _stub_meta() -> dict[str, str]:
 
 
 def _imap_meta() -> dict[str, str]:
+    personal = _mailbox_login.get()
     return {
         "mode": "real",
         "source": "imap",
         "host": settings.imap_host,
         "mailbox": settings.imap_mailbox,
+        "login": personal[0] if personal else settings.imap_username,
     }
 
 
@@ -279,8 +309,10 @@ def _connect():
         raise ImapToolError(
             "Пакет imapclient не установлен. В backend: pip install imapclient"
         ) from exc
-    if not imap_configured():
+    personal = _mailbox_login.get()
+    if personal is None and not imap_configured():
         raise ImapToolError(IMAP_NOT_CONFIGURED)
+    login, secret = personal or (settings.imap_username, settings.imap_password)
     context = ssl.create_default_context()
     timeout = float(os.environ.get("IMAP_CONNECT_TIMEOUT_SEC", "120"))
     client = IMAPClient(
@@ -289,7 +321,18 @@ def _connect():
         ssl_context=context,
         timeout=timeout,
     )
-    client.login(settings.imap_username, settings.imap_password)
+    try:
+        client.login(login, secret)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            client.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+        if personal is not None:
+            raise ImapToolError(
+                f"IMAP: почтовый сервер не принял логин «{login}» с паролем входа в программу"
+            ) from exc
+        raise
     return client
 
 

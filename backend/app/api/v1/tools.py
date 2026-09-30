@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
+from app.config import settings
 from app.core.jwt import AuthContext
 from app.schemas.workflow import WebSearchRequest, WebSearchResponse, WebSearchResultItem
 from app.services.imap_tools import ImapToolError, imap_configured, invoke_imap
@@ -104,7 +105,16 @@ def _dispatch_server_tool(
     tool_name = resolved
     try:
         if tool_name in _IMAP_TOOLS:
-            result = invoke_imap(tool_name, arguments)
+            imap_args = dict(arguments or {})
+            mail_login = str(imap_args.pop("mail_login", "") or "")
+            mail_password = str(imap_args.pop("mail_password", "") or "")
+            result = invoke_imap(
+                tool_name,
+                imap_args,
+                user_login=mail_login,
+                user_password=mail_password,
+                personal=True,
+            )
         elif tool_name in _TURBOPROJECT_TOOLS:
             result = invoke_turboproject(tool_name, arguments)
         elif tool_name in _USERS_TOOLS:
@@ -135,9 +145,11 @@ def _ensure_websearch_path() -> None:
 @router.get("/imap/status")
 async def imap_status(auth: AuthContext = Depends(get_current_user)) -> dict[str, Any]:
     _ = auth
+    configured = bool(settings.imap_host) or imap_configured()
     return {
-        "configured": imap_configured(),
-        "mode": "real" if imap_configured() else "stub",
+        "configured": configured,
+        "mode": "real" if configured else "stub",
+        "personal_mailbox": True,
         "tools": sorted(_IMAP_TOOLS),
     }
 

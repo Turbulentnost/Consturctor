@@ -726,6 +726,224 @@
   color: #1565c0;
 }
 
+/* Правка своего протокола: карандаш в шапке карточки, форма и редактор задач. */
+.docflow-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.docflow-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid rgba(13, 59, 115, 0.2);
+  border-radius: 8px;
+  background: #fff;
+  color: #1565c0;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.docflow-edit-btn:hover:not(:disabled) {
+  background: #eef4fd;
+}
+
+.docflow-edit-btn.is-primary {
+  border-color: #1565c0;
+  background: #1565c0;
+  color: #fff;
+  font-weight: 600;
+}
+
+.docflow-edit-btn.is-primary:hover:not(:disabled) {
+  background: #0f55a8;
+}
+
+.docflow-edit-btn.is-locked {
+  color: #8a97a8;
+}
+
+.docflow-edit-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.docflow-edit-notice {
+  display: flex;
+  align-items: center;
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(46, 154, 111, 0.12);
+  color: #1b7a4e;
+  font-size: 12.5px;
+}
+
+.docflow-edit-notice.is-error {
+  background: rgba(198, 40, 40, 0.1);
+  color: #9b1c1c;
+}
+
+.docflow-edit-notice .docflow-retry {
+  margin-left: auto;
+  text-decoration: none;
+}
+
+.docflow-edit-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.docflow-edit-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--content-muted);
+}
+
+.docflow-edit-form label.is-wide {
+  grid-column: 1 / -1;
+}
+
+.docflow-edit-form label small {
+  font-size: 11px;
+  color: #8a97a8;
+}
+
+.docflow-edit-form input,
+.docflow-edit-form select,
+.docflow-edit-form textarea,
+.docflow-task-edit input,
+.docflow-task-edit select,
+.docflow-task-edit textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid rgba(13, 59, 115, 0.25);
+  border-radius: 7px;
+  padding: 5px 8px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  color: #102033;
+}
+
+.docflow-edit-form input[readonly] {
+  background: #eef1f5;
+  color: #5b6b80;
+}
+
+.docflow-edit-form textarea,
+.docflow-task-edit textarea {
+  resize: vertical;
+}
+
+.docflow-edit-pair {
+  display: flex;
+  gap: 6px;
+}
+
+.docflow-task-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.docflow-task-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(13, 59, 115, 0.12);
+  background: #fff;
+}
+
+.docflow-task-row.is-locked {
+  background: #f1f3f6;
+}
+
+.docflow-task-row.is-locked p {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.docflow-task-row.is-locked small {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: #5b6b80;
+}
+
+.docflow-task-line {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.docflow-task-line > input:first-child:not(.docflow-task-n) {
+  flex: 1 1 auto;
+}
+
+.docflow-task-line input[type='date'] {
+  flex: 0 0 140px;
+}
+
+.docflow-task-line select {
+  flex: 0 0 130px;
+}
+
+.docflow-task-edit .docflow-task-n {
+  flex: 0 0 56px;
+  width: 56px;
+}
+
+.docflow-task-remove {
+  flex: 0 0 auto;
+  height: 30px;
+  width: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(198, 40, 40, 0.25);
+  border-radius: 7px;
+  background: #fff;
+  color: #9b1c1c;
+  cursor: pointer;
+}
+
+.docflow-task-add {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px dashed rgba(21, 101, 192, 0.5);
+  border-radius: 8px;
+  background: #fff;
+  color: #1565c0;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
 .docflow-table td.docflow-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
