@@ -52,7 +52,7 @@ export function readCalendarColorSlots(fio: string): CalendarColorSlot[] {
         person: String((item as CalendarColorSlot)?.person || '').trim(),
         slot: Number((item as CalendarColorSlot)?.slot)
       }))
-      .filter((item) => item.person && Number.isInteger(item.slot) && item.slot > 0)
+      .filter((item) => item.person && Number.isInteger(item.slot) && item.slot >= 0)
   } catch {
     return []
   }
@@ -156,6 +156,7 @@ export function useTrackedCalendars(fio: string): {
   add: (person: string) => void
   remove: (person: string) => void
   setOrder: (order: string[]) => void
+  setColor: (person: string, slot: number) => void
 } {
   const [people, setPeople] = useState(() => readTrackedCalendars(fio))
   const [statuses, setStatuses] = useState(readCalendarStatus)
@@ -233,5 +234,15 @@ export function useTrackedCalendars(fio: string): {
 
   const setOrder = useCallback((next: string[]) => writeCalendarOrder(fio, next), [fio])
 
-  return { people, statuses, order, colorSlots, add, remove, setOrder }
+  const setColor = useCallback(
+    (person: string, slot: number) => {
+      const name = person.trim()
+      if (!name || !Number.isInteger(slot) || slot < 0) return
+      const slots = readCalendarColorSlots(fio).filter((item) => !samePerson(item.person, name))
+      writeCalendarColorSlots(fio, [...slots, { person: name, slot }])
+    },
+    [fio]
+  )
+
+  return { people, statuses, order, colorSlots, add, remove, setOrder, setColor }
 }

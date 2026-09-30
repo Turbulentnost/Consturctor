@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Calendar,
   ChevronDown,
@@ -22,12 +23,18 @@ import {
   type CalendarView
 } from '../../utils/calendar'
 import { formatSurnameInitials } from '../../workplace/tileFilters'
-import type { MeetingQuickFilters } from '../../workplace/meetingCalendars'
+import {
+  CALENDAR_PICKER_ORDER,
+  calendarPalette,
+  type MeetingQuickFilters
+} from '../../workplace/meetingCalendars'
 import './meetingsPanel.css'
 
 export type MeetingCalendarRow = {
   person: string
   color: string
+  /** Индекс палитры, который сейчас закреплён за человеком. */
+  palette: number
   visible: boolean
   removable: boolean
   hint: string
@@ -115,6 +122,94 @@ function MiniMonth({
   )
 }
 
+/** Выбор цвета открывается справа от кружка и не шире этой сетки. */
+const COLOR_POP_W = 196
+
+function ColorPicker({
+  anchor,
+  current,
+  onPick,
+  onClose
+}: {
+  anchor: DOMRect
+  current: number
+  onPick: (slot: number) => void
+  onClose: () => void
+}): React.JSX.Element {
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ left: 0, top: 0, fromLeft: true, ready: false })
+
+  useLayoutEffect(() => {
+    const node = ref.current
+    if (!node) return
+    const box = node.getBoundingClientRect()
+    const gap = 8
+    const fitsRight = anchor.right + gap + box.width <= window.innerWidth - 8
+    const left = fitsRight ? anchor.right + gap : Math.max(8, anchor.left - gap - box.width)
+    const top = Math.max(8, Math.min(anchor.top - 8, window.innerHeight - box.height - 8))
+    setPos({ left, top, fromLeft: fitsRight, ready: true })
+  }, [anchor])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    const onDown = (event: MouseEvent): void => {
+      const target = event.target as HTMLElement | null
+      if (!target || ref.current?.contains(target)) return
+      // Клик по другому кружку сам откроет его палитру, здесь не мешаем.
+      if (target.closest('.meet-rail-calendar-swatch')) return
+      onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('mousedown', onDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('mousedown', onDown, true)
+    }
+  }, [onClose])
+
+  return createPortal(
+    <div
+      ref={ref}
+      className={[
+        'meet-color-pop',
+        pos.ready ? 'is-shown' : '',
+        pos.fromLeft ? '' : 'is-from-right'
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      role="dialog"
+      aria-label="Цвет календаря"
+      style={{
+        left: pos.left,
+        top: pos.top,
+        width: COLOR_POP_W,
+        visibility: pos.ready ? 'visible' : 'hidden'
+      }}
+    >
+      <div className="meet-color-grid">
+        {CALENDAR_PICKER_ORDER.map((slot) => {
+          const palette = calendarPalette(slot)
+          const selected = slot === current
+          return (
+            <button
+              key={slot}
+              type="button"
+              className={`meet-color-dot${selected ? ' is-current' : ''}`}
+              style={{ background: palette.dot }}
+              aria-label={selected ? 'Текущий цвет' : 'Выбрать цвет'}
+              aria-pressed={selected}
+              onClick={() => onPick(slot)}
+            />
+          )
+        })}
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 export function MeetingsSidePanel({
   view,
   anchor,
@@ -125,6 +220,7 @@ export function MeetingsSidePanel({
   calendars,
   onToggleCalendar,
   onMoveCalendar,
+  onPickColor,
   onRemoveCalendar,
   onAddCalendar,
   filters,
@@ -142,6 +238,7 @@ export function MeetingsSidePanel({
   calendars: MeetingCalendarRow[]
   onToggleCalendar: (person: string) => void
   onMoveCalendar: (person: string, step: number) => void
+  onPickColor: (person: string, slot: number) => void
   onRemoveCalendar: (person: string) => void
   /** Возвращает текст ошибки, если календарь уже открыт. */
   onAddCalendar: (person: string) => string
@@ -155,6 +252,8 @@ export function MeetingsSidePanel({
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
   const [note, setNote] = useState('')
+  const [colorPick, setColorPick] = useState<{ person: string; anchor: DOMRect } | null>(null)
+  const colorIds = useId()
 
   useEffect(() => {
     setMonth(new Date(anchor.getFullYear(), anchor.getMonth(), 1))
@@ -303,15 +402,34 @@ export function MeetingsSidePanel({
         <ul className="meet-rail-calendars">
           {calendars.map((row, index) => (
             <li key={row.person} className="meet-rail-calendar" title={row.hint || row.person}>
-              <label className="meet-rail-calendar-label">
+              <div className="meet-rail-calendar-label">
                 <input
+                  id={`${colorIds}-${index}`}
                   type="checkbox"
                   checked={row.visible}
                   onChange={() => onToggleCalendar(row.person)}
                 />
-                <span className="meet-rail-calendar-dot" style={{ background: row.color }} aria-hidden />
-                <span className="meet-rail-calendar-name">{formatSurnameInitials(row.person)}</span>
-              </label>
+                <button
+                  type="button"
+                  className="meet-rail-calendar-swatch"
+                  aria-label={`Цвет календаря ${formatSurnameInitials(row.person)}`}
+                  aria-expanded={colorPick?.person === row.person}
+                  onClick={(event) => {
+                    const dot = event.currentTarget.getBoundingClientRect()
+                    // Справа от всей панели, на уровне кружка: фамилии остаются видны.
+                    const rail = event.currentTarget.closest('.meet-rail')?.getBoundingClientRect()
+                    const anchor = rail ? new DOMRect(rail.right, dot.top, 0, dot.height) : dot
+                    setColorPick((current) =>
+                      current?.person === row.person ? null : { person: row.person, anchor }
+                    )
+                  }}
+                >
+                  <span className="meet-rail-calendar-dot" style={{ background: row.color }} />
+                </button>
+                <label htmlFor={`${colorIds}-${index}`} className="meet-rail-calendar-name">
+                  {formatSurnameInitials(row.person)}
+                </label>
+              </div>
               <span className="meet-rail-calendar-tools">
                 <button
                   type="button"
@@ -347,6 +465,17 @@ export function MeetingsSidePanel({
             </li>
           ))}
         </ul>
+        {colorPick ? (
+          <ColorPicker
+            anchor={colorPick.anchor}
+            current={calendars.find((row) => row.person === colorPick.person)?.palette ?? 0}
+            onPick={(slot) => {
+              onPickColor(colorPick.person, slot)
+              setColorPick(null)
+            }}
+            onClose={() => setColorPick(null)}
+          />
+        ) : null}
       </section>
 
       <section className="meet-rail-block">

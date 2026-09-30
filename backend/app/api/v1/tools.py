@@ -16,6 +16,11 @@ from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.schemas.workflow import WebSearchRequest, WebSearchResponse, WebSearchResultItem
 from app.services.imap_tools import ImapToolError, imap_configured, invoke_imap
+from app.services.meeting_planner import (
+    MEETING_PLANNER_TOOLS,
+    MEETING_PLANNER_WRITE_TOOLS,
+    invoke_meeting_planner,
+)
 from app.services.onec_artifacts import ArtifactError, load_artifact_file
 from app.services.onec_tools import ONEC_TOOLS, OnecToolError, invoke_onec, odata_configured
 from app.services.tool_names import resolve_tool_name
@@ -59,7 +64,14 @@ _USERS_TOOLS = frozenset(
     }
 )
 _AUDIO_TOOLS = frozenset({"audio.transcribe"})
-_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS | _USERS_TOOLS | _AUDIO_TOOLS
+_SERVER_TOOLS = (
+    _IMAP_TOOLS
+    | ONEC_TOOLS
+    | _TURBOPROJECT_TOOLS
+    | _USERS_TOOLS
+    | _AUDIO_TOOLS
+    | MEETING_PLANNER_TOOLS
+)
 
 
 class ToolInvokeBody(BaseModel):
@@ -111,6 +123,10 @@ def _dispatch_server_tool(
             result = _invoke_users_tool(tool_name, arguments, auth)
         elif tool_name in _AUDIO_TOOLS:
             result = _invoke_audio_tool(tool_name, arguments, auth)
+        elif tool_name in MEETING_PLANNER_TOOLS:
+            if tool_name in MEETING_PLANNER_WRITE_TOOLS:
+                _require_meeting_planner_writer(auth)
+            result = invoke_meeting_planner(tool_name, arguments)
         else:
             result = invoke_onec(
                 tool_name,
@@ -124,6 +140,20 @@ def _dispatch_server_tool(
     if tool_name == "onec.download_artifact" and isinstance(result, dict):
         result = _artifact_invoke_view(result)
     return {"ok": True, "tool": tool_name, "result": result}
+
+
+def _require_meeting_planner_writer(auth: AuthContext) -> None:
+    """Совещания создаются от служебного ящика — только помощнику ПСД и администраторам."""
+    from app.services.app_users import is_admin_user
+    from app.services.orchestrator.ilchenko import is_ilchenko
+
+    fio = auth.fio or ""
+    if is_ilchenko(user_id=auth.user_id, fio=fio) or is_admin_user(fio):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Создавать совещания в календаре «Совещания» может только помощник ПСД.",
+    )
 
 
 def _ensure_websearch_path() -> None:

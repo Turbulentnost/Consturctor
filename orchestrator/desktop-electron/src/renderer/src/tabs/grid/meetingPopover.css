@@ -11,6 +11,29 @@
   background: #fff;
   box-shadow: 0 8px 28px rgba(16, 20, 26, 0.22);
   overflow: hidden;
+  transform-origin: var(--meet-pop-origin, left center);
+}
+
+/* Карточка вылетает из совещания, по которому кликнули. */
+.meet-pop.is-shown {
+  animation: meet-pop-in 200ms cubic-bezier(0.16, 0.84, 0.3, 1.05);
+}
+
+@keyframes meet-pop-in {
+  from {
+    opacity: 0;
+    transform: translate(var(--meet-pop-shift-x, -18px), var(--meet-pop-shift-y, 0px)) scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meet-pop.is-shown {
+    animation: none;
+  }
 }
 
 .meet-pop-close {

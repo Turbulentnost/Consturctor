@@ -29,17 +29,17 @@ import './meetingsCalendar.css'
 
 /** Высота часа в сетке недели: от неё считается высота блока по длительности. */
 const HOUR_H = 66
-/** Ниже заголовок в две строки уже не поместится. */
-const MIN_BLOCK_H = 38
+/** Ниже заголовок и время под ним уже не поместятся. */
+const MIN_BLOCK_H = 46
 /** Высота одной дорожки в режиме дня. */
 const DAY_LANE_H = 96
 /** Шаг строки заголовка, тот же что в CSS. */
-const TITLE_LINE_H = 14
-/** Рамки и отступы блока; со временем внизу добавляется ещё строка. */
-const BLOCK_CHROME_H = 8
-const TIME_ROW_H = 14
+const TITLE_LINE_H = 16
+/** Рамки и отступы блока; время идёт сразу под заголовком. */
+const BLOCK_CHROME_H = 10
+const TIME_ROW_H = 16
 /** Ниже времени уже не видно, остаётся только заголовок. */
-const TIME_MIN_BLOCK_H = 48
+const TIME_MIN_BLOCK_H = 42
 
 /**
  * Сколько строк заголовка реально влезает в блок такой высоты. Без этого счёта
@@ -114,6 +114,27 @@ type DayLane = {
 }
 
 type ConflictPick = { day: Date; segment: ConflictSegment }
+
+/**
+ * Рамка самого блока совещания на сетке. Список пересечений внизу страницы
+ * карточки не открывает: она должна вылететь из совещания на его времени.
+ */
+function meetingBlockAnchor(meeting: MeetingEvent, fallback: DOMRect): DOMRect {
+  const node = document.querySelector<HTMLElement>(
+    `[data-meeting-key="${CSS.escape(meetingInstanceKey(meeting))}"]`
+  )
+  if (!node) return fallback
+  const box = node.getBoundingClientRect()
+  const frame = node.closest('.mcal-scroll')?.getBoundingClientRect()
+  const offscreen =
+    frame &&
+    (box.bottom < frame.top + 4 ||
+      box.top > frame.bottom - 4 ||
+      box.right < frame.left + 4 ||
+      box.left > frame.right - 4)
+  if (offscreen) node.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+  return node.getBoundingClientRect()
+}
 
 function timeLabel(date: Date | null): string {
   if (!date) return ''
@@ -540,16 +561,31 @@ function DayStrip({
   )
 }
 
+/** «3 совещания»: слово согласуем с числом. */
+function meetingsCountLabel(count: number): string {
+  const mod10 = count % 10
+  const mod100 = count % 100
+  const word =
+    mod10 === 1 && mod100 !== 11
+      ? 'совещание'
+      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+        ? 'совещания'
+        : 'совещаний'
+  return `${count} ${word}`
+}
+
 function MonthGrid({
   anchor,
   lanes,
-  onSelect,
-  onConflict,
-  selectedId,
-  protocolMarks,
   eventPalette
 }: GridProps & { anchor: Date }): React.JSX.Element {
   const now = new Date()
+  // Самый приоритетный — тот, кто в списке календарей стоит выше всех и вообще
+  // есть в этом месяце. В ячейке дня показываем только его число совещаний.
+  const topPriority = lanes.reduce((best, lane) => {
+    for (const block of lane.blocks) best = Math.min(best, block.span.priority)
+    return best
+  }, Number.POSITIVE_INFINITY)
   return (
     <div className="cal-scroll mcal-scroll">
       <div className="mcal-month">
@@ -562,6 +598,8 @@ function MonthGrid({
           {lanes.map((lane) => {
             const inMonth = lane.day.getMonth() === anchor.getMonth()
             const today = sameDay(lane.day, now)
+            const top = lane.blocks.filter((block) => block.span.priority === topPriority)
+            const palette = top[0] ? eventPalette?.(top[0].span.meeting) : undefined
             return (
               <div
                 key={lane.day.toISOString()}
@@ -574,26 +612,19 @@ function MonthGrid({
                   .join(' ')}
               >
                 <span className="mcal-month-day">{lane.day.getDate()}</span>
-                {lane.blocks.map((block) => {
-                  const key = meetingInstanceKey(block.span.meeting)
-                  const minutes = block.span.to - block.span.from
-                  const blockHeight = Math.max(22, Math.min(52, minutes * 0.34))
-                  return (
-                    <MeetingBlock
-                      key={key}
-                      block={block}
-                      now={now}
-                      compact
-                      style={{}}
-                      height={blockHeight}
-                      selected={selectedId === key}
-                      onClick={onSelect}
-                      onConflict={(segment) => onConflict({ day: lane.day, segment })}
-                      protocolNumber={protocolMarks?.get(key)?.number}
-                      palette={eventPalette?.(block.span.meeting)}
-                    />
-                  )
-                })}
+                {top.length ? (
+                  <span
+                    className="mcal-month-count"
+                    style={{
+                      background: palette?.fill || '#E7EFFC',
+                      borderColor: palette?.border || '#A8C3F2',
+                      color: palette?.text || '#17325F'
+                    }}
+                    title={meetingsCountLabel(top.length)}
+                  >
+                    {top.length}
+                  </span>
+                ) : null}
               </div>
             )
           })}
@@ -651,6 +682,7 @@ function MeetingBlock({
     .join('\n')
   return (
     <div
+      data-meeting-key={meetingInstanceKey(span.meeting)}
       className={[
         'mcal-event',
         compact ? 'is-compact' : '',
@@ -762,7 +794,9 @@ function ConflictPanel({
             <button
               type="button"
               className="mcal-conflict-item"
-              onClick={(event) => onSelect(meeting, event.currentTarget.getBoundingClientRect())}
+              onClick={(event) =>
+                onSelect(meeting, meetingBlockAnchor(meeting, event.currentTarget.getBoundingClientRect()))
+              }
             >
               <span
                 className="mcal-conflict-dot"

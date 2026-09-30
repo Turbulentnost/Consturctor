@@ -18,9 +18,8 @@ export type CalendarPalette = {
 }
 
 /**
- * Цвет календаря берём по позиции в списке панели: им закрашен и кружок в легенде,
- * и сам блок совещания. Оттенки держим на одной светлоте, чтобы рядом стоящие
- * колонки не спорили друг с другом, а тёмный текст читался на любой заливке.
+ * Цвета календаря. Первые шесть не переставляем: на них уже ссылаются сохранённые
+ * слоты людей. Заливка светлая, текст тёмный — заголовок читается на любом тоне.
  */
 const CALENDAR_PALETTES: CalendarPalette[] = [
   { dot: '#2F6BD8', fill: '#E7EFFC', border: '#A8C3F2', text: '#17325F' },
@@ -28,7 +27,24 @@ const CALENDAR_PALETTES: CalendarPalette[] = [
   { dot: '#1F9A78', fill: '#E3F5EF', border: '#A3DCCA', text: '#0F4A39' },
   { dot: '#D08324', fill: '#FCF1E1', border: '#F0CE9F', text: '#6B3F0C' },
   { dot: '#1188A8', fill: '#E2F2F8', border: '#9FD3E4', text: '#0A4658' },
-  { dot: '#C64B8C', fill: '#FBEAF3', border: '#EDB2D0', text: '#6B2049' }
+  { dot: '#C64B8C', fill: '#FBEAF3', border: '#EDB2D0', text: '#6B2049' },
+  { dot: '#D23B3B', fill: '#FDECEC', border: '#F3B8B8', text: '#6E1A1A' },
+  { dot: '#E06A62', fill: '#FDF0EE', border: '#F4C4BF', text: '#6E2E28' },
+  { dot: '#E4572E', fill: '#FDEEE8', border: '#F6C4B2', text: '#6E2612' },
+  { dot: '#C8960C', fill: '#FBF6E4', border: '#F0DFA0', text: '#5C4808' },
+  { dot: '#8A9E1C', fill: '#F4F7E4', border: '#D5E2A4', text: '#3E4A0C' },
+  { dot: '#5C9E3A', fill: '#EDF6E8', border: '#C4E0B4', text: '#234814' },
+  { dot: '#0E7A45', fill: '#E5F5EC', border: '#AAD9BE', text: '#084028' },
+  { dot: '#1A8FD0', fill: '#E7F4FB', border: '#B5DDF2', text: '#0A4668' },
+  { dot: '#5C6BC0', fill: '#EEEFFA', border: '#C5CBEF', text: '#24306E' },
+  { dot: '#9A7AD4', fill: '#F4EFFB', border: '#D9C8F0', text: '#3E2870' },
+  { dot: '#7A3E9D', fill: '#F6EEF8', border: '#E0C4EA', text: '#4A1860' },
+  { dot: '#6E6A64', fill: '#F3F2F0', border: '#D8D4CE', text: '#2E2C28' }
+]
+
+/** Порядок кружков в выборе цвета: тёплые, затем зелёные и синие, затем фиолетовые. */
+export const CALENDAR_PICKER_ORDER: readonly number[] = [
+  6, 7, 8, 3, 9, 10, 11, 2, 12, 4, 13, 0, 14, 1, 15, 16, 5, 17
 ]
 
 export function calendarPalette(index: number): CalendarPalette {

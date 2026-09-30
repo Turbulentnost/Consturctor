@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { api } from '../../api/client'
 import { createPortal } from 'react-dom'
-import { Mic, PenLine, Search } from 'lucide-react'
+import { Bot, Mic, PenLine, Search } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { toolLabel } from '../../components/agentfeed/labels'
 import { useRuns } from '../../store/runs'
@@ -56,6 +56,8 @@ import { usePageSearch } from '../../layout/pageSearchContext'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { MeetingReportModal } from './MeetingReportModal'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
+import { MeetingPlannerPanel } from './MeetingPlannerPanel'
+import { isMeetingPlannerUser, PLANNER_AGENT_TITLE } from '../../workplace/meetingPlannerAgent'
 import { searchOnecProtocols, type OnecProtocolHit } from '../../workplace/meetingProtocolCreate'
 import {
   PROTOCOL_CREATED_EVENT,
@@ -676,6 +678,15 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   const [hiddenOwners, setHiddenOwners] = useState<string[]>([])
   const [quick, setQuick] = useState<MeetingQuickFilters>(EMPTY_MEETING_QUICK_FILTERS)
   const [syncedAt, setSyncedAt] = useState('')
+  const [plannerOpen, setPlannerOpen] = useState(false)
+  const canPlan = isMeetingPlannerUser(user)
+  const runs = useRuns()
+  const plannerState = useMemo(
+    () => Object.values(runs.entries).find((item) => !item.background && item.title === PLANNER_AGENT_TITLE)?.state,
+    [runs.entries]
+  )
+  const plannerWaiting = Boolean(plannerState?.pendingHitl || plannerState?.pendingQuestion)
+  const plannerRunning = Boolean(plannerState?.running) || plannerWaiting
 
   const owners = useMemo(
     () => meetingCalendarOwners(fio, tracked.people, tracked.order),
@@ -695,9 +706,9 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   /** Цвет закреплён за человеком: смена приоритета не должна перекрашивать календарь. */
   const colorIndex = useCallback(
     (person: string) => {
-      if (samePersonName(person, selfLabel)) return 0
       const slot = tracked.colorSlots.find((item) => samePersonName(item.person, person))
       if (slot) return slot.slot
+      if (samePersonName(person, selfLabel)) return 0
       // Календарь добавили до появления слотов — берём позицию в списке отслеживаемых.
       const at = tracked.people.findIndex((item) => samePersonName(item, person))
       return at < 0 ? 0 : at + 1
@@ -737,6 +748,11 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
 
   useEffect(() => {
     load(false)
+  }, [load])
+
+  // Приглашение из календаря «Совещания» доходит до участников через Exchange не мгновенно.
+  const refreshAfterPlanning = useCallback(() => {
+    window.setTimeout(() => load(true), 5000)
   }, [load])
 
   /** Что вообще показываем: только календари с включённой галочкой. Плитки считаем от этого же. */
@@ -870,15 +886,17 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
         return {
           person,
           color: ownerColor(person),
+          palette: colorIndex(person),
           visible: !hiddenOwners.some((hidden) => samePersonName(hidden, person)),
           removable: !samePersonName(person, selfLabel),
           hint: status?.hint ? `${person}: ${status.hint}` : person
         }
       }),
-    [owners, tracked.statuses, hiddenOwners, ownerColor, selfLabel]
+    [owners, tracked.statuses, hiddenOwners, ownerColor, colorIndex, selfLabel]
   )
 
   return (
+    <>
     <StandardTabChrome
       tabId="meetings"
       userId={userId}
@@ -887,6 +905,27 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
       chromeTiles={chromeTiles}
       // Периодом здесь управляет левая панель, общий KPI-календарь только путал.
       hideGlobalPeriod
+      filterToolbarExtra={
+        canPlan ? (
+          <button
+            type="button"
+            className="meetings-agent-btn"
+            onClick={() => setPlannerOpen(true)}
+            title={
+              plannerWaiting
+                ? 'Агент ждёт вашего решения'
+                : 'Планировщик совещаний по служебным запискам'
+            }
+          >
+            {plannerRunning ? (
+              <span className={`meetings-agent-btn-dot${plannerWaiting ? ' is-waiting' : ''}`} aria-hidden />
+            ) : (
+              <Bot size={14} aria-hidden />
+            )}
+            Запустить ИИ-агента
+          </button>
+        ) : null
+      }
       widgets={{
         filters: (
         <GridFilterBar
@@ -939,6 +978,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
             next.splice(to, 0, ...next.splice(at, 1))
             tracked.setOrder(next)
           }}
+          onPickColor={(person, slot) => tracked.setColor(person, slot)}
           onRemoveCalendar={(person) => {
             setHiddenOwners((current) => current.filter((hidden) => !samePersonName(hidden, person)))
             tracked.remove(person)
@@ -982,7 +1022,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
             priorityOf={priorityOf}
           />
           {selected && picked ? (
-            <MeetingPopover anchor={picked.anchor} onClose={() => setPicked(null)}>
+            <MeetingPopover key={picked.key} anchor={picked.anchor} onClose={() => setPicked(null)}>
               <MeetingDetailCard
                 meeting={selected}
                 userId={userId}
@@ -995,5 +1035,13 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
         )
       }}
     />
+    {canPlan ? (
+      <MeetingPlannerPanel
+        open={plannerOpen}
+        onClose={() => setPlannerOpen(false)}
+        onMeetingCreated={refreshAfterPlanning}
+      />
+    ) : null}
+    </>
   )
 }
