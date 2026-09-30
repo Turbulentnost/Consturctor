@@ -11,7 +11,7 @@ Mirrors Документ.ТД_Протокол.Форма.ФормаСписка
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -49,6 +49,11 @@ _NUMBER_PREFIXES: dict[str, tuple[str, ...]] = {
 }
 
 _REVIEW_STATUSES = frozenset({"Подготовлен"})
+
+# ПСД/СПГ/СД numbers also cover planning meetings and ДПИ; the board is told apart by its theme.
+SD_BOARD_TOPIC = "Совет директоров по ГК"
+_PAIR_LOOKBACK_DAYS = 370
+_PAIR_LOOKAHEAD_DAYS = 60
 
 
 def _normalize_kind(raw: str) -> str:
@@ -124,6 +129,13 @@ def _number_scope_filter(args: dict[str, Any], *, kind: str) -> str:
     return _number_prefix_filter(kind)
 
 
+def _topic_filter(args: dict[str, Any]) -> str:
+    topic = str(args.get("topic") or "").strip()
+    if not topic:
+        return ""
+    return f"ТемаСовещания/Description eq '{_escape_odata_string(topic)}'"
+
+
 def protocol_navigation_path(ref_key: str, section: str) -> str:
     """Full OData path to a protocol tabular section, e.g. …/Решения."""
     key = (ref_key or "").strip()
@@ -141,6 +153,8 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
         filters.append(f"Number eq '{_escape_odata_string(number)}'")
     elif psd_only or kind in _NUMBER_PREFIXES:
         filters.append(_number_scope_filter(args, kind=kind))
+    if topic := _topic_filter(args):
+        filters.append(topic)
 
     review_only = args.get("review_only")
     if review_only is None:
@@ -195,7 +209,7 @@ _PROTOCOL_LIST_SELECT = ",".join(
 
 def build_protocol_list_path(*, odata_filter: str, limit: int) -> str:
     """OData list path for Document_ТД_Протокол with topic expand."""
-    filt = quote(odata_filter, safe="=,'")
+    filt = quote(odata_filter, safe="=,'/")
     return (
         f"{PROTOCOL_ENTITY}?$format=json&$top={limit}"
         f"&$filter={filt}&$orderby=Date%20desc&$expand=ТемаСовещания"
@@ -212,6 +226,8 @@ def _relaxed_protocol_filters(args: dict[str, Any], *, kind: str) -> list[str]:
         parts.append(f"Number eq '{_escape_odata_string(number)}'")
     elif psd_mark_requested(args) or kind in _NUMBER_PREFIXES:
         parts.append(_number_scope_filter(args, kind=kind))
+    if topic := _topic_filter(args):
+        parts.append(topic)
     start, end = _period(args)
     if start:
         parts.append(f"Date ge {_odata_datetime(start)}")
@@ -357,6 +373,8 @@ def list_meeting_protocols(
     ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
     if ref_key:
         return _read_protocol_card(ref_key)
+    if _arg_flag(args.get("pair"), default=False):
+        return board_protocol_pair(args, access=access)
 
     kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or ""))
     start, end = _period(args)
@@ -460,6 +478,204 @@ def _read_protocol_card(ref_key: str) -> dict[str, Any]:
         "entity": PROTOCOL_ENTITY,
         "method": "odata_meeting_protocol_card",
         "summary": f"протокол {protocol.get('number') or ref_key}: {protocol.get('status') or '—'}",
+    }
+
+
+def _pick_pair(
+    protocols: list[dict[str, Any]],
+    *,
+    anchor: date,
+    explicit_day: bool,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Current = meeting on the given day (or the newest draft); previous = the one before it."""
+    ordered = sorted(protocols, key=lambda item: item.get("date") or "", reverse=True)
+    day = anchor.isoformat()
+    if explicit_day:
+        on_day = [item for item in ordered if (item.get("date") or "")[:10] == day]
+        on_day.sort(key=lambda item: not item.get("needs_review"))
+        current = on_day[0] if on_day else None
+    else:
+        current = next((item for item in ordered if item.get("needs_review")), None)
+    border = (current.get("date") or "")[:10] if current else (anchor + timedelta(days=1)).isoformat()
+    previous = next(
+        (
+            item
+            for item in ordered
+            if item is not current and (item.get("date") or "")[:10] < border
+        ),
+        None,
+    )
+    return current, previous
+
+
+def check_protocol_tasks(
+    form: dict[str, Any],
+    *,
+    posted: bool,
+    today: date,
+) -> dict[str, Any]:
+    """Completeness of «Поставленные задачи»: executor, due date, sent to 1C, file, overdue."""
+    tasks = [task for task in form.get("tasks") or [] if isinstance(task, dict)]
+    checked: list[dict[str, Any]] = []
+    for task in tasks:
+        findings: list[str] = []
+        if not str(task.get("executor") or "").strip():
+            findings.append("не указан исполнитель")
+        due = str(task.get("due") or "").strip()
+        if not due:
+            findings.append("не указан срок")
+        if posted and not task.get("sent") and not task.get("process_started"):
+            findings.append("не отправлена исполнителю в 1С")
+        if not task.get("has_file"):
+            findings.append("нет вложенного файла")
+        if posted and due and due < today.isoformat() and not str(task.get("note") or "").strip():
+            findings.append(f"срок {due} прошёл, нет отметки об исполнении")
+        checked.append(
+            {
+                "item": task.get("item") or "",
+                "text": task.get("text") or "",
+                "executor": task.get("executor") or "",
+                "due": due,
+                "note": task.get("note") or "",
+                "sent": bool(task.get("sent") or task.get("process_started")),
+                "has_file": bool(task.get("has_file")),
+                "complete": not findings,
+                "findings": findings,
+            }
+        )
+    gaps: list[str] = []
+    if not checked:
+        gaps.append("в «Поставленных задачах» протокола нет ни одной задачи")
+    incomplete = [task for task in checked if not task["complete"]]
+    return {
+        "tasks": checked,
+        "tasks_total": len(checked),
+        "tasks_incomplete": len(incomplete),
+        "complete": bool(checked) and not incomplete,
+        "gaps": gaps,
+    }
+
+
+def _pair_side(
+    protocol: dict[str, Any] | None,
+    *,
+    today: date,
+    gaps: list[str],
+    label: str,
+) -> dict[str, Any] | None:
+    from app.services.meeting_protocol_write import (
+        ProtocolWriteError,
+        read_protocol_card,
+        read_protocol_form,
+    )
+
+    if protocol is None:
+        return None
+    ref_key = str(protocol.get("ref_key") or "")
+    try:
+        card = read_protocol_card(ref_key)
+        form = read_protocol_form(ref_key, card=card)["form"]
+    except ProtocolWriteError as exc:
+        gaps.append(f"{label} протокол {protocol.get('number')}: не прочитан ({exc})")
+        return {**protocol, "error": str(exc)}
+    check = check_protocol_tasks(form, posted=bool(protocol.get("posted")), today=today)
+    gaps.extend(f"{label} протокол {protocol.get('number')}: {gap}" for gap in check["gaps"])
+    return {
+        **protocol,
+        "next_meeting": form.get("next_meeting_date") or protocol.get("next_meeting") or "",
+        "participants": form.get("participants") or [],
+        "agenda": form.get("agenda") or [],
+        "decisions": form.get("decisions") or [],
+        "responsible": form.get("responsible") or "",
+        "check": check,
+    }
+
+
+def _mark_not_carried(current: dict[str, Any] | None, previous: dict[str, Any] | None) -> None:
+    if not current or not previous or "check" not in current or "check" not in previous:
+        return
+    carried = {
+        str(task.get("text") or "").strip().casefold() for task in current["check"]["tasks"]
+    }
+    number = current.get("number") or ""
+    for task in previous["check"]["tasks"]:
+        if str(task.get("text") or "").strip().casefold() in carried or str(task.get("note") or "").strip():
+            continue
+        task["findings"].append(f"не перенесена в протокол {number} на контроль")
+        task["complete"] = False
+    previous["check"]["tasks_incomplete"] = sum(
+        1 for task in previous["check"]["tasks"] if not task["complete"]
+    )
+    previous["check"]["complete"] = bool(previous["check"]["tasks"]) and not previous["check"][
+        "tasks_incomplete"
+    ]
+
+
+def board_protocol_pair(args: dict[str, Any], *, access: Any | None = None) -> dict[str, Any]:
+    """Current and previous board protocols with a completeness check of their tasks."""
+    topic = str(args.get("topic") or SD_BOARD_TOPIC).strip()
+    explicit = _parse_iso_date(str(args.get("date") or ""))
+    anchor = explicit or date.today()
+    listed = list_meeting_protocols(
+        {
+            "meeting_kind": str(args.get("meeting_kind") or "sd"),
+            "topic": topic,
+            "date_from": (anchor - timedelta(days=_PAIR_LOOKBACK_DAYS)).isoformat(),
+            "date_to": (anchor + timedelta(days=_PAIR_LOOKAHEAD_DAYS)).isoformat(),
+            "review_only": False,
+            "include_closed": True,
+            "max_results": 30,
+        },
+        access=access,
+    )
+    base = {
+        "pair": True,
+        "topic": topic,
+        "anchor_date": anchor.isoformat(),
+        "source": "odata",
+        "readonly": True,
+        "entity": PROTOCOL_ENTITY,
+        "method": "odata_board_protocol_pair",
+    }
+    if listed.get("error"):
+        return {**base, "current": None, "previous": None, "error": listed["error"],
+                "gaps": [f"протоколы «{topic}» не прочитаны: {listed['error']}"]}
+    protocols = listed.get("protocols") or []
+    current_row, previous_row = _pick_pair(protocols, anchor=anchor, explicit_day=explicit is not None)
+    from concurrent.futures import ThreadPoolExecutor
+
+    today = date.today()
+    current_gaps: list[str] = []
+    previous_gaps: list[str] = []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        current_job = pool.submit(_pair_side, current_row, today=today, gaps=current_gaps, label="текущий")
+        previous_job = pool.submit(_pair_side, previous_row, today=today, gaps=previous_gaps, label="прошлый")
+        current, previous = current_job.result(), previous_job.result()
+    gaps = current_gaps + previous_gaps
+    _mark_not_carried(current, previous)
+    if current is None:
+        gaps.append(
+            f"протокол текущего заседания «{topic}» "
+            + (f"на {anchor.isoformat()} " if explicit else "(черновик «Подготовлен») ")
+            + "в 1С не найден"
+        )
+    if previous is None:
+        gaps.append(f"протокол прошлого заседания «{topic}» в 1С не найден")
+    names = " / ".join(
+        f"{side['number']} от {(side.get('date') or '')[:10]}"
+        for side in (current, previous)
+        if side
+    )
+    return {
+        **base,
+        "current": current,
+        "previous": previous,
+        "gaps": gaps,
+        "candidates": [
+            {key: item.get(key) for key in ("number", "date", "status", "posted", "ref_key")}
+            for item in sorted(protocols, key=lambda row: row.get("date") or "", reverse=True)[:10]
+        ],
+        "summary": f"«{topic}»: {names or 'протоколы не найдены'}; пробелов: {len(gaps)}",
     }
 
 

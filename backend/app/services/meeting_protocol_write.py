@@ -674,9 +674,9 @@ def _prefetch_descriptions(card: dict[str, Any], cache: dict[str, str]) -> None:
                 cache[f"{entity}:{key}"] = name
 
 
-def read_protocol_form(ref_key: str) -> dict[str, Any]:
+def read_protocol_form(ref_key: str, *, card: dict[str, Any] | None = None) -> dict[str, Any]:
     """Document_ТД_Протокол → form fields (names instead of GUIDs) for the desktop editor."""
-    card = read_protocol_card(ref_key)
+    card = card if isinstance(card, dict) and card else read_protocol_card(ref_key)
     cache: dict[str, str] = {}
     _prefetch_descriptions(card, cache)
 
@@ -717,27 +717,32 @@ def read_protocol_form(ref_key: str) -> dict[str, Any]:
         if _clean(row.get("ТекстРешения"))
     ]
     tasks: list[dict[str, Any]] = []
-    seen_tasks: set[tuple[str, str]] = set()
+    seen_tasks: dict[tuple[str, str], dict[str, Any]] = {}
     for part_name in (TASKS_PART, STANDING_TASKS_PART):
         for row in _protocol_rows(card, part_name):
             text = _clean(row.get("Задача"))
             if not text:
                 continue
+            has_file = bool(_clean(row.get("Файл_Base64Data")))
             dedupe = (text, str(row.get("LineNumber") or ""))
             if dedupe in seen_tasks:
+                seen_tasks[dedupe]["has_file"] = seen_tasks[dedupe]["has_file"] or has_file
                 continue
-            seen_tasks.add(dedupe)
-            tasks.append(
-                {
-                    "text": text,
-                    "executor": _clean(row.get("Ответственный"))
-                    or person_fio(row.get("Ответственный_Key")),
-                    "due": _iso_day(row.get("ДатаФактическогоИсполнения")),
-                    "priority": _clean(row.get("Приоритет")),
-                    "note": _clean(row.get("Примечание")),
-                    "item": _clean(row.get("НомерПунктаПротокола")),
-                }
-            )
+            task = {
+                "text": text,
+                "executor": _clean(row.get("Ответственный"))
+                or person_fio(row.get("Ответственный_Key")),
+                "due": _iso_day(row.get("ДатаФактическогоИсполнения")),
+                "priority": _clean(row.get("Приоритет")),
+                "note": _clean(row.get("Примечание")),
+                "item": _clean(row.get("НомерПунктаПротокола")),
+                "sent": row.get("Отправлена") is True,
+                "process_started": _looks_like_guid(row.get("ПроцессID"))
+                and _clean(row.get("ПроцессID")) != _EMPTY_GUID,
+                "has_file": has_file,
+            }
+            seen_tasks[dedupe] = task
+            tasks.append(task)
 
     status = _clean(card.get("Статус"))
     posted = bool(card.get("Posted"))

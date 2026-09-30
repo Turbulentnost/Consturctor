@@ -61,6 +61,22 @@ def test_invoke_meeting_protocols_via_odata_get() -> None:
     assert result["meeting_kind"] == "sd"
 
 
+def test_board_pair_goes_to_backend() -> None:
+    payload = {"ok": True, "result": {"pair": True, "current": None, "previous": None, "gaps": []}}
+    with patch("app.tools.runtime_api.request", return_value=payload) as mock_request:
+        result = invoke_tool(
+            "onec.meeting_protocols",
+            {"meeting_kind": "sd", "pair": True, "date": "2026-09-30"},
+        )
+
+    mock_request.assert_called_once()
+    assert mock_request.call_args[0][1] == "/api/v1/tools/invoke"
+    body = mock_request.call_args[1]["json"]
+    assert body["arguments"]["pair"] is True
+    assert "meeting_protocols" in str(body)
+    assert result["pair"] is True
+
+
 def test_psd_mark_filter_keeps_closed_protocols() -> None:
     filt = build_protocol_filter({"meeting_kind": "sd", "psd_mark": True}, kind="sd")
     assert filt.startswith("DeletionMark eq false and startswith(Number,'ПСД')")
