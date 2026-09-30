@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
@@ -8,7 +7,6 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.core.jwt import AuthContext
 from app.models.finance import FinanceSalaryEntry
 from app.models.org import OrgPerson, OrgPosition
@@ -16,6 +14,7 @@ from app.models.position_kpi import PositionCompRule
 from app.services.admin.finance import current_salary
 from app.services.org_structure import fio_key
 from app.services.position_kpi.daily import get_or_compute_position_kpi, resolve_profile
+from app.services.position_kpi.pin import KpiPinError, verify_pin
 
 
 class CompensationError(RuntimeError):
@@ -84,8 +83,10 @@ def unlock_compensation(
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> dict[str, Any]:
-    if not hmac.compare_digest(str(pin), settings.salary_pin):
-        raise CompensationError("Неверный PIN-код", 403)
+    try:
+        verify_pin(db, auth.user_id, pin)
+    except KpiPinError as exc:
+        raise CompensationError(exc.message, exc.status_code) from exc
 
     target_day = date_to or date.today()
     salary, department = _salary(db, auth, target_day)

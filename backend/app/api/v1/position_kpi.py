@@ -29,6 +29,7 @@ from app.services.position_kpi.daily import (
     resolve_profile,
     schedule_today_fill,
 )
+from app.services.position_kpi import pin as kpi_pin
 from app.services.position_kpi import protection as kpi_protection
 from app.services.position_kpi.explain import PositionKpiMetricNotFound, explain_metric
 from app.services.position_kpi.salary import SalaryLookupError
@@ -165,6 +166,53 @@ def _parse_day(raw: str | None, *, field: str) -> date | None:
         return date.fromisoformat(text)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Некорректная дата {field}") from exc
+
+
+class _PinOut(BaseModel):
+    has_pin: bool
+
+
+class _PinSetIn(BaseModel):
+    pin: str = Field(max_length=16)
+    pin_repeat: str = Field(max_length=16)
+
+
+class _PinChangeIn(_PinSetIn):
+    current_pin: str = Field(max_length=16)
+
+
+def _pin_http(exc: kpi_pin.KpiPinError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+@router.get("/pin", response_model=_PinOut)
+def read_pin(auth: AuthContext = Depends(get_current_user), db: Session = Depends(get_db)) -> _PinOut:
+    try:
+        return _PinOut(has_pin=kpi_pin.has_pin(db, auth.user_id))
+    except kpi_pin.KpiPinError as exc:
+        raise _pin_http(exc) from exc
+
+
+@router.post("/pin", response_model=_PinOut)
+def create_pin(
+    body: _PinSetIn, auth: AuthContext = Depends(get_current_user), db: Session = Depends(get_db)
+) -> _PinOut:
+    try:
+        kpi_pin.set_pin(db, auth.user_id, body.pin, body.pin_repeat)
+    except kpi_pin.KpiPinError as exc:
+        raise _pin_http(exc) from exc
+    return _PinOut(has_pin=True)
+
+
+@router.put("/pin", response_model=_PinOut)
+def change_pin(
+    body: _PinChangeIn, auth: AuthContext = Depends(get_current_user), db: Session = Depends(get_db)
+) -> _PinOut:
+    try:
+        kpi_pin.change_pin(db, auth.user_id, body.current_pin, body.pin, body.pin_repeat)
+    except kpi_pin.KpiPinError as exc:
+        raise _pin_http(exc) from exc
+    return _PinOut(has_pin=True)
 
 
 class _CompensationUnlockIn(BaseModel):

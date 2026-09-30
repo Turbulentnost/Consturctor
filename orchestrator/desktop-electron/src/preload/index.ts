@@ -66,6 +66,13 @@ const api = {
     openAfter?: boolean
   }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
     ipcRenderer.invoke('api:download', opts),
+  saveLocalFile: (opts: {
+    defaultName?: string
+    text?: string
+    base64?: string
+    filters?: { name: string; extensions: string[] }[]
+  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('api:saveLocalFile', opts),
   createWorkflow: <T = unknown>(opts: {
     notes: string
     draftId?: string

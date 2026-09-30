@@ -193,6 +193,22 @@
   filter: saturate(0.55);
 }
 
+/* Короткая встреча растянута до минимальной ширины, и на неё наехала соседняя:
+   размываем нижнюю, чтобы два заголовка не читались вперемешку. Наведение возвращает
+   её наверх и в резкость. */
+.mcal-event.is-covered {
+  filter: blur(1.4px) saturate(0.7);
+  opacity: 0.75;
+  transition: filter 0.12s ease, opacity 0.12s ease;
+}
+
+.mcal-event.is-covered:hover,
+.mcal-event.is-covered:focus-within {
+  z-index: 60 !important;
+  filter: none;
+  opacity: 1;
+}
+
 /* Совещание прошло — цвет человека остаётся, блок просто уходит на второй план. */
 .mcal-event.is-past {
   opacity: 0.62;

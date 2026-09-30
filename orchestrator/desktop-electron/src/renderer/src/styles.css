@@ -14024,9 +14024,40 @@ button.spec-v04-tile {
   cursor: pointer;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.set-tabs button svg {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+.set-tabs button.active svg {
+  opacity: 1;
 }
 .set-tabs button:hover {
   color: #1565c0;
+}
+.set-security-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .set-security-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.set-pin-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 4px;
+}
+.set-pin-done {
+  color: #107f3e;
 }
 .set-tabs button.active {
   color: #1565c0;

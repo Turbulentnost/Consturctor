@@ -2416,6 +2416,25 @@ export class ApiClient {
     return parsePositionKpiCompensation(data ?? {})
   }
 
+  async getKpiPin(): Promise<{ hasPin: boolean }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/pin')
+    return { hasPin: Boolean(data?.has_pin) }
+  }
+
+  async createKpiPin(pin: string, pinRepeat: string): Promise<{ hasPin: boolean }> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/position-kpi/pin', {
+      body: { pin, pin_repeat: pinRepeat }
+    })
+    return { hasPin: Boolean(data?.has_pin) }
+  }
+
+  async changeKpiPin(currentPin: string, pin: string, pinRepeat: string): Promise<{ hasPin: boolean }> {
+    const data = await this.request<Record<string, unknown>>('PUT', '/api/v1/position-kpi/pin', {
+      body: { current_pin: currentPin, pin, pin_repeat: pinRepeat }
+    })
+    return { hasPin: Boolean(data?.has_pin) }
+  }
+
   async getPositionKpiMetric(position: string, code: string): Promise<PositionKpiMetricDetail> {
     const data = await this.request<Record<string, unknown>>(
       'GET',

@@ -33,6 +33,8 @@ const HOUR_H = 66
 const MIN_BLOCK_H = 46
 /** Высота одной дорожки в режиме дня. */
 const DAY_LANE_H = 96
+/** Минимальная ширина блока в режиме дня — та же, что в CSS (.mcal-event.is-horizontal). */
+const DAY_MIN_BLOCK_W = 118
 /** Шаг строки заголовка, тот же что в CSS. */
 const TITLE_LINE_H = 16
 /** Рамки и отступы блока; время идёт сразу под заголовком. */
@@ -462,6 +464,17 @@ function DayStrip({
   rows?: DayRowSpec[]
   rowKeyOf?: (meeting: MeetingEvent) => string
 }): React.JSX.Element {
+  // Ширина дорожки нужна, чтобы понять, какие блоки налезли друг на друга.
+  const [track, setTrack] = useState<HTMLDivElement | null>(null)
+  const [trackWidth, setTrackWidth] = useState(0)
+  useEffect(() => {
+    if (!track) return
+    const update = (): void => setTrackWidth(track.clientWidth)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(track)
+    return () => observer.disconnect()
+  }, [track])
   if (!lane) return <div className="mcal-empty">Нет данных за день</div>
   const bounds = hourWindow([lane])
   const hours = Array.from({ length: bounds.to - bounds.from }, (_, index) => bounds.from + index)
@@ -490,6 +503,26 @@ function DayStrip({
     }
   )
 
+  // Короткая встреча растягивается до DAY_MIN_BLOCK_W и заезжает под соседнюю справа.
+  // Такую подложку размываем, иначе два заголовка читаются вперемешку.
+  const covered = new Set<string>()
+  if (trackWidth > 0) {
+    const pxPerMinute = trackWidth / span
+    for (const { subLanes } of board) {
+      for (const subLane of subLanes) {
+        const ordered = [...subLane].sort((left, right) => left.span.from - right.span.from)
+        ordered.forEach((block, index) => {
+          const next = ordered[index + 1]
+          if (!next) return
+          const width = Math.max(block.span.to - block.span.from, DAY_MIN_BLOCK_W / pxPerMinute)
+          if (block.span.from + width > next.span.from) {
+            covered.add(meetingInstanceKey(block.span.meeting))
+          }
+        })
+      }
+    }
+  }
+
   return (
     <div className="cal-scroll mcal-scroll">
       <div className="mcal-day">
@@ -509,7 +542,7 @@ function DayStrip({
             </span>
           ))}
         </div>
-        {board.map(({ row, subLanes }) => (
+        {board.map(({ row, subLanes }, rowIndex) => (
           <Fragment key={row.key || 'self'}>
             <div className="mcal-day-name" title={row.key || row.label}>
               <span
@@ -521,6 +554,7 @@ function DayStrip({
             </div>
             <div
               className="mcal-day-track"
+              ref={rowIndex === 0 ? setTrack : undefined}
               style={{ height: subLanes.length * DAY_LANE_H }}
             >
               {lines}
@@ -541,6 +575,7 @@ function DayStrip({
                         width: `${Math.max(3, (minutes / span) * 100)}%`
                       }}
                       height={DAY_LANE_H - 10}
+                      covered={covered.has(key)}
                       selected={selectedId === key}
                       onClick={onSelect}
                       onConflict={(segment) => onConflict({ day: lane.day, segment })}
@@ -644,6 +679,7 @@ function MeetingBlock({
   selected,
   compact,
   horizontal,
+  covered,
   protocolNumber,
   palette
 }: {
@@ -657,6 +693,8 @@ function MeetingBlock({
   selected?: boolean
   compact?: boolean
   horizontal?: boolean
+  /** Соседний блок наехал сверху: уводим этот на задний план. */
+  covered?: boolean
   protocolNumber?: string
   palette?: CalendarPalette
 }): React.JSX.Element {
@@ -689,6 +727,7 @@ function MeetingBlock({
         horizontal ? 'is-horizontal' : '',
         selected ? 'is-selected' : '',
         parts.length ? (top ? 'has-conflict is-top' : 'has-conflict is-under') : '',
+        covered && !selected ? 'is-covered' : '',
         isPast(span, now) ? 'is-past' : '',
         protocolNumber != null ? 'has-protocol' : ''
       ]

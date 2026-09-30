@@ -17,20 +17,18 @@ export function usePositionCompensation(): {
   compensation: PositionKpiCompensation
   loading: boolean
   unlocking: boolean
-  error: string
-  unlock: (pin: string) => Promise<boolean>
+  /** Пустая строка — зарплата открыта, иначе текст ошибки. */
+  unlock: (pin: string) => Promise<string>
   hide: () => void
 } {
   const [compensation, setCompensation] = useState<PositionKpiCompensation>(EMPTY)
   const [loading, setLoading] = useState(true)
   const [unlocking, setUnlocking] = useState(false)
-  const [error, setError] = useState('')
 
   useEffect(() => {
     let alive = true
     setLoading(true)
     setCompensation(EMPTY)
-    setError('')
     void api
       .getPositionKpiCompensation()
       .then((next) => {
@@ -47,16 +45,13 @@ export function usePositionCompensation(): {
     }
   }, [])
 
-  const unlock = useCallback(async (pin: string): Promise<boolean> => {
+  const unlock = useCallback(async (pin: string): Promise<string> => {
     setUnlocking(true)
-    setError('')
     try {
-      const next = await api.unlockPositionKpiCompensation(pin)
-      setCompensation(next)
-      return true
+      setCompensation(await api.unlockPositionKpiCompensation(pin))
+      return ''
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Не удалось показать зарплату')
-      return false
+      return err instanceof Error && err.message ? err.message : 'Не удалось показать зарплату'
     } finally {
       setUnlocking(false)
     }
@@ -70,8 +65,7 @@ export function usePositionCompensation(): {
       bonus: null,
       total: null
     }))
-    setError('')
   }, [])
 
-  return { compensation, loading, unlocking, error, unlock, hide }
+  return { compensation, loading, unlocking, unlock, hide }
 }

@@ -25,6 +25,8 @@ import { OrchSlotMain } from '../../layout/GridSlots'
 import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
 import { useKpiProtection, writeKpiUnlock } from '../../workplace/kpiProtection'
 import { usePositionCompensation } from '../../workplace/usePositionCompensation'
+import { useKpiPin } from '../../workplace/useKpiPin'
+import { kpiPageTone, overallKpiPercent, useKpiPageTone } from '../../workplace/kpiPageTone'
 import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel } from './KpiEmployeePanel'
 import { KpiMetricCodeModal } from './KpiMetricCodeModal'
@@ -88,8 +90,16 @@ export function KpiGridTab(_props: {
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
   const positionKpi = usePositionKpi(_props.user?.position || '')
   const positionCompensation = usePositionCompensation()
+  const kpiPin = useKpiPin()
   const [buildingMethod, setBuildingMethod] = useState(false)
   const [codeFor, setCodeFor] = useState('')
+  const tilesRef = useRef<HTMLDivElement>(null)
+  const overallPct = overallKpiPercent(positionKpi.snap)
+  const pageTone = kpiPageTone(
+    overallPct,
+    Boolean(positionKpi.error) || positionKpi.methodologyStatus === 'none'
+  )
+  useKpiPageTone(tilesRef, pageTone, !buildingMethod)
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('kpi:module-chat-state', { detail: buildingMethod }))
@@ -288,16 +298,16 @@ export function KpiGridTab(_props: {
       }}
       widgets={{
         tiles: (
-          <div className="kpi-two-tier-tiles">
+          <div className="kpi-two-tier-tiles" ref={tilesRef}>
             <KpiEmployeePanel
               variant="bar"
               metrics={positionKpi.metrics}
               compensation={positionCompensation.compensation}
               compensationLoading={positionCompensation.loading}
-              compensationUnlocking={positionCompensation.unlocking}
-              compensationError={positionCompensation.error}
               onUnlockCompensation={positionCompensation.unlock}
               onHideCompensation={positionCompensation.hide}
+              pin={kpiPin}
+              pinPromptAllowed={!showGate && !formOpen}
               loading={positionKpi.loading}
               needsMethodology={positionKpi.needsBuild}
               methodologyStatus={positionKpi.methodologyStatus}

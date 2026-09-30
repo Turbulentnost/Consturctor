@@ -657,90 +657,173 @@
   background: #fff;
 }
 
+/* Плитка «Зарплата» по раскладке карты в Сбере: иконка сверху, сумма или шум, подпись снизу. */
 .kpi-salary-tile {
-  border-color: rgba(21, 101, 192, 0.2);
-  background: linear-gradient(145deg, #f8fbff 0%, #eef6ff 100%);
+  position: relative;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
-.kpi-salary-tile.is-visible {
-  border-color: rgba(8, 116, 95, 0.25);
-  background: linear-gradient(145deg, #f8fffc 0%, #edf9f5 100%);
+.kpi-salary-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
 }
 
-.kpi-salary-eye {
+.kpi-money-icon {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 16px;
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.kpi-salary-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kpi-money-eye {
+  flex: 0 0 auto;
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
+  margin: -2px -3px 0 0;
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  border-radius: 50%;
   background: transparent;
-  color: #426276;
+  color: rgba(255, 255, 255, 0.82);
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
 
-.kpi-salary-eye:hover,
-.kpi-salary-eye:focus-visible {
-  background: rgba(21, 101, 192, 0.1);
-  color: #1565c0;
+.kpi-money-eye:hover,
+.kpi-money-eye:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
   outline: none;
 }
 
-.kpi-salary-mask {
-  flex: 1;
+.kpi-money-eye:active {
+  transform: scale(0.92);
+}
+
+.kpi-money-eye:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.kpi-money-eye-icon {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.kpi-money-eye-slash {
+  stroke-dasharray: 21;
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 0.28s ease;
+}
+
+.kpi-money-eye-icon.is-open .kpi-money-eye-slash {
+  stroke-dashoffset: 21;
+}
+
+.kpi-salary-amount {
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 2px;
+  align-items: center;
+  width: 100%;
+  margin: 2px 0;
   padding: 0;
   border: 0;
   background: transparent;
-  color: #0d1b2a;
-  cursor: pointer;
+  color: inherit;
   text-align: left;
 }
 
-.kpi-salary-mask strong {
-  font-size: 17px;
-  line-height: 1;
-  letter-spacing: 0.6px;
+.kpi-salary-mask {
+  cursor: pointer;
+}
+
+.kpi-salary-mask:disabled {
+  cursor: default;
+}
+
+/* Холст шире полосы суммы на запас NOISE_BLEED_X/Y — точки выходят за край, а раскладка не сдвигается. */
+.kpi-money-noise {
+  display: block;
+  width: calc(78% + 20px);
+  height: 34px;
+  margin: -7px -10px;
+  color: rgba(255, 255, 255, 0.95);
+  animation: kpi-money-noise-in 0.4s ease;
+}
+
+.kpi-salary-mask:hover .kpi-money-noise {
+  color: #fff;
+}
+
+.kpi-salary-wait {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.kpi-salary-total {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+  animation: kpi-money-reveal 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.kpi-salary-caption {
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.2;
+  opacity: 0.72;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.kpi-salary-mask span {
-  color: var(--content-muted);
-  font-size: 10px;
-  line-height: 1.1;
+@keyframes kpi-money-reveal {
+  from {
+    opacity: 0;
+    filter: blur(8px);
+    letter-spacing: 3px;
+  }
+  to {
+    opacity: 1;
+    filter: none;
+    letter-spacing: -0.2px;
+  }
 }
 
-.kpi-salary-values {
-  display: grid;
-  gap: 2px;
-  margin-top: 3px;
-  min-height: 0;
-}
-
-.kpi-salary-values > div {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-}
-
-.kpi-salary-values span {
-  color: var(--content-muted);
-  font-size: 10px;
-}
-
-.kpi-salary-values strong {
-  color: #0d1b2a;
-  font-size: 12px;
-  line-height: 1.15;
-  white-space: nowrap;
+@keyframes kpi-money-noise-in {
+  from {
+    opacity: 0;
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
 }
 
 .kpi-employee-tile-title {
@@ -985,37 +1068,33 @@
 }
 
 .kpi-pin-modal-card {
-  width: min(380px, 100%);
-  align-items: stretch;
+  width: min(400px, 100%);
+  align-items: center;
+  text-align: center;
+  padding: 26px 24px 20px;
+  border-radius: 22px;
+}
+
+.kpi-pin-modal-card .kpi-form-modal-actions {
+  align-self: stretch;
+  justify-content: center;
 }
 
 .kpi-pin-icon {
-  width: 42px;
-  height: 42px;
+  width: 52px;
+  height: 52px;
   display: grid;
   place-items: center;
-  border-radius: 12px;
-  background: #eef6ff;
-  color: #1565c0;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #21a038 0%, #0f7a3a 100%);
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(16, 122, 58, 0.3);
 }
 
-.kpi-pin-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 11px 14px;
-  border: 1px solid rgba(13, 27, 42, 0.18);
-  border-radius: 10px;
-  outline: none;
-  color: #0d1b2a;
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: 12px;
-  text-align: center;
-}
-
-.kpi-pin-input:focus {
-  border-color: #1565c0;
-  box-shadow: 0 0 0 3px rgba(21, 101, 192, 0.12);
+.kpi-pin-hint {
+  margin: 0;
+  color: var(--content-muted, #5c6b66);
+  font-size: 12px;
 }
 
 .kpi-problem-zones {
@@ -1541,4 +1620,295 @@
   .orch-grid-kpi .kpi-problem-zones-table tbody td {
     padding: 6px 10px;
   }
+}
+
+/* --- Тон страницы KPI по общему проценту: шапка и плитки на градиенте, ниже белое --- */
+@property --kpi-base {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #151b24;
+}
+
+@property --kpi-mid {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #2c3644;
+}
+
+@property --kpi-glow {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgba(96, 116, 146, 0.75);
+}
+
+@property --kpi-glow2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgba(140, 160, 190, 0.35);
+}
+
+/* Как у Сбера: глубокий цвет, мягкое свечение слева, тёмный угол справа — и плавный уход в белый под плитками. */
+.orch-grid-kpi[data-kpi-tone] {
+  --kpi-hero: var(--kpi-hero-h, 300px);
+  --kpi-fade: 190px;
+  --kpi-glass: rgba(255, 255, 255, 0.12);
+  --kpi-glass-border: rgba(255, 255, 255, 0.1);
+  --kpi-glass-hover: rgba(255, 255, 255, 0.2);
+  --kpi-on-tone: #fff;
+  --kpi-on-tone-muted: rgba(255, 255, 255, 0.72);
+  background-color: #fff;
+  background-image:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0) calc(var(--kpi-hero) - 12px),
+      rgba(255, 255, 255, 0.35) calc(var(--kpi-hero) + 40px),
+      rgba(255, 255, 255, 0.8) calc(var(--kpi-hero) + 110px),
+      #fff calc(var(--kpi-hero) + var(--kpi-fade))
+    ),
+    radial-gradient(48% 62% at 16% 46%, var(--kpi-glow) 0%, transparent 72%),
+    radial-gradient(38% 55% at 62% 8%, var(--kpi-glow2) 0%, transparent 70%),
+    radial-gradient(42% 70% at 100% 55%, rgba(0, 0, 0, 0.32) 0%, transparent 72%),
+    linear-gradient(180deg, var(--kpi-base) 0%, var(--kpi-mid) 100%);
+  background-size: 100% calc(var(--kpi-hero) + var(--kpi-fade));
+  background-repeat: no-repeat;
+  transition:
+    --kpi-base 0.8s ease,
+    --kpi-mid 0.8s ease,
+    --kpi-glow 0.8s ease,
+    --kpi-glow2 0.8s ease;
+}
+
+.orch-grid-kpi[data-kpi-tone='good'] {
+  --kpi-base: #041f12;
+  --kpi-mid: #0a4a28;
+  --kpi-glow: rgba(35, 170, 82, 0.85);
+  --kpi-glow2: rgba(84, 214, 122, 0.4);
+}
+
+.orch-grid-kpi[data-kpi-tone='bad'] {
+  --kpi-base: #24060a;
+  --kpi-mid: #64121a;
+  --kpi-glow: rgba(214, 62, 56, 0.85);
+  --kpi-glow2: rgba(255, 120, 96, 0.38);
+}
+
+.orch-grid-kpi[data-kpi-tone='neutral'] {
+  --kpi-base: #151b24;
+  --kpi-mid: #2c3644;
+  --kpi-glow: rgba(96, 116, 146, 0.75);
+  --kpi-glow2: rgba(140, 160, 190, 0.35);
+}
+
+/* Шапка: заголовок, кнопки, пользователь — светлые на цвете */
+.orch-grid-kpi[data-kpi-tone] .orch-grid-title h1 {
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .orch-grid-title .orch-grid-sub {
+  color: var(--kpi-on-tone-muted);
+}
+
+.orch-grid-kpi[data-kpi-tone] .orch-grid-title-icon {
+  background: var(--kpi-glass);
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .orch-grid-header-actions .spec-btn-outline,
+.orch-grid-kpi[data-kpi-tone] .orch-grid-header-actions .spec-header-action-compact,
+.orch-grid-kpi[data-kpi-tone] .orch-grid-header-actions .spec-btn-launch {
+  border-color: var(--kpi-glass-border);
+  background: var(--kpi-glass);
+  color: var(--kpi-on-tone);
+  backdrop-filter: blur(10px);
+}
+
+.orch-grid-kpi[data-kpi-tone] .orch-grid-header-actions .spec-btn-outline:hover,
+.orch-grid-kpi[data-kpi-tone] .kpi-header-actions .spec-btn-outline.is-active {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: var(--kpi-glass-hover);
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .orch-grid-util .user-menu .who .name {
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .orch-grid-util .user-menu .who .pos {
+  color: var(--kpi-on-tone-muted);
+}
+
+.orch-grid-kpi[data-kpi-tone] .orch-grid-util .user-menu__chevron {
+  color: var(--kpi-on-tone);
+  stroke: currentColor;
+}
+
+.orch-grid-kpi[data-kpi-tone] .orch-grid-util .icon-btn,
+.orch-grid-kpi[data-kpi-tone] .orch-grid-util .icon-btn-help {
+  background: var(--kpi-glass);
+  color: var(--kpi-on-tone);
+}
+
+/* Под плитками — без сетки и без жёсткой границы: цвет растворяется сквозь верх карточки таблицы */
+.orch-grid-kpi[data-kpi-tone] .tab-chrome-canvas--snap.tab-chrome-canvas--view {
+  background: transparent;
+}
+
+.orch-grid-kpi[data-kpi-tone] .tab-chrome-canvas--view .tab-chrome-shell {
+  border-radius: 18px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.6) 0,
+    rgba(255, 255, 255, 0.9) 70px,
+    #fff 150px
+  );
+  backdrop-filter: blur(18px);
+  box-shadow: 0 12px 32px rgba(8, 24, 16, 0.07);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-dash-main-table.wp-card {
+  border-color: rgba(16, 32, 51, 0.06);
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Плитки — стекло как карточки Сбера: светлее сверху, без обводки */
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-tile,
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-tile {
+  border: 1px solid var(--kpi-glass-border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.06) 100%);
+  color: var(--kpi-on-tone);
+  box-shadow: none;
+  backdrop-filter: blur(18px) saturate(1.25);
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-tile {
+  padding: 8px 11px;
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-tile-title,
+.orch-grid-kpi[data-kpi-tone] .kpi-pending-tile .kpi-employee-tile-title {
+  color: var(--kpi-on-tone-muted);
+  font-weight: 600;
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-tile-values strong {
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-trend.is-good {
+  color: #b8f5c8;
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-trend.is-bad,
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-trend.is-warn-up {
+  color: #ffc2b8;
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-spark polyline {
+  stroke: rgba(255, 255, 255, 0.92);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-spark stop {
+  stop-color: #fff;
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-footer,
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-loading {
+  color: var(--kpi-on-tone-muted);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-info {
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-info:hover,
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-info:focus-visible {
+  background: #fff;
+  color: var(--kpi-mid);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-salary-title {
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-salary-tile:has(.kpi-salary-mask:hover) {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.09) 100%);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-pending-tile {
+  border: 1px dashed rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-pending-tile:hover,
+.orch-grid-kpi[data-kpi-tone] .kpi-pending-tile:focus-visible {
+  border-color: rgba(255, 255, 255, 0.8);
+  background: var(--kpi-glass-hover);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-pending-tile-state {
+  color: #ffe08a;
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-pending-tile-action {
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-empty p {
+  color: var(--kpi-on-tone-muted);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-tile.is-clickable:hover,
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-tile.is-clickable:focus-visible,
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-tile.is-active {
+  border-color: rgba(255, 255, 255, 0.55);
+  background: var(--kpi-glass-hover);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-tile-label,
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-tile-hint {
+  color: var(--kpi-on-tone-muted);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-tile-value {
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-tile-icon-wrap {
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-tile-bar {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-tile-bar i {
+  background: #fff;
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-ring {
+  position: relative;
+  background: none;
+  color: var(--kpi-on-tone);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-ring::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(#fff var(--p), rgba(255, 255, 255, 0.2) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4.5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4.5px));
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-agent-top-tiles .spec-v04-ring span {
+  position: relative;
+  background: transparent;
 }

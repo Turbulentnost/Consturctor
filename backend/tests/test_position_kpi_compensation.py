@@ -7,13 +7,13 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.config import settings
 from app.core.jwt import AuthContext
 from app.db.base import Base
 from app.models.finance import FinanceImport, FinanceSalaryEntry
 from app.models.org import OrgPerson, OrgPosition
 from app.models.position_kpi import PositionCompRule, PositionKpiProfile
 from app.services.position_kpi import compensation
+from app.services.position_kpi import pin as kpi_pin
 
 
 POSITION = "Помощник Председателя совета директоров"
@@ -97,13 +97,17 @@ def test_masked_compensation_never_returns_money() -> None:
 
 def test_unlock_checks_pin_and_calculates_bonus(monkeypatch: pytest.MonkeyPatch) -> None:
     db = _session()
-    monkeypatch.setattr(settings, "salary_pin", "1111")
     monkeypatch.setattr(
         compensation,
         "get_or_compute_position_kpi",
         lambda *_args, **_kwargs: {"tiles": [{"contrib": 25}, {"contrib": 35}]},
     )
 
+    with pytest.raises(compensation.CompensationError) as exc:
+        compensation.unlock_compensation(db, AUTH, pin="1111")
+    assert exc.value.status_code == 409
+
+    kpi_pin.set_pin(db, AUTH.user_id, "1111", "1111")
     with pytest.raises(compensation.CompensationError) as exc:
         compensation.unlock_compensation(db, AUTH, pin="0000")
     assert exc.value.status_code == 403

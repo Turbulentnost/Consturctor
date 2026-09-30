@@ -17,6 +17,17 @@ import {
   writeTodayWidgetVisibility,
   TODAY_WIDGET_VISIBILITY_EVENT
 } from '../tabs/grid/todayWidgetSettings'
+import {
+  Activity,
+  Bell,
+  Database,
+  Plug,
+  ShieldCheck,
+  SlidersHorizontal,
+  UsersRound,
+  type LucideIcon
+} from 'lucide-react'
+import { KpiPinSettings } from './KpiPinSettings'
 import { KpiProtectionSettings } from './KpiProtectionSettings'
 import { OneCSessionProfileSection } from './OneCSessionProfileSection'
 
@@ -24,6 +35,7 @@ type SettingsSection =
   | 'general'
   | 'notifications'
   | 'access'
+  | 'security'
   | 'diagnostics'
   | 'integrations'
   | 'onec_profile'
@@ -132,13 +144,14 @@ interface NotifyPrefs {
   highlightUnread: boolean
 }
 
-const TABS: { id: SettingsSection; label: string }[] = [
-  { id: 'general', label: 'Общие' },
-  { id: 'notifications', label: 'Уведомления' },
-  { id: 'access', label: 'Права доступа' },
-  { id: 'diagnostics', label: 'Диагностика' },
-  { id: 'onec_profile', label: 'Профиль 1С' },
-  { id: 'integrations', label: 'Интеграции' }
+const TABS: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
+  { id: 'general', label: 'Общие', icon: SlidersHorizontal },
+  { id: 'notifications', label: 'Уведомления', icon: Bell },
+  { id: 'access', label: 'Права доступа', icon: UsersRound },
+  { id: 'security', label: 'Безопасность', icon: ShieldCheck },
+  { id: 'diagnostics', label: 'Диагностика', icon: Activity },
+  { id: 'onec_profile', label: 'Профиль 1С', icon: Database },
+  { id: 'integrations', label: 'Интеграции', icon: Plug }
 ]
 
 const DEFAULT_EVENTS: EventChannelRow[] = [
@@ -487,14 +500,15 @@ export function SettingsWorkplace({
   return (
     <div className="wp-page set-page">
       <nav className="set-tabs" aria-label="Разделы настроек">
-        {TABS.map((tab) => (
+        {TABS.map(({ id, label, icon: Icon }) => (
           <button
-            key={tab.id}
+            key={id}
             type="button"
-            className={section === tab.id ? 'active' : ''}
-            onClick={() => setSection(tab.id)}
+            className={section === id ? 'active' : ''}
+            onClick={() => setSection(id)}
           >
-            {tab.label}
+            <Icon size={16} strokeWidth={2} aria-hidden />
+            {label}
           </button>
         ))}
       </nav>
@@ -523,7 +537,6 @@ export function SettingsWorkplace({
             <h2>Обновления</h2>
             <SettingsUpdateBlock />
           </section>
-          <KpiProtectionSettings userId={user.id} />
           <section className="set-card">
             <h2>Файлы агентов</h2>
             <p className="set-muted">
@@ -921,6 +934,21 @@ export function SettingsWorkplace({
               </ul>
             </section>
           ) : null}
+        </div>
+      ) : null}
+
+      {section === 'security' ? (
+        <div className="set-body">
+          <header className="set-head">
+            <div>
+              <h1 className="page-title">Безопасность</h1>
+              <p className="set-sub">PIN-код для просмотра зарплаты и защита данных KPI</p>
+            </div>
+          </header>
+          <div className="set-security-grid">
+            <KpiPinSettings />
+            <KpiProtectionSettings userId={user.id} />
+          </div>
         </div>
       ) : null}
 
