@@ -147,6 +147,7 @@ export function showToast(payload: ToastPayload): void {
       workflowId: payload.workflowId || '',
       runId: payload.runId || '',
       requestId: payload.requestId || '',
+      body: payload.body || '',
       openDecisions: Boolean(payload.openDecisions || payload.requestId)
     })
   })

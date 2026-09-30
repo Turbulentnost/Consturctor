@@ -11,6 +11,7 @@ import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { erpActorFio } from '../../workplace/userContext'
 import {
   buildProtocolMessage,
+  buildSupplementMessage,
   PROTOCOL_AGENT_TITLE,
   resolveProtocolAgentWorkflowId
 } from '../../workplace/meetingProtocolAgent'
@@ -35,11 +36,13 @@ import { MeetingReportModal } from './MeetingReportModal'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
 import { searchOnecProtocols, type OnecProtocolHit } from '../../workplace/meetingProtocolCreate'
 import {
+  detachProtocolDocument,
   PROTOCOL_CREATED_EVENT,
   rememberProtocolDocument,
   useProtocolMarks,
   type ProtocolMark
 } from '../../workplace/meetingProtocolMarks'
+import './meetingActions.css'
 
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'wma', 'amr', 'webm', 'mp4', 'mkv']
 
@@ -86,7 +89,7 @@ function MeetingDetailCard({
   protocol?: ProtocolMark
 }): React.JSX.Element {
   const runs = useRuns()
-  const { record, runEntry, rememberStart, patchRecord } = useMeetingProtocol(meeting, userId)
+  const { record, runEntry, rememberStart, patchRecord, forgetRecord } = useMeetingProtocol(meeting, userId)
   const [resolvedProtocolRef, setResolvedProtocolRef] = useState('')
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
@@ -186,6 +189,80 @@ function MeetingDetailCard({
   const protocolRefKey = (resolvedProtocolRef || protocol?.refKey || '').trim()
   const hasProtocol = Boolean(protocolRefKey || protocol?.number)
   const canOpenReport = hasDocx || Boolean(protocolRefKey)
+
+  const supplementWithAudio = useCallback(async () => {
+    if (busy || isRunning || !protocolRefKey) return
+    setActionError('')
+    setBusy(true)
+    try {
+      const paths = await window.api.openFile({
+        title: 'Выберите аудиозапись для дополнения протокола',
+        filters: [{ name: 'Аудио', extensions: AUDIO_EXTENSIONS }],
+        properties: ['openFile']
+      })
+      const audioPath = paths?.[0]
+      if (!audioPath) return
+
+      const res = await api.invokeServerTool('onec.meeting_protocols', { ref_key: protocolRefKey }, 60_000)
+      const card = (res.ok && res.result && typeof res.result === 'object'
+        ? (res.result as { protocol?: Record<string, unknown> }).protocol
+        : undefined) as
+        | { number?: string; editable?: boolean; status?: string; form?: Record<string, unknown> }
+        | undefined
+      if (!card?.form) {
+        throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
+      }
+      if (card.editable === false) {
+        throw new Error(
+          `Протокол ${card.number || ''} уже проведён (статус «${card.status || 'проведён'}») — дополнить можно только черновик`
+        )
+      }
+
+      const workflowId = await resolveProtocolAgentWorkflowId()
+      const message = buildSupplementMessage(meeting, audioPath, {
+        number: String(card.number || protocol?.number || ''),
+        refKey: protocolRefKey,
+        form: card.form
+      })
+      const runId = runs.startRun({
+        workflowId,
+        title: PROTOCOL_AGENT_TITLE,
+        message,
+        filePaths: [audioPath]
+      })
+      rememberStart({
+        workflowId,
+        runId: runId || '',
+        backendRunId: '',
+        status: 'running',
+        audioPath,
+        audioName: basename(audioPath),
+        startedAt: new Date().toISOString(),
+        reportFileId: '',
+        reportName: '',
+        reportUrl: ''
+      })
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Не удалось запустить дополнение протокола')
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, isRunning, meeting, protocol?.number, protocolRefKey, rememberStart, runs])
+
+  const detachProtocol = (): void => {
+    if (isRunning) return
+    const label = protocol?.number ? `Протокол ${protocol.number}` : 'Протокол'
+    const ok = window.confirm(
+      `${label} будет отвязан от этого совещания во вкладке «Совещания».\nДокумент в 1С не удаляется.`
+    )
+    if (!ok) return
+    detachProtocolDocument(userId, meeting, protocolRefKey)
+    forgetRecord()
+    setResolvedProtocolRef('')
+    setReportOpen(false)
+    setFormOpen(false)
+    setActionError('')
+  }
 
   useEffect(() => {
     setResolvedProtocolRef('')
@@ -371,11 +448,11 @@ function MeetingDetailCard({
       {actionError ? <p className="meeting-protocol-error">{actionError}</p> : null}
 
       {isRunning && !hasProtocol ? null : (
-        <footer className="spec-detail-actions">
+        <footer className="spec-detail-actions meeting-protocol-actions">
           {hasProtocol ? (
             <button
               type="button"
-              className="btn-light"
+              className="cal-btn"
               onClick={() => openForm('edit')}
               disabled={!protocolRefKey}
               title={
@@ -389,7 +466,7 @@ function MeetingDetailCard({
           ) : (
             <button
               type="button"
-              className="btn-primary"
+              className="cal-btn primary"
               onClick={() => setChooserOpen(true)}
               disabled={busy}
             >
@@ -399,7 +476,7 @@ function MeetingDetailCard({
           {hasProtocol ? null : (
             <button
               type="button"
-              className="btn-light"
+              className="cal-btn"
               onClick={() => setAttachOpen(true)}
               disabled={busy}
               title="Найти готовый протокол в 1С по номеру и привязать к совещанию"
@@ -410,11 +487,33 @@ function MeetingDetailCard({
           {hasProtocol || hasDocx ? (
             <button
               type="button"
-              className="btn-primary"
+              className="cal-btn primary"
               onClick={() => setReportOpen(true)}
               disabled={!canOpenReport}
             >
               Получить протокол
+            </button>
+          ) : null}
+          {hasProtocol ? (
+            <button
+              type="button"
+              className="cal-btn"
+              onClick={() => void supplementWithAudio()}
+              disabled={busy || isRunning || !protocolRefKey}
+              title="Агент дополнит и исправит задачи, решения и другие данные протокола по новой записи"
+            >
+              {busy ? 'Запуск…' : 'Дополнить аудиозаписью'}
+            </button>
+          ) : null}
+          {hasProtocol || hasDocx ? (
+            <button
+              type="button"
+              className="cal-btn"
+              onClick={detachProtocol}
+              disabled={busy || isRunning}
+              title="Отвязать протокол от этого совещания; документ в 1С не удаляется"
+            >
+              Удалить протокол
             </button>
           ) : null}
         </footer>

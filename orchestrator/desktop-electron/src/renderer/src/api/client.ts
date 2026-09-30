@@ -85,7 +85,9 @@ function parseWorkflowList(data: unknown): WorkflowListItem[] {
       title: String(item.title ?? ''),
       phase: String(item.phase ?? ''),
       documentName: String(item.document_name ?? item.documentName ?? ''),
-      updatedAt: String(item.updatedAt ?? item.updated_at ?? '')
+      updatedAt: String(item.updatedAt ?? item.updated_at ?? ''),
+      paused: Boolean(item.paused),
+      autoRun: Boolean(item.auto_run ?? item.autoRun)
     }))
     .filter((item) => item.id)
 }

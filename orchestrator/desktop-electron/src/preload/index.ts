@@ -173,6 +173,7 @@ const api = {
       runId: string
       draftId?: string
       requestId?: string
+      body?: string
       openDecisions?: boolean
     }) => void
   ): (() => void) => {

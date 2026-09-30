@@ -85,19 +85,35 @@ def _filename_from_header(disposition: str) -> str:
     return Path(unquote(match.group(1).strip().strip('"'))).name
 
 
-def _filename_from_bytes(file_id: str, content: bytes, hinted: str) -> str:
-    name = Path(hinted).name if hinted else ""
-    if name:
-        return name
+def _suffix_from_bytes(content: bytes) -> str:
     if content.startswith(b"%PDF"):
-        return f"{file_id}.pdf"
+        return ".pdf"
     if content[:3] == b"\xff\xd8\xff":
-        return f"{file_id}.jpg"
+        return ".jpg"
     if content.startswith(b"\x89PNG"):
-        return f"{file_id}.png"
+        return ".png"
+    if content[:4] in (b"II*\x00", b"MM\x00*"):
+        return ".tif"
     if content[:2] == b"PK":
-        return f"{file_id}.zip"
-    return f"{file_id}.bin"
+        head = content[:4096]
+        if b"word/" in head:
+            return ".docx"
+        if b"xl/" in head:
+            return ".xlsx"
+        if b"ppt/" in head:
+            return ".pptx"
+        return ".zip"
+    if content.startswith(b"\xd0\xcf\x11\xe0"):
+        return ".doc"
+    return ""
+
+
+def _filename_from_bytes(file_id: str, content: bytes, hinted: str) -> str:
+    """1C often returns the card Description without extension; readers pick the parser by suffix."""
+    name = Path(hinted).name if hinted else ""
+    if name and Path(name).suffix:
+        return name
+    return f"{name or file_id}{_suffix_from_bytes(content) or '.bin'}"
 
 
 def _parse_dtw_response(
@@ -174,6 +190,12 @@ def cached_artifact_download(file_id: str) -> ArtifactDownload | None:
         content = path.read_bytes()
     except OSError:
         return None
+    if not path.suffix:
+        fixed = path.with_name(_filename_from_bytes(normalized, content, path.name))
+        try:
+            path = path.replace(fixed)
+        except OSError:
+            path = fixed if fixed.exists() else path
     return ArtifactDownload(
         file_id=normalized,
         filename=path.name,

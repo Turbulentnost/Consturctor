@@ -16,6 +16,8 @@ export type ProtocolMark = {
   refKey: string
   /** Picked by the user from 1С: trusted even without the outlook: marker in the comment. */
   manual?: boolean
+  /** Protocols the user unlinked from this meeting; auto-matching by the outlook marker skips them. */
+  detached?: string[]
 }
 
 export type OnecProtocolRow = {
@@ -56,7 +58,33 @@ export function rememberProtocolDocument(
   const bucket = readStored(userId)
   const previous = bucket[key]
   const manual = mark.manual ?? (previous?.manual && previous.refKey === mark.refKey)
-  bucket[key] = { number: mark.number || '', refKey: mark.refKey || '', ...(manual ? { manual: true } : {}) }
+  const detached = (previous?.detached || []).filter((ref) => ref !== mark.refKey)
+  bucket[key] = {
+    number: mark.number || '',
+    refKey: mark.refKey || '',
+    ...(manual ? { manual: true } : {}),
+    ...(detached.length ? { detached } : {})
+  }
+  writeStored(userId, bucket)
+}
+
+/** Unlink the protocol from this meeting in the Meetings tab only; the 1С document stays. */
+export function detachProtocolDocument(userId: string, meeting: MeetingEvent, refKey: string): void {
+  const key = meetingInstanceKey(meeting)
+  if (!key) return
+  const bucket = readStored(userId)
+  const previous = storedMarkForMeeting(meeting, bucket)
+  const detached = new Set(previous?.detached || [])
+  if (refKey) detached.add(refKey)
+  if (previous?.refKey) detached.add(previous.refKey)
+  for (const legacy of [meetingProtocolKey(meeting), (meeting.id || '').trim()]) {
+    if (legacy && legacy !== key) delete bucket[legacy]
+  }
+  bucket[key] = { number: '', refKey: '', detached: [...detached] }
+  writeStored(userId, bucket)
+}
+
+function writeStored(userId: string, bucket: Record<string, ProtocolMark>): void {
   try {
     localStorage.setItem(storageKey(userId), JSON.stringify(bucket))
   } catch {
@@ -147,9 +175,10 @@ export function marksForMeetings(
   for (const meeting of meetings) {
     const instanceKey = meetingInstanceKey(meeting)
     if (marks.has(instanceKey)) continue
+    const detached = new Set(storedMarkForMeeting(meeting, stored)?.detached || [])
     const hit = protocols.find((row) => {
       const ref = String(row.ref_key || '').trim()
-      return Boolean(ref) && !usedRefs.has(ref) && protocolMatchesMeeting(meeting, row)
+      return Boolean(ref) && !usedRefs.has(ref) && !detached.has(ref) && protocolMatchesMeeting(meeting, row)
     })
     if (!hit) {
       const local = storedMarkForMeeting(meeting, stored)

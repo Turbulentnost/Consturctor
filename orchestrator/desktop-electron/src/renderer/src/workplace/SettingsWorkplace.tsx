@@ -18,10 +18,12 @@ import {
   TODAY_WIDGET_VISIBILITY_EVENT
 } from '../tabs/grid/todayWidgetSettings'
 import { KpiProtectionSettings } from './KpiProtectionSettings'
+import { MyAgentsSection } from './MyAgentsSection'
 import { OneCSessionProfileSection } from './OneCSessionProfileSection'
 
 type SettingsSection =
   | 'general'
+  | 'my_agents'
   | 'notifications'
   | 'access'
   | 'diagnostics'
@@ -134,6 +136,7 @@ interface NotifyPrefs {
 
 const TABS: { id: SettingsSection; label: string }[] = [
   { id: 'general', label: 'Общие' },
+  { id: 'my_agents', label: 'Мои агенты' },
   { id: 'notifications', label: 'Уведомления' },
   { id: 'access', label: 'Права доступа' },
   { id: 'diagnostics', label: 'Диагностика' },
@@ -330,13 +333,19 @@ export function SettingsWorkplace({
   onDiagnostics,
   onTickets,
   onFiles,
-  onSupport
+  onSupport,
+  onOpenAgent,
+  onOpenPassport,
+  onOpenHistory
 }: {
   user: UserProfile
   onDiagnostics: () => void
   onTickets: () => void
   onFiles: () => void
   onSupport: () => void
+  onOpenAgent: (workflowId: string, title: string) => void
+  onOpenPassport: (workflowId: string, title: string) => void
+  onOpenHistory: (workflowId: string, title: string) => void
 }): React.JSX.Element {
   const [section, setSection] = useState<SettingsSection>('notifications')
   const [prefs, setPrefs] = useState<NotifyPrefs>(() => loadPrefs(user.id))
@@ -593,6 +602,10 @@ export function SettingsWorkplace({
           </section>
           </div>
         </div>
+      ) : null}
+
+      {section === 'my_agents' ? (
+        <MyAgentsSection onOpen={onOpenAgent} onPassport={onOpenPassport} onHistory={onOpenHistory} />
       ) : null}
 
       {section === 'notifications' ? (

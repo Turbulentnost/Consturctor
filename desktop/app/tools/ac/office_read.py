@@ -14,6 +14,7 @@ from app.tools.ac.readable_files import (
     READABLE_SUFFIXES,
     kind_for_suffix,
     resolve_readable_path,
+    with_detected_suffix,
 )
 from app.tools.ac.registry import ToolRegistry
 from app.tools.ac.tooling import (
@@ -112,7 +113,7 @@ class OfficeReadFileTool(BaseTool):
             return self._fail("INVALID_FILENAME", "Укажи filename или path.")
         try:
             workspace = self._resolver.for_agent(self._resolver.agent_id_from_input(input_data))
-            path = resolve_readable_path(workspace, raw)
+            path = with_detected_suffix(resolve_readable_path(workspace, raw))
         except WorkspaceError as exc:
             return self._fail("WORKSPACE_ERROR", str(exc))
 

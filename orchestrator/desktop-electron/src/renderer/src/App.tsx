@@ -450,8 +450,7 @@ function AppShell(): React.JSX.Element {
     })
     const unsubscribe = window.api.onNotificationOpen?.((payload) => {
       if (payload?.openDecisions || payload?.requestId) {
-        setLastTab('decisions')
-        setView({ kind: 'tab', key: 'decisions' })
+        openApprovalChat(payload?.workflowId || '', payload?.runId || '', payload?.body || '')
         return
       }
       const workflowId = payload?.workflowId || ''
@@ -760,10 +759,24 @@ function AppShell(): React.JSX.Element {
     setView({ kind: 'agentrun', workflowId, title: nextTitle || 'ИИ-агент', autoStart: false })
   }
 
-  function openFromInbox(workflowId: string, runId = '', title = '', body = ''): void {
-    if (/ожидает подтверждения/i.test(title)) {
+  function openApprovalChat(workflowId: string, runId = '', body = ''): void {
+    if (!workflowId) {
       setLastTab('decisions')
       setView({ kind: 'tab', key: 'decisions' })
+      return
+    }
+    const fromBody = /^([^:]+):/.exec(body || '')?.[1]?.trim() || ''
+    const title = runs.entries[workflowId]?.title || fromBody || 'ИИ-агент'
+    setView({ kind: 'agentrun', workflowId, title, autoStart: false })
+    if (runId && !liveEntryMatchesRun(runs.entries[workflowId], runId)) {
+      runs.noteRunning(workflowId, title, runId)
+      void runs.attachHistoryFeed(workflowId)
+    }
+  }
+
+  function openFromInbox(workflowId: string, runId = '', title = '', body = ''): void {
+    if (/ожидает подтверждения/i.test(title)) {
+      openApprovalChat(workflowId, runId, body)
       return
     }
     const fromBody = /Агент «([^»]+)»/.exec(body || '')?.[1] || ''
@@ -995,6 +1008,9 @@ function AppShell(): React.JSX.Element {
         onTickets={() => setView({ kind: 'tickets' })}
         onFiles={() => setView({ kind: 'files' })}
         onSupport={openSupport}
+        onOpenAgent={(workflowId, title) => void openAgentRun(workflowId, '', false, title)}
+        onOpenPassport={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })}
+        onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
       />
     )
   }

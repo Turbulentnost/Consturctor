@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -31,6 +32,50 @@ def kind_for_suffix(suffix: str) -> str:
     if folded in EXCEL_SUFFIXES:
         return "excel"
     return ""
+
+
+def suffix_from_bytes(content: bytes) -> str:
+    """1C file cards often come without an extension; readers pick the parser by suffix."""
+    if content.startswith(b"%PDF"):
+        return ".pdf"
+    if content[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if content.startswith(b"\x89PNG"):
+        return ".png"
+    if content[:4] in (b"II*\x00", b"MM\x00*"):
+        return ".tif"
+    if content[:2] == b"PK":
+        head = content[:4096]
+        if b"word/" in head:
+            return ".docx"
+        if b"xl/" in head:
+            return ".xlsx"
+        if b"ppt/" in head:
+            return ".pptx"
+        return ".zip"
+    if content.startswith(b"\xd0\xcf\x11\xe0"):
+        return ".doc"
+    return ""
+
+
+def with_detected_suffix(path: Path) -> Path:
+    """A file without extension gets a sibling copy named by its content type."""
+    if path.suffix or not path.is_file():
+        return path
+    try:
+        with path.open("rb") as handle:
+            suffix = suffix_from_bytes(handle.read(4096))
+    except OSError:
+        return path
+    if not suffix:
+        return path
+    target = path.with_name(path.name + suffix)
+    if not target.exists():
+        try:
+            shutil.copy2(path, target)
+        except OSError:
+            return path
+    return target
 
 
 def read_tool_for_suffix(suffix: str) -> str:

@@ -154,6 +154,10 @@ def _write_artifact_bytes(name: str, content: bytes, result: dict[str, Any]) -> 
     dest_dir = Path(tempfile.gettempdir()) / "constructor-onec-artifacts"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / Path(name).name
+    if not dest.suffix:
+        from app.tools.ac.readable_files import suffix_from_bytes
+
+        dest = dest.with_name(dest.name + suffix_from_bytes(content))
     dest.write_bytes(content)
     out = dict(result)
     out.pop("content_base64", None)

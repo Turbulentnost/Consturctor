@@ -331,7 +331,8 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             "psd_mark=true — только номер с «ПСД», все статусы включая закрытые, "
             "выборка листается целиком, max_results её не обрезает. "
             "pair=true (sd) — протоколы текущего и прошлого заседания «Совет директоров по ГК» "
-            "с проверкой комплектности «Поставленных задач» и списком пробелов."
+            "с построчной сверкой поручений («Решения»), «Поставленных задач» и повестки "
+            "(reconciliation: строка + ошибки) и списком пробелов."
         ),
         _schema(
             {
@@ -511,7 +512,7 @@ SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,
-    # faster-whisper small на CPU: ~8 минут на 25 минут аудио, берём запас.
+    # faster-whisper small на CPU, beam 1: ~2,5 минуты на 25 минут аудио; запас на beam 5 и медленные машины.
     "audio.transcribe": 3600,
 }
 

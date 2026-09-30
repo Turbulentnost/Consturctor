@@ -11,6 +11,7 @@ Mirrors Документ.ТД_Протокол.Форма.ФормаСписка
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -543,16 +544,261 @@ def check_protocol_tasks(
                 "findings": findings,
             }
         )
+    decisions = check_protocol_decisions(form, posted=posted, today=today)
+    agenda = check_protocol_agenda(form)
     gaps: list[str] = []
-    if not checked:
-        gaps.append("в «Поставленных задачах» протокола нет ни одной задачи")
+    if not checked and not decisions:
+        gaps.append("в протоколе нет ни поручений («Решения»), ни «Поставленных задач»")
     incomplete = [task for task in checked if not task["complete"]]
+    open_decisions = [item for item in decisions if not item["complete"]]
+    open_agenda = [item for item in agenda if not item["complete"]]
     return {
         "tasks": checked,
         "tasks_total": len(checked),
         "tasks_incomplete": len(incomplete),
-        "complete": bool(checked) and not incomplete,
+        "decisions": decisions,
+        "decisions_total": len(decisions),
+        "decisions_incomplete": len(open_decisions),
+        "agenda": agenda,
+        "agenda_incomplete": len(open_agenda),
+        "complete": bool(checked or decisions) and not (incomplete or open_decisions or open_agenda),
         "gaps": gaps,
+    }
+
+
+def check_protocol_decisions(
+    form: dict[str, Any],
+    *,
+    posted: bool,
+    today: date,
+) -> list[dict[str, Any]]:
+    """Each board assignment («Решения»): artifact, result, due date, cancel.
+
+    «Решения» have no executor in 1С, so «Отправлено» is not a finding: the board sends them
+    by posting the protocol.
+    """
+    _ = posted
+    checked: list[dict[str, Any]] = []
+    for item in form.get("decisions") or []:
+        if not isinstance(item, dict) or not str(item.get("text") or "").strip():
+            continue
+        due = str(item.get("due") or item.get("due_in_text") or "").strip()
+        done = bool(str(item.get("done_date") or "").strip() or str(item.get("result") or "").strip())
+        findings: list[str] = []
+        if item.get("canceled"):
+            status = "отменено"
+        else:
+            if not item.get("has_artifact"):
+                findings.append("нет артефакта (отметка «Наличие артефакта» не стоит)")
+            if not done:
+                findings.append("нет результата и даты исполнения")
+            if not due:
+                findings.append("не указан срок")
+            elif due < today.isoformat() and not done:
+                findings.append(f"срок {due} прошёл, поручение не исполнено")
+            status = "исполнено" if done and item.get("has_artifact") else "не исполнено"
+        checked.append(
+            {
+                "item": item.get("item") or "",
+                "text": item.get("text") or "",
+                "since": item.get("since") or "",
+                "due": due,
+                "due_source": "1С" if item.get("due") else ("текст поручения" if due else ""),
+                "result": item.get("result") or "",
+                "done_date": item.get("done_date") or "",
+                "has_artifact": bool(item.get("has_artifact")),
+                "sent": bool(item.get("sent")),
+                "canceled": bool(item.get("canceled")),
+                "cancel_reason": item.get("cancel_reason") or "",
+                "status": status,
+                "complete": not findings,
+                "findings": findings,
+            }
+        )
+    return checked
+
+
+def check_protocol_agenda(form: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each agenda question: a responsible speaker and an attached material."""
+    checked: list[dict[str, Any]] = []
+    for item in form.get("agenda") or []:
+        if not isinstance(item, dict) or not str(item.get("question") or "").strip():
+            continue
+        findings: list[str] = []
+        if not str(item.get("responsible") or "").strip():
+            findings.append("не указан ответственный")
+        if not item.get("has_file"):
+            findings.append("нет приложенного материала")
+        checked.append(
+            {
+                "item": item.get("item") or "",
+                "question": item.get("question") or "",
+                "responsible": item.get("responsible") or "",
+                "has_file": bool(item.get("has_file")),
+                "complete": not findings,
+                "findings": findings,
+            }
+        )
+    return checked
+
+
+PROTOCOL_FILES_ENTITY = "Catalog_ТД_ПротоколПрисоединенныеФайлы"
+
+# Name fragments of attached files per package item of п. 6.4 ПЛ-34-242.
+PACKAGE_FILE_HINTS: dict[str, tuple[str, ...]] = {
+    "резюме": ("резюме", "summary"),
+    "опу": ("опу", "бдр", "прибыл", "убыт", "план-факт", "план факт", "планфакт"),
+    "ддс": ("ддс", "бддс", "денежн"),
+    "инвестиц": ("инвест", "capex"),
+    "продаж": ("продаж", "выручк", "коммерч"),
+    "дз": ("дз", "дебитор"),
+    "производств": ("производ",),
+    "ниокр": ("ниокр", "нир", "окр"),
+    "риск": ("риск",),
+    "персонал": ("персонал", "кадр", "штат", "фот"),
+    "поручен": ("поручен",),
+    "решения класса а": ("класс а", "класса а"),
+    "приложение а": ("приложение а", "прил а", "прил. а", "план-факт", "план факт", "планфакт"),
+    "приложение б": ("приложение б", "прил б", "прил. б", "бдр"),
+}
+
+# Rows of the п. 6.4 table in the order of ПЛ-34-242.
+PACKAGE_LABELS: dict[str, str] = {
+    "резюме": "Краткое резюме (1 стр.)",
+    "опу": "Финансы план/факт: ОПУ",
+    "ддс": "Финансы: ДДС",
+    "инвестиц": "Капитал и инвестиции",
+    "продаж": "Продажи и клиенты",
+    "дз": "Дебиторская задолженность",
+    "производств": "Производство и качество",
+    "ниокр": "Проекты / НИОКР",
+    "риск": "Риски и комплаенс",
+    "персонал": "Персонал и преемственность",
+    "поручен": "Статус исполнения решений / поручений ПСД",
+    "решения класса а": "Решения на согласование (класс А)",
+    "приложение а": "Приложение А. План-факт БДР",
+    "приложение б": "Приложение Б. БДР",
+}
+
+# Agenda questions point to the speaker of a package item when no file names one.
+_AGENDA_HINTS: dict[str, tuple[str, ...]] = {
+    "опу": ("управленческ", "отчетност", "отчётност"),
+    "продаж": ("коммерческ", "продаж"),
+    "персонал": ("заработн", "персонал", "кадр"),
+    "поручен": ("поручени", "решени"),
+}
+
+
+def protocol_attached_files(ref_key: str) -> list[dict[str, Any]]:
+    """Files attached to the protocol card (Catalog_ТД_ПротоколПрисоединенныеФайлы), in upload order."""
+    from app.services.onec_tools import _fetch_odata_list
+
+    result = _fetch_odata_list(
+        {
+            "entity": PROTOCOL_FILES_ENTITY,
+            "filter": f"ВладелецФайла_Key eq guid'{ref_key}' and DeletionMark eq false",
+            "top": 200,
+        }
+    )
+    files = []
+    for row in result.get("value") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("Description") or "").strip()
+        extension = str(row.get("Расширение") or "").strip()
+        files.append(
+            {
+                "file_id": str(row.get("Ref_Key") or ""),
+                "name": f"{name}.{extension}" if name and extension else name or extension,
+                "created": str(row.get("ДатаСоздания") or "")[:16].replace("T", " "),
+                "uploaded_by": str(row.get("Изменил_Name") or row.get("Изменил") or "").strip(),
+            }
+        )
+    files.sort(key=lambda item: item["created"])
+    return files
+
+
+def package_table(
+    sides: list[tuple[dict[str, Any] | None, str]],
+    agenda: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One row per п. 6.4 item: responsible person and its documents in upload order."""
+    files = [
+        {
+            "name": str(item.get("name") or ""),
+            "created": str(item.get("created") or ""),
+            "uploaded_by": str(item.get("uploaded_by") or ""),
+            "protocol": str(side.get("number") or ""),
+        }
+        for side, _label in sides
+        if side
+        for item in side.get("files") or []
+    ]
+    files.sort(key=lambda item: item["created"])
+
+    def matches(item: dict[str, Any], hints: tuple[str, ...]) -> bool:
+        return any(_name_has_hint(item["name"], hint) for hint in hints)
+
+    def described(item: dict[str, Any]) -> str:
+        return f"{item['name']} ({item['created']}, {item['uploaded_by'] or 'автор не указан'}, {item['protocol']})"
+
+    rows: list[dict[str, Any]] = []
+    for index, (key, label) in enumerate(PACKAGE_LABELS.items(), start=1):
+        docs = [item for item in files if matches(item, PACKAGE_FILE_HINTS.get(key, ()))]
+        people = list(dict.fromkeys(item["uploaded_by"] for item in docs if item["uploaded_by"]))
+        source = "загрузил файлы в 1С" if people else ""
+        if not people:
+            speakers = [
+                str(question.get("responsible") or "").strip()
+                for question in agenda
+                if any(hint in str(question.get("question") or "").casefold() for hint in _AGENDA_HINTS.get(key, ()))
+            ]
+            people = list(dict.fromkeys(name for name in speakers if name))
+            source = "ответственный по вопросу повестки" if people else ""
+        rows.append(
+            {
+                "n": index,
+                "item": label,
+                "responsible": ", ".join(people),
+                "responsible_source": source,
+                "documents": [described(item) for item in docs],
+                "status": "есть" if docs else "нет",
+            }
+        )
+    unread = [item for item in files if not any(matches(item, hints) for hints in PACKAGE_FILE_HINTS.values())]
+    if unread:
+        rows.append(
+            {
+                "n": len(rows) + 1,
+                "item": "Не определено по имени — прочитать и отнести к пункту",
+                "responsible": ", ".join(dict.fromkeys(item["uploaded_by"] for item in unread if item["uploaded_by"])),
+                "responsible_source": "загрузил файлы в 1С",
+                "documents": [described(item) for item in unread],
+                "status": "прочитать",
+            }
+        )
+    return rows
+
+
+def _name_has_hint(name: str, hint: str) -> bool:
+    text = re.sub(r"[_]+", " ", name.casefold())
+    if len(hint) <= 3:
+        return any(word == hint or word.startswith(hint + " ") for word in re.findall(r"[a-zа-яё0-9]+", text))
+    return hint in text
+
+
+def package_by_files(files: list[dict[str, Any]]) -> dict[str, Any]:
+    """Match protocol files to package items by name; unnamed scans must be read to be classified."""
+    items: dict[str, list[str]] = {}
+    matched: set[str] = set()
+    for item, hints in PACKAGE_FILE_HINTS.items():
+        names = [f["name"] for f in files if any(_name_has_hint(f["name"], hint) for hint in hints)]
+        items[item] = names
+        matched.update(names)
+    unrecognized = [f for f in files if f["name"] not in matched]
+    return {
+        "items": [{"item": item, "files": names, "found": bool(names)} for item, names in items.items()],
+        "unrecognized": unrecognized,
     }
 
 
@@ -580,6 +826,11 @@ def _pair_side(
         return {**protocol, "error": str(exc)}
     check = check_protocol_tasks(form, posted=bool(protocol.get("posted")), today=today)
     gaps.extend(f"{label} протокол {protocol.get('number')}: {gap}" for gap in check["gaps"])
+    try:
+        files = protocol_attached_files(ref_key)
+    except Exception as exc:  # noqa: BLE001 — a failed file list must not hide the protocol check
+        files = []
+        gaps.append(f"{label} протокол {protocol.get('number')}: файлы не прочитаны ({str(exc)[:200]})")
     return {
         **protocol,
         "next_meeting": form.get("next_meeting_date") or protocol.get("next_meeting") or "",
@@ -588,6 +839,8 @@ def _pair_side(
         "decisions": form.get("decisions") or [],
         "responsible": form.get("responsible") or "",
         "check": check,
+        "files": files,
+        "package": package_by_files(files),
     }
 
 
@@ -603,12 +856,26 @@ def _mark_not_carried(current: dict[str, Any] | None, previous: dict[str, Any] |
             continue
         task["findings"].append(f"не перенесена в протокол {number} на контроль")
         task["complete"] = False
-    previous["check"]["tasks_incomplete"] = sum(
-        1 for task in previous["check"]["tasks"] if not task["complete"]
+    carried_decisions = {_decision_key(item.get("text")) for item in current["check"].get("decisions") or []}
+    for item in previous["check"].get("decisions") or []:
+        if item["canceled"] or item["status"] == "исполнено":
+            continue
+        if _decision_key(item.get("text")) in carried_decisions:
+            item["carried"] = True
+            continue
+        item["carried"] = False
+        item["findings"].append(f"не исполнено и не перенесено в протокол {number}")
+        item["complete"] = False
+    check = previous["check"]
+    check["tasks_incomplete"] = sum(1 for task in check["tasks"] if not task["complete"])
+    check["decisions_incomplete"] = sum(1 for item in check.get("decisions") or [] if not item["complete"])
+    check["complete"] = bool(check["tasks"] or check.get("decisions")) and not (
+        check["tasks_incomplete"] or check["decisions_incomplete"] or check.get("agenda_incomplete")
     )
-    previous["check"]["complete"] = bool(previous["check"]["tasks"]) and not previous["check"][
-        "tasks_incomplete"
-    ]
+
+
+def _decision_key(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
 
 
 def board_protocol_pair(args: dict[str, Any], *, access: Any | None = None) -> dict[str, Any]:
@@ -666,17 +933,101 @@ def board_protocol_pair(args: dict[str, Any], *, access: Any | None = None) -> d
         for side in (current, previous)
         if side
     )
+    reconciliation = reconciliation_rows(current, previous)
+    with_errors = sum(1 for row in reconciliation if row["errors"])
+    files_note = "; ".join(
+        f"файлов у {side['number']}: {len(side.get('files') or [])}" for side in (current, previous) if side
+    )
+    package_rows = package_table(
+        [(current, "текущий"), (previous, "прошлый")],
+        (current or {}).get("agenda") or (previous or {}).get("agenda") or [],
+    )
     return {
         **base,
         "current": current,
         "previous": previous,
+        "reconciliation": reconciliation,
+        "package_table": package_rows,
         "gaps": gaps,
         "candidates": [
             {key: item.get(key) for key in ("number", "date", "status", "posted", "ref_key")}
             for item in sorted(protocols, key=lambda row: row.get("date") or "", reverse=True)[:10]
         ],
-        "summary": f"«{topic}»: {names or 'протоколы не найдены'}; пробелов: {len(gaps)}",
+        "summary": (
+            f"«{topic}»: {names or 'протоколы не найдены'}; сверено строк: {len(reconciliation)}, "
+            f"с ошибками: {with_errors}; {files_note + '; ' if files_note else ''}пробелов: {len(gaps)}"
+        ),
     }
+
+
+def reconciliation_rows(
+    current: dict[str, Any] | None,
+    previous: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """One row per assignment / task / agenda question — the table the agent reports as is."""
+    rows: list[dict[str, Any]] = []
+    for side, label in ((previous, "прошлый"), (current, "текущий")):
+        check = (side or {}).get("check") or {}
+        number = (side or {}).get("number") or ""
+        files = (side or {}).get("files") or []
+        posted = bool((side or {}).get("posted"))
+        status_1c = str((side or {}).get("status") or "")
+        in_card = (
+            [f"к протоколу приложено файлов: {len(files)} (к строке в 1С не привязаны)"] if files else []
+        )
+        for item in check.get("decisions") or []:
+            errors = [
+                f"отметка «Наличие артефакта» не стоит; к протоколу приложено файлов: {len(files)} — "
+                "сверь по содержанию, относятся ли они к поручению"
+                if files and error.startswith("нет артефакта")
+                else error
+                for error in item["findings"]
+            ]
+            rows.append(
+                {
+                    "protocol": f"{label} {number}",
+                    "section": "поручение",
+                    "item": item["item"],
+                    "text": item["text"],
+                    "responsible": "",
+                    "due": item["due"],
+                    "status": item["status"],
+                    "ok": ["артефакт есть"] * item["has_artifact"]
+                    + ([f"исполнено {item['done_date']}".strip()] if item["done_date"] else [])
+                    + (["перенесено в текущий протокол"] if item.get("carried") else [])
+                    + ([f"протокол проведён, статус «{status_1c}»"] if posted else []),
+                    "errors": errors,
+                }
+            )
+        for task in check.get("tasks") or []:
+            rows.append(
+                {
+                    "protocol": f"{label} {number}",
+                    "section": "поставленная задача",
+                    "item": task["item"],
+                    "text": task["text"],
+                    "responsible": task["executor"],
+                    "due": task["due"],
+                    "status": "комплект полный" if task["complete"] else "неполный",
+                    "ok": ["файл есть"] * task["has_file"] + ["отправлена в 1С"] * task["sent"],
+                    "errors": list(task["findings"]),
+                }
+            )
+        for question in check.get("agenda") or []:
+            rows.append(
+                {
+                    "protocol": f"{label} {number}",
+                    "section": "вопрос повестки",
+                    "item": question["item"],
+                    "text": question["question"],
+                    "responsible": question["responsible"],
+                    "due": "",
+                    "status": "комплект полный" if question["complete"] else "неполный",
+                    "ok": ["материал приложен"] * question["has_file"] + (in_card if not question["has_file"] else []),
+                    "errors": list(question["findings"]),
+                }
+            )
+    return rows
 
 
 def stub_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:

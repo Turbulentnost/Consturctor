@@ -19,6 +19,17 @@ from app.services.workflows.cursor_tools import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_transcripts(tmp_path, monkeypatch):
+    import app.services.audio_transcribe as audio_mod
+
+    monkeypatch.setattr(audio_mod, "_transcript_dir", lambda: tmp_path)
+    monkeypatch.delenv("WHISPER_BEAM_SIZE", raising=False)
+    audio_mod._cache.clear()
+    yield
+    audio_mod._cache.clear()
+
+
 def _session_factory():
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -125,6 +136,52 @@ def test_transcribe_passes_outlook_names_as_prompt(monkeypatch) -> None:
     )
     assert "Ильченко" in seen.get("initial_prompt", "")
     assert "Мегрелишвили" in result["names_hint"]
+
+
+def test_transcribe_uses_fast_decoding(monkeypatch) -> None:
+    Session = _session_factory()
+    _seed_audio_file(Session)
+    monkeypatch.setattr(db_session, "SessionLocal", Session)
+    seen: dict = {}
+
+    class _RecordingModel(_FakeModel):
+        def transcribe(self, path, **kwargs):
+            seen.update(kwargs)
+            return super().transcribe(path, **kwargs)
+
+    monkeypatch.setattr("app.services.audio_transcribe._get_model", lambda: _RecordingModel())
+    transcribe_run_attachment(file_id="file-1", user_id="user-1")
+    assert seen["beam_size"] == 1
+    assert seen["condition_on_previous_text"] is False
+    assert seen["vad_filter"] is True
+
+    import app.services.audio_transcribe as audio_mod
+
+    audio_mod._cache.clear()
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")
+    transcribe_run_attachment(file_id="file-1", user_id="user-1")
+    assert seen["beam_size"] == 5
+
+
+def test_transcribe_disk_cache_survives_restart(monkeypatch) -> None:
+    Session = _session_factory()
+    _seed_audio_file(Session)
+    monkeypatch.setattr(db_session, "SessionLocal", Session)
+    monkeypatch.setattr("app.services.audio_transcribe._get_model", lambda: _FakeModel())
+
+    import app.services.audio_transcribe as audio_mod
+
+    first = transcribe_run_attachment(file_id="file-1", user_id="user-1")
+    assert first["cached"] is False
+
+    audio_mod._cache.clear()
+    monkeypatch.setattr(
+        audio_mod, "_get_model", lambda: pytest.fail("после перезапуска модель не должна грузиться")
+    )
+    again = transcribe_run_attachment(file_id="file-1", user_id="user-1")
+    assert again["cached"] is True
+    assert again["transcript_path"] == first["transcript_path"]
+    assert again["segment_count"] == 2
 
 
 def test_transcribe_rejects_foreign_user(monkeypatch) -> None:

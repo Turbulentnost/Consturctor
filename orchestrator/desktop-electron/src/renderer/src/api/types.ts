@@ -90,6 +90,8 @@ export interface WorkflowListItem {
   phase: string
   documentName?: string
   updatedAt?: string
+  paused?: boolean
+  autoRun?: boolean
 }
 
 export interface WorkflowFileItem {

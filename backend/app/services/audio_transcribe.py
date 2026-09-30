@@ -2,11 +2,14 @@
 
 Инструмент audio.transcribe: file_id вложения запуска → текст и сегменты
 с таймкодами. Модель кэшируется на процесс, читается из env WHISPER_MODEL.
+Готовая расшифровка хранится на диске по хэшу файла: повторная загрузка той же
+записи не распознаётся заново, в том числе после перезапуска backend.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 import threading
@@ -41,6 +44,15 @@ _inflight_lock = threading.Lock()
 
 def _wanted_model() -> str:
     return (os.environ.get("WHISPER_MODEL") or "small").strip() or "small"
+
+
+def _beam_size() -> int:
+    """Greedy decoding by default: ~3x faster than beam 5 on CPU with the same text on meetings."""
+    raw = (os.environ.get("WHISPER_BEAM_SIZE") or "").strip()
+    try:
+        return max(1, min(10, int(raw))) if raw else 1
+    except ValueError:
+        return 1
 
 
 def _cpu_threads() -> int:
@@ -122,6 +134,29 @@ def _write_transcript(filename: str, segments: list[dict[str, Any]], duration_se
     return path
 
 
+def _disk_cache_path(cache_key: str) -> Path:
+    name = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:24]
+    return _transcript_dir() / f"{name}.json"
+
+
+def _read_disk_cache(cache_key: str) -> dict[str, Any] | None:
+    path = _disk_cache_path(cache_key)
+    try:
+        result = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(result, dict) or not Path(str(result.get("transcript_path") or "")).is_file():
+        return None
+    return result
+
+
+def _write_disk_cache(cache_key: str, result: dict[str, Any]) -> None:
+    try:
+        _disk_cache_path(cache_key).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _short_result(
     *,
     filename: str,
@@ -197,11 +232,15 @@ def transcribe_run_attachment(
 
     prompt = _names_prompt(names, hint)
     digest = hashlib.sha256(raw).hexdigest()
-    cache_key = f"{digest}:{_wanted_model()}:{prompt}"
+    cache_key = f"{digest}:{_wanted_model()}:beam{_beam_size()}:{prompt}"
     with _inflight_lock:
         cached = _cache.get(cache_key)
         if cached is not None and Path(str(cached.get("transcript_path") or "")).is_file():
             return {**cached, "cached": True}
+        stored = _read_disk_cache(cache_key)
+        if stored is not None:
+            _cache[cache_key] = stored
+            return {**stored, "cached": True}
         waiter = _inflight.get(cache_key)
         if waiter is None:
             waiter = threading.Event()
@@ -232,6 +271,7 @@ def transcribe_run_attachment(
         )
         with _inflight_lock:
             _cache[cache_key] = result
+        _write_disk_cache(cache_key, result)
         return result
     finally:
         waiter.set()
@@ -248,7 +288,13 @@ def _transcribe_bytes(
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(raw)
             tmp_path = Path(tmp.name)
-        options: dict[str, Any] = {"language": "ru", "vad_filter": True, "beam_size": 5}
+        # Not conditioning on previous text is faster and stops Whisper's repeat loops on long meetings.
+        options: dict[str, Any] = {
+            "language": "ru",
+            "vad_filter": True,
+            "beam_size": _beam_size(),
+            "condition_on_previous_text": False,
+        }
         if prompt:
             options["initial_prompt"] = prompt
         segments_iter, info = model.transcribe(str(tmp_path), **options)

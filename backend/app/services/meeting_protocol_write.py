@@ -20,7 +20,7 @@ Field / catalog mapping discovered live from $metadata and existing protocols
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Callable
 
 from app.services.erp_assignments import (
@@ -567,6 +567,22 @@ def _iso_day(value: Any) -> str:
     return text[:10]
 
 
+_DUE_IN_TEXT = re.compile(r"\bдо\s+(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})\b", re.IGNORECASE)
+
+
+def _due_from_text(value: Any) -> str:
+    """Last «до ДД.ММ.ГГ» in a decision text — board decisions keep the deadline there."""
+    matches = list(_DUE_IN_TEXT.finditer(_clean(value)))
+    if not matches:
+        return ""
+    day, month, year = matches[-1].groups()
+    year_full = int(year) + 2000 if len(year) == 2 else int(year)
+    try:
+        return date(year_full, int(month), int(day)).isoformat()
+    except ValueError:
+        return ""
+
+
 def _iso_clock(value: Any) -> str:
     text = _clean(value)
     if "T" not in text:
@@ -702,16 +718,29 @@ def read_protocol_form(ref_key: str, *, card: dict[str, Any] | None = None) -> d
     ]
     agenda = [
         {
+            "item": _clean(row.get("LineNumber")),
             "question": _clean(row.get("Вопрос")),
             "responsible": person_fio(row.get("Ответственный_Key")),
+            "has_file": bool(
+                _clean(row.get("Файл_Base64Data")) or _clean(row.get("ОтметкаОНаличииПриложений"))
+            ),
         }
         for row in _protocol_rows(card, "ПовесткаСовещания")
         if _clean(row.get("Вопрос"))
     ]
     decisions = [
         {
+            "item": _clean(row.get("LineNumber")),
             "text": _clean(row.get("ТекстРешения")),
             "due": _iso_day(row.get("ДатаОкончания")),
+            "due_in_text": _due_from_text(row.get("ТекстРешения")),
+            "since": _iso_day(row.get("ДатаНачала")),
+            "result": _clean(row.get("РезультатРешения")),
+            "done_date": _iso_day(row.get("ДатаИсполнения")),
+            "sent": row.get("Отправлено") is True,
+            "has_artifact": row.get("НаличиеАртефакта") is True,
+            "canceled": row.get("Отменено") is True,
+            "cancel_reason": _clean(row.get("ПричинаОтмены")),
         }
         for row in _protocol_rows(card, "Решения")
         if _clean(row.get("ТекстРешения"))
