@@ -102,11 +102,51 @@ def test_office_manager_returns_empty_tiles_and_does_not_load_sources(monkeypatc
     assert db.query(PositionKpiDailyFact).count() == 1
 
 
-def test_assistant_skips_module_without_scorer(monkeypatch) -> None:
+def test_assistant_skips_meetings_schedule_until_sources_are_clarified(monkeypatch) -> None:
     db = _session()
-    monkeypatch.setattr(daily_mod, "load_outlook_events", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(
+        daily_mod,
+        "load_outlook_events",
+        lambda *_a, **_k: [{"subject": "Планёрка директора", "start": "2026-09-10T10:00:00"}],
+    )
     monkeypatch.setattr(daily_mod, "load_protocols", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError()))
     monkeypatch.setattr(daily_mod, "load_cards", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError()))
+
+    def load_odata(self, extra):
+        entity = extra.get("entity")
+        if entity == "Catalog_Пользователи":
+            return [{"Ref_Key": "leader", "Description": "Донцова Анна Егоровна"}]
+        if entity == "Catalog_ТД_ТемыСовещаний":
+            return [
+                {
+                    "Ref_Key": "t1",
+                    "Description": "Планёрка директора",
+                    "DeletionMark": False,
+                    "ДатаЗакрытияТемы": "2026-12-31T00:00:00",
+                    "ДеньВМесяце": 10,
+                    "ПовторениеПоМесяцам": [{"Месяц": 9}],
+                }
+            ]
+        if entity == "Document_ТД_Протокол":
+            return [
+                {
+                    "DeletionMark": False,
+                    "ВидСовещания": "Отчетное",
+                    "ТемаСовещания_Key": "t1",
+                    "Date": "2026-09-10T12:00:00",
+                }
+            ]
+        raise AssertionError(entity)
+
+    monkeypatch.setattr(daily_mod.SourceBundle, "load_odata", load_odata)
+
+    def _skip_dpi(*_args, **_kwargs):
+        raise RuntimeError("dpi is a separate test")
+
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_dpi", _skip_dpi)
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_orders", _skip_dpi)
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_unplanned", _skip_dpi)
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_tasks", _skip_dpi)
 
     result = get_or_compute_position_kpi(
         db,
@@ -116,7 +156,6 @@ def test_assistant_skips_module_without_scorer(monkeypatch) -> None:
         date_to=PERIOD_TO,
     )
     assert result["tiles"] == []
-    assert "meetings_schedule" not in {tile["code"] for tile in result["tiles"]}
 
 
 def test_unknown_position_raises() -> None:
@@ -182,6 +221,31 @@ def test_failed_scorer_skips_tile_not_response(monkeypatch) -> None:
     assert calls["protocol"] == 1
 
 
+def test_failed_source_shows_no_data_instead_of_perfect_score(monkeypatch) -> None:
+    db = _session()
+
+    def broken_odata(*_args, **_kwargs):
+        raise RuntimeError("HTTP 400: Сегмент пути Тема не найден!")
+
+    monkeypatch.setattr("app.services.onec_tools._fetch_odata_list", broken_odata)
+
+    def zero_violations(metric, ctx):
+        rows = ctx.load_for({"loader": "odata", "entity": "Document_ТД_СлужебнаяЗаписка"})
+        return {"fact_pct": 100.0 if not rows else 0.0, "score_pct": 100.0, "contrib_pct": 25.0}, "ok"
+
+    monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_packages", zero_violations)
+    monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol"))
+    monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_instructions", _scorer("instructions"))
+    monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_quality", _scorer("quality"))
+
+    result = get_or_compute_position_kpi(db, PSD, as_of=AS_OF, date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    tiles = {tile["code"]: tile for tile in result["tiles"]}
+    broken = tiles["package_on_time"]
+    assert broken["fact"] is None and broken["score"] is None and broken["contrib"] is None
+    assert "Тема" in broken["evidence"]
+    assert tiles["protocol_on_time"]["score"] == 100
+
+
 def test_refresh_recomputes(monkeypatch) -> None:
     db = _session()
     calls: dict[str, int] = {}
@@ -242,6 +306,11 @@ def test_daily_cache_skips_profiles_already_computed_today(monkeypatch) -> None:
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol", calls))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_instructions", _scorer("instructions", calls))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_quality", _scorer("quality", calls))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_meetings", _scorer("meetings", calls))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_dpi", _scorer("dpi", calls))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_orders", _scorer("orders", calls))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_unplanned", _scorer("unplanned", calls))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_tasks", _scorer("tasks", calls))
 
     first = refresh_all_profiles(
         db,
@@ -278,6 +347,11 @@ def test_refresh_all_profiles_warms_catalog(monkeypatch) -> None:
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol"))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_instructions", _scorer("instructions"))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_quality", _scorer("quality"))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_meetings", _scorer("meetings"))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_dpi", _scorer("dpi"))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_orders", _scorer("orders"))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_unplanned", _scorer("unplanned"))
+    monkeypatch.setitem(SCORERS, "kpi.sources.assistant_tasks", _scorer("tasks"))
 
     result = refresh_all_profiles(db, as_of=AS_OF, date_from=PERIOD_FROM, date_to=PERIOD_TO)
     assert result["ok"] is True

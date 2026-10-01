@@ -23,6 +23,7 @@ import { usePageSearch } from '../../layout/pageSearchContext'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter'
 import { hasTurboSessionCredentials } from '../../workplace/userContext'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 function ProjectTasksTable({
   rows,
@@ -138,6 +139,21 @@ export function ProjectsGridTab({
       return true
     })
   }, [data.projects, tileFilter, query, barStatus, barRisk, barMine, periodFrom, periodTo])
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      projects.map((project) => ({
+        id: `projects:${project.id}`,
+        source: 'grid:projects',
+        pageKey: 'projects',
+        kind: 'entity',
+        targetId: project.id,
+        title: project.name,
+        subtitle: [project.code, project.status, project.role].filter(Boolean).join(' · '),
+        keywords: [project.risk, project.manager, project.deadline]
+      })),
+    [projects]
+  )
+  useRegisterGlobalSearch('grid:projects', globalSearchEntries)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
   const [myTasksOnly, setMyTasksOnly] = useState(true)
   const effectiveId = selectedId || projects[0]?.id || ''
@@ -252,6 +268,31 @@ export function ProjectsGridTab({
 
   const fileLabel = selected?.fileId || selected?.id || '—'
   const [openHint, setOpenHint] = useState('')
+  const [launchingTurboProject, setLaunchingTurboProject] = useState(false)
+  const [launchHint, setLaunchHint] = useState<{ text: string; ok: boolean } | null>(null)
+
+  useEffect(() => {
+    if (!launchHint?.ok) return
+    const timer = window.setTimeout(() => setLaunchHint(null), 6000)
+    return () => window.clearTimeout(timer)
+  }, [launchHint])
+
+  const launchTurboProject = async (): Promise<void> => {
+    setLaunchingTurboProject(true)
+    setLaunchHint(null)
+    try {
+      const result = await window.api.launchTurboProject()
+      if (!result.ok) {
+        setLaunchHint({ text: result.error || 'Не удалось открыть приложение TurboProject.', ok: false })
+      } else if (result.message) {
+        setLaunchHint({ text: result.message, ok: true })
+      }
+    } catch {
+      setLaunchHint({ text: 'Не удалось открыть приложение TurboProject.', ok: false })
+    } finally {
+      setLaunchingTurboProject(false)
+    }
+  }
 
   const openSelectedProject = (): void => {
     if (!selected) return
@@ -272,6 +313,26 @@ export function ProjectsGridTab({
         if (id === 'load') return
         setTileFilter((current) => (id === 'active' ? 'all' : toggleSimpleTile(current, id)))
       })}
+      filterToolbarExtra={
+        <div className="turbo-launch">
+          {launchHint ? (
+            <span
+              className={`turbo-launch-hint${launchHint.ok ? '' : ' error'}`}
+              title={launchHint.text}
+            >
+              {launchHint.text}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="btn-primary turbo-launch-btn"
+            disabled={launchingTurboProject}
+            onClick={() => void launchTurboProject()}
+          >
+            {launchingTurboProject ? 'Открываем…' : 'Открыть в приложении'}
+          </button>
+        </div>
+      }
       widgets={{
         filters: (
         <GridFilterBar
@@ -335,6 +396,7 @@ export function ProjectsGridTab({
                 return (
                   <Fragment key={p.id}>
                     <tr
+                      data-search-id={p.id}
                       className={selected?.id === p.id ? 'selected' : ''}
                       onClick={() => setSelectedId(p.id)}
                     >

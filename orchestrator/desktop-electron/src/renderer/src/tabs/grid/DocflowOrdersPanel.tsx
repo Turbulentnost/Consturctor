@@ -21,6 +21,12 @@ import {
   type OrderRow
 } from '../../workplace/fetchDocflowCorrespondence'
 import { SortTh, useDocflowTable } from './docflowTableTools'
+import {
+  useRegisterGlobalSearch,
+  type GlobalSearchEntry
+} from '../../layout/globalSearch'
+
+const GLOBAL_SEARCH_SOURCE = 'grid:docflow:orders'
 
 const KINDS: { id: '' | OrderKind; title: string }[] = [
   { id: '', title: 'Все' },
@@ -236,6 +242,32 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
     query
   })
   const visible = table.rows
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      visible.map((row) => {
+        const targetId = `order:${row.id}`
+        return {
+          id: `docflow:${targetId}`,
+          source: GLOBAL_SEARCH_SOURCE,
+          pageKey: 'docflow',
+          kind: 'entity',
+          targetId,
+          sectionId: 'orders',
+          title: row.subject || `${row.kindLabel} № ${cell(row.number)}`,
+          subtitle: [formatCorrespondenceDate(row.date), row.kindLabel, row.status].filter(Boolean).join(' · '),
+          keywords: [
+            row.number,
+            row.organization,
+            row.responsible,
+            row.access,
+            row.content,
+            ...(sheets[row.id]?.items || []).map((item) => item.name)
+          ]
+        }
+      }),
+    [visible, sheets]
+  )
+  useRegisterGlobalSearch(GLOBAL_SEARCH_SOURCE, globalSearchEntries)
 
   const selected = visible.find((row) => row.id === selectedId) || listed.find((row) => row.id === selectedId) || null
   const selectedSheet = selected ? sheets[selected.id] : undefined
@@ -382,6 +414,7 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
                 {visible.map((row) => (
                   <tr
                     key={row.id}
+                    data-search-id={`order:${row.id}`}
                     className={`docflow-row${selected?.id === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => setSelectedId(row.id)}

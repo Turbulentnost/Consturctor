@@ -570,7 +570,7 @@ function kpiListReady(text: string): boolean {
   const lines = blob.split(/\r?\n/);
   const doneAt = lines.findIndex((line) => /^\s*СПИСОК_ГОТОВ\s*$/.test(line));
   if (doneAt < 0) return false;
-  const weighted = /^\s*(?:\d+[\).]|[-*•])\s*.+\d{1,3}\s*%/;
+  const weighted = /^\s*(?:(?:\d+[\).]|[-*•])\s*)?.+\d{1,3}\s*%/;
   const numbered = /^\s*(?:\d+[\).]|[-*•])\s*\S/;
   let count = 0;
   for (const line of lines.slice(0, doneAt)) {

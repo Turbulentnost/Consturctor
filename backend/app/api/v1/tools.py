@@ -13,9 +13,15 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
+from app.config import settings
 from app.core.jwt import AuthContext
 from app.schemas.workflow import WebSearchRequest, WebSearchResponse, WebSearchResultItem
 from app.services.imap_tools import ImapToolError, imap_configured, invoke_imap
+from app.services.meeting_planner import (
+    MEETING_PLANNER_TOOLS,
+    MEETING_PLANNER_WRITE_TOOLS,
+    invoke_meeting_planner,
+)
 from app.services.onec_artifacts import ArtifactError, load_artifact_file
 from app.services.onec_tools import ONEC_TOOLS, OnecToolError, invoke_onec, odata_configured
 from app.services.tool_names import resolve_tool_name
@@ -60,7 +66,14 @@ _USERS_TOOLS = frozenset(
     }
 )
 _AUDIO_TOOLS = frozenset({"audio.transcribe"})
-_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS | _USERS_TOOLS | _AUDIO_TOOLS
+_SERVER_TOOLS = (
+    _IMAP_TOOLS
+    | ONEC_TOOLS
+    | _TURBOPROJECT_TOOLS
+    | _USERS_TOOLS
+    | _AUDIO_TOOLS
+    | MEETING_PLANNER_TOOLS
+)
 
 
 class ToolInvokeBody(BaseModel):
@@ -105,13 +118,26 @@ def _dispatch_server_tool(
     tool_name = resolved
     try:
         if tool_name in _IMAP_TOOLS:
-            result = invoke_imap(tool_name, arguments)
+            imap_args = dict(arguments or {})
+            mail_login = str(imap_args.pop("mail_login", "") or "")
+            mail_password = str(imap_args.pop("mail_password", "") or "")
+            result = invoke_imap(
+                tool_name,
+                imap_args,
+                user_login=mail_login,
+                user_password=mail_password,
+                personal=True,
+            )
         elif tool_name in _TURBOPROJECT_TOOLS:
             result = invoke_turboproject(tool_name, arguments)
         elif tool_name in _USERS_TOOLS:
             result = _invoke_users_tool(tool_name, arguments, auth)
         elif tool_name in _AUDIO_TOOLS:
             result = _invoke_audio_tool(tool_name, arguments, auth)
+        elif tool_name in MEETING_PLANNER_TOOLS:
+            if tool_name in MEETING_PLANNER_WRITE_TOOLS:
+                _require_meeting_planner_writer(auth)
+            result = invoke_meeting_planner(tool_name, arguments)
         else:
             result = invoke_onec(
                 tool_name,
@@ -127,6 +153,20 @@ def _dispatch_server_tool(
     return {"ok": True, "tool": tool_name, "result": result}
 
 
+def _require_meeting_planner_writer(auth: AuthContext) -> None:
+    """Совещания создаются от служебного ящика — только помощнику ПСД и администраторам."""
+    from app.services.app_users import is_admin_user
+    from app.services.orchestrator.ilchenko import is_ilchenko
+
+    fio = auth.fio or ""
+    if is_ilchenko(user_id=auth.user_id, fio=fio) or is_admin_user(fio):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Создавать совещания в календаре «Совещания» может только помощник ПСД.",
+    )
+
+
 def _ensure_websearch_path() -> None:
     path = str(_TOOLS_WEBSEARCH)
     if path not in sys.path:
@@ -136,9 +176,11 @@ def _ensure_websearch_path() -> None:
 @router.get("/imap/status")
 async def imap_status(auth: AuthContext = Depends(get_current_user)) -> dict[str, Any]:
     _ = auth
+    configured = bool(settings.imap_host) or imap_configured()
     return {
-        "configured": imap_configured(),
-        "mode": "real" if imap_configured() else "stub",
+        "configured": configured,
+        "mode": "real" if configured else "stub",
+        "personal_mailbox": True,
         "tools": sorted(_IMAP_TOOLS),
     }
 

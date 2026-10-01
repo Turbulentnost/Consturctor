@@ -36,6 +36,10 @@ export interface WorkplaceKpiEmployeeMetric {
   sparklinePoints: number[]
   sparklineColor: string
   source: KpiValueSource
+  /** План в тех же единицах, что и точки графика — пунктир на плитке. */
+  planValue?: number | null
+  /** Вес показателя в премии, %. */
+  weight?: number
 }
 
 export interface WorkplaceKpiProblemZone {

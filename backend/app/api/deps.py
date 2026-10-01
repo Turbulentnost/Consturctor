@@ -5,7 +5,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import settings
 from app.core.jwt import AuthContext, validate_token
-from app.services.app_users import is_admin_user
+from app.services.admin_access import get_admin_access
 from app.services.sessions import is_current_session
 
 _bearer = HTTPBearer(auto_error=False)
@@ -28,6 +28,22 @@ def get_current_user(
 
 
 def require_admin_user(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
-    if not is_admin_user(auth.fio or ""):
+    if get_admin_access(auth.user_id) is None:
         raise HTTPException(status_code=403, detail="Доступ только для администратора")
     return auth
+
+
+def require_admin_page(page: str):
+    return require_any_admin_page(page)
+
+
+def require_any_admin_page(*pages: str):
+    wanted = frozenset(pages)
+
+    def dependency(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
+        access = get_admin_access(auth.user_id)
+        if access is None or not wanted.intersection(access.pages):
+            raise HTTPException(status_code=403, detail="Нет доступа к разделу админ-панели")
+        return auth
+
+    return dependency

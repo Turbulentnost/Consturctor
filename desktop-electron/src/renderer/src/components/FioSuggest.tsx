@@ -12,6 +12,8 @@ interface FioSuggestProps {
   variant?: 'light' | 'dark'
   onEnter?: () => void
   autoFocus?: boolean
+  /** Login screen: only people from the 1C login dialog, no chat directory. */
+  publicOnly?: boolean
 }
 
 function initials(name: string): string {
@@ -33,7 +35,8 @@ export function FioSuggest({
   inputClassName,
   variant = 'light',
   onEnter,
-  autoFocus
+  autoFocus,
+  publicOnly = false
 }: FioSuggestProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<DirectoryUser[]>([])
@@ -57,7 +60,7 @@ export function FioSuggest({
     void Promise.all(
       items.map(async (user) => {
         let url = await loadUserAvatar({ id: user.id, avatarUrl: user.avatarUrl })
-        if (!url && user.fio) {
+        if (!url && user.fio && !publicOnly) {
           const matches = await api.listDirectoryUsers(user.fio)
           const match =
             matches.find((item) => item.fio.toLowerCase() === user.fio.toLowerCase() && item.id) ||
@@ -84,19 +87,21 @@ export function FioSuggest({
     return () => {
       alive = false
     }
-  }, [items])
+  }, [items, publicOnly])
 
   function query(search: string): void {
     if (debounce.current) clearTimeout(debounce.current)
     debounce.current = setTimeout(async () => {
       let results: DirectoryUser[] = []
-      try {
-        results = await api.listDirectoryUsers(search)
-      } catch {
-        results = []
+      if (!publicOnly) {
+        try {
+          results = await api.listDirectoryUsers(search)
+        } catch {
+          results = []
+        }
       }
       if (!results.length) {
-        const names = await api.searchUsers(search)
+        const names = await api.searchUsers(search, publicOnly)
         results = names.map((fio) => ({
           id: '',
           fio,

@@ -15,6 +15,7 @@ import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilter
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { MailDetailPanel } from './MailDetailPanel'
 import { usePageSearch } from '../../layout/pageSearchContext'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 import {
   applyMailMeta,
   createMailFolderId,
@@ -127,6 +128,21 @@ export function MailGridTab({
       return true
     })
   }, [directionRows, folderFilter, tileFilter, query, barPriority, barStatus])
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      visibleMail.map((row) => ({
+        id: `mail:${row.id}`,
+        source: 'grid:mail',
+        pageKey: 'mail',
+        kind: 'entity',
+        targetId: row.id,
+        title: decodeMimeHeader(row.subject),
+        subtitle: decodeMimeHeader(directionTab === 'sent' ? row.to || row.sender : row.sender),
+        keywords: [row.status, row.priority, row.time, row.to]
+      })),
+    [visibleMail, directionTab]
+  )
+  useRegisterGlobalSearch('grid:mail', globalSearchEntries)
 
   const selected = visibleMail.find((m) => m.id === (selectedId || visibleMail[0]?.id))
   const patchRow = useCallback((id: string, patch: Partial<(typeof mailRows)[0]>) => {
@@ -446,6 +462,7 @@ export function MailGridTab({
                 {visibleMail.map((row) => (
                   <tr
                     key={row.id}
+                    data-search-id={row.id}
                     className={selected?.id === row.id ? 'selected' : ''}
                     onClick={() => setSelectedId(row.id)}
                     onContextMenu={(e) => {

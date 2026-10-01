@@ -96,7 +96,8 @@ def _script_failure_message(exit_code: int | None, stdout: str, stderr: str) -> 
     if "No module named pytest" in blob:
         return (
             f"Python-скрипт завершился с кодом {exit_code}.{detail}\n"
-            "В этом интерпретаторе нет pytest. Модуль не переписывай и пакеты не ставь."
+            "Это запуск как обычного скрипта, без pytest. Модуль не переписывай и пакеты не ставь — "
+            "запусти code.run_python filename=tests/test_<slug>.py (с папкой tests/)."
         )
     return (
         f"Python-скрипт завершился с кодом {exit_code}.{detail}\n"
@@ -105,15 +106,22 @@ def _script_failure_message(exit_code: int | None, stdout: str, stderr: str) -> 
 
 
 def _imports_pytest(command: list[str]) -> bool:
+    # Same env as the real run; stdin closed — under the sidecar it is the protocol pipe.
     try:
         completed = subprocess.run(
             [*command, "-c", "import pytest"],
             capture_output=True,
-            timeout=20,
+            stdin=subprocess.DEVNULL,
+            env=_agent_python_env(),
+            timeout=60,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"pytest probe failed {command}: {exc!r}", file=sys.stderr, flush=True)
         return False
+    if completed.returncode != 0:
+        tail = (completed.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+        print(f"pytest probe rejected {command}: {tail}", file=sys.stderr, flush=True)
     return completed.returncode == 0
 
 
@@ -138,13 +146,13 @@ def pytest_command_prefix() -> list[str]:
     if launcher and "windowsapps" not in launcher.casefold():
         candidates.append([launcher, "-3.13"])
         candidates.append([launcher, "-3"])
-    chosen = list(own or [sys.executable])
     for command in candidates:
         if _imports_pytest(command):
-            chosen = list(command)
-            break
-    _PYTEST_PREFIX = chosen
-    return list(chosen)
+            _PYTEST_PREFIX = list(command)
+            print(f"pytest interpreter: {command}", file=sys.stderr, flush=True)
+            return list(command)
+    # Not cached: a probe may fail transiently, the next KPI test run should look again.
+    return list(own or [sys.executable])
 
 
 def _pytest_command(prefix: list[str], target: Path) -> list[str]:
@@ -201,6 +209,12 @@ def _resolve_kpi_module_file(workspace: AgentWorkspace, name: str) -> Path | Non
     parts = tuple(part for part in relative.split("/") if part)
     if any(part in {".", ".."} for part in parts):
         raise WorkspaceError("Путь скрипта выходит за пределы рабочей папки агента")
+    if len(parts) == 1:
+        # Модель часто зовёт «test_<slug>.py» без папки — это тот же KPI-тест, не скрипт в code/.
+        bare = parts[0]
+        folder = "tests" if bare.startswith("test_") else "generated"
+        existing = workspace.directory / folder / bare
+        return existing.resolve() if existing.is_file() else None
     if len(parts) != 2:
         return None
     folder, filename = parts

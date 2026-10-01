@@ -984,7 +984,9 @@ class ApiClient:
         items: list[str] = []
         error: ApiError | None = None
         try:
-            params = {"search": search} if search.strip() else None
+            params: dict[str, str] = {"only_shown": "true"}
+            if search.strip():
+                params["search"] = search
             data = self._request("GET", "/api/v1/auth/users", params=params)
             items = [str(item) for item in (data.get("items") or [])]
         except ApiError as exc:

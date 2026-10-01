@@ -8,6 +8,7 @@ from typing import Any, Mapping
 ENV_COM_USR = "ONEC_COM_USR"
 ENV_LOGIN = "ERP_LOGIN"
 ENV_PASSWORD = "ERP_PASSWORD"
+ENV_NAME_MAIL = "ORCH_NAME_MAIL"
 
 
 def snapshot_desktop_com_env() -> dict[str, str]:
@@ -83,6 +84,9 @@ def apply_onec_session_credentials(
 
     if fio:
         target[ENV_LOGIN] = fio
+    name_mail = str(payload.get("name_mail") or "").strip()
+    if name_mail:
+        target[ENV_NAME_MAIL] = name_mail
     if password:
         target[ENV_PASSWORD] = password
     elif any(key in raw for key in ("password", "erp_password", "erpPassword")):

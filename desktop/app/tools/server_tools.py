@@ -492,6 +492,88 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             ["text"],
         ),
     ),
+    (
+        "meetings.memo_requests",
+        (
+            "Служебные записки 1С на тему «Организация совещаний (регл.)» — по регламенту они идут "
+            "помощнику ПСД (Ильченко). По умолчанию только актуальные: не согласованы и дата проведения "
+            "не назначена, за последние 60 дней. На каждую записку: number, date, topic, purpose, agenda, "
+            "desired_date, start_time/end_time, duration_minutes, place, leader, author, participants (ФИО), "
+            "psd_level, planned (совещание уже создано агентом в календаре «Совещания» — второй раз не ставь). "
+            "numbers — конкретные номера (тогда без фильтра актуальности). Только чтение. Сервер."
+        ),
+        _schema(
+            {
+                "numbers": _prop(
+                    "array",
+                    "Номера записок, например [\"000016146\"]. Пусто — все актуальные",
+                    items={"type": "string"},
+                ),
+                "date_from": _prop("string", "С какой даты записки, YYYY-MM-DD. Пусто — 60 дней назад"),
+                "date_to": _prop("string", "По какую дату, YYYY-MM-DD. Пусто — сегодня"),
+                "only_open": _prop("boolean", "false — вместе с согласованными", default=True),
+                "max_results": _prop("integer", "Сколько записок вернуть", default=50),
+            }
+        ),
+    ),
+    (
+        "outlook.ews_availability",
+        (
+            "Занятость по Exchange: всегда проверяет Амураля И.Б. (шеф), плюс people — участники. "
+            "start (+duration_minutes или end) — проверить конкретное время: requested.boss_free, "
+            "boss_conflicts (с темами совещаний), place_conflicts (место занято другим совещанием "
+            "календаря «Совещания»), participants_busy. suggestions — ближайшие окна, где шеф и место "
+            "свободны, раньше те, где свободны и все участники; boss_free_windows — свободные окна шефа "
+            "(пн–пт 08:00–18:00). unresolved — ФИО, которых нет в адресной книге. Только чтение. Сервер."
+        ),
+        _schema(
+            {
+                "start": _prop("string", "Проверяемое начало, YYYY-MM-DDTHH:MM (местное время)"),
+                "end": _prop("string", "Окончание, YYYY-MM-DDTHH:MM. Пусто — start + duration_minutes"),
+                "duration_minutes": _prop("integer", "Длительность, минут", default=60),
+                "people": _prop(
+                    "array", "ФИО или e-mail участников из служебной записки", items={"type": "string"}
+                ),
+                "place": _prop("string", "Место из служебной записки — проверить, не занято ли"),
+                "date_from": _prop("string", "Искать окна с даты, YYYY-MM-DD. Пусто — дата start или сегодня"),
+                "date_to": _prop("string", "Искать окна по дату, YYYY-MM-DD. Пусто — +days"),
+                "days": _prop("integer", "Сколько дней смотреть вперёд, если нет date_to", default=5),
+                "max_suggestions": _prop("integer", "Сколько вариантов времени вернуть", default=8),
+            }
+        ),
+    ),
+    (
+        "outlook.ews_create_meeting",
+        (
+            "Создать совещание в общем календаре «Совещания» (calendar@turbo-don.ru) и разослать "
+            "приглашения участникам. Амураль И.Б. добавляется в участники всегда. Сначала проверяет, "
+            "свободен ли шеф: если занят — не создаёт и возвращает boss_busy + conflicts (force=true "
+            "только если человек сам велел ставить поверх). Если по memo_number совещание уже создано — "
+            "возвращает duplicate, второе не создаёт. Запись: нужно подтверждение человека. Сервер."
+        ),
+        _schema(
+            {
+                "subject": _prop("string", "Тема — тема совещания из служебной записки"),
+                "start": _prop("string", "Начало, YYYY-MM-DDTHH:MM (местное время)"),
+                "end": _prop("string", "Окончание, YYYY-MM-DDTHH:MM. Пусто — start + duration_minutes"),
+                "duration_minutes": _prop("integer", "Длительность, минут", default=60),
+                "location": _prop(
+                    "string", "Место, как в календаре: «руководитель <ФИО>, <место из записки>»"
+                ),
+                "attendees": _prop(
+                    "array", "ФИО или e-mail всех участников из записки и руководителя", items={"type": "string"}
+                ),
+                "leader": _prop("string", "Руководитель совещания (ФИО)"),
+                "purpose": _prop("string", "Цель совещания из записки"),
+                "agenda": _prop("array", "Пункты плана совещания из записки", items={"type": "string"}),
+                "body": _prop("string", "Дополнительный текст приглашения"),
+                "memo_number": _prop("string", "Номер служебной записки — защита от дубля"),
+                "memo_date": _prop("string", "Дата служебной записки, ДД.ММ.ГГГГ"),
+                "force": _prop("boolean", "Создать, даже если шеф занят (только по явному указанию)"),
+            },
+            ["subject", "start", "attendees"],
+        ),
+    ),
 ]
 
 
@@ -512,8 +594,13 @@ SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,
+    "onec.meeting_protocols": 300,
     # faster-whisper small на CPU, beam 1: ~2,5 минуты на 25 минут аудио; запас на beam 5 и медленные машины.
     "audio.transcribe": 3600,
+    # 1C OData + справочники участников; Exchange free/busy по всем участникам.
+    "meetings.memo_requests": 180,
+    "outlook.ews_availability": 180,
+    "outlook.ews_create_meeting": 180,
 }
 
 

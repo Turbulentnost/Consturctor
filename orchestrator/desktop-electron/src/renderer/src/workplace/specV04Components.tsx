@@ -108,7 +108,7 @@ export function SpecSummaryTiles({
           <>
             <div className="spec-v04-tile-top">
               <div className="spec-v04-tile-label-row">
-                <SpecTileIcon id={tile.id} />
+                <SpecTileIcon id={tile.icon || tile.id} />
                 <span className="spec-v04-tile-label" title={tooltip}>
                   {tile.label}
                 </span>
@@ -232,6 +232,7 @@ export function SpecTableTabs({
       {tabs.map((tab) => (
         <button
           key={tab.id}
+          data-search-id={tab.id}
           type="button"
           className={active === tab.id ? 'active' : ''}
           onClick={() => onChange(tab.id)}

@@ -7,7 +7,7 @@ import {
   formatMailReceivedLabel,
   formatMailTime
 } from '../utils/outlookMail'
-import { filterMessagesOnDay } from './mailProbe'
+import { filterMessagesOnDay, OUTLOOK_NO_MAILBOX } from './mailProbe'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
@@ -22,7 +22,7 @@ export interface TodayOutlookMailState {
   rows: SpecMailRow[]
 }
 
-export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
+export function useTodayOutlookMail(periodDay: Date, mailbox: string): TodayOutlookMailState {
   const generation = useGridRefreshGeneration()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -33,7 +33,7 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
 
   useEffect(() => {
     let alive = true
-    const cacheKey = `today-outlook-mail-inout:${dayKey}`
+    const cacheKey = `today-outlook-mail-inout:${mailbox}:${dayKey}`
     if (!shouldRunGridFetch(cacheKey, generation)) {
       const cached = readGridCache<{ error: string; source: string; rows: SpecMailRow[] }>(cacheKey)
       if (cached) {
@@ -44,12 +44,19 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
         return
       }
     }
+    if (!mailbox.trim()) {
+      setRows([])
+      setSource('')
+      setError(OUTLOOK_NO_MAILBOX)
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError('')
     void (async () => {
       try {
         const dayIso = dayKeyLocal(periodDay)
-        const batch = await ensureOutlookMailRange('', dayIso, dayIso, {
+        const batch = await ensureOutlookMailRange(mailbox, dayIso, dayIso, {
           folder: 'All',
           maxResults: 80
         })
@@ -103,7 +110,7 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
     return () => {
       alive = false
     }
-  }, [dayKey, generation, periodDay])
+  }, [dayKey, generation, periodDay, mailbox])
 
   const resolvedRows = useMemo(() => {
     return rows

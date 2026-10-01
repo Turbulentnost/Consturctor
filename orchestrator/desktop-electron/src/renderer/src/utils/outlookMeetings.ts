@@ -3,6 +3,7 @@ import {
   calendarStatusFor,
   publishCalendarStatus,
   readTrackedCalendars,
+  samePersonFio,
   type CalendarReadStatus
 } from './trackedCalendars'
 
@@ -49,6 +50,8 @@ export interface MeetingEvent {
   attendees: string
   owner: string
   ownCalendar?: boolean
+  /** Importance из Outlook: 0 — низкая, 1 — обычная, 2 — высокая. */
+  importance?: number
 }
 
 interface OutlookMeetingRaw {
@@ -62,9 +65,10 @@ interface OutlookMeetingRaw {
   organizer?: string
   required_attendees?: string
   optional_attendees?: string
+  importance?: number
 }
 
-const CACHE_KEY = 'orchOutlookMeetings:v5'
+const CACHE_KEY = 'orchOutlookMeetings:v6'
 const REQUEST_TIMEOUT_MS = 180_000
 
 function pad2(n: number): string {
@@ -200,7 +204,8 @@ function normalizeMeeting(raw: OutlookMeetingRaw, index: number): MeetingEvent {
     organizer: (raw.organizer || '').trim(),
     attendees,
     owner: (raw.calendar_owner || '').trim(),
-    ownCalendar: Boolean(raw.own_calendar) || isOutlookFolderOwner(raw.calendar_owner)
+    ownCalendar: Boolean(raw.own_calendar) || isOutlookFolderOwner(raw.calendar_owner),
+    importance: Number.isFinite(Number(raw.importance)) ? Number(raw.importance) : 1
   }
 }
 
@@ -356,7 +361,7 @@ export async function ensureOutlookMeetings(
   const owner = (options.owner || '').trim()
   const baseCalendar = sharedMeetingCalendarFor(owner)
   const tracked = readTrackedCalendars(owner).filter(
-    (person) => person.toLocaleLowerCase('ru') !== baseCalendar.toLocaleLowerCase('ru')
+    (person) => !baseCalendar || !samePersonFio(person, baseCalendar)
   )
   const calendarOwners = baseCalendar || tracked.length ? [baseCalendar, ...tracked] : []
   const cacheOwner = calendarOwners.length ? `${owner}@${calendarOwners.join('|')}` : owner

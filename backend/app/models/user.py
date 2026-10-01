@@ -32,3 +32,22 @@ class AppUser(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class UserKpiPin(Base):
+    """PIN-код сотрудника для просмотра зарплаты в KPI. Хранятся только соль и хеш."""
+
+    __tablename__ = "user_kpi_pins"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    salt: Mapped[str] = mapped_column(String(64), nullable=False)
+    pin_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

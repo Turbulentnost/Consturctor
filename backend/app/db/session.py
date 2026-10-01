@@ -26,6 +26,7 @@ def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import agent_run as _agent_run  # noqa: F401
     from app.models import calendar_overlay as _calendar_overlay  # noqa: F401
+    from app.models import finance as _finance  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
     from app.models import org as _org  # noqa: F401
     from app.models import orchestrator as _orchestrator  # noqa: F401
@@ -131,6 +132,37 @@ def _ensure_columns() -> None:
             )
         ).fetchall()
         trigger_cols = {str(r[0]) for r in trigger_rows}
+        org_member_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'org_members'
+                """
+            )
+        ).fetchall()
+        org_member_cols = {str(r[0]) for r in org_member_rows}
+        if org_member_cols and "position_id" not in org_member_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE org_members ADD COLUMN position_id VARCHAR(64) NULL "
+                    "REFERENCES org_positions(id)"
+                )
+            )
+        if org_member_cols and "person_id" not in org_member_cols:
+            conn.execute(text("ALTER TABLE org_members ADD COLUMN person_id VARCHAR(64) NULL"))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_org_members_person_id "
+                    "ON org_members (person_id)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_org_members_position_id "
+                    "ON org_members (position_id)"
+                )
+            )
         if trigger_cols and "interval_seconds" not in trigger_cols:
             conn.execute(
                 text(
@@ -243,6 +275,161 @@ def _ensure_columns() -> None:
             conn.execute(text("ALTER TABLE chat_messages ADD COLUMN edited_at TIMESTAMPTZ NULL"))
         if chat_cols and "deleted_at" not in chat_cols:
             conn.execute(text("ALTER TABLE chat_messages ADD COLUMN deleted_at TIMESTAMPTZ NULL"))
+        kpi_profile_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'position_kpi_profiles'
+                """
+            )
+        ).fetchall()
+        kpi_profile_cols = {str(r[0]) for r in kpi_profile_rows}
+        if kpi_profile_cols and "effective_to" not in kpi_profile_cols:
+            conn.execute(
+                text("ALTER TABLE position_kpi_profiles ADD COLUMN effective_to DATE NULL")
+            )
+        if kpi_profile_cols and "source_import_id" not in kpi_profile_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE position_kpi_profiles "
+                    "ADD COLUMN source_import_id VARCHAR(64) NOT NULL DEFAULT ''"
+                )
+            )
+        if kpi_profile_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE position_kpi_profiles "
+                    "DROP CONSTRAINT IF EXISTS position_kpi_profiles_position_name_key"
+                )
+            )
+            conn.execute(text("DROP INDEX IF EXISTS uq_position_kpi_profiles_name_effective"))
+            # Old schema had unique=True on position_name; versions per department/date need duplicates.
+            is_unique_name_index = conn.execute(
+                text(
+                    "SELECT 1 FROM pg_indexes WHERE tablename = 'position_kpi_profiles' "
+                    "AND indexname = 'ix_position_kpi_profiles_position_name' "
+                    "AND indexdef LIKE 'CREATE UNIQUE INDEX%'"
+                )
+            ).first()
+            if is_unique_name_index:
+                conn.execute(text("DROP INDEX ix_position_kpi_profiles_position_name"))
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_position_kpi_profiles_position_name "
+                        "ON position_kpi_profiles (position_name)"
+                    )
+                )
+            conn.execute(
+                text(
+                    "ALTER TABLE position_kpi_profiles "
+                    "DROP CONSTRAINT IF EXISTS uq_position_kpi_profiles_name_effective"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_position_kpi_profiles_name_dept_effective "
+                    "ON position_kpi_profiles (position_name, department, effective_from)"
+                )
+            )
+        salary_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'finance_salary_entries'
+                """
+            )
+        ).fetchall()
+        salary_cols = {str(r[0]) for r in salary_rows}
+        if salary_cols and "department" not in salary_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE finance_salary_entries "
+                    "ADD COLUMN department VARCHAR(512) NOT NULL DEFAULT ''"
+                )
+            )
+        if salary_cols and "position_id" not in salary_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE finance_salary_entries "
+                    "ADD COLUMN position_id VARCHAR(64) NULL REFERENCES org_positions(id)"
+                )
+            )
+            conn.execute(
+                text(
+                    "UPDATE finance_salary_entries salary "
+                    "SET position_id = person.position_id "
+                    "FROM org_people person "
+                    "WHERE salary.person_id = person.id AND salary.position_id IS NULL"
+                )
+            )
+        if salary_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE finance_salary_entries "
+                    "DROP CONSTRAINT IF EXISTS uq_finance_salary_person_date_revision"
+                )
+            )
+            if "person_id" in salary_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE finance_salary_entries "
+                        "ALTER COLUMN person_id DROP NOT NULL"
+                    )
+                )
+            if "fio_snapshot" in salary_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE finance_salary_entries "
+                        "ALTER COLUMN fio_snapshot DROP NOT NULL"
+                    )
+                )
+            conn.execute(
+                text(
+                    "ALTER TABLE finance_salary_entries "
+                    "DROP CONSTRAINT IF EXISTS uq_finance_salary_position_date_revision"
+                )
+            )
+            conn.execute(text("DROP INDEX IF EXISTS uq_finance_salary_position_date_revision"))
+            conn.execute(
+                text(
+                    """
+                    WITH ranked AS (
+                        SELECT
+                            id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY position_id, department, effective_from
+                                ORDER BY created_at, id
+                            ) AS new_revision,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY position_id, department, effective_from
+                                ORDER BY created_at DESC, id DESC
+                            ) AS newest
+                        FROM finance_salary_entries
+                        WHERE position_id IS NOT NULL
+                    )
+                    UPDATE finance_salary_entries salary
+                    SET revision = ranked.new_revision,
+                        is_current = (ranked.newest = 1)
+                    FROM ranked
+                    WHERE salary.id = ranked.id
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_finance_salary_position_dept_date_revision "
+                    "ON finance_salary_entries (position_id, department, effective_from, revision)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_finance_salary_entries_position_id "
+                    "ON finance_salary_entries (position_id)"
+                )
+            )
         creation_cols = {str(r[0]) for r in creation_rows}
         if creation_cols and "interview_json" not in creation_cols:
             conn.execute(

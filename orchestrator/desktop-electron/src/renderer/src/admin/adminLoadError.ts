@@ -27,7 +27,7 @@ export function formatAdminLoadError(err: unknown, fallback = 'Не удалос
       return ADMIN_BACKEND_UNAVAILABLE
     }
     if (err.status === 403) {
-      return 'Доступ только для администратора (403). Войдите под учётной записью из списка admin FIO.'
+      return 'Недостаточно прав для доступа к этому разделу админ-панели (403).'
     }
     if (err.status === 401) {
       return 'Требуется авторизация (401). Перелогиньтесь в приложении.'

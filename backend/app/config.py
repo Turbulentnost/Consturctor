@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480
+    # Temporary employee compensation PIN. Override in backend/.env for non-demo use.
+    salary_pin: str = "1111"
 
     api_host: str = "0.0.0.0"
     api_port: int = 7812
@@ -39,6 +41,12 @@ class Settings(BaseSettings):
     lm_studio_model: str = "ministral-3-14b-instruct-2512"
     lm_studio_ocr_model: str = "ministral-3-14b-instruct-2512"
     ocr_pages_per_batch: int = 3
+    # cursor_sdk — страницы уходят в зрение локального Cursor SDK; lm_studio — старый VLM.
+    ocr_provider: str = "cursor_sdk"
+    # Пусто — берётся cursor_workflow_model.
+    cursor_ocr_model: str = ""
+    cursor_ocr_pages_per_batch: int = 2
+    cursor_ocr_parallel: int = 3
     claude_api_key: str = ""
     claudehub_base_url: str = "https://api.claudehub.fun"
     claudehub_model: str = "claude-sonnet-4.6"
@@ -73,6 +81,7 @@ class Settings(BaseSettings):
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
     platform_task_storage_dir: Path = BACKEND_ROOT / "storage" / "platform_tasks"
+    finance_storage_dir: Path = BACKEND_ROOT / "storage" / "finance"
 
     # IMAP (server-side tools only; desktop never executes imap.*)
     imap_host: str = ""
@@ -80,6 +89,18 @@ class Settings(BaseSettings):
     imap_username: str = ""
     imap_password: str = ""
     imap_mailbox: str = "INBOX"
+
+    # Exchange (EWS): служебный ящик, от имени которого агенты создают совещания.
+    outlook_email: str = ""
+    outlook_password: str = ""
+    outlook_server: str = ""
+    outlook_mailbox: str = ""
+    outlook_company_calendar: str = ""
+    outlook_timezone: str = "Europe/Moscow"
+    outlook_timeout_sec: float = 60.0
+    outlook_smtp_host: str = ""
+    outlook_smtp_port: int = 587
+    outlook_smtp_tls: bool = True
 
     # TurboProject API (server-side tool turboproject; desktop only proxies)
     turboproject_api_base: str = ""
@@ -135,5 +156,6 @@ settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.platform_task_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.finance_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.onec_artifact_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.dok_inbox_cache_dir.mkdir(parents=True, exist_ok=True)

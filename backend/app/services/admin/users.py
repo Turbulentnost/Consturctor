@@ -10,7 +10,7 @@ from app.models.user import AppUser
 from app.models.workflow import Workflow
 from app.schemas.admin import AdminFilterOut, AdminUserRowOut, AdminUsersOut
 from app.services.admin import stub_payloads
-from app.services.app_users import is_admin_user
+from app.services.admin_access import admin_user_ids
 from app.services.triggers.service import workflow_is_deleted
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
@@ -61,6 +61,7 @@ def build_admin_users() -> AdminUsersOut:
             select(Workflow.user_id, Workflow.local_run, Workflow.phase)
         ).all()
         used_pairs = db.execute(select(AgentRun.user_id, AgentRun.workflow_id).distinct()).all()
+        administrator_ids = admin_user_ids(db)
 
     access: dict[str, int] = {}
     for user_id, local_run, phase in workflows:
@@ -84,7 +85,7 @@ def build_admin_users() -> AdminUsersOut:
             fio=user.fio or "—",
             position=user.position or "—",
             department=user.department or "—",
-            role="Администратор" if is_admin_user(user.fio) else "Пользователь",
+            role="Администратор" if user.id in administrator_ids else "Пользователь",
             status=_activity_label(user.activity_status),
             agents_access=access.get(user.id, 0),
             agents_used=len(used.get(user.id, set())),

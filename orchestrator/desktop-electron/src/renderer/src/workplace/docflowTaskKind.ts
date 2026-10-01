@@ -133,6 +133,31 @@ export function docflowTaskKind(step?: string, name?: string, serverKind?: strin
   return 'other'
 }
 
+/** Разделы списка задач: сначала то, что делает сам, ознакомление — в конце. */
+export const DOCFLOW_GROUP_ORDER = [
+  'execute',
+  'approve',
+  'confirm',
+  'check',
+  'consider',
+  'resolution',
+  'question',
+  'other',
+  'acquaint'
+] as const
+
+export type DocflowGroupKey = (typeof DOCFLOW_GROUP_ORDER)[number]
+
+/** Задачи без вида (платформа, TurboProject) попадают в «Прочие». */
+export function docflowGroupKey(kind: DocflowTaskKind | null | undefined): DocflowGroupKey {
+  if (!kind) return 'other'
+  return kind === 'acquaint_result' ? 'acquaint' : kind
+}
+
+export function docflowGroupLabel(key: DocflowGroupKey): string {
+  return key === 'other' ? 'Прочие задачи' : DOCFLOW_KIND_LABEL[key]
+}
+
 export function docflowKindActions(kind: DocflowTaskKind): DocflowActionSpec[] {
   return KIND_ACTIONS[kind] ?? KIND_ACTIONS.other
 }

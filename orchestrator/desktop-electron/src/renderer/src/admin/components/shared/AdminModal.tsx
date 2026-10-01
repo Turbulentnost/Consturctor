@@ -6,9 +6,17 @@ interface AdminModalProps {
   onClose: () => void
   children: React.ReactNode
   footer?: React.ReactNode
+  className?: string
 }
 
-export function AdminModal({ title, open, onClose, children, footer }: AdminModalProps): React.JSX.Element | null {
+export function AdminModal({
+  title,
+  open,
+  onClose,
+  children,
+  footer,
+  className
+}: AdminModalProps): React.JSX.Element | null {
   useEffect(() => {
     if (!open) return
     function onKeyDown(event: KeyboardEvent): void {
@@ -22,7 +30,7 @@ export function AdminModal({ title, open, onClose, children, footer }: AdminModa
 
   return (
     <div className="admin-modal-backdrop" onClick={onClose}>
-      <div className="admin-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+      <div className={className ? `admin-modal ${className}` : 'admin-modal'} role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
         <div className="admin-modal__head">
           <h3>{title}</h3>
           <button type="button" className="admin-modal__close" aria-label="Закрыть" onClick={onClose}>×</button>

@@ -22,6 +22,7 @@ import {
 } from './historyRunFilters'
 import { useHistoryKpiMetrics } from './useHistoryKpiMetrics'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../layout/globalSearch'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50] as const
 
@@ -272,8 +273,7 @@ export function HistoryWorkplace({
   function resetFilters(): void {
     setQuery('')
     const key = todayDayKey()
-    setRangeFrom(key)
-    setRangeTo(key)
+    setWorkplaceRange({ from: key, to: key })
     setAgentId('')
     setEventTypes([])
     setInitiator('')
@@ -448,6 +448,30 @@ export function HistoryWorkplace({
     const start = (pageSafe - 1) * pageSize
     return visible.slice(start, start + pageSize)
   }, [visible, pageSafe, pageSize])
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
+    () =>
+      pageRows.map((item) => {
+        const processTitle =
+          titles[item.workflowId] ||
+          agents.find((agent) => agent.id === item.workflowId)?.title ||
+          item.workflowId
+        const status = historyRunStatus(item)
+        return {
+          id: `history:${item.runId}`,
+          source: 'workplace:history',
+          pageKey: 'history',
+          kind: 'entity',
+          targetId: item.runId,
+          title: eventTitleForRun(item),
+          subtitle: [processTitle, HISTORY_STATUS_LABELS[status], formatRunWhen(item.startedAt)]
+            .filter(Boolean)
+            .join(' · '),
+          keywords: [item.runId, item.workflowId, item.source, item.triggerReason]
+        }
+      }),
+    [pageRows, titles, agents]
+  )
+  useRegisterGlobalSearch('workplace:history', globalSearchEntries)
 
   useEffect(() => {
     if (!selected) return
@@ -807,6 +831,7 @@ export function HistoryWorkplace({
                     return (
                       <tr
                         key={item.runId}
+                        data-search-id={item.runId}
                         className={active ? 'active' : undefined}
                         onClick={() => setSelected(item.runId)}
                       >

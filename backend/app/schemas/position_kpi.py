@@ -5,6 +5,11 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class PositionKpiPointOut(BaseModel):
+    day: str
+    value: float
+
+
 class PositionKpiTileOut(BaseModel):
     code: str
     name: str
@@ -16,6 +21,7 @@ class PositionKpiTileOut(BaseModel):
     contrib: float | None = None
     evidence: str = ""
     detail: dict[str, Any] = Field(default_factory=dict)
+    history: list[PositionKpiPointOut] = Field(default_factory=list)
 
 
 class PositionKpiSubjectOut(BaseModel):
@@ -69,6 +75,7 @@ class PositionKpiBuildMessageOut(BaseModel):
 class PositionKpiBuildOut(BaseModel):
     build_id: str
     position: str
+    subject_fio: str = ""
     status: str
     cursor_agent_id: str = ""
     extracted: dict[str, Any] = Field(default_factory=dict)

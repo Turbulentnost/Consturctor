@@ -1,4 +1,5 @@
 import type { TaskTileFilter } from './tileFilters'
+import type { GlobalSearchTarget } from '../layout/globalSearch'
 
 export const ORCH_OPEN_TAB = 'orchestrator:open-tab'
 export const ORCH_CREATE_TASK = 'orchestrator:create-task'
@@ -14,6 +15,7 @@ export const CREATE_TASK_CHANNEL_LABEL: Record<CreateTaskChannel, string> = {
 export type WorkplaceTabIntent = {
   taskFilter?: TaskTileFilter
   processTab?: string
+  searchTarget?: GlobalSearchTarget
 }
 
 export type OpenWorkplaceTabDetail = {

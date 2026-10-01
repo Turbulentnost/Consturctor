@@ -1,13 +1,33 @@
-import { useEffect, useMemo, useState } from 'react'
-import { FioSuggest } from './FioSuggest'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, Folder, FolderPlus, GripVertical, Pencil, Trash2, X } from 'lucide-react'
+import { GlobalSearchSuggest } from './GlobalSearchSuggest'
 import { api, parseChatMessage } from '../api/client'
 import { previewText } from '../api/chatCodec'
 import { loadUserAvatar } from '../api/avatars'
-import type { ChatMessage, ChatThread, DirectoryUser } from '../api/types'
+import type { ChatMessage, ChatThread } from '../api/types'
 import logoUrl from '../assets/logo.png'
 import iconSearch from '../assets/search.png'
 import { NavIcon } from '../layout/navIcons'
 import { useSpecV04SourcesContext } from '../workplace/SpecV04SourcesProvider'
+import {
+  addSidebarFolder,
+  deleteSidebarFolder,
+  folderIdFromNode,
+  folderNodeId,
+  loadSidebarLayout,
+  moveSidebarNode,
+  normalizeSidebarLayout,
+  renameSidebarFolder,
+  saveSidebarLayout,
+  tabKeyFromNode,
+  tabNodeId,
+  toggleSidebarFolder,
+  type SidebarDropTarget,
+  type SidebarLayout,
+  type SidebarScope
+} from './sidebarFolders'
+
+type DropHint = { target: SidebarDropTarget; into: string | null }
 
 export type AdminPageKey =
   | 'overview'
@@ -15,6 +35,9 @@ export type AdminPageKey =
   | 'users'
   | 'ai_agents'
   | 'knowledge_base'
+  | 'finance_employees'
+  | 'finance_upload'
+  | 'finance_import_history'
 
 export type UserPageKey =
   | 'today'
@@ -43,10 +66,13 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   users: 'Пользователи',
   ai_agents: 'ИИ-агенты',
   knowledge_base: 'База знаний',
+  finance_employees: 'Сотрудники',
+  finance_upload: 'Загрузить',
+  finance_import_history: 'История',
   today: 'Сегодня',
   processes: 'Процессы',
   tasks: 'Задачи',
-  projects: 'Проекты',
+  projects: 'Turboproject',
   mail: 'Письма',
   docflow: 'Документооборот',
   meetings: 'Совещания',
@@ -70,6 +96,9 @@ const ADMIN_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'users', label: PAGE_LABELS.users },
   { key: 'ai_agents', label: PAGE_LABELS.ai_agents },
   { key: 'knowledge_base', label: PAGE_LABELS.knowledge_base },
+  { key: 'finance_employees', label: PAGE_LABELS.finance_employees },
+  { key: 'finance_upload', label: PAGE_LABELS.finance_upload },
+  { key: 'finance_import_history', label: PAGE_LABELS.finance_import_history },
   { key: 'settings', label: PAGE_LABELS.settings }
 ]
 
@@ -77,7 +106,6 @@ const USER_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'today', label: PAGE_LABELS.today },
   { key: 'processes', label: PAGE_LABELS.processes },
   { key: 'tasks', label: PAGE_LABELS.tasks },
-  { key: 'projects', label: PAGE_LABELS.projects },
   { key: 'mail', label: PAGE_LABELS.mail },
   { key: 'docflow', label: PAGE_LABELS.docflow },
   { key: 'meetings', label: PAGE_LABELS.meetings },
@@ -150,30 +178,33 @@ interface SidebarProps {
   active: PageKey | null
   light?: boolean
   showAdminNav?: boolean
+  adminPageKeys?: PageKey[]
+  adminTitle?: string
   activeThreadId?: string
   currentUserId?: string
   onNavigate: (key: PageKey) => void
   onOpenThread: (thread: ChatThread) => void
-  onOpenFio: (fio: string, user?: DirectoryUser) => void
   refreshAt?: number
   /** Pinned extension tabs (inserted before «+ Расширения»). */
   pinnedExtensionNav?: SidebarNavItem[]
+  navScope?: SidebarScope
 }
 
 export function Sidebar({
   active,
   light = false,
   showAdminNav = false,
+  adminPageKeys = [],
+  adminTitle = 'Администрирование',
   activeThreadId = '',
   currentUserId = '',
   onNavigate,
   onOpenThread,
-  onOpenFio,
   refreshAt = 0,
-  pinnedExtensionNav = []
+  pinnedExtensionNav = [],
+  navScope
 }: SidebarProps): React.JSX.Element {
   const [collapsed, setCollapsed] = useState(false)
-  const [fio, setFio] = useState('')
   const [peers, setPeers] = useState<ChatThread[]>([])
   const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
   const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
@@ -181,7 +212,10 @@ export function Sidebar({
   const { newOneCTaskKeys } = useSpecV04SourcesContext()
   const navBadges: Partial<Record<PageKey, number>> = { tasks: newOneCTaskKeys.size }
   const items = useMemo((): SidebarNavItem[] => {
-    if (showAdminNav) return ADMIN_ITEMS
+    if (showAdminNav) {
+      const allowed = new Set(adminPageKeys)
+      return ADMIN_ITEMS.filter((item) => allowed.has(item.key))
+    }
     const pinnedKeys = new Set(pinnedExtensionNav.map((item) => item.key))
     const core = USER_ITEMS.filter((item) => item.key !== 'extensions' && !pinnedKeys.has(item.key))
     const settings = USER_ITEMS.find((item) => item.key === 'settings')
@@ -192,7 +226,244 @@ export function Sidebar({
       ...(extensionsHub ? [extensionsHub] : []),
       ...(settings ? [settings] : [])
     ]
-  }, [showAdminNav, pinnedExtensionNav])
+  }, [showAdminNav, adminPageKeys, pinnedExtensionNav])
+  const effectiveNavScope: SidebarScope = navScope ?? (showAdminNav ? 'admin:default' : 'user')
+  const availableNavKeys = useMemo(() => items.map((item) => item.key), [items])
+  const availableNavKey = availableNavKeys.join('\u0001')
+  const [navLayout, setNavLayout] = useState<SidebarLayout>(() =>
+    loadSidebarLayout(currentUserId, effectiveNavScope, availableNavKeys)
+  )
+  const [editMode, setEditMode] = useState(false)
+  const [folderEditor, setFolderEditor] = useState<'new' | string | null>(null)
+  const [folderDraft, setFolderDraft] = useState('')
+  const [draggedNode, setDraggedNode] = useState<string | null>(null)
+  const [dropHint, setDropHint] = useState<DropHint | null>(null)
+  const pointerDragRef = useRef<{
+    node: string
+    pointerId: number
+    startX: number
+    startY: number
+    moved: boolean
+  } | null>(null)
+  const itemByKey = useMemo(() => new Map(items.map((item) => [item.key, item])), [items])
+
+  useEffect(() => {
+    const next = loadSidebarLayout(currentUserId, effectiveNavScope, availableNavKeys)
+    setNavLayout(next)
+    saveSidebarLayout(currentUserId, effectiveNavScope, next)
+    setFolderEditor(null)
+    setDraggedNode(null)
+    setDropHint(null)
+  }, [currentUserId, effectiveNavScope, availableNavKey])
+
+  useEffect(() => {
+    if (!editMode) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || folderEditor || pointerDragRef.current) return
+      setEditMode(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [editMode, folderEditor])
+
+  const persistNavLayout = (next: SidebarLayout): void => {
+    const normalized = normalizeSidebarLayout(next, availableNavKeys)
+    setNavLayout(normalized)
+    saveSidebarLayout(currentUserId, effectiveNavScope, normalized)
+  }
+
+  const beginFolderCreate = (): void => {
+    if (collapsed) setCollapsed(false)
+    setFolderDraft('')
+    setFolderEditor('new')
+  }
+
+  const beginFolderRename = (folderId: string, currentName: string): void => {
+    if (collapsed) setCollapsed(false)
+    setFolderDraft(currentName)
+    setFolderEditor(folderId)
+  }
+
+  const submitFolderEditor = (): void => {
+    const name = folderDraft.trim()
+    if (!name || !folderEditor) return
+    persistNavLayout(
+      folderEditor === 'new'
+        ? addSidebarFolder(navLayout, name)
+        : renameSidebarFolder(navLayout, folderEditor, name)
+    )
+    setFolderEditor(null)
+    setFolderDraft('')
+  }
+
+  const removeFolder = (folderId: string, folderName: string): void => {
+    if (!window.confirm(`Удалить папку «${folderName}»? Вкладки вернутся в общий список.`)) return
+    persistNavLayout(deleteSidebarFolder(navLayout, folderId))
+    if (folderEditor === folderId) setFolderEditor(null)
+  }
+
+  const toggleEditMode = (): void => {
+    if (editMode) {
+      setEditMode(false)
+      setFolderEditor(null)
+      return
+    }
+    if (collapsed) setCollapsed(false)
+    setEditMode(true)
+  }
+
+  const finishNodeDrag = (): void => {
+    pointerDragRef.current = null
+    setDraggedNode(null)
+    setDropHint(null)
+  }
+
+  const resolveDropHint = (x: number, y: number, dragNode: string): DropHint | null => {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null
+    if (!el) return null
+    const dragIsFolder = folderIdFromNode(dragNode) !== null
+    const toRootEnd: DropHint = { target: { folderId: null, anchor: null, position: 'after' }, into: null }
+    if (el.closest('[data-nav-root-zone]')) return toRootEnd
+
+    const row = el.closest<HTMLElement>('[data-nav-node]')
+    const node = row?.dataset.navNode
+    if (row && node) {
+      const rect = row.getBoundingClientRect()
+      const before = y < rect.top + rect.height / 2
+      const headerFolderId = folderIdFromNode(node)
+      if (headerFolderId !== null) {
+        if (node === dragNode) return null
+        if (dragIsFolder) {
+          return { target: { folderId: null, anchor: node, position: before ? 'before' : 'after' }, into: null }
+        }
+        const folder = navLayout.folders.find((item) => item.id === headerFolderId)
+        const edge = rect.height / 4
+        const nearTop = y < rect.top + edge
+        const nearBottom = !folder?.expanded && y > rect.bottom - edge
+        if (nearTop || nearBottom) {
+          return { target: { folderId: null, anchor: node, position: nearTop ? 'before' : 'after' }, into: null }
+        }
+        return { target: { folderId: headerFolderId, anchor: null, position: 'after' }, into: headerFolderId }
+      }
+      const parent = row.dataset.navParent || null
+      if (parent && dragIsFolder) {
+        const parentNode = folderNodeId(parent)
+        if (parentNode === dragNode) return null
+        return { target: { folderId: null, anchor: parentNode, position: before ? 'before' : 'after' }, into: null }
+      }
+      if (node === dragNode) return null
+      return { target: { folderId: parent, anchor: node, position: before ? 'before' : 'after' }, into: null }
+    }
+
+    const folderEl = el.closest<HTMLElement>('[data-nav-folder-id]')
+    const folderId = folderEl?.dataset.navFolderId
+    if (folderId && !dragIsFolder) {
+      return { target: { folderId, anchor: null, position: 'after' }, into: folderId }
+    }
+    if (el.closest('[data-nav-root]')) return toRootEnd
+    return null
+  }
+
+  const beginPointerNodeDrag = (event: React.PointerEvent<HTMLElement>, node: string): void => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    pointerDragRef.current = {
+      node,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false
+    }
+    setDraggedNode(node)
+  }
+
+  const updatePointerNodeDrag = (event: React.PointerEvent<HTMLElement>): void => {
+    const drag = pointerDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return
+    drag.moved = true
+    setDropHint(resolveDropHint(event.clientX, event.clientY, drag.node))
+  }
+
+  const endPointerNodeDrag = (event: React.PointerEvent<HTMLElement>): void => {
+    const drag = pointerDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const hint = drag.moved ? resolveDropHint(event.clientX, event.clientY, drag.node) : null
+    if (hint) persistNavLayout(moveSidebarNode(navLayout, drag.node, hint.target))
+    finishNodeDrag()
+  }
+
+  const dropMarkClass = (node: string): string => {
+    if (!dropHint || dropHint.target.anchor !== node) return ''
+    return dropHint.target.position === 'before' ? 'drop-before' : 'drop-after'
+  }
+
+  const dragHandleProps = (node: string, label: string): React.HTMLAttributes<HTMLSpanElement> => ({
+    role: 'button',
+    tabIndex: 0,
+    'aria-label': `Переместить «${label}»`,
+    title: 'Перетащите, чтобы изменить порядок или переложить в папку',
+    onPointerDown: (event) => beginPointerNodeDrag(event, node),
+    onPointerMove: updatePointerNodeDrag,
+    onPointerUp: endPointerNodeDrag,
+    onPointerCancel: finishNodeDrag,
+    onClick: (event) => event.stopPropagation()
+  })
+
+  const renderNavTab = (item: SidebarNavItem, parentFolderId: string | null = null): React.JSX.Element => {
+    const isActive = item.key === active
+    const isExtensionModule = 'extension' in item && Boolean(item.extension)
+    const isExtensionsHub = item.key === 'extensions'
+    const badge = showAdminNav ? 0 : navBadges[item.key] ?? 0
+    const badgeText = badge > 99 ? '99+' : String(badge)
+    const node = tabNodeId(item.key)
+    return (
+      <div
+        key={item.key}
+        data-nav-node={node}
+        data-nav-parent={parentFolderId ?? ''}
+        className={[
+          'nav-tab-row',
+          parentFolderId ? 'nav-tab-row-nested' : '',
+          draggedNode === node ? 'dragging' : '',
+          dropMarkClass(node)
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        <button
+          type="button"
+          className={[
+            'nav-item',
+            isActive ? 'active' : '',
+            isExtensionsHub ? 'nav-item-extensions-hub' : '',
+            isExtensionModule ? 'nav-item-extension-module' : ''
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          onClick={() => onNavigate(item.key)}
+          title={badge > 0 ? `${item.label}: новых задач 1С — ${badge}` : item.label}
+        >
+          <span className="nav-icon" aria-hidden>
+            <NavIcon page={item.key} />
+          </span>
+          {!collapsed && <span className="nav-label">{item.label}</span>}
+          {badge > 0 ? (
+            <em className="nav-badge" aria-label={`Новых: ${badge}`}>
+              {badgeText}
+            </em>
+          ) : null}
+        </button>
+        {editMode && !collapsed ? (
+          <span className="nav-drag-handle" {...dragHandleProps(node, item.label)}>
+            <GripVertical size={15} strokeWidth={2} aria-hidden />
+          </span>
+        ) : null}
+      </div>
+    )
+  }
 
   const runCheck = (): void => {
     if (checking) return
@@ -299,13 +570,13 @@ export function Sidebar({
   }
 
   return (
-    <aside className={collapsed ? 'sidebar collapsed' : 'sidebar'}>
+    <aside className={['sidebar', collapsed ? 'collapsed' : '', light ? 'light' : ''].filter(Boolean).join(' ')}>
       <div className="sidebar-brand">
         <img className="sidebar-logo" src={logoUrl} alt={APP_TITLE} />
         {!collapsed && showAdminNav ? (
           <div className="sidebar-brand-text">
             <div className="sidebar-title">{APP_TITLE}</div>
-            <div className="sidebar-subtitle">Администрирование</div>
+            <div className="sidebar-subtitle">{adminTitle}</div>
           </div>
         ) : null}
         {!collapsed && !showAdminNav ? (
@@ -316,54 +587,184 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <div className="sidebar-search" onClick={expandForSearch} title={collapsed ? 'ФИО' : undefined}>
+      <div className="sidebar-search" onClick={expandForSearch} title={collapsed ? 'Поиск' : undefined}>
         <img className="sidebar-search-icon" src={iconSearch} alt="" />
         {!collapsed && (
-          <FioSuggest
-            value={fio}
-            onChange={setFio}
-            onSelect={(value, user) => {
-              setFio('')
-              onOpenFio(value, user)
-            }}
-            placeholder="ФИО"
+          <GlobalSearchSuggest
+            placeholder="Поиск"
             inputClassName="sidebar-search-input"
-            variant={light ? 'light' : 'dark'}
           />
         )}
       </div>
 
-      <nav className="nav">
-        {items.map((item) => {
-          const isActive = item.key === active
-          const isExtensionModule = 'extension' in item && Boolean(item.extension)
-          const isExtensionsHub = item.key === 'extensions'
-          const badge = showAdminNav ? 0 : navBadges[item.key] ?? 0
-          const badgeText = badge > 99 ? '99+' : String(badge)
+      <div className={editMode ? 'nav-toolbar is-editing' : 'nav-toolbar'}>
+        {editMode && !collapsed ? (
+          <button
+            type="button"
+            className="nav-folder-add"
+            onClick={beginFolderCreate}
+            title="Создать папку вкладок"
+            aria-label="Создать папку вкладок"
+          >
+            <FolderPlus size={17} strokeWidth={2} aria-hidden />
+            <span>Новая папка</span>
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className={editMode ? 'nav-folder-add nav-edit-toggle active' : 'nav-folder-add nav-edit-toggle'}
+          onClick={toggleEditMode}
+          aria-pressed={editMode}
+          title={editMode ? 'Завершить настройку меню (Esc)' : 'Настроить меню: порядок вкладок и папки'}
+          aria-label={editMode ? 'Завершить настройку меню' : 'Настроить меню'}
+        >
+          {editMode ? <Check size={16} strokeWidth={2.2} aria-hidden /> : <Pencil size={15} strokeWidth={2} aria-hidden />}
+          {editMode && !collapsed ? <span>Готово</span> : null}
+        </button>
+      </div>
+
+      <nav
+        className={['nav', editMode ? 'nav-editing' : '', draggedNode ? 'nav-dragging' : ''].filter(Boolean).join(' ')}
+        data-nav-root
+      >
+        {folderEditor === 'new' ? (
+          <div className="nav-folder-editor">
+            <Folder size={17} aria-hidden />
+            <input
+              autoFocus
+              value={folderDraft}
+              maxLength={64}
+              placeholder="Название папки"
+              aria-label="Название новой папки"
+              onChange={(event) => setFolderDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') submitFolderEditor()
+                if (event.key === 'Escape') setFolderEditor(null)
+              }}
+            />
+            <button type="button" onClick={submitFolderEditor} disabled={!folderDraft.trim()} aria-label="Сохранить папку">
+              <Check size={15} aria-hidden />
+            </button>
+            <button type="button" onClick={() => setFolderEditor(null)} aria-label="Отменить создание">
+              <X size={15} aria-hidden />
+            </button>
+          </div>
+        ) : null}
+
+        {draggedNode && tabKeyFromNode(draggedNode) !== null && !navLayout.root.includes(draggedNode) ? (
+          <div
+            data-nav-root-zone
+            className={`nav-root-drop-zone${
+              dropHint && dropHint.target.folderId === null && dropHint.target.anchor === null ? ' is-over' : ''
+            }`}
+          >
+            В общий список
+          </div>
+        ) : null}
+
+        {navLayout.root.map((nodeId) => {
+          const tabKey = tabKeyFromNode(nodeId)
+          if (tabKey !== null) {
+            const item = itemByKey.get(tabKey as PageKey)
+            return item ? renderNavTab(item) : null
+          }
+          const folderId = folderIdFromNode(nodeId)
+          const folder = navLayout.folders.find((item) => item.id === folderId)
+          if (!folder) return null
+          const containsActive = active !== null && folder.tabKeys.includes(active)
+          const isEditing = folderEditor === folder.id
           return (
-            <button
-              key={item.key}
+            <div
+              key={nodeId}
               className={[
-                'nav-item',
-                isActive ? 'active' : '',
-                isExtensionsHub ? 'nav-item-extensions-hub' : '',
-                isExtensionModule ? 'nav-item-extension-module' : ''
+                'nav-folder',
+                containsActive ? 'has-active' : '',
+                dropHint?.into === folder.id ? 'is-drop-target' : '',
+                draggedNode === nodeId ? 'dragging' : '',
+                dropMarkClass(nodeId)
               ]
                 .filter(Boolean)
                 .join(' ')}
-              onClick={() => onNavigate(item.key)}
-              title={badge > 0 ? `${item.label}: новых задач 1С — ${badge}` : item.label}
+              data-nav-folder-id={folder.id}
             >
-              <span className="nav-icon" aria-hidden>
-                <NavIcon page={item.key} />
-              </span>
-              {!collapsed && <span className="nav-label">{item.label}</span>}
-              {badge > 0 ? (
-                <em className="nav-badge" aria-label={`Новых: ${badge}`}>
-                  {badgeText}
-                </em>
+              {isEditing ? (
+                <div className="nav-folder-editor">
+                  <Folder size={17} aria-hidden />
+                  <input
+                    autoFocus
+                    value={folderDraft}
+                    maxLength={64}
+                    aria-label={`Новое название папки «${folder.name}»`}
+                    onChange={(event) => setFolderDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') submitFolderEditor()
+                      if (event.key === 'Escape') setFolderEditor(null)
+                    }}
+                  />
+                  <button type="button" onClick={submitFolderEditor} disabled={!folderDraft.trim()} aria-label="Сохранить название">
+                    <Check size={15} aria-hidden />
+                  </button>
+                  <button type="button" onClick={() => setFolderEditor(null)} aria-label="Отменить переименование">
+                    <X size={15} aria-hidden />
+                  </button>
+                </div>
+              ) : (
+                <div className="nav-folder-row" data-nav-node={nodeId}>
+                  <button
+                    type="button"
+                    className="nav-folder-toggle"
+                    aria-expanded={collapsed ? undefined : folder.expanded}
+                    title={folder.name}
+                    onClick={() => {
+                      if (collapsed) setCollapsed(false)
+                      else persistNavLayout(toggleSidebarFolder(navLayout, folder.id))
+                    }}
+                  >
+                    <span className="nav-folder-chevron" aria-hidden>
+                      {folder.expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </span>
+                    <Folder size={17} aria-hidden />
+                    {!collapsed ? <span className="nav-folder-name">{folder.name}</span> : null}
+                  </button>
+                  {editMode && !collapsed ? (
+                    <span className="nav-folder-actions">
+                      <button
+                        type="button"
+                        onClick={() => beginFolderRename(folder.id, folder.name)}
+                        title="Переименовать папку"
+                        aria-label={`Переименовать папку «${folder.name}»`}
+                      >
+                        <Pencil size={13} aria-hidden />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeFolder(folder.id, folder.name)}
+                        title="Удалить папку"
+                        aria-label={`Удалить папку «${folder.name}»`}
+                      >
+                        <Trash2 size={13} aria-hidden />
+                      </button>
+                      <span className="nav-folder-grip" {...dragHandleProps(nodeId, folder.name)}>
+                        <GripVertical size={15} strokeWidth={2} aria-hidden />
+                      </span>
+                    </span>
+                  ) : null}
+                </div>
+              )}
+              {!collapsed && folder.expanded ? (
+                <div className="nav-folder-children">
+                  {folder.tabKeys.map((key) => {
+                    const item = itemByKey.get(key as PageKey)
+                    return item ? renderNavTab(item, folder.id) : null
+                  })}
+                  {!folder.tabKeys.length ? (
+                    <span className="nav-folder-empty">
+                      {editMode ? 'Перетащите вкладку сюда' : 'Пустая папка — нажмите карандаш, чтобы добавить вкладки'}
+                    </span>
+                  ) : null}
+                </div>
               ) : null}
-            </button>
+            </div>
           )
         })}
       </nav>
@@ -446,7 +847,16 @@ export function Sidebar({
         })}
       </div>
 
-      <button className="collapse-btn" onClick={() => setCollapsed((value) => !value)} title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}>
+      <button
+        className="collapse-btn"
+        onClick={() => {
+          if (!collapsed) {
+            setEditMode(false)
+            setFolderEditor(null)
+          }
+          setCollapsed(!collapsed)
+        }}
+        title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}>
         {collapsed ? '\u203A' : '\u2039'}
       </button>
     </aside>

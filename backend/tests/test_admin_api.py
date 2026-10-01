@@ -2,23 +2,29 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
+from types import SimpleNamespace
 
 from app.api.deps import require_admin_user
 from app.core.jwt import AuthContext, create_access_token
 from app.services.admin.overview import build_admin_overview
 
 
-def test_require_admin_user_rejects_non_admin():
+def test_require_admin_user_rejects_non_admin(monkeypatch):
+    monkeypatch.setattr("app.api.deps.get_admin_access", lambda _user_id: None)
     auth = AuthContext(user_id="u1", fio="Обычный Пользователь", session_id="s1")
     with pytest.raises(HTTPException) as exc:
         require_admin_user(auth)
     assert exc.value.status_code == 403
 
 
-def test_require_admin_user_allows_admin_fio():
+def test_require_admin_user_allows_assigned_position(monkeypatch):
+    monkeypatch.setattr(
+        "app.api.deps.get_admin_access",
+        lambda _user_id: SimpleNamespace(panel_key="default", pages=("overview",)),
+    )
     auth = AuthContext(
         user_id="u1",
-        fio="Жалыбин Максим Дмитриевич",
+        fio="Любой Пользователь",
         session_id="s1",
     )
     assert require_admin_user(auth) is auth
@@ -59,6 +65,7 @@ def test_admin_overview_route_requires_admin(monkeypatch):
 
     empty_statuses = AdminAgentStatusesOut(title="Статусы агентов", total=0, slices=[])
     monkeypatch.setattr(sessions, "is_current_session", lambda *_a, **_k: True)
+    monkeypatch.setattr("app.api.deps.get_admin_access", lambda _user_id: None)
     monkeypatch.setattr(
         "app.services.admin.overview._count_metrics",
         lambda: (0, 0, 0, 0, 0, 0, 0, (empty_launch_dynamics(), empty_statuses, 0)),
@@ -78,6 +85,10 @@ def test_admin_overview_route_requires_admin(monkeypatch):
     )
     assert response.status_code == 403
 
+    monkeypatch.setattr(
+        "app.api.deps.get_admin_access",
+        lambda _user_id: SimpleNamespace(panel_key="default", pages=("overview",)),
+    )
     admin_token = create_access_token(
         user_id="admin-1",
         fio="Жалыбин Максим Дмитриевич",
@@ -94,6 +105,81 @@ def test_admin_overview_route_requires_admin(monkeypatch):
     assert isinstance(body.get("metrics"), list)
 
 
+def test_finance_panel_cannot_open_users_route(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.services import sessions
+
+    monkeypatch.setattr(sessions, "is_current_session", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "app.api.deps.get_admin_access",
+        lambda _user_id: SimpleNamespace(
+            panel_key="finance",
+            pages=(
+                "finance_employees",
+                "finance_upload",
+                "finance_import_history",
+            ),
+        ),
+    )
+    token = create_access_token(
+        user_id="finance-1",
+        fio="Финансовый Пользователь",
+        session_id="sess-finance",
+        client="orchestrator",
+    )
+
+    response = TestClient(app).get(
+        "/api/v1/admin/users",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_finance_employees_route_requires_finance_page(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.services import sessions
+    from app.services.admin import finance
+
+    monkeypatch.setattr(sessions, "is_current_session", lambda *_a, **_k: True)
+    monkeypatch.setattr(finance, "list_employees", lambda *_a, **_k: {"rows": [], "total": 0})
+    token = create_access_token(
+        user_id="admin-1",
+        fio="Администратор",
+        session_id="sess-finance-page",
+        client="orchestrator",
+    )
+    client = TestClient(app)
+
+    monkeypatch.setattr(
+        "app.api.deps.get_admin_access",
+        lambda _user_id: SimpleNamespace(panel_key="default", pages=("overview",)),
+    )
+    denied = client.get(
+        "/api/v1/admin/finance/employees",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert denied.status_code == 403
+
+    monkeypatch.setattr(
+        "app.api.deps.get_admin_access",
+        lambda _user_id: SimpleNamespace(
+            panel_key="finance",
+            pages=("finance_employees",),
+        ),
+    )
+    allowed = client.get(
+        "/api/v1/admin/finance/employees",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["rows"] == []
+
+
 def _admin_client(monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -101,6 +187,22 @@ def _admin_client(monkeypatch):
     from app.services import sessions
 
     monkeypatch.setattr(sessions, "is_current_session", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "app.api.deps.get_admin_access",
+        lambda _user_id: SimpleNamespace(
+            panel_key="default",
+            pages=(
+                "overview",
+                "history",
+                "launch_calendar",
+                "kpi",
+                "users",
+                "ai_agents",
+                "knowledge_base",
+                "settings",
+            ),
+        ),
+    )
     admin_token = create_access_token(
         user_id="admin-1",
         fio="Жалыбин Максим Дмитриевич",

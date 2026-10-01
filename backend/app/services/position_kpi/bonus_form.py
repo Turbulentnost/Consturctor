@@ -295,7 +295,7 @@ def _write_sheet(
     money: BonusMoney | None = None,
 ) -> None:
     last_col = 8 if money else 7
-    widths = {"A": 8, "B": 62, "C": 16, "D": 18, "E": 18, "F": 42, "G": 22, "H": 20}
+    widths = {"A": 8, "B": 62, "C": 16, "D": 36, "E": 18, "F": 42, "G": 22, "H": 20}
     for column, width in widths.items():
         sheet.column_dimensions[column].width = width
 
@@ -361,13 +361,14 @@ def _write_sheet(
             missing += 1
         else:
             earned_total += float(earned)
+        fact_text = "" if str(row.get("code") or "") == "instructions" else str(row.get("evidence") or "")
         values = (
             offset,
             str(row.get("name") or ""),
             _pct(weight),
-            "отчёт",
+            "лист",
             deadline,
-            str(row.get("evidence") or ""),
+            fact_text,
             _pct(earned if isinstance(earned, (int, float)) else None),
         )
         for index, value in enumerate(values, start=1):
@@ -444,7 +445,7 @@ def _link_reports(sheet: Worksheet, names: list[str]) -> None:
     header_row = 12
     for offset, title in enumerate(names, start=1):
         cell = sheet.cell(header_row + offset, 4)
-        cell.value = "отчёт"
+        cell.value = title
         cell.hyperlink = report_hyperlink(cell.coordinate, title)
         cell.font = _LINK_FONT
         cell.alignment = _CENTER

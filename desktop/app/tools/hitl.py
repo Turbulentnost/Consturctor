@@ -66,6 +66,9 @@ _READ_EXACT = frozenset(
         "onec.docflow_tasks",
         "onec.open_form",
         "onec.meeting_service_notes",
+        "meetings.memo_requests",
+        "outlook.ews_availability",
+        "onec.meeting_protocols",
         "agent.wait",
         "turboproject",
         "users.list",
@@ -201,6 +204,11 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
         "Создаёт событие в календаре Outlook. Можно указать участников и организатора. "
         "В теме и тексте будет пометка, что это ИИ-агент.",
     ),
+    "outlook.ews_create_meeting": (
+        "Совещание в календаре «Совещания»",
+        "Создаёт совещание в общем календаре «Совещания» и сразу рассылает приглашения "
+        "участникам и Амуралю И.Б.",
+    ),
     "report.export_document": (
         "Отчёт в файл",
         "Сохраняет оформленный отчёт файлом (Word или Markdown) в папке агента.",
@@ -212,6 +220,10 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
     "excel.edit_workbook": (
         "Изменение Excel",
         "Правит существующую книгу Excel в папке агента.",
+    ),
+    "excel.write_action_tracker": (
+        "Запись Action Tracker",
+        "Записывает в Action Tracker все поручения и все протоколы ПСД из последних выборок 1С.",
     ),
     "code.write_python": (
         "Запись кода",
@@ -404,10 +416,29 @@ def explain_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
         filename = str(args.get("filename") or "").strip()
         if filename:
             extra.append(f"Файл: {filename}.")
-    elif tool in {"excel.create_workbook", "excel.edit_workbook", "office.format_document", "report.export_document"}:
+    elif tool in {
+        "excel.create_workbook",
+        "excel.edit_workbook",
+        "excel.write_action_tracker",
+        "office.format_document",
+        "report.export_document",
+    }:
         filename = str(args.get("filename") or args.get("path") or "").strip()
         if filename:
             extra.append(f"Файл: {filename}.")
+    elif tool == "outlook.ews_create_meeting":
+        subject = str(args.get("subject") or "").strip()
+        start = str(args.get("start") or "").strip().replace("T", " ")
+        location = str(args.get("location") or "").strip()
+        attendees = args.get("attendees")
+        if subject:
+            extra.append(f"Тема: {subject}.")
+        if start:
+            extra.append(f"Начало: {start}.")
+        if location:
+            extra.append(f"Место: {location}.")
+        if isinstance(attendees, list) and attendees:
+            extra.append(f"Участники: {', '.join(str(item) for item in attendees)}.")
     elif tool == "outlook.create_event":
         subject = str(args.get("subject") or args.get("title") or "").strip()
         start = str(args.get("start") or args.get("start_at") or "").strip()

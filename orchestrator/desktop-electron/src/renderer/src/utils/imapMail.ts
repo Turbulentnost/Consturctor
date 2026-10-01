@@ -1,5 +1,6 @@
 import { api } from '../api/client'
 import type { ToolStatus } from '../api/types'
+import { comCredentials } from '../store/session'
 import { dayKeyLocal } from './outlookMail'
 
 /** Desktop never opens IMAP sockets — only POST /api/v1/tools/invoke. */
@@ -12,6 +13,27 @@ export type ImapSearchResult = {
   error?: string
   host?: string
   mailbox?: string
+  login?: string
+}
+
+const IMAP_NO_MAILBOX =
+  'IMAP: нет логина почты или пароля — войдите в программу заново с паролем'
+
+/** Логин ящика текущего пользователя (name_mail); пусто — IMAP не вызывается. */
+export function imapMailboxLogin(): string {
+  const { nameMail, password } = comCredentials()
+  return password ? nameMail.trim().toLowerCase() : ''
+}
+
+function withMailbox(payload: Record<string, unknown>): Record<string, unknown> | null {
+  const { nameMail, password } = comCredentials()
+  const login = nameMail.trim().toLowerCase()
+  if (!login || !password) return null
+  return { ...payload, mail_login: login, mail_password: password }
+}
+
+function noMailbox(): ImapSearchResult {
+  return { ok: false, mode: '', configuredHint: false, messages: [], error: IMAP_NO_MAILBOX }
 }
 
 export function nextDayKey(ymd: string): string {
@@ -64,7 +86,9 @@ export async function fetchImapSearch(args: {
   if (args.before) payload.before = args.before
   if (args.query) payload.query = args.query
 
-  const res = await api.invokeServerTool('imap.search', payload)
+  const personal = withMailbox(payload)
+  if (!personal) return noMailbox()
+  const res = await api.invokeServerTool('imap.search', personal)
   if (!res.ok || !res.result || typeof res.result !== 'object') {
     return {
       ok: false,
@@ -83,12 +107,15 @@ export async function fetchImapSearch(args: {
     configuredHint: mode === 'real' || mode === 'imap',
     messages,
     host: String(body.host || ''),
-    mailbox: String(body.mailbox || '')
+    mailbox: String(body.mailbox || ''),
+    login: String(body.login || '')
   }
 }
 
 export async function fetchImapListUnread(limit = 50): Promise<ImapSearchResult> {
-  const res = await api.invokeServerTool('imap.list_unread', { limit })
+  const personal = withMailbox({ limit })
+  if (!personal) return noMailbox()
+  const res = await api.invokeServerTool('imap.list_unread', personal)
   if (!res.ok || !res.result || typeof res.result !== 'object') {
     return {
       ok: false,
@@ -106,7 +133,8 @@ export async function fetchImapListUnread(limit = 50): Promise<ImapSearchResult>
     configuredHint: mode === 'real' || mode === 'imap',
     messages: asRecordList(body.messages),
     host: String(body.host || ''),
-    mailbox: String(body.mailbox || '')
+    mailbox: String(body.mailbox || ''),
+    login: String(body.login || '')
   }
 }
 
@@ -117,7 +145,9 @@ export async function fetchImapMessage(uid: number): Promise<{
   body: string
   error?: string
 }> {
-  const res = await api.invokeServerTool('imap.fetch_message', { uid })
+  const personal = withMailbox({ uid })
+  if (!personal) return { ok: false, subject: '', from: '', body: '', error: IMAP_NO_MAILBOX }
+  const res = await api.invokeServerTool('imap.fetch_message', personal)
   if (!res.ok || !res.result || typeof res.result !== 'object') {
     return { ok: false, subject: '', from: '', body: '', error: res.error || 'Не удалось загрузить письмо IMAP' }
   }

@@ -90,7 +90,8 @@ export const STANDARD_TAB_LABELS: Record<string, string> = {
   botA: 'Нижний блок A',
   botB: 'Нижний блок B',
   botC: 'Нижний блок C',
-  calendar: 'Календарь'
+  calendar: 'Календарь',
+  rail: 'Период и календари'
 }
 
 export type TabChromeMeta = {
@@ -109,6 +110,15 @@ export type TabChromePersist = {
 export const DEFAULT_STANDARD_LAYOUT: LayoutItem[] = [
   { i: 'main', x: 0, y: 0, w: 12, h: 12, minW: 6, minH: 4, maxW: 16, maxH: 12 },
   { i: 'side', x: 12, y: 0, w: 4, h: 12, minW: 4, minH: 4, maxW: 16, maxH: 12 }
+]
+
+/**
+ * Совещания: слева период и календари, справа сетка. Карточки совещания в раскладке
+ * нет — она открывается рядом с блоком, как в Google Calendar.
+ */
+export const DEFAULT_MEETINGS_LAYOUT: LayoutItem[] = [
+  { i: 'rail', x: 0, y: 0, w: 3, h: 12, minW: 2, minH: 6, maxW: 6, maxH: 12 },
+  { i: 'main', x: 3, y: 0, w: 13, h: 12, minW: 5, minH: 4, maxW: 16, maxH: 12 }
 ]
 
 export const DEFAULT_WIDE_MAIN_LAYOUT: LayoutItem[] = [
@@ -174,15 +184,9 @@ export const DEFAULT_PROCESS_LAYOUT: LayoutItem[] = [
   { i: 'botB', x: 8, y: 7, w: 8, h: 5, minW: 4, minH: 2, maxW: 16, maxH: 6 }
 ]
 
-/**
- * 8×6 (col×row): side 2×2, botB/botC 2×1, main 8×3, botA 8×1 — сумма рядов = 6.
- */
+/** KPI: таблица на всю ширину под двумя фиксированными рядами плиток. */
 export const DEFAULT_KPI_LAYOUT: LayoutItem[] = [
-  { i: 'side', x: 0, y: 0, w: 2, h: 2, minW: 2, minH: 2, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
-  { i: 'botB', x: 2, y: 0, w: 2, h: 1, minW: 2, minH: 1, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
-  { i: 'botC', x: 4, y: 0, w: 2, h: 1, minW: 2, minH: 1, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
-  { i: 'main', x: 0, y: 2, w: 8, h: 3, minW: 4, minH: 2, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
-  { i: 'botA', x: 0, y: 5, w: 8, h: 1, minW: 6, minH: 1, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS }
+  { i: 'main', x: 0, y: 0, w: 8, h: 6, minW: 4, minH: 2, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS }
 ]
 
 export const DEFAULT_DECISIONS_LAYOUT: LayoutItem[] = [
@@ -198,6 +202,13 @@ function storageKey(tabId: string, userId: string): string {
   }
   if (tabId === 'agent_library') {
     return `${TAB_CHROME_STORAGE_KEY}:agent_library-v1:${uid}`
+  }
+  if (tabId === 'meetings') {
+    // v3 — правая карточка уехала во всплывающее окно, сетка заняла её место.
+    return `${TAB_CHROME_STORAGE_KEY}:meetings-v3:${uid}`
+  }
+  if (tabId === 'kpi') {
+    return `${TAB_CHROME_STORAGE_KEY}:kpi-v4:${uid}`
   }
   return `${TAB_CHROME_STORAGE_KEY}:${tabId}:${uid}`
 }

@@ -1,0 +1,655 @@
+.mcal-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.mcal-scroll {
+  scrollbar-gutter: stable;
+  overflow: auto;
+}
+
+/* ---- Неделя: у колонок есть минимальная ширина, узкое окно прокручивается ---- */
+.mcal-head,
+.mcal-body {
+  display: flex;
+  min-width: max-content;
+}
+
+.mcal-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  gap: 2px;
+  padding-right: 2px;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+  background: #fff;
+}
+
+/* box-sizing задаём явно: шапка и тело должны считать ширину колонки одинаково,
+   иначе колонки разъезжаются с заголовками дней. */
+.mcal-gutter-cell,
+.mcal-gutter,
+.mcal-head-day,
+.mcal-col {
+  box-sizing: border-box;
+}
+
+.mcal-gutter-cell,
+.mcal-gutter {
+  position: sticky;
+  left: 0;
+  flex: 0 0 42px;
+  width: 42px;
+  min-width: 42px;
+  background: #fff;
+}
+
+.mcal-gutter {
+  z-index: 2;
+}
+
+/* Шапка дня как в Google Calendar: мелкий день недели, под ним крупное число. */
+.mcal-head-day {
+  flex: 1 0 124px;
+  min-width: 124px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 2px 8px;
+  white-space: nowrap;
+}
+
+.mcal-head-dow {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6b7380;
+}
+
+.mcal-head-date {
+  display: grid;
+  place-items: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 4px;
+  border-radius: 17px;
+  font-size: 22px;
+  font-weight: 400;
+  color: #10141a;
+}
+
+.mcal-head-day.is-today .mcal-head-dow {
+  color: #2f6bd8;
+}
+
+/* Сегодняшнее число — залитый кружок, как в Google Calendar. */
+.mcal-head-day.is-today .mcal-head-date,
+.mcal-day-corner.is-today .mcal-head-date {
+  background: #2f6bd8;
+  color: #fff;
+}
+
+.mcal-head-count {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(16, 20, 26, 0.07);
+  font-size: 10px;
+  font-weight: 700;
+  color: #6b7380;
+}
+
+.mcal-head-day.is-today .mcal-head-count {
+  background: rgba(47, 107, 216, 0.14);
+  color: #2f6bd8;
+}
+
+.mcal-body {
+  position: relative;
+  gap: 2px;
+  padding-right: 2px;
+  background: #fff;
+}
+
+.mcal-gutter {
+  position: relative;
+}
+
+.mcal-hour {
+  position: absolute;
+  right: 4px;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  color: #6b7380;
+  white-space: nowrap;
+}
+
+/* z-index: 1 замыкает слои блоков внутри колонки, чтобы они не лезли на шкалу часов. */
+.mcal-col {
+  position: relative;
+  z-index: 1;
+  flex: 1 0 124px;
+  min-width: 124px;
+  border-left: 1px solid rgba(16, 20, 26, 0.08);
+}
+
+.mcal-col.is-today {
+  background: rgba(21, 101, 192, 0.05);
+}
+
+.mcal-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(16, 20, 26, 0.07);
+  pointer-events: none;
+}
+
+.mcal-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: #e5484d;
+  z-index: 30;
+  pointer-events: none;
+}
+
+/* ---- Блок совещания: заголовок, сразу под ним время ---- */
+.mcal-event {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  overflow: hidden;
+  padding: 4px 6px;
+  border: 1px solid;
+  border-left-width: 3px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.mcal-event.is-selected {
+  box-shadow: 0 0 0 2px rgba(16, 20, 26, 0.35);
+}
+
+/* Этот блок выиграл приоритет и остаётся видимым в пересечении. */
+.mcal-event.is-top {
+  border-left-width: 5px;
+  box-shadow: 0 1px 5px rgba(16, 20, 26, 0.2);
+}
+
+/* А этот перекрыт: наружу торчит только край — пунктирный и приглушённый. */
+.mcal-event.is-under {
+  border-style: dashed;
+  border-left-style: solid;
+  filter: saturate(0.55);
+}
+
+/* Короткая встреча растянута до минимальной ширины, и на неё наехала соседняя:
+   размываем нижнюю, чтобы два заголовка не читались вперемешку. Наведение возвращает
+   её наверх и в резкость. */
+.mcal-event.is-covered {
+  filter: blur(1.4px) saturate(0.7);
+  opacity: 0.75;
+  transition: filter 0.12s ease, opacity 0.12s ease;
+}
+
+.mcal-event.is-covered:hover,
+.mcal-event.is-covered:focus-within {
+  z-index: 60 !important;
+  filter: none;
+  opacity: 1;
+}
+
+/* Совещание прошло — цвет человека остаётся, блок просто уходит на второй план. */
+.mcal-event.is-past {
+  opacity: 0.62;
+}
+
+.mcal-event.is-past:hover {
+  opacity: 1;
+}
+
+/* Текст лежит поверх штриховки и не перехватывает клики: по штриховке открывается
+   список пересечений, по чистой части блока — само совещание. */
+.mcal-event-title,
+.mcal-event-time {
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.mcal-event-title {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  /* Ровно 16px: от этого шага компонент считает, сколько строк влезает в блок. */
+  line-height: 16px;
+  color: inherit;
+}
+
+/* Обрезку с многоточием ставим на вложенный элемент: у флекс-элемента
+   display: -webkit-box блокифицируется во flow-root и line-clamp не работает. */
+.mcal-event-title-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.mcal-event-time {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  color: inherit;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+
+.mcal-event.has-protocol .mcal-event-title {
+  padding-right: 14px;
+}
+
+.mcal-event-doc {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.92);
+  color: inherit;
+  pointer-events: none;
+}
+
+/* В режиме дня top/height задаёт дорожка, left/width — время. */
+.mcal-event.is-horizontal {
+  position: absolute;
+  left: auto;
+  right: auto;
+  /* Короткая встреча всё равно должна показать заголовок. */
+  min-width: 118px;
+}
+
+.mcal-event.is-compact {
+  position: relative;
+  left: auto;
+  right: auto;
+  margin-bottom: 2px;
+}
+
+/* ---- Штриховка пересечений ----
+   Лежит внутри блока на перекрытом участке и в цвет самого блока (currentColor),
+   так что заголовок сверху остаётся читаемым. */
+.mcal-hatch {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    45deg,
+    currentColor 0,
+    currentColor 1px,
+    transparent 1px,
+    transparent 7px
+  );
+  cursor: pointer;
+}
+
+/* Приоритет читается по плотности штриха: у верхнего блока она еле заметна,
+   у перекрытого — густая, поэтому сразу видно, кто кого закрывает. */
+.mcal-event.is-top .mcal-hatch {
+  opacity: 0.16;
+}
+
+.mcal-event.is-under .mcal-hatch {
+  opacity: 0.42;
+}
+
+.mcal-hatch:hover {
+  opacity: 0.6;
+}
+
+.mcal-event.is-horizontal .mcal-hatch {
+  top: 0;
+  bottom: 0;
+  left: auto;
+  right: auto;
+}
+
+/* Метка пересечения на блоке в режиме месяца, где блоки стоят в столбик. */
+.mcal-event-hatch {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  z-index: 3;
+  width: 13px;
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    45deg,
+    currentColor 0,
+    currentColor 1.5px,
+    transparent 1.5px,
+    transparent 6px
+  );
+  opacity: 0.4;
+  cursor: pointer;
+}
+
+.mcal-event-hatch:hover {
+  opacity: 0.7;
+}
+
+/* ---- День: время по горизонтали, строка на каждый календарь ---- */
+.mcal-day {
+  display: grid;
+  /* minmax даёт дорожке минимальную ширину: в узком окне появляется прокрутка. */
+  grid-template-columns: 124px minmax(620px, 1fr);
+  align-content: start;
+  padding-bottom: 8px;
+}
+
+.mcal-day-corner,
+.mcal-day-name {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  background: #fff;
+}
+
+.mcal-day-corner,
+.mcal-day-hours {
+  position: sticky;
+  top: 0;
+  background: #fff;
+}
+
+.mcal-day-corner {
+  z-index: 4;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 8px 2px;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+}
+
+.mcal-day-hours {
+  position: sticky;
+  z-index: 3;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+}
+
+/* Метки часов прижаты к низу полосы: сверху её высоту задаёт крупная дата слева. */
+.mcal-day-hour {
+  position: absolute;
+  bottom: 5px;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: #6b7380;
+  white-space: nowrap;
+}
+
+.mcal-day-hour.is-first {
+  transform: none;
+  margin-left: 2px;
+}
+
+.mcal-day-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 8px 8px 2px;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.07);
+  font-size: 12px;
+  font-weight: 600;
+  color: #10141a;
+}
+
+.mcal-day-dot {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.mcal-day-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcal-day-track {
+  position: relative;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.07);
+  border-left: 1px solid rgba(16, 20, 26, 0.1);
+  background: #fff;
+}
+
+.mcal-day-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(16, 20, 26, 0.07);
+  pointer-events: none;
+}
+
+.mcal-day-now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #e5484d;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.mcal-day-free {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: #b5c2d3;
+}
+
+.mcal-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  font-size: 12px;
+  color: #9aa4b2;
+}
+
+/* ---- Месяц ---- */
+.mcal-month {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mcal-month-head,
+.mcal-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.mcal-month-head span {
+  text-align: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #6b7380;
+}
+
+.mcal-month-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  min-height: 64px;
+  padding: 6px;
+  border: 1px solid rgba(16, 20, 26, 0.08);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.mcal-month-cell.is-out {
+  background: #fafbfd;
+}
+
+.mcal-month-cell.is-out .mcal-month-day {
+  color: #b5c2d3;
+}
+
+.mcal-month-cell.is-today {
+  border-color: #1565c0;
+  background: rgba(21, 101, 192, 0.05);
+}
+
+.mcal-month-day {
+  font-size: 12px;
+  font-weight: 700;
+  color: #10141a;
+}
+
+/* В месяце вместо блоков — число совещаний самого приоритетного человека. */
+.mcal-month-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* ---- Блок «что пересекается» ---- */
+.mcal-conflict {
+  flex: 0 0 auto;
+  margin-top: 6px;
+  border: 1px solid rgba(48, 58, 82, 0.28);
+  border-radius: 9px;
+  background: rgba(48, 58, 82, 0.05);
+  overflow: hidden;
+}
+
+.mcal-conflict-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #10141a;
+}
+
+.mcal-conflict-close {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #6b7380;
+  cursor: pointer;
+}
+
+.mcal-conflict-close:hover {
+  background: rgba(48, 58, 82, 0.12);
+  color: #10141a;
+}
+
+.mcal-conflict-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 6px 6px;
+  list-style: none;
+  max-height: 148px;
+  overflow: auto;
+}
+
+.mcal-conflict-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: #fff;
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcal-conflict-item:hover {
+  background: #e8f1fb;
+}
+
+.mcal-conflict-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.mcal-conflict-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcal-conflict-time {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: #6b7380;
+}
+
+.mcal-conflict-tag {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(21, 101, 192, 0.12);
+  font-size: 9.5px;
+  color: #1565c0;
+}

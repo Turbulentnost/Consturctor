@@ -42,10 +42,14 @@ import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter
 import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { NewOneCTaskMark } from '../../workplace/specV04Components'
 import {
+  DOCFLOW_GROUP_ORDER,
   DOCFLOW_KIND_LABEL,
   DOCFLOW_KIND_TONE,
+  docflowGroupKey,
+  docflowGroupLabel,
   docflowPrimaryAction,
   docflowTaskKind,
+  type DocflowGroupKey,
   type DocflowTaskKind
 } from '../../workplace/docflowTaskKind'
 import { isPlatformTaskMine, needsPlatformReview } from '../../workplace/platformTasks'
@@ -53,25 +57,7 @@ import { acceptPlatformTask, completePlatformTask, PlatformTaskDetail } from './
 import { ClosedOneCTasksModal } from './ClosedOneCTasksModal'
 import { onecRowImportance } from '../../workplace/onecTaskImportance'
 import { usePageSearch } from '../../layout/pageSearchContext'
-
-/** Разделы списка: сначала то, что исполняет сам, ознакомление — в конце. */
-const TASK_GROUP_ORDER = [
-  'execute',
-  'approve',
-  'confirm',
-  'check',
-  'consider',
-  'resolution',
-  'question',
-  'other',
-  'acquaint'
-] as const
-
-type TaskGroupKey = (typeof TASK_GROUP_ORDER)[number]
-
-function taskGroupLabel(key: TaskGroupKey): string {
-  return key === 'other' ? 'Прочие задачи' : DOCFLOW_KIND_LABEL[key]
-}
+import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
 export function TasksGridTab({
   user,
@@ -98,10 +84,13 @@ export function TasksGridTab({
     () => buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows, data.platformTasks),
     [data.erpTasks, data.turboTasks, data.processRows, data.platformTasks]
   )
-  const effectiveTile: TaskTileFilter = {
-    source: (barSource as TaskSourceFilter) || tileFilter.source,
-    overdueOnly: barOverdue || tileFilter.overdueOnly
-  }
+  const effectiveTile = useMemo<TaskTileFilter>(
+    () => ({
+      source: (barSource as TaskSourceFilter) || tileFilter.source,
+      overdueOnly: barOverdue || tileFilter.overdueOnly
+    }),
+    [barSource, tileFilter.source, barOverdue, tileFilter.overdueOnly]
+  )
   const taskRows = useMemo(() => {
     const q = query.trim().toLowerCase()
     const filtered = filterTaskRows(catalog.rows, effectiveTile, catalog.erpIds, catalog.turboIds).filter(
@@ -233,20 +222,15 @@ export function TasksGridTab({
       })
       .finally(() => setClosingId(''))
   }
-  const groupOf = (row: (typeof taskRows)[number]): TaskGroupKey => {
-    const kind = kindOf(row)
-    if (!kind) return 'other'
-    return kind === 'acquaint_result' ? 'acquaint' : kind
-  }
-  const groups = TASK_GROUP_ORDER.map((key) => ({
+  const groups = DOCFLOW_GROUP_ORDER.map((key) => ({
     key,
-    rows: taskRows.filter((row) => groupOf(row) === key)
+    rows: taskRows.filter((row) => docflowGroupKey(kindOf(row)) === key)
   })).filter((group) => group.rows.length)
   const acquaintRows = groups.find((group) => group.key === 'acquaint')?.rows ?? []
   const acquaintTargets = acquaintRows.filter((row) => rowAction(row)?.id === 'acquaint')
   // Ознакомление свёрнуто: его много и оно не требует работы, остальные разделы открыты.
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<TaskGroupKey>>(() => new Set(['acquaint']))
-  const toggleGroup = (key: TaskGroupKey): void => {
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<DocflowGroupKey>>(() => new Set(['acquaint']))
+  const toggleGroup = (key: DocflowGroupKey): void => {
     setCollapsedGroups((current) => {
       const next = new Set(current)
       if (next.has(key)) next.delete(key)
@@ -289,6 +273,24 @@ export function TasksGridTab({
   }
   const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
   const visibleRows = groups.flatMap((group) => (collapsedGroups.has(group.key) ? [] : group.rows))
+  // groups пересобирается на каждом рендере; по ключу из id поиск не перерегистрируется зря.
+  const visibleKey = visibleRows.map((row) => row.id).join('\n')
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(() => {
+    const ids = new Set(visibleKey.split('\n'))
+    return taskRows
+      .filter((row) => ids.has(row.id))
+      .map((row) => ({
+        id: `tasks:${row.id}`,
+        source: 'grid:tasks',
+        pageKey: 'tasks',
+        kind: 'entity',
+        targetId: row.id,
+        title: row.title,
+        subtitle: [row.source, row.status, row.project].filter(Boolean).join(' · '),
+        keywords: [row.process, row.author, row.performer, row.executor, row.deadline]
+      }))
+  }, [visibleKey, taskRows])
+  useRegisterGlobalSearch('grid:tasks', globalSearchEntries)
   const effectiveId = selectedId || visibleRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
   const renderRow = (row: (typeof taskRows)[number]): React.JSX.Element => {
@@ -299,6 +301,7 @@ export function TasksGridTab({
     return (
       <tr
         key={row.id}
+        data-search-id={row.id}
         className={[
           effectiveId === row.id ? 'selected' : '',
           isNew ? 'is-new-onec' : '',
@@ -525,7 +528,7 @@ export function TasksGridTab({
                         <div className="spec-group-head">
                           <button type="button" className="spec-group-toggle" aria-expanded={open}>
                             {open ? <ChevronDown size={16} aria-hidden /> : <ChevronRight size={16} aria-hidden />}
-                            {taskGroupLabel(group.key)}
+                            {docflowGroupLabel(group.key)}
                             <em>{group.rows.length}</em>
                           </button>
                           {bulkReady ? (

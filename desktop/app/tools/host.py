@@ -124,6 +124,18 @@ def _invoke_local_backend_tool(name: str, args: dict[str, Any]) -> dict[str, Any
     raise ToolHostError(f"Локальный backend-инструмент не реализован: {name}")
 
 
+def _with_personal_mailbox(args: dict[str, Any]) -> dict[str, Any]:
+    """Сервер читает почту только ящика вошедшего пользователя: логин почты + пароль сеанса."""
+    import os
+
+    from app.tools.ac.workers.onec_com_session import ENV_NAME_MAIL, ENV_PASSWORD
+
+    out = dict(args)
+    out["mail_login"] = os.environ.get(ENV_NAME_MAIL, "").strip()
+    out["mail_password"] = os.environ.get(ENV_PASSWORD, "")
+    return out
+
+
 def _invoke_server_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Proxy a server-executed tool to the Constructor backend.
 
@@ -133,6 +145,8 @@ def _invoke_server_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     from app.tools import runtime_api
 
     timeout = _server_tool_timeout(name)
+    if name.startswith("imap."):
+        args = _with_personal_mailbox(args)
     try:
         data = runtime_api.request(
             "POST",

@@ -477,11 +477,14 @@ def register_excel_tools(
     skip_existing: bool = False,
 ) -> None:
     """Зарегистрировать Excel-инструменты в реестре."""
+    from app.tools.ac.action_tracker import ExcelWriteActionTrackerTool
+
     for tool in [
         ExcelListFilesTool(resolver),
         ExcelReadWorkbookTool(resolver),
         ExcelCreateWorkbookTool(resolver),
         ExcelEditWorkbookTool(resolver),
+        ExcelWriteActionTrackerTool(resolver),
     ]:
         if skip_existing and registry.has_tool(tool.definition.name):
             continue

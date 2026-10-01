@@ -1441,6 +1441,40 @@
   box-shadow: inset 3px 0 0 #e53935;
 }
 
+/* Разделы по видам задач внутри виджета. */
+.today-mini-table tr.today-group-row {
+  cursor: pointer;
+}
+
+.today-mini-table tr.today-group-row td {
+  background: var(--surface-muted, #f4f6f9);
+  border-top: 1px solid var(--border-subtle, #e3e8ef);
+  padding: 4px 8px !important;
+}
+
+.today-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--content-muted);
+  cursor: pointer;
+}
+
+.today-group-toggle em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--content-muted);
+  opacity: 0.75;
+}
+
 /* Строка виджета открывает карточку записи. */
 .today-mini-table tr.today-tr-clickable {
   cursor: pointer;

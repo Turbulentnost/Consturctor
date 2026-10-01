@@ -18,16 +18,20 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _trace(message: str) -> None:
-    print(message, flush=True)
+    try:
+        print(message, flush=True)
+    except OSError:
+        pass
 
 
 @router.get("/users", response_model=UserFioListResponse)
 async def list_users(
     search: str | None = None,
     limit: int = Query(default=200, ge=1, le=20000),
+    only_shown: bool = Query(default=False),
 ) -> UserFioListResponse:
     try:
-        items = await auth_service.list_user_fios(search, limit=limit)
+        items = await auth_service.list_user_fios(search, limit=limit, only_shown=only_shown)
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return UserFioListResponse(items=items)

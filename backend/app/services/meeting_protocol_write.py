@@ -23,6 +23,7 @@ import re
 from datetime import date, datetime
 from typing import Any, Callable
 
+from app.services.docflow_document_tasks import fio_matches
 from app.services.erp_assignments import (
     PROBE_MARK,
     _parse_day,
@@ -866,8 +867,10 @@ def handle_protocol_write(
         return _update_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
     if action == "next":
         return _next_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
+    if action == "edit":
+        return edit_protocol(args, actor_fio=actor_fio)
     if action != "create":
-        raise ProtocolWriteError("action: create | update | next | probe")
+        raise ProtocolWriteError("action: create | update | next | edit | probe")
     body, meta = build_protocol_create_body(
         args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
@@ -1028,8 +1031,242 @@ def _update_protocol(
     }
 
 
+# --------------------------------------------------------------------------- edit
+# Точечная правка из журнала «Протоколы»: update выше пересобирает документ целиком и теряет
+# перенесённые решения (ПротоколИсточник_Key), файлы строк и признаки отправки задач.
+
+EDIT_HEADER_FIELDS = (
+    "topic",
+    "meeting_type",
+    "time_start",
+    "time_end",
+    "next_meeting_date",
+    "leader",
+    "responsible",
+    "room",
+    "access",
+    "department",
+    "project",
+    "comment",
+)
+
+
+def protocol_edit_block(card: dict[str, Any], actor_fio: str) -> str:
+    """Почему протокол нельзя править из Оркестратора; пустая строка — можно."""
+    status = _clean(card.get("Статус"))
+    if bool(card.get("Posted")) or status not in ("", DRAFT_STATUS):
+        return f"Протокол уже {'проведён' if card.get('Posted') else 'в работе'} (статус «{status}») — правки только в 1С"
+    prepared = _description_of(USER_ENTITY, card.get("Подготовил_Key"), {})
+    if not actor_fio or not prepared or not fio_matches(prepared, actor_fio):
+        return f"Править протокол может только тот, кто его подготовил{f' ({prepared})' if prepared else ''}"
+    return ""
+
+
+def task_table_block(rows: list[dict[str, Any]]) -> str:
+    """PATCH заменяет таблицу целиком, а 1С не принимает обратно поле «Файл» (ValueList XDTO) через OData."""
+    if any(str(row.get("Файл_Base64Data") or "").strip() for row in rows):
+        return "К задачам приложены файлы — 1С не принимает их через OData, эту таблицу правьте в 1С"
+    return ""
+
+
+def _row_copy(row: dict[str, Any]) -> dict[str, Any]:
+    """Строка табличной части без ссылки на документ и навигаций — в том виде, как её принимает PATCH."""
+    return {
+        key: value
+        for key, value in row.items()
+        if key != "Ref_Key" and "@" not in key and not isinstance(value, (dict, list))
+    }
+
+
+def _point(value: Any, fallback: int) -> int:
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return fallback
+    return number if number > 0 else fallback
+
+
+def _edit_ref(entity: str, query: str, label: str, missing: list[str]) -> str:
+    text = _clean(query)
+    if not text:
+        return _EMPTY_GUID
+    key = resolve_ref(entity, text)
+    if not key:
+        missing.append(f"{label} «{text}»")
+    return key
+
+
+def _edit_header(fields: dict[str, Any], card: dict[str, Any], missing: list[str]) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    if "topic" in fields:
+        topic = _clean(fields["topic"])
+        theme = resolve_theme(topic) if topic else None
+        found = _clean(theme.get("Description")) if theme else ""
+        # Тема — ссылка на справочник, поиск 1С регистр не различает: «…по гк» найдёт «…по ГК».
+        if topic and not theme:
+            missing.append(f"тема совещания «{topic}»")
+        elif topic and found != topic:
+            raise ProtocolWriteError(
+                f"Тема совещания — элемент справочника «Темы совещаний». По «{topic}» найдена тема «{found}». "
+                "Выберите тему из списка; название самой темы меняется только в справочнике 1С — "
+                "и сразу во всех протоколах с этой темой."
+            )
+        body["ТемаСовещания_Key"] = str(theme.get("Ref_Key")) if theme else _EMPTY_GUID
+    if "meeting_type" in fields:
+        kind = _clean(fields["meeting_type"])
+        if kind not in MEETING_TYPES:
+            missing.append(f"вид совещания «{kind}»")
+        body["ВидСовещания"] = kind
+    for field, target in (("time_start", "ВремяНачалаСовещания"), ("time_end", "ВремяОкончанияСовещания")):
+        if field in fields:
+            body[target] = _time_value(fields[field]) or _EMPTY_DATE
+    if "next_meeting_date" in fields:
+        body["ДатаСледующегоСовещания"] = _day_value(fields["next_meeting_date"]) or _EMPTY_DATE
+    for field, target, label in (("leader", "Руководитель_Key", "руководитель"), ("responsible", "Ответственный_Key", "ответственный")):
+        if field not in fields:
+            continue
+        name = _clean(fields[field])
+        if not name:
+            missing.append(f"{label} не указан")
+            continue
+        try:
+            body[target] = resolve_user_card(name)["ref_key"]
+        except ProtocolWriteError:
+            missing.append(f"{label} «{name}»")
+    if "room" in fields:
+        room = _clean(fields["room"])
+        body["Кабинет_Key"] = _edit_ref(ROOM_ENTITY, _ROOM_ALIASES.get(room.lower(), room), "место", missing)
+    for field, entity, target, label in (
+        ("access", ACCESS_ENTITY, "ГрифДоступа_Key", "гриф доступа"),
+        ("department", DEPARTMENT_ENTITY, "Подразделение_Key", "подразделение"),
+        ("project", PROJECT_ENTITY, "Проект_Key", "проект"),
+    ):
+        if field in fields:
+            body[target] = _edit_ref(entity, fields[field], label, missing)
+    if "comment" in fields:
+        comment = str(fields["comment"] or "").strip()
+        for marker in re.findall(r"outlook:\S+", str(card.get("Комментарий") or "")):
+            if marker not in comment:
+                comment = f"{comment}\n{marker}".strip()
+        body["Комментарий"] = comment
+    return body
+
+
+def _edit_tasks(
+    items: list[Any],
+    existing: list[dict[str, Any]],
+    *,
+    assigned: bool,
+    author_key: str,
+    missing: list[str],
+) -> list[dict[str, Any]]:
+    """Полный список строк таблицы: PATCH табличной части заменяет её целиком."""
+    by_line = {str(row.get("LineNumber") or ""): row for row in existing}
+    # Отправленная исполнителю задача уже живёт своей жизнью — её строку не меняем и не удаляем.
+    locked = {line for line, row in by_line.items() if assigned and bool(row.get("Отправлена"))}
+    today = datetime.now().strftime("%Y-%m-%dT00:00:00")
+    rows: list[dict[str, Any]] = []
+    kept: set[str] = set()
+    for item in items[:_MAX_ROWS]:
+        if not isinstance(item, dict):
+            continue
+        line = str(item.get("line") or "").strip()
+        if line in locked:
+            rows.append(_row_copy(by_line[line]))
+            kept.add(line)
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        base = by_line.get(line)
+        row = _row_copy(base) if base else {"Автор_Key": author_key, "ДатаПостановкиЗадачи": today}
+        if base:
+            kept.add(line)
+        elif assigned:
+            row.update({"Отправлена": False, "ПроцессID": ""})
+        row["Задача"] = text
+        row["НомерПунктаПротокола"] = _point(item.get("n"), len(rows) + 1)
+        row["ДатаФактическогоИсполнения"] = _day_value(item.get("due"), end=True) or _EMPTY_DATE
+        row["Приоритет"] = _clean(item.get("priority"))
+        row["Примечание"] = str(item.get("note") or "").strip()
+        name = _clean(item.get("responsible"))
+        if assigned:
+            key = _clean(item.get("responsible_key"))
+            if _looks_like_guid(key):
+                row["Ответственный_Key"] = key
+            elif name:
+                try:
+                    row["Ответственный_Key"] = resolve_person(name)["ref_key"]
+                except ProtocolWriteError:
+                    missing.append(f"ответственный задачи «{name}»")
+            else:
+                row["Ответственный_Key"] = _EMPTY_GUID
+        else:
+            row["Ответственный"] = name
+        rows.append(row)
+    rows.extend(_row_copy(by_line[line]) for line in sorted(locked - kept, key=int))
+    for index, row in enumerate(rows, start=1):
+        row["LineNumber"] = str(index)
+    return rows
+
+
+def edit_protocol(args: dict[str, Any], *, actor_fio: str = "") -> dict[str, Any]:
+    """Правка черновика протокола его автором: изменённые поля шапки и таблицы задач."""
+    ref_key = _clean(_first(args, "ref_key", "Ref_Key"))
+    if not _looks_like_guid(ref_key):
+        raise ProtocolWriteError("Для правки нужен ref_key протокола (GUID)")
+    card = read_protocol_card(ref_key)
+    block = protocol_edit_block(card, actor_fio)
+    if block:
+        raise ProtocolWriteError(block)
+    fields = args.get("fields") if isinstance(args.get("fields"), dict) else {}
+    missing: list[str] = []
+    body = _edit_header({key: fields[key] for key in EDIT_HEADER_FIELDS if key in fields}, card, missing)
+    author_key = _clean(card.get("Подготовил_Key"))
+    for arg_name, part, assigned in (
+        ("control_tasks", STANDING_TASKS_PART, False),
+        ("assigned_tasks", TASKS_PART, True),
+    ):
+        if isinstance(args.get(arg_name), list):
+            existing = _protocol_rows(card, part)
+            table_block = task_table_block(existing)
+            if table_block:
+                raise ProtocolWriteError(table_block)
+            body[part] = _edit_tasks(
+                args[arg_name],
+                existing,
+                assigned=assigned,
+                author_key=author_key,
+                missing=missing,
+            )
+    if missing:
+        raise ProtocolWriteError("Не найдено в 1С: " + "; ".join(missing))
+    number = _clean(card.get("Number"))
+    if not body:
+        return {"summary": f"Протокол {number}: изменений нет", "ref_key": ref_key, "number": number, "updated": False}
+    _odata_patch({"entity": PROTOCOL_ENTITY, "ref_key": ref_key, "body": body})
+    return {
+        "summary": f"Протокол {number or ref_key} сохранён в 1С",
+        "entity": PROTOCOL_ENTITY,
+        "ref_key": ref_key,
+        "number": number,
+        "updated": True,
+        "fields": sorted(key for key in body if not key.endswith("ЗадачиПротокола")),
+        "control_tasks": len(body.get(STANDING_TASKS_PART) or []) if STANDING_TASKS_PART in body else None,
+        "assigned_tasks": len(body.get(TASKS_PART) or []) if TASKS_PART in body else None,
+        "source": "odata",
+    }
+
+
 def stub_protocol_write(args: dict[str, Any], **_: Any) -> dict[str, Any]:
     action = _clean(args.get("action") or "create").casefold()
+    if action == "edit":
+        return {
+            "summary": "stub: протокол в 1С не изменён (OData не настроена)",
+            "ref_key": _clean(args.get("ref_key")),
+            "updated": False,
+            "source": "stub",
+        }
     if action == "probe":
         return {
             "ok": True,
@@ -1091,6 +1328,12 @@ def protocol_write_recipe(*, source: str = "odata") -> dict[str, Any]:
             "via": "odata_patch",
             "fields": ["ref_key", "header без ДатаСоздания/Posted/Статус/Подготовил_Key", "табличные части целиком"],
             "guard": "только Posted=false и Статус «Подготовлен»",
+        },
+        "edit": {
+            "action": "edit",
+            "via": "odata_patch",
+            "fields": ["ref_key", "fields{} — только изменённые поля шапки", "control_tasks[] / assigned_tasks[] — таблица целиком"],
+            "guard": "черновик; автор = Подготовил_Key; отправленные задачи неизменны; таблица с файлами строк — только в 1С",
         },
         "delete": {"via": "odata_delete"},
         "source": source,

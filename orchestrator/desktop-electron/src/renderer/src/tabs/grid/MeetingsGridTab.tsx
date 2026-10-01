@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { api } from '../../api/client'
 import { createPortal } from 'react-dom'
-import { Mic, PenLine, Search } from 'lucide-react'
+import { Bot, Mic, PenLine, Search } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { toolLabel } from '../../components/agentfeed/labels'
 import { useRuns } from '../../store/runs'
-import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
-import { DEFAULT_STANDARD_LAYOUT, STANDARD_TAB_LABELS } from './useTabChromeLayout'
+import { StandardTabChrome, type ChromeTileSpec } from './TabChromeGrid'
+import { DEFAULT_MEETINGS_LAYOUT, STANDARD_TAB_LABELS } from './useTabChromeLayout'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { erpActorFio } from '../../workplace/userContext'
 import {
@@ -25,15 +25,40 @@ import {
   type MeetingEvent
 } from '../../utils/outlookMeetings'
 import { addDays, mondayOf, type CalendarView } from '../../utils/calendar'
-import { countMeetingTiles, meetingMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
-import { MeetingsCalendar } from '../../components/agents/MeetingsCalendar'
+import {
+  countMeetingTiles,
+  formatSurnameInitials,
+  meetingMatchesTile,
+  toggleSimpleTile
+} from '../../workplace/tileFilters'
+import { MeetingsCalendar, type DayRowSpec } from '../../components/agents/MeetingsCalendar'
 import { GridFilterBar } from './gridFilters'
-import { TrackedCalendarsControl } from './TrackedCalendarsControl'
-import { useTrackedCalendarsVersion } from '../../utils/trackedCalendars'
+import { MeetingPopover } from './MeetingPopover'
+import { MeetingsSidePanel, type MeetingCalendarRow } from './MeetingsSidePanel'
+import { MeetingTileBreakdown } from './MeetingTileBreakdown'
+import {
+  applyMeetingQuickFilters,
+  calendarColor,
+  calendarPalette,
+  EMPTY_MEETING_QUICK_FILTERS,
+  meetingCalendarOwners,
+  meetingOwnerCounts,
+  meetingOwnerName,
+  meetingSelfLabel,
+  samePersonName,
+  type MeetingQuickFilters
+} from '../../workplace/meetingCalendars'
+import {
+  calendarStatusFor,
+  useTrackedCalendars,
+  useTrackedCalendarsVersion
+} from '../../utils/trackedCalendars'
 import { usePageSearch } from '../../layout/pageSearchContext'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { MeetingReportModal } from './MeetingReportModal'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
+import { MeetingPlannerPanel } from './MeetingPlannerPanel'
+import { isMeetingPlannerUser, PLANNER_AGENT_TITLE } from '../../workplace/meetingPlannerAgent'
 import { searchOnecProtocols, type OnecProtocolHit } from '../../workplace/meetingProtocolCreate'
 import {
   detachProtocolDocument,
@@ -743,10 +768,56 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   const [view, setView] = useState<CalendarView>('week')
   const [anchor, setAnchor] = useState(() => new Date())
   const [tileFilter, setTileFilter] = useState('all')
-  const [selectedId, setSelectedId] = useState('')
+  /** Открытая карточка совещания: сам ключ и рамка блока, у которого её показать. */
+  const [picked, setPicked] = useState<{ key: string; anchor: DOMRect } | null>(null)
   const { query, setQuery } = usePageSearch()
   const [barStatus, setBarStatus] = useState('')
   const trackedVersion = useTrackedCalendarsVersion()
+  const tracked = useTrackedCalendars(fio)
+  const [hiddenOwners, setHiddenOwners] = useState<string[]>([])
+  const [quick, setQuick] = useState<MeetingQuickFilters>(EMPTY_MEETING_QUICK_FILTERS)
+  const [syncedAt, setSyncedAt] = useState('')
+  const [plannerOpen, setPlannerOpen] = useState(false)
+  const canPlan = isMeetingPlannerUser(user)
+  const runs = useRuns()
+  const plannerState = useMemo(
+    () => Object.values(runs.entries).find((item) => !item.background && item.title === PLANNER_AGENT_TITLE)?.state,
+    [runs.entries]
+  )
+  const plannerWaiting = Boolean(plannerState?.pendingHitl || plannerState?.pendingQuestion)
+  const plannerRunning = Boolean(plannerState?.running) || plannerWaiting
+
+  const owners = useMemo(
+    () => meetingCalendarOwners(fio, tracked.people, tracked.order),
+    [fio, tracked.people, tracked.order]
+  )
+  // Не owners[0]: список переупорядочен приоритетом, а свой календарь от него не зависит.
+  const selfLabel = useMemo(() => meetingSelfLabel(fio) || fio, [fio])
+  const visibleOwners = useMemo(
+    () => owners.filter((person) => !hiddenOwners.some((hidden) => samePersonName(hidden, person))),
+    [owners, hiddenOwners]
+  )
+  const ownerIndex = useCallback(
+    (person: string) => owners.findIndex((item) => samePersonName(item, person)),
+    [owners]
+  )
+
+  /** Цвет закреплён за человеком: смена приоритета не должна перекрашивать календарь. */
+  const colorIndex = useCallback(
+    (person: string) => {
+      const slot = tracked.colorSlots.find((item) => samePersonName(item.person, person))
+      if (slot) return slot.slot
+      if (samePersonName(person, selfLabel)) return 0
+      // Календарь добавили до появления слотов — берём позицию в списке отслеживаемых.
+      const at = tracked.people.findIndex((item) => samePersonName(item, person))
+      return at < 0 ? 0 : at + 1
+    },
+    [selfLabel, tracked.colorSlots, tracked.people]
+  )
+  const ownerColor = useCallback(
+    (person: string) => calendarColor(colorIndex(person)),
+    [colorIndex]
+  )
 
   const load = useCallback((force = false) => {
     setLoading(true)
@@ -755,6 +826,9 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
         if (cal.ok || cal.meetings.length) {
           setMeetings(cal.meetings || [])
           setError('')
+          setSyncedAt(
+            new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+          )
           return
         }
         setError(cal.error || 'Outlook недоступен')
@@ -775,10 +849,28 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
     load(false)
   }, [load])
 
+  // Приглашение из календаря «Совещания» доходит до участников через Exchange не мгновенно.
+  const refreshAfterPlanning = useCallback(() => {
+    window.setTimeout(() => load(true), 5000)
+  }, [load])
+
+  /** Что вообще показываем: только календари с включённой галочкой. Плитки считаем от этого же. */
+  const ownerScoped = useMemo(
+    () =>
+      meetings.filter((item) =>
+        visibleOwners.some((person) => samePersonName(meetingOwnerName(item, selfLabel), person))
+      ),
+    [meetings, visibleOwners, selfLabel]
+  )
+
   const visibleMeetings = useMemo(() => {
     const q = query.trim().toLowerCase()
     const now = new Date()
-    return meetings.filter((item) => {
+    const scoped = applyMeetingQuickFilters(ownerScoped, quick, {
+      selfLabel,
+      others: visibleOwners
+    })
+    return scoped.filter((item) => {
       if (!meetingMatchesTile(item, tileFilter, now)) return false
       if (barStatus === 'past' && !meetingMatchesTile(item, 'done', now)) return false
       if (barStatus === 'today' && !meetingMatchesTile(item, 'today', now)) return false
@@ -788,56 +880,156 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
       }
       return true
     })
-  }, [meetings, tileFilter, query, barStatus])
+  }, [ownerScoped, quick, selfLabel, visibleOwners, tileFilter, query, barStatus])
 
-  const defaultInstanceKey = visibleMeetings[0] ? meetingInstanceKey(visibleMeetings[0]) : ''
-  const selected = visibleMeetings.find(
-    (item) => meetingInstanceKey(item) === (selectedId || defaultInstanceKey)
-  )
+  // Совещание могло уйти из выборки после смены фильтров — тогда карточку закрываем.
+  const selected = picked
+    ? visibleMeetings.find((item) => meetingInstanceKey(item) === picked.key)
+    : undefined
+  useEffect(() => {
+    if (picked && !selected) setPicked(null)
+  }, [picked, selected])
+
   const protocolMarks = useProtocolMarks(userId, meetings, view, anchor)
 
   const tiles: SpecSummaryTile[] = useMemo(() => {
-    const counts = countMeetingTiles(meetings)
+    const counts = countMeetingTiles(ownerScoped)
     const dash = (n: number): string => (n ? String(n) : '—')
     return [
-      { id: 'period', label: 'Совещания за период', value: dash(counts.period), tone: 'orange' },
-      { id: 'today', label: 'Сегодня', value: dash(counts.today), tone: 'yellow' },
-      { id: 'done', label: 'Прошло', value: dash(counts.done), tone: 'green' },
-      { id: 'upcoming', label: 'Дальше', value: dash(counts.upcoming), tone: 'blue' }
+      {
+        id: 'period',
+        icon: 'meet-period',
+        label: 'Совещания за период',
+        value: dash(counts.period),
+        tone: 'orange'
+      },
+      { id: 'today', icon: 'meet-today', label: 'Сегодня', value: dash(counts.today), tone: 'yellow' },
+      { id: 'done', icon: 'meet-done', label: 'Прошло', value: dash(counts.done), tone: 'green' },
+      { id: 'upcoming', icon: 'meet-next', label: 'Дальше', value: dash(counts.upcoming), tone: 'blue' }
     ]
-  }, [meetings])
+  }, [ownerScoped])
 
-  const chromeTiles = useMemo(
+  const shiftAnchorBy = useCallback(
+    (step: number) => {
+      setAnchor((current) => {
+        if (view === 'month') return new Date(current.getFullYear(), current.getMonth() + step, 1)
+        if (view === 'day') return addDays(current, step)
+        return addDays(mondayOf(current), step * 7)
+      })
+    },
+    [view]
+  )
+
+  const chromeTiles: ChromeTileSpec[] = useMemo(() => {
+    const activeId = tileFilter === 'all' ? 'period' : tileFilter
+    const select = (id: string): void => {
+      setTileFilter((current) => (id === 'period' ? 'all' : toggleSimpleTile(current, id)))
+    }
+    return tiles.map((tile) => ({
+      id: tile.id,
+      label: tile.label,
+      node: (
+        <MeetingTileBreakdown
+          tile={tile}
+          active={activeId === tile.id}
+          rows={
+            visibleOwners.length > 1
+              ? meetingOwnerCounts(ownerScoped, tile.id, visibleOwners, selfLabel).map((row) => ({
+                  ...row,
+                  color: ownerColor(row.person)
+                }))
+              : []
+          }
+          onSelect={select}
+        />
+      )
+    }))
+  }, [tiles, tileFilter, ownerScoped, visibleOwners, selfLabel, ownerColor])
+
+  // Сетка пересчитывает раскладку и пересечения, когда меняется любая из этих функций,
+  // поэтому держим их стабильными.
+  const eventPalette = useCallback(
+    (meeting: MeetingEvent) => calendarPalette(colorIndex(meetingOwnerName(meeting, selfLabel))),
+    [colorIndex, selfLabel]
+  )
+  const rowKeyOf = useCallback(
+    (meeting: MeetingEvent) => {
+      const owner = meetingOwnerName(meeting, selfLabel)
+      return visibleOwners.find((person) => samePersonName(person, owner)) || ''
+    },
+    [visibleOwners, selfLabel]
+  )
+  const priorityOf = useCallback(
+    (meeting: MeetingEvent) => {
+      const at = ownerIndex(meetingOwnerName(meeting, selfLabel))
+      return at < 0 ? owners.length : at
+    },
+    [ownerIndex, owners.length, selfLabel]
+  )
+
+  /** Режим дня: строка на каждый видимый календарь, порядок — как в левой панели. */
+  const dayRows: DayRowSpec[] = useMemo(
     () =>
-      summaryTilesAsChrome(tiles, tileFilter === 'all' ? 'period' : tileFilter, (id) => {
-        setTileFilter((current) => (id === 'period' ? 'all' : toggleSimpleTile(current, id)))
+      visibleOwners.map((person) => ({
+        key: person,
+        label: formatSurnameInitials(person),
+        palette: calendarPalette(colorIndex(person))
+      })),
+    [visibleOwners, colorIndex]
+  )
+
+  const calendarRows: MeetingCalendarRow[] = useMemo(
+    () =>
+      owners.map((person) => {
+        const status = calendarStatusFor(person, tracked.statuses)
+        return {
+          person,
+          color: ownerColor(person),
+          palette: colorIndex(person),
+          visible: !hiddenOwners.some((hidden) => samePersonName(hidden, person)),
+          removable: !samePersonName(person, selfLabel),
+          hint: status?.hint ? `${person}: ${status.hint}` : person
+        }
       }),
-    [tiles, tileFilter]
+    [owners, tracked.statuses, hiddenOwners, ownerColor, colorIndex, selfLabel]
   )
 
   return (
+    <>
     <StandardTabChrome
       tabId="meetings"
       userId={userId}
-      defaults={DEFAULT_STANDARD_LAYOUT}
+      defaults={DEFAULT_MEETINGS_LAYOUT}
       labels={{ ...STANDARD_TAB_LABELS, main: 'Календарь' }}
       chromeTiles={chromeTiles}
+      // Периодом здесь управляет левая панель, общий KPI-календарь только путал.
+      hideGlobalPeriod
+      filterToolbarExtra={
+        canPlan ? (
+          <button
+            type="button"
+            className="meetings-agent-btn"
+            onClick={() => setPlannerOpen(true)}
+            title={
+              plannerWaiting
+                ? 'Агент ждёт вашего решения'
+                : 'Планировщик совещаний по служебным запискам'
+            }
+          >
+            {plannerRunning ? (
+              <span className={`meetings-agent-btn-dot${plannerWaiting ? ' is-waiting' : ''}`} aria-hidden />
+            ) : (
+              <Bot size={14} aria-hidden />
+            )}
+            Запустить ИИ-агента
+          </button>
+        ) : null
+      }
       widgets={{
         filters: (
         <GridFilterBar
           search={{ value: query, onChange: setQuery, placeholder: 'Поиск совещаний…' }}
           selects={[
-            {
-              id: 'view',
-              value: view,
-              emptyLabel: '',
-              onChange: (value) => setView((value as CalendarView) || 'week'),
-              options: [
-                { value: 'day', label: 'День' },
-                { value: 'week', label: 'Неделя' },
-                { value: 'month', label: 'Месяц' }
-              ]
-            },
             {
               id: 'status',
               value: barStatus,
@@ -856,8 +1048,51 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
             setTileFilter('all')
             setView('week')
             setAnchor(new Date())
+            setHiddenOwners([])
+            setQuick(EMPTY_MEETING_QUICK_FILTERS)
           }}
-          extra={<TrackedCalendarsControl fio={fio} />}
+        />
+        ),
+        rail: (
+        <MeetingsSidePanel
+          view={view}
+          anchor={anchor}
+          onView={setView}
+          onShift={shiftAnchorBy}
+          onToday={() => setAnchor(new Date())}
+          onPickDay={(day) => setAnchor(day)}
+          calendars={calendarRows}
+          onToggleCalendar={(person) =>
+            setHiddenOwners((current) =>
+              current.some((hidden) => samePersonName(hidden, person))
+                ? current.filter((hidden) => !samePersonName(hidden, person))
+                : [...current, person]
+            )
+          }
+          onMoveCalendar={(person, step) => {
+            const at = ownerIndex(person)
+            const to = at + step
+            if (at < 0 || to < 0 || to >= owners.length) return
+            const next = [...owners]
+            next.splice(to, 0, ...next.splice(at, 1))
+            tracked.setOrder(next)
+          }}
+          onPickColor={(person, slot) => tracked.setColor(person, slot)}
+          onRemoveCalendar={(person) => {
+            setHiddenOwners((current) => current.filter((hidden) => !samePersonName(hidden, person)))
+            tracked.remove(person)
+          }}
+          onAddCalendar={(person) => {
+            const opened = owners.find((item) => samePersonName(item, person))
+            if (opened) return `Календарь ${formatSurnameInitials(opened)} уже открыт`
+            tracked.add(person)
+            return ''
+          }}
+          filters={quick}
+          onFilters={setQuick}
+          loading={loading}
+          syncedAt={syncedAt}
+          onRefresh={() => load(true)}
         />
         ),
         main: (
@@ -870,33 +1105,42 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
             error={error}
             ownerName={fio}
             onView={setView}
-            onShift={(step) => {
-              setAnchor((current) => {
-                if (view === 'month') return new Date(current.getFullYear(), current.getMonth() + step, 1)
-                if (view === 'day') return addDays(current, step)
-                return addDays(mondayOf(current), step * 7)
-              })
-            }}
+            onShift={shiftAnchorBy}
             onToday={() => setAnchor(new Date())}
             onRefresh={() => load(true)}
             selectedId={selected ? meetingInstanceKey(selected) : ''}
-            onSelectMeeting={(m) => setSelectedId(meetingInstanceKey(m))}
+            onSelectMeeting={(meeting, rect) =>
+              setPicked({ key: meetingInstanceKey(meeting), anchor: rect })
+            }
             showDetailsModal={false}
             protocolMarks={protocolMarks}
+            hideHeader
+            eventPalette={eventPalette}
+            dayRows={dayRows}
+            rowKeyOf={rowKeyOf}
+            priorityOf={priorityOf}
           />
+          {selected && picked ? (
+            <MeetingPopover key={picked.key} anchor={picked.anchor} onClose={() => setPicked(null)}>
+              <MeetingDetailCard
+                meeting={selected}
+                userId={userId}
+                actorFio={fio}
+                protocol={protocolMarks.get(meetingInstanceKey(selected))}
+              />
+            </MeetingPopover>
+          ) : null}
         </div>
-        ),
-        side: selected ? (
-          <MeetingDetailCard
-            meeting={selected}
-            userId={userId}
-            actorFio={fio}
-            protocol={protocolMarks.get(meetingInstanceKey(selected))}
-          />
-        ) : (
-          <div className="wp-card spec-v04-muted">Выберите совещание</div>
         )
       }}
     />
+    {canPlan ? (
+      <MeetingPlannerPanel
+        open={plannerOpen}
+        onClose={() => setPlannerOpen(false)}
+        onMeetingCreated={refreshAfterPlanning}
+      />
+    ) : null}
+    </>
   )
 }

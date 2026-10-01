@@ -5,6 +5,8 @@ export interface UserProfile {
   position: string
   role: string
   isAdmin: boolean
+  adminPanel: string | null
+  adminPages: string[]
   /** Логин 1С (v8users.Name) → Outlook: {nameMail}@turbo-don.ru */
   nameMail: string
   avatarUrl: string | null
@@ -719,6 +721,8 @@ export interface PositionKpiTile {
   score: number | null
   contrib: number | null
   evidence: string
+  /** Факт по дням месяца из дневного кэша. */
+  history: { day: string; value: number }[]
 }
 
 export interface PositionKpiDaily {
@@ -731,6 +735,41 @@ export interface PositionKpiDaily {
   cached: boolean
   stale: boolean
   tiles: PositionKpiTile[]
+}
+
+export interface PositionKpiMethodology {
+  status: 'none' | 'needs_modules' | 'ready'
+  position: string
+  department: string
+  profileId: string
+  sourceTitle: string
+  effectiveFrom: string
+  metrics: Array<{
+    code: string
+    name: string
+    weight: number
+    formulaHuman: string
+    moduleReady: boolean
+  }>
+}
+
+export interface PositionKpiSalaryPoint {
+  effectiveFrom: string
+  salary: number | null
+  bonus: number | null
+  total: number | null
+}
+
+export interface PositionKpiCompensation {
+  available: boolean
+  unlocked: boolean
+  currency: string
+  effectiveFrom: string
+  salary: number | null
+  bonus: number | null
+  total: number | null
+  /** Изменения оклада в 1С, от старого к актуальному. */
+  history: PositionKpiSalaryPoint[]
 }
 
 export interface PositionKpiDataSourceInfo {
@@ -783,6 +822,7 @@ export interface PositionKpiBuildMessage {
 export interface PositionKpiBuildSession {
   buildId: string
   position: string
+  subjectFio: string
   status: string
   cursorAgentId: string
   extracted: Record<string, unknown>

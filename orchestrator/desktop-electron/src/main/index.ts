@@ -26,6 +26,7 @@ import {
   getComSessionSecret,
   setComSessionSecret
 } from './comSessionSecret'
+import { launchTurboProject } from './turboProjectLauncher'
 
 interface RequestOptions {
   method?: string
@@ -875,11 +876,26 @@ async function handleFetchBinary(
 
 async function handleDownload(
   _evt: unknown,
-  opts: { url: string; defaultName?: string; token?: string | null }
+  opts: {
+    url: string
+    defaultName?: string
+    token?: string | null
+    temporary?: boolean
+    openAfter?: boolean
+  }
 ) {
-  const win = BrowserWindow.getFocusedWindow()
-  const result = await dialog.showSaveDialog(win!, { defaultPath: opts.defaultName || 'file' })
-  if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+  let filePath = ''
+  if (opts.temporary) {
+    filePath = join(
+      tmpdir(),
+      `orchestrator-preview-${Date.now()}-${basename(opts.defaultName || 'file')}`
+    )
+  } else {
+    const win = BrowserWindow.getFocusedWindow()
+    const result = await dialog.showSaveDialog(win!, { defaultPath: opts.defaultName || 'file' })
+    if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+    filePath = result.filePath
+  }
   const url = absoluteBackendUrl(opts.url)
   const headers: Record<string, string> = {}
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
@@ -887,8 +903,12 @@ async function handleDownload(
     const response = await fetch(url, { headers })
     if (!response.ok) return { ok: false, error: `Ошибка загрузки (${response.status})` }
     const arrayBuffer = await response.arrayBuffer()
-    writeFileSync(result.filePath, Buffer.from(arrayBuffer))
-    return { ok: true, path: result.filePath }
+    writeFileSync(filePath, Buffer.from(arrayBuffer))
+    if (opts.openAfter) {
+      const openError = await shell.openPath(filePath)
+      if (openError) return { ok: false, path: filePath, error: openError }
+    }
+    return { ok: true, path: filePath }
   } catch {
     return { ok: false, error: 'Не удалось скачать файл' }
   }
@@ -1339,6 +1359,39 @@ function registerMainIpcHandlers(): void {
     })
     child.unref()
     return { ok: true }
+  })
+  ipcHandle('shell:launchTurboProject', async () => {
+    if (process.platform !== 'win32') {
+      return { ok: false, error: 'Приложение TurboProject доступно только в Windows' }
+    }
+    const configuredPath = String(process.env.TURBOPROJECT_DESKTOP_PATH || '').trim()
+    const localAppData = String(process.env.LOCALAPPDATA || '').trim()
+    const candidates = [
+      configuredPath,
+      localAppData ? join(localAppData, 'Programs', 'turboproject-2.0', 'TurboProject.exe') : ''
+    ].filter(Boolean)
+    const executablePath = candidates.find((candidate) => existsSync(candidate))
+    if (!executablePath) {
+      return {
+        ok: false,
+        autoLogin: false,
+        error:
+          'TurboProject не найден. Установите приложение или задайте путь в TURBOPROJECT_DESKTOP_PATH.'
+      }
+    }
+    const secret = getComSessionSecret()
+    const credentials = secret?.password
+      ? {
+          nameMail: secret.nameMail || secret.login,
+          password: secret.password
+        }
+      : CONFIG.devGateway?.password
+        ? {
+            nameMail: CONFIG.devGateway.nameMail,
+            password: CONFIG.devGateway.password
+          }
+        : null
+    return launchTurboProject(executablePath, credentials)
   })
   ipcHandle('shell:openPath', async (_evt, filePath: string) => {
     const target = String(filePath || '').trim()
