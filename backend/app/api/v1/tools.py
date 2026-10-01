@@ -208,9 +208,11 @@ async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
 # Журналы 1С, полная SOAP-выгрузка задач и тяжёлый odata_get не делят одну очередь.
 # Иначе выгрузка на 3–4 минуты и таймаут приказа занимают оба потока, и служебные
 # записки не стартуют, пока клиент уже не ждёт.
+# Саму выгрузку ДО dok_soap пускает по одной; остальные потоки отдают кеш
+# другим пользователям, пока она идёт.
 _JOURNAL_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="tool-journal")
 _BULK_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-bulk")
-_SLOW_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool-slow")
+_SLOW_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tool-slow")
 _SLOW_TOOLS = frozenset({"onec.docflow_tasks"})
 _BULK_TOOLS = frozenset({"onec.odata_get"}) | _IMAP_TOOLS
 _READ_COALESCE = _SLOW_TOOLS | _BULK_TOOLS | frozenset(

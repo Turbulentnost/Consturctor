@@ -715,3 +715,115 @@ def test_inbox_cache_shares_dump_across_users(tmp_path, monkeypatch) -> None:
     )
     assert calls["n"] == 2
     assert third["cached"] is False
+
+
+def _session_dump_env(tmp_path, monkeypatch):
+    from app.tools.onec import dok_soap
+
+    dok_soap._inbox_cache.clear()
+    dok_soap._refreshing.clear()
+    dok_soap._verified_logins.clear()
+    monkeypatch.setattr(dok_soap, "_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        dok_soap,
+        "load_config",
+        lambda username=None, password=None, **_kwargs: DokConfig(
+            server="192.168.2.229",
+            port=81,
+            user=username or "svc",
+            password=password or "x",
+            timeout=210,
+            base_path="/doc",
+        ),
+    )
+    monkeypatch.setattr(dok_soap, "retrieve_tasks", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(dok_soap, "probe_by_user_delegates", lambda *_args, **_kwargs: {})
+    dumps: list[str] = []
+
+    def fake_dump(config, **_kwargs):
+        dumps.append(config.user)
+        return {
+            "kind": "open_dump",
+            "endpoint": config.soap_url(),
+            "only_open": True,
+            "count": 2,
+            "rows": [
+                {"id": "1", "performer": "Иванов И.И.", "executed": False, "due": "2026-09-16T18:00:00"},
+                {"id": "2", "performer": "Петров П.П.", "executed": False, "due": "2026-09-10T18:00:00"},
+            ],
+        }
+
+    monkeypatch.setattr(dok_soap, "fetch_open_dump", fake_dump)
+    return dok_soap, dumps
+
+
+def test_session_dump_shared_after_login_check(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    checked: list[str] = []
+    monkeypatch.setattr(
+        dok_soap,
+        "find_user",
+        lambda config, name, **_kwargs: checked.append(config.user) or {"id": "u", "name": name},
+    )
+    first = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", today_and_overdue=True, username="ivanov", password="a"
+    )
+    second = dok_soap.fetch_user_inbox_tasks(
+        "Петров П.П.", today_and_overdue=True, username="petrov", password="b"
+    )
+    assert dumps == ["ivanov"]
+    assert checked == ["petrov"]
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert [row["id"] for row in second["rows"]] == ["2"]
+
+
+def test_session_dump_not_shared_when_login_rejected(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", today_and_overdue=True, username="ivanov", password="a"
+    )
+
+    def reject(*_args, **_kwargs):
+        raise RuntimeError("HTTP 401: Документооборот отклонил Basic-учётку")
+
+    monkeypatch.setattr(dok_soap, "find_user", reject)
+    with pytest.raises(RuntimeError, match="401"):
+        dok_soap.fetch_user_inbox_tasks(
+            "Петров П.П.", today_and_overdue=True, username="petrov", password="wrong"
+        )
+    assert dumps == ["ivanov"]
+
+
+def test_background_refresh_skips_while_other_dump_runs(tmp_path, monkeypatch) -> None:
+    import threading
+
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    finished = threading.Event()
+    original_run = threading.Thread.run
+
+    def run_and_signal(self):
+        try:
+            original_run(self)
+        finally:
+            if self.name == "dok-soap-refresh":
+                finished.set()
+
+    monkeypatch.setattr(threading.Thread, "run", run_and_signal)
+    assert dok_soap._dump_gate.acquire(blocking=False)
+    try:
+        dok_soap._schedule_refresh(
+            "dump|http://192.168.2.229:81/doc/ws/dm.1cws|1|ivanov|fp",
+            endpoint="http://192.168.2.229:81/doc/ws/dm.1cws",
+            only_open=True,
+            user_fio="Иванов И.И.",
+            stale_at=0.0,
+            env_file=None,
+            username="ivanov",
+            password="a",
+        )
+        assert finished.wait(5)
+    finally:
+        dok_soap._dump_gate.release()
+    assert dumps == []
+    assert not dok_soap._refreshing

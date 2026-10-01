@@ -11,7 +11,10 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
-from app.config import settings
+from app.config import BACKEND_ROOT, settings
+from app.core.console import configure_logging
+
+_LOG_FILE = BACKEND_ROOT / "logs" / "backend.log"
 
 
 def _configure_console_encoding() -> None:
@@ -24,22 +27,13 @@ def _configure_console_encoding() -> None:
                 pass
 
 
-def _configure_logging() -> None:
-    """Keep Cursor/httpx/app logs visible under uvicorn --reload.
+def _configure_logging(*, to_file: bool = False) -> None:
+    """Keep Cursor/httpx/app logs visible; the running server also writes backend/logs/backend.log.
 
     Uvicorn may already attach handlers, so basicConfig is a no-op and httpx
     stays at WARNING — that's why the terminal looks empty during a run.
     """
-    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    if not root.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(fmt)
-        root.addHandler(handler)
-    for handler in root.handlers:
-        handler.setLevel(logging.INFO)
-        handler.setFormatter(fmt)
+    configure_logging(_LOG_FILE if to_file else None)
     for name in (
         "httpx",
         "httpcore",
@@ -67,11 +61,6 @@ http_logger = logging.getLogger("app.http")
 
 def _http_trace(message: str) -> None:
     try:
-        print(message, flush=True)
-    except OSError:
-        # Aborted Windows console / closed pipe: do not fail the request.
-        pass
-    try:
         http_logger.info(message)
     except OSError:
         pass
@@ -81,7 +70,7 @@ def _http_trace(message: str) -> None:
 async def lifespan(_app: FastAPI):
     from app.db.session import init_db
 
-    _configure_logging()
+    _configure_logging(to_file=True)
     logger.info(
         "Constructor backend starting (ERP=%s/%s, LLM=%s, DB=%s)",
         settings.erp_sql_server,
@@ -246,6 +235,7 @@ def run() -> None:
         host=settings.api_host,
         port=settings.api_port,
         reload=False,
+        log_config=None,
     )
 
 
