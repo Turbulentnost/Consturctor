@@ -276,15 +276,18 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "копирует шапку, присутствующих и повестку, переносит задачи на контроль исполнения; "
                 "дата — date или «Дата следующего совещания» прошлого протокола; любое поле можно "
                 "передать явно. action=create — новый протокол, action=update + ref_key — перезаписать "
-                "черновик. ФИО передавай как в 1С. Требует подтверждения человека."
+                "черновик. action=add_tasks + ref_key — проведённый протокол: дописать задачи в регистр "
+                "ТД_ЗадачиПротоколов (документ не меняется); tasks — только новые {text, executor, due} "
+                "и правки неотправленных {id, …} (id из tasks[].id протокола). "
+                "ФИО передавай как в 1С. Требует подтверждения человека."
             ),
             "execution": "server",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "action": _prop("string", "create | update | next", default="create"),
+                    "action": _prop("string", "create | update | next | add_tasks", default="create"),
                     "source_ref_key": _prop("string", "Ref_Key прошлого протокола (action=next)"),
-                    "ref_key": _prop("string", "Ref_Key черновика (action=update)"),
+                    "ref_key": _prop("string", "Ref_Key протокола (action=update / add_tasks)"),
                     "topic": _prop("string", "Тема совещания как в справочнике «Темы совещаний»"),
                     "date": _prop("string", "Дата совещания YYYY-MM-DD"),
                     "time_start": _prop("string", "Время начала HH:MM"),
@@ -295,7 +298,11 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "participants": _prop("array", "ФИО присутствующих"),
                     "agenda": _prop("array", "Вопросы повестки: строка или {question, responsible}"),
                     "decisions": _prop("array", "Решения: строка или {text, due}"),
-                    "tasks": _prop("array", "Задачи: {text, executor (ФИО), due YYYY-MM-DD, priority, note}"),
+                    "tasks": _prop(
+                        "array",
+                        "Задачи: {text, executor (ФИО), due YYYY-MM-DD, priority, note}; "
+                        "для add_tasks правка существующей — {id, …изменённые поля}",
+                    ),
                     "comment": _prop("string", "Комментарий к протоколу"),
                 },
                 "required": ["action"],

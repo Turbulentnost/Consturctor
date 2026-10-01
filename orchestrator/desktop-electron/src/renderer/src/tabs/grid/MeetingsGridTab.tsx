@@ -237,16 +237,12 @@ function MeetingDetailCard({
       if (!card?.form) {
         throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
       }
-      if (card.editable === false) {
-        throw new Error(
-          `Протокол ${card.number || ''} уже проведён (статус «${card.status || 'проведён'}») — дополнить можно только черновик`
-        )
-      }
 
       const workflowId = await resolveProtocolAgentWorkflowId()
       const message = buildSupplementMessage(meeting, audioPath, {
         number: String(card.number || protocol?.number || ''),
         refKey: protocolRefKey,
+        editable: card.editable !== false,
         form: card.form
       })
       const runId = runs.startRun({

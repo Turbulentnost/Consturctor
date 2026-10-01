@@ -513,3 +513,104 @@ def test_tool_registered_as_write_tool():
     assert onec_tools.REAL_HANDLERS["onec.meeting_protocol_write"] is mpw.handle_protocol_write
     stub = onec_tools.STUB_HANDLERS["onec.meeting_protocol_write"]({"tasks": ["a"]})
     assert stub["source"] == "stub" and stub["entity"] == mpw.PROTOCOL_ENTITY
+
+
+SENT_ID = "11111111-2222-4333-8444-555555555555"
+OPEN_ID = "66666666-7777-4888-9999-000000000000"
+
+
+def _register_rows() -> list[dict]:
+    base = {"Протокол_Key": PROTOCOL_KEY, "ТемаСовещания_Key": THEME["Ref_Key"], "ПроцессID": ""}
+    return [
+        {**base, "ИдентификаторЗадачи": OPEN_ID, "НомерПунктаПротокола": "2", "Задача": "Открытая задача",
+         "Ответственный_Key": PERSONS["Жалыбин Максим Дмитриевич"], "СрокИсполнения": "2026-10-05T23:59:59",
+         "Отправлена": False},
+        {**base, "ИдентификаторЗадачи": SENT_ID, "НомерПунктаПротокола": "1", "Задача": "Отправленная задача",
+         "Ответственный_Key": PERSONS["Мегрелишвили Михаил Эмзарович"], "Отправлена": True},
+    ]
+
+
+def _fake_get_with_register(card: dict, rows: list[dict]):
+    base = _fake_get(card)
+
+    def fake_get(args):
+        if args.get("entity") == mpw.TASK_REGISTER:
+            assert PROTOCOL_KEY in args.get("filter", "")
+            return {"value": [dict(row) for row in rows]}
+        return base(args)
+
+    return fake_get
+
+
+def test_read_protocol_form_posted_takes_tasks_from_register(monkeypatch):
+    card = _card(Posted=True, Статус="НаИсполнении")
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(card, _register_rows()))
+    form = mpw.read_protocol_form(PROTOCOL_KEY)["form"]
+    assert form["tasks_source"] == "register"
+    assert [task["item"] for task in form["tasks"]] == ["1", "2"]
+    sent, open_task = form["tasks"]
+    assert sent["id"] == SENT_ID and sent["sent"] is True
+    assert open_task["executor"] == "Жалыбин Максим Дмитриевич" and open_task["due"] == "2026-10-05"
+
+
+def test_add_tasks_refuses_draft(monkeypatch):
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(_card(), []))
+    with pytest.raises(mpw.ProtocolWriteError, match="черновик"):
+        mpw.handle_protocol_write(
+            {"action": "add_tasks", "ref_key": PROTOCOL_KEY, "tasks": [{"text": "Новая"}]}
+        )
+
+
+def test_add_tasks_numbers_from_register_not_table(monkeypatch):
+    card = _card(Posted=True, Статус="Закрыт")
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(card, []))
+    posted: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_post", lambda args: posted.append(args) or {})
+    mpw.handle_protocol_write({"action": "add_tasks", "ref_key": PROTOCOL_KEY, "tasks": ["Первая", "Вторая"]})
+    assert [call["body"]["НомерПунктаПротокола"] for call in posted] == [1, 2]
+
+
+def test_add_tasks_renumbers_unsent_by_id(monkeypatch):
+    card = _card(Posted=True, Статус="Закрыт")
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(card, _register_rows()))
+    patched: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.append(args) or {})
+    mpw.handle_protocol_write({"action": "add_tasks", "ref_key": PROTOCOL_KEY, "tasks": [{"id": OPEN_ID, "item": 7}]})
+    assert patched[0]["body"] == {"НомерПунктаПротокола": 7}
+
+
+def test_add_tasks_appends_to_register_and_edits_unsent(monkeypatch):
+    card = _card(Posted=True, Статус="НаИсполнении")
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(card, _register_rows()))
+    posted: list[dict] = []
+    patched: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_post", lambda args: posted.append(args) or {})
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.append(args) or {"updated": True})
+    result = mpw.handle_protocol_write(
+        {
+            "action": "add_tasks",
+            "ref_key": PROTOCOL_KEY,
+            "tasks": [
+                {"text": "Новая задача", "executor": "Соломичева", "due": "2026-10-10"},
+                {"id": OPEN_ID, "due": "2026-10-12"},
+                {"id": SENT_ID, "text": "Переписать"},
+                {"text": "Кому-то", "executor": "Неизвестный"},
+            ],
+        }
+    )
+    assert len(posted) == 1
+    record = posted[0]["body"]
+    assert posted[0]["entity"] == mpw.TASK_REGISTER
+    assert record["Протокол_Key"] == PROTOCOL_KEY and record["ТемаСовещания_Key"] == THEME["Ref_Key"]
+    assert record["НомерПунктаПротокола"] == 3
+    assert record["Ответственный_Key"] == PERSONS["Соломичева Светлана Викторовна"]
+    assert record["СрокИсполнения"].startswith("2026-10-10")
+    assert record["ДатаПостановкиЗадачи"] == "2026-09-21T00:00:00"
+    assert record["Отправлена"] is False and record["ИдентификаторЗадачи"] not in (OPEN_ID, SENT_ID)
+    assert len(patched) == 1
+    assert patched[0]["key"]["ИдентификаторЗадачи"] == OPEN_ID
+    assert list(patched[0]["body"]) == ["СрокИсполнения"]
+    assert [item["item"] for item in result["added"]] == [3]
+    assert result["changed"][0]["id"] == OPEN_ID
+    assert any("отправлена" in error for error in result["errors"])
+    assert result["unresolved"] == ["исполнитель задачи «Неизвестный»"]
