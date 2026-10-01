@@ -169,6 +169,7 @@ def test_pair_reconciliation_has_a_row_per_item(monkeypatch) -> None:
     assert result["gaps"] == []
     assert "сверено строк: 4" in result["summary"]
     assert "файлов у ПСД_001_О_201: 2" in result["summary"]
+    assert result["package_table_markdown"].startswith("### Пакет п. 6.4")
 
 
 def test_package_table_lists_responsible_and_documents_in_order() -> None:
@@ -203,6 +204,14 @@ def test_package_table_lists_responsible_and_documents_in_order() -> None:
     unread = rows[-1]
     assert unread["status"] == "прочитать" and unread["documents"][0].startswith("doc02715420260929090414.pdf")
     assert [row["n"] for row in rows] == list(range(1, len(rows) + 1))
+
+    markdown = meeting_protocols.package_table_markdown(rows)
+    lines = markdown.splitlines()
+    assert lines[0] == "### Пакет п. 6.4"
+    assert lines[2] == "| № | Пункт пакета | Ответственное лицо | Документы (по порядку) | Статус |"
+    assert len([line for line in lines if line.startswith("| ") and line[2].isdigit()]) == len(rows)
+    assert "| 5 | Продажи и клиенты | Торотадзе Д.Ш. (по вопросу повестки) | — | нет |" in lines
+    assert "| 3 | Финансы: ДДС | не назначен | — | нет |" in lines
 
 
 def test_package_hints_match_whole_short_words() -> None:

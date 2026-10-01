@@ -802,6 +802,30 @@ def package_by_files(files: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+PACKAGE_TABLE_TITLE = "Пакет п. 6.4"
+
+
+def package_table_markdown(rows: list[dict[str, Any]]) -> str:
+    """The п. 6.4 table as markdown — the agent pastes it as is into the summary and WORK_RESULT."""
+
+    def cell(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).replace("|", "/").strip()
+
+    lines = [
+        f"### {PACKAGE_TABLE_TITLE}",
+        "",
+        "| № | Пункт пакета | Ответственное лицо | Документы (по порядку) | Статус |",
+        "|---|---|---|---|---|",
+    ]
+    for row in rows:
+        documents = "; ".join(cell(doc) for doc in row.get("documents") or []) or "—"
+        responsible = cell(row.get("responsible")) or "не назначен"
+        if row.get("responsible_source") == "ответственный по вопросу повестки":
+            responsible += " (по вопросу повестки)"
+        lines.append(f"| {row.get('n')} | {cell(row.get('item'))} | {responsible} | {documents} | {cell(row.get('status'))} |")
+    return "\n".join(lines)
+
+
 def _pair_side(
     protocol: dict[str, Any] | None,
     *,
@@ -944,6 +968,7 @@ def board_protocol_pair(args: dict[str, Any], *, access: Any | None = None) -> d
     )
     return {
         **base,
+        "package_table_markdown": package_table_markdown(package_rows),
         "current": current,
         "previous": previous,
         "reconciliation": reconciliation,

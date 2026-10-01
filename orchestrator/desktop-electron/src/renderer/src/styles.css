@@ -36,6 +36,15 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Chromium в Electron рисует фокус жёлтой рамкой (-webkit-focus-ring-color). */
+:focus {
+  outline: none;
+}
+:where(button, a, [role='button'], [tabindex]):where(:not(input, textarea, select)):focus-visible {
+  outline: 2px solid rgba(21, 101, 192, 0.45);
+  outline-offset: 1px;
+}
+
 button {
   font-family: inherit;
   cursor: pointer;
