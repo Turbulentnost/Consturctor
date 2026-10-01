@@ -38,6 +38,7 @@ function requestOutlookMail(range: {
   maxResults?: number
   query?: string
   mailbox?: string
+  ownerFio?: string
 }): Promise<{
   ok: boolean
   messages: Record<string, unknown>[]
@@ -93,7 +94,8 @@ function requestOutlookMail(range: {
       folder: range.folder || 'Inbox',
       maxResults: range.maxResults ?? 50,
       query: range.query,
-      mailbox: range.mailbox || ''
+      mailbox: range.mailbox || '',
+      ownerFio: range.mailbox ? '' : range.ownerFio || ''
     })
   })
 }
@@ -133,12 +135,13 @@ function writeMailCache(cache: OutlookMailCache): void {
 /**
  * Письма за период — не чаще одного COM-запроса в день на тот же диапазон
  * (как ensureOutlookMeetings для календаря).
+ * Без адреса ящика Outlook ищет его по ownerFio; без того и другого — ящик профиля Outlook.
  */
 export async function ensureOutlookMailRange(
   mailbox: string,
   dateFrom: string,
   dateTo: string,
-  options: { force?: boolean; folder?: string; maxResults?: number } = {}
+  options: { force?: boolean; folder?: string; maxResults?: number; ownerFio?: string } = {}
 ): Promise<{
   ok: boolean
   messages: Record<string, unknown>[]
@@ -150,13 +153,15 @@ export async function ensureOutlookMailRange(
   const today = dayKeyLocal(new Date())
   const folder = options.folder || 'All'
   const box = (mailbox || '').trim().toLowerCase()
+  const ownerFio = box ? '' : (options.ownerFio || '').trim()
+  const cacheBox = box || (ownerFio ? `fio:${ownerFio.toLocaleLowerCase('ru')}` : '')
 
   if (!options.force && fromKey && toKey) {
     const cache = readMailCache()
     if (
       cache &&
       cache.day === today &&
-      cache.mailbox === box &&
+      cache.mailbox === cacheBox &&
       cache.dateFrom === fromKey &&
       cache.dateTo === toKey &&
       cache.folder === folder
@@ -171,12 +176,13 @@ export async function ensureOutlookMailRange(
     dateTo: toKey,
     folder,
     maxResults: options.maxResults ?? 120,
-    mailbox: box
+    mailbox: box,
+    ownerFio
   })
   if (result.ok && fromKey && toKey) {
     writeMailCache({
       day: today,
-      mailbox: box,
+      mailbox: cacheBox,
       dateFrom: fromKey,
       dateTo: toKey,
       folder,

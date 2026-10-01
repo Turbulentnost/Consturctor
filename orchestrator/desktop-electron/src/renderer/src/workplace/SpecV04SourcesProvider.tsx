@@ -279,7 +279,7 @@ export function SpecV04SourcesProvider({
     void loadOrchestratorMail(
       outlookMailbox,
       { dateFrom: mailPeriodFrom, dateTo: mailPeriodTo },
-      { forceOutlook: takeHardRefresh() }
+      { forceOutlook: takeHardRefresh(), ownerFio: erpFio }
     ).then((mail) => {
       if (!alive) return
       setMailRows(mail.rows)
@@ -293,7 +293,7 @@ export function SpecV04SourcesProvider({
     return () => {
       alive = false
     }
-  }, [user.id, outlookMailbox, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
+  }, [user.id, erpFio, outlookMailbox, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
 
   useEffect(() => {
     if (!user.id) return

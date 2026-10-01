@@ -981,6 +981,57 @@ def _mailbox_matches(address: str, mailbox: str) -> bool:
 OL_PRIMARY_EXCHANGE_MAILBOX = 0
 
 
+def _name_words(text: str) -> set[str]:
+    return set(re.findall(r"[^\W\d_]+", (text or "").casefold().replace("ё", "е")))
+
+
+def _same_person(display_name: str, fio: str) -> bool:
+    """Фамилия и имя из ФИО есть в имени Outlook (порядок слов любой)."""
+    parts = re.findall(r"[^\W\d_]+", (fio or "").casefold().replace("ё", "е"))
+    return len(parts) >= 2 and set(parts[:2]) <= _name_words(display_name)
+
+
+def _exchange_smtp(address_entry: Any) -> str:
+    try:
+        user = address_entry.GetExchangeUser()
+        return _safe_str(getattr(user, "PrimarySmtpAddress", "")).strip().casefold()
+    except Exception:
+        return ""
+
+
+def _mailbox_for_person(namespace: Any, fio: str) -> str:
+    """SMTP ящика сотрудника по ФИО: профиль Outlook этого человека или адресная книга.
+
+    "" — профиль Outlook открыт под ним, а SMTP не отдаётся; тогда читается ящик профиля.
+    """
+    _ensure_mapi_logon(namespace)
+    try:
+        current = namespace.CurrentUser
+        if _same_person(_safe_str(getattr(current, "Name", "")), fio):
+            return _exchange_smtp(current.AddressEntry)
+    except Exception as exc:
+        _log_progress(f"step=mailbox_owner_profile skipped: {exc}")
+    parts = (fio or "").split()
+    for query in dict.fromkeys([" ".join(parts), " ".join(parts[:2])]):
+        if not query:
+            continue
+        try:
+            recipient = namespace.CreateRecipient(query)
+            recipient.Resolve()
+            if not bool(recipient.Resolved):
+                continue
+            entry = recipient.AddressEntry
+        except Exception as exc:
+            _log_progress(f"step=mailbox_owner_resolve skipped query={query}: {exc}")
+            continue
+        address = _exchange_smtp(entry)
+        if address and _same_person(_safe_str(getattr(entry, "Name", "")), fio):
+            return address
+    raise OutlookAccessError(
+        f"Почтовый ящик «{fio}» не найден в адресной книге Outlook этого компьютера"
+    )
+
+
 def _mailbox_folder(namespace: Any, mailbox: str, folder_id: int) -> tuple[Any, str]:
     """Папка ящика mailbox: ящик в списке Outlook → учётная запись профиля → общий доступ.
 
@@ -1037,6 +1088,7 @@ def search_mail(input_data: dict) -> dict:
     """Безопасно прочитать входящие/отправленные письма Outlook без изменений.
 
     mailbox — адрес ящика вошедшего пользователя; пусто — ящик профиля Outlook.
+    owner_fio — ФИО вошедшего, когда адрес неизвестен: ящик ищется по нему, не по профилю.
     """
     _log_progress("step=load_pywin32 start")
     days = _clamp_int(input_data.get("days"), DEFAULT_DAYS, 1, MAX_DAYS)
@@ -1060,14 +1112,19 @@ def search_mail(input_data: dict) -> dict:
     )
     folder_specs = _resolve_mail_folder_specs(input_data.get("folder"))
     mailbox = _safe_str(input_data.get("mailbox") or "").strip().casefold()
+    owner_fio = _safe_str(input_data.get("owner_fio") or "").strip()
 
     def _read(win32com_client: Any) -> dict:
+        nonlocal mailbox
         _log_progress("step=dispatch_outlook start")
         outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
         _log_progress("step=get_namespace start")
         namespace = _mapi_namespace(outlook)
         _log_progress("step=get_namespace ok")
+        if not mailbox and owner_fio:
+            mailbox = _mailbox_for_person(namespace, owner_fio)
+            _log_progress(f"step=mailbox_owner ok mailbox={mailbox or 'profile'}")
 
         results = []
         scanned_count = 0

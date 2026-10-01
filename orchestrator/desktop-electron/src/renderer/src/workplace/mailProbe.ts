@@ -320,8 +320,9 @@ export function pickMailRows(input: {
 export async function loadOrchestratorMail(
   outlookMailbox: string,
   period?: { dateFrom: string; dateTo: string },
-  options?: { forceOutlook?: boolean }
+  options?: { forceOutlook?: boolean; ownerFio?: string }
 ): Promise<OrchestratorMailLoad> {
+  const ownerFio = (options?.ownerFio || '').trim()
   const range = resolveOutlookMailFetchRange(
     period?.dateFrom || '',
     period?.dateTo || '',
@@ -347,14 +348,14 @@ export async function loadOrchestratorMail(
       error: 'Outlook COM отключён (VITE_SKIP_OUTLOOK_COM)',
       source: ''
     }
-  } else if (!outlookMailbox.trim()) {
+  } else if (!outlookMailbox.trim() && !ownerFio) {
     comWeek = { ok: false, messages: [], error: OUTLOOK_NO_MAILBOX, source: '' }
   } else {
     const ensured = await ensureOutlookMailRange(
       outlookMailbox,
       range.dateFrom,
       range.dateTo,
-      { folder: 'All', maxResults: 120, force: options?.forceOutlook }
+      { folder: 'All', maxResults: 120, force: options?.forceOutlook, ownerFio }
     )
     comWeek = {
       ok: ensured.ok,

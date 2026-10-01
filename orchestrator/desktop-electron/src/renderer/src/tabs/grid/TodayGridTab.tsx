@@ -421,10 +421,10 @@ export function TodayGridTab({
   const outlookFromMe = kpiTiles.outlookFromMe
   const projectAsManager = kpiTiles.projectAsManager
   const canvasRef = useRef<HTMLDivElement | null>(null)
-  const outlookMail = useTodayOutlookMail(periodDay, outlookMailboxAddress(user))
+  const erpFio = erpActorFio(user)
+  const outlookMail = useTodayOutlookMail(periodDay, outlookMailboxAddress(user), erpFio)
   const preparedDecisions = useTodayPreparedDecisions(periodDay, user.id)
   const projectTasks = useTodayProjectTasks(periodDay, data)
-  const erpFio = erpActorFio(user)
 
   const projectRows = useMemo(() => {
     return projectTasks.rows.filter((row) =>

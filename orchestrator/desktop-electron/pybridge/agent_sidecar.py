@@ -5137,6 +5137,9 @@ class Sidecar:
         mailbox = str(command.get("mailbox") or "").strip()
         if mailbox:
             input_data["mailbox"] = mailbox
+        owner_fio = str(command.get("ownerFio") or "").strip()
+        if owner_fio:
+            input_data["owner_fio"] = owner_fio
 
         def _work() -> None:
             try:

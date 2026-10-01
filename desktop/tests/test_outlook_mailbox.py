@@ -84,6 +84,70 @@ def test_added_mailbox_in_profile_is_used() -> None:
     assert folder.Name.startswith("ivanov@turbo-don.ru")
 
 
+class _ExchangeUser:
+    def __init__(self, smtp: str) -> None:
+        self.PrimarySmtpAddress = smtp
+
+
+class _Entry:
+    def __init__(self, name: str, smtp: str) -> None:
+        self.Name = name
+        self._smtp = smtp
+
+    def GetExchangeUser(self) -> _ExchangeUser:
+        return _ExchangeUser(self._smtp)
+
+
+class _Person:
+    def __init__(self, name: str, smtp: str) -> None:
+        self.Name = name
+        self.AddressEntry = _Entry(name, smtp)
+
+
+class _BookRecipient:
+    def __init__(self, entry: _Entry | None) -> None:
+        self.Resolved = entry is not None
+        self.AddressEntry = entry
+
+    def Resolve(self) -> None:
+        return None
+
+
+class _BookNamespace(_Namespace):
+    def __init__(self, current: _Person, book: dict[str, _Entry]) -> None:
+        super().__init__([], shared=False)
+        self.CurrentUser = current
+        self.queries: list[str] = []
+        self._book = book
+
+    def CreateRecipient(self, name: str) -> _BookRecipient:
+        self.queries.append(name)
+        return _BookRecipient(self._book.get(name))
+
+
+def test_mailbox_for_profile_owner() -> None:
+    ns = _BookNamespace(_Person("Ильченко Екатерина Александровна", "E.Ilchenko@turbo-don.ru"), {})
+    assert oca._mailbox_for_person(ns, "Ильченко Екатерина Александровна") == "e.ilchenko@turbo-don.ru"
+    assert ns.queries == []
+
+
+def test_mailbox_for_person_from_address_book() -> None:
+    ns = _BookNamespace(
+        _Person("Тестов Тест", "test_ii@turbo-don.ru"),
+        {"Ильченко Екатерина": _Entry("Екатерина Ильченко", "e.ilchenko@turbo-don.ru")},
+    )
+    assert oca._mailbox_for_person(ns, "Ильченко Екатерина Александровна") == "e.ilchenko@turbo-don.ru"
+
+
+def test_mailbox_for_person_rejects_other_name() -> None:
+    ns = _BookNamespace(
+        _Person("Тестов Тест", "test_ii@turbo-don.ru"),
+        {"Ильченко Екатерина Александровна": _Entry("Ильченко Ольга", "o.ilchenko@turbo-don.ru")},
+    )
+    with pytest.raises(oca.OutlookAccessError):
+        oca._mailbox_for_person(ns, "Ильченко Екатерина Александровна")
+
+
 def test_unknown_mailbox_reports_address_book() -> None:
     ns = _Namespace([_Store("test_ii@turbo-don.ru", 0)], shared=True, resolved=False)
     with pytest.raises(oca.OutlookAccessError) as exc:

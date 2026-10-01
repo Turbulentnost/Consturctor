@@ -22,7 +22,11 @@ export interface TodayOutlookMailState {
   rows: SpecMailRow[]
 }
 
-export function useTodayOutlookMail(periodDay: Date, mailbox: string): TodayOutlookMailState {
+export function useTodayOutlookMail(
+  periodDay: Date,
+  mailbox: string,
+  ownerFio = ''
+): TodayOutlookMailState {
   const generation = useGridRefreshGeneration()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -33,7 +37,7 @@ export function useTodayOutlookMail(periodDay: Date, mailbox: string): TodayOutl
 
   useEffect(() => {
     let alive = true
-    const cacheKey = `today-outlook-mail-inout:${mailbox}:${dayKey}`
+    const cacheKey = `today-outlook-mail-inout:${mailbox || ownerFio}:${dayKey}`
     if (!shouldRunGridFetch(cacheKey, generation)) {
       const cached = readGridCache<{ error: string; source: string; rows: SpecMailRow[] }>(cacheKey)
       if (cached) {
@@ -44,7 +48,7 @@ export function useTodayOutlookMail(periodDay: Date, mailbox: string): TodayOutl
         return
       }
     }
-    if (!mailbox.trim()) {
+    if (!mailbox.trim() && !ownerFio.trim()) {
       setRows([])
       setSource('')
       setError(OUTLOOK_NO_MAILBOX)
@@ -58,7 +62,8 @@ export function useTodayOutlookMail(periodDay: Date, mailbox: string): TodayOutl
         const dayIso = dayKeyLocal(periodDay)
         const batch = await ensureOutlookMailRange(mailbox, dayIso, dayIso, {
           folder: 'All',
-          maxResults: 80
+          maxResults: 80,
+          ownerFio
         })
         if (!alive) return
         if (!batch.ok) {
@@ -110,7 +115,7 @@ export function useTodayOutlookMail(periodDay: Date, mailbox: string): TodayOutl
     return () => {
       alive = false
     }
-  }, [dayKey, generation, periodDay, mailbox])
+  }, [dayKey, generation, periodDay, mailbox, ownerFio])
 
   const resolvedRows = useMemo(() => {
     return rows

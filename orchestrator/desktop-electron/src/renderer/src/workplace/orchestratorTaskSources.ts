@@ -546,7 +546,8 @@ export async function fetchOrchestratorTaskSources(
 ): Promise<OrchestratorTaskSourcesBundle> {
   const core = await fetchOrchestratorCoreSources(user, erpFio, opts)
   const mail = await loadOrchestratorMail(outlookMailbox, opts?.mailPeriod, {
-    forceOutlook: opts?.forceRefresh
+    forceOutlook: opts?.forceRefresh,
+    ownerFio: erpFio
   })
   return { ...core, mail }
 }
