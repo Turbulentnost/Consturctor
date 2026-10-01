@@ -45,7 +45,7 @@ PREVIOUS = {
 }
 
 
-def test_copies_header_participants_agenda_and_carries_tasks() -> None:
+def test_copies_header_participants_agenda_and_leaves_tasks_to_the_register() -> None:
     args = mpw.next_protocol_args(PREVIOUS, {"action": "next", "source_ref_key": SOURCE})
 
     assert args["date"] == "2026-10-08"
@@ -53,8 +53,8 @@ def test_copies_header_participants_agenda_and_carries_tasks() -> None:
     assert args["leader"] == "Петров Пётр Петрович"
     assert args["responsible"] == "Сидорова Анна Ивановна"
     assert args["participants"] == ["Петров Пётр Петрович", "Иванов Иван Иванович"]
-    assert [task["text"] for task in args["tasks"]] == ["Подготовить ОПУ за квартал"]
-    assert args["tasks"][0]["executor"] == "Иванов Иван Иванович"
+    # Открытые задачи темы форма 1С берёт из регистра; копия стала бы второй задачей на контроле.
+    assert "tasks" not in args
     assert args["agenda"][-1] == {
         "question": "Контроль исполнения поручений протокола ПСД_001_О_012",
         "responsible": "Сидорова Анна Ивановна",
@@ -103,7 +103,8 @@ def test_next_action_reads_source_and_creates_draft(monkeypatch: pytest.MonkeyPa
 
     assert seen["args"]["date"] == "2026-10-08"
     assert result["source_number"] == "ПСД_001_О_012"
-    assert result["carried_tasks"] == 1
+    assert "tasks" not in seen["args"]
+    assert result["control_tasks"] == 1
     assert "на основе ПСД_001_О_012" in result["summary"]
 
 

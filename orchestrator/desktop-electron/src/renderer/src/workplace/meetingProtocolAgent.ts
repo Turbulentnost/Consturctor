@@ -189,25 +189,46 @@ export function buildSupplementMessage(
   ].join('\n')
 }
 
+function isoDay(raw: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec((raw || '').trim())
+  return match ? match[1] : ''
+}
+
 /** Russian task message with Outlook meeting fields and absolute audio path. */
-export function buildProtocolMessage(meeting: MeetingEvent, audioPath: string): string {
+export function buildProtocolMessage(
+  meeting: MeetingEvent,
+  audioPath: string,
+  opts: { nextMeetingStart?: string } = {}
+): string {
   const when = formatMeetingStamp(meeting.start)
   const end = meeting.end ? formatMeetingStamp(meeting.end) : ''
   const period = end ? `${when} – ${end}` : when
+  const nextDay = isoDay(opts.nextMeetingStart || '')
   return [
     'Сформируй протокол совещания по приложенной аудиозаписи.',
     '',
     'Данные совещания из календаря Outlook:',
     `Тема: ${field(meeting.subject)}`,
     `Дата / время: ${period}`,
+    `Место: ${field(meeting.location)}`,
     `Организатор: ${field(meeting.organizer)}`,
     'Участники:',
     attendeesList(meeting),
     `Идентификатор совещания Outlook: ${meeting.id || '—'}`,
+    nextDay
+      ? `Следующее совещание этой серии в Outlook: ${formatMeetingStamp(opts.nextMeetingStart || '')} (${nextDay})`
+      : 'Следующее совещание этой серии в Outlook: на 45 дней вперёд не найдено',
     '',
     `Абсолютный путь к аудиофайлу: ${audioPath}`,
     '',
     'Используй данные календаря для темы протокола и сопоставления говорящих.',
+    `В onec.meeting_protocol_write action="create" передай room — «Место» из Outlook${
+      meeting.location?.trim() ? '' : ' (здесь не указано — не передавай)'
+    }${
+      nextDay
+        ? ` и next_meeting_date="${nextDay}", если в записи не названа другая дата следующего совещания.`
+        : '; next_meeting_date передай, только если дата следующего совещания прозвучала в записи.'
+    } Чего нет — сервер возьмёт кабинет и периодичность из прошлого протокола этой темы.`,
     'Итоговый отчёт сохрани в формате docx через report.export_document.',
     meetingOutlookMarker(meeting)
       ? `В comment протокола 1С (onec.meeting_protocol_write) отдельной строкой добавь метку ${meetingOutlookMarker(meeting)} — по ней совещание в календаре связывается с документом (дата в метке обязательна).`
