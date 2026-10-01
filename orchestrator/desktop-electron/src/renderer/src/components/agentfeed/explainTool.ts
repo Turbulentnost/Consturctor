@@ -431,6 +431,34 @@ function protocolWrite(args: Record<string, unknown>): ToolExplanation {
       ])
     )
   }
+  if (action === 'check_tasks') {
+    if (refKey) facts.push(`Документ: ${clip(refKey, 40)}`)
+    return explanation(
+      'Выполнение задач протокола',
+      'отметить выполненные задачи протокола в 1С',
+      'Отмечает выполнение задач',
+      facts,
+      joinDetail([
+        `Отметит выполненными задач: ${tasks} — «Выполнена» и дата исполнения в регистре задач протокола.`,
+        'Задачи с запущенным процессом в Документообороте не меняются — их закрывает процесс.'
+      ])
+    )
+  }
+  if (action === 'add_tasks') {
+    if (refKey) facts.push(`Документ: ${clip(refKey, 40)}`)
+    const items = Array.isArray(args.tasks) ? (args.tasks as unknown[]) : []
+    const edits = items.filter((item) => item && typeof item === 'object' && asText((item as Record<string, unknown>).id)).length
+    return explanation(
+      'Задачи в протокол 1С',
+      'дописать задачи в проведённый протокол',
+      'Дописывает задачи в протокол',
+      facts,
+      joinDetail([
+        `Добавит в регистр задач протокола новых задач: ${items.length - edits}${edits ? `, исправит неотправленных: ${edits}` : ''}.`,
+        'Сам документ «Протокол» не перепроводится; уже отправленные исполнителям задачи не меняются.'
+      ])
+    )
+  }
   return explanation(
     'Протокол в 1С',
     'создать протокол совещания в 1С',

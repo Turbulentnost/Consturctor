@@ -308,8 +308,9 @@ def test_list_meeting_protocols_routes_pair(monkeypatch) -> None:
 def test_read_protocol_form_task_flags(monkeypatch) -> None:
     from app.services import meeting_protocol_write
 
-    monkeypatch.setattr(meeting_protocol_write, "_prefetch_descriptions", lambda card, cache: None)
+    monkeypatch.setattr(meeting_protocol_write, "_prefetch_descriptions", lambda card, cache, **_: None)
     monkeypatch.setattr(meeting_protocol_write, "_description_of", lambda entity, key, cache: "")
+    monkeypatch.setattr(meeting_protocol_write, "read_task_register", lambda ref: [])
     card = {
         "Ref_Key": PREVIOUS_KEY,
         "Number": "ПСД_001_О_201",
@@ -335,7 +336,7 @@ def test_read_protocol_form_task_flags(monkeypatch) -> None:
 def test_read_protocol_form_decision_fields(monkeypatch) -> None:
     from app.services import meeting_protocol_write
 
-    monkeypatch.setattr(meeting_protocol_write, "_prefetch_descriptions", lambda card, cache: None)
+    monkeypatch.setattr(meeting_protocol_write, "_prefetch_descriptions", lambda card, cache, **_: None)
     monkeypatch.setattr(meeting_protocol_write, "_description_of", lambda entity, key, cache: "")
     card = {
         "Ref_Key": CURRENT_KEY,

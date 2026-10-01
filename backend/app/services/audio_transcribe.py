@@ -134,6 +134,20 @@ def _write_transcript(filename: str, segments: list[dict[str, Any]], duration_se
     return path
 
 
+def read_transcript(transcript_path: str) -> dict[str, Any]:
+    """Текст расшифровки по transcript_path из ответа audio.transcribe — только файлы этой папки."""
+    folder = _transcript_dir().resolve()
+    try:
+        path = Path(str(transcript_path or "").strip()).resolve()
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Непонятный путь к расшифровке") from exc
+    if path.parent != folder or path.suffix.lower() != ".txt":
+        raise RuntimeError("Это не файл расшифровки audio.transcribe")
+    if not path.is_file():
+        raise RuntimeError("Расшифровка не найдена — её удалили вместе с временными файлами сервера")
+    return {"ok": True, "transcript_path": str(path), "text": path.read_text(encoding="utf-8")}
+
+
 def _disk_cache_path(cache_key: str) -> Path:
     name = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:24]
     return _transcript_dir() / f"{name}.json"

@@ -67,6 +67,12 @@ def _fake_resolvers(monkeypatch):
     monkeypatch.setattr(mpw, "resolve_ref", resolve_ref)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_odata_writes(monkeypatch):
+    for name in ("_odata_post", "_odata_patch", "_odata_delete"):
+        monkeypatch.setattr(mpw, name, lambda args, name=name: pytest.fail(f"unexpected {name}: {args}"))
+
+
 def _args() -> dict:
     return {
         "topic": "Разработка ИИ-агентов",
@@ -223,21 +229,112 @@ def test_empty_protocol_is_rejected(monkeypatch):
         )
 
 
+NEW_KEY = "96396617-b5b0-11f1-9889-6cb31113810c"
+
+
+def _missing_record(args):
+    from app.services.onec_tools import OnecToolError
+
+    raise OnecToolError("1C OData HTTP 404: запись не найдена")
+
+
 def test_create_posts_and_returns_number(monkeypatch):
-    posted: dict = {}
+    posted: list[dict] = []
 
     def fake_post(args):
-        posted.update(args)
-        return {"data": {"Ref_Key": "96396617-b5b0-11f1-9889-6cb31113810c", "Number": "ДР__062_О_427"}}
+        posted.append(args)
+        return {"data": {"Ref_Key": NEW_KEY, "Number": "ДР__062_О_427"}}
 
     monkeypatch.setattr(mpw, "_odata_post", fake_post)
+    monkeypatch.setattr(mpw, "_odata_patch", _missing_record)
     result = mpw.handle_protocol_write(_args(), actor_fio="Жалыбин Максим Дмитриевич")
-    assert posted["entity"] == mpw.PROTOCOL_ENTITY
+    assert posted[0]["entity"] == mpw.PROTOCOL_ENTITY
     assert result["number"] == "ДР__062_О_427"
-    assert result["ref_key"] == "96396617-b5b0-11f1-9889-6cb31113810c"
+    assert result["ref_key"] == NEW_KEY
     assert result["posted"] is False
     assert "ДР__062_О_427" in result["summary"]
     assert result["unresolved"]
+
+
+def test_create_writes_tasks_to_register(monkeypatch):
+    posted: list[dict] = []
+
+    def fake_post(args):
+        posted.append(args)
+        return {"data": {"Ref_Key": NEW_KEY, "Number": "ДР__062_О_427"}}
+
+    monkeypatch.setattr(mpw, "_odata_post", fake_post)
+    monkeypatch.setattr(mpw, "_odata_patch", _missing_record)
+    result = mpw.handle_protocol_write(_args(), actor_fio="Жалыбин Максим Дмитриевич")
+    records = [call["body"] for call in posted if call["entity"] == mpw.TASK_REGISTER]
+    assert len(records) == 2
+    first = records[0]
+    assert first["Протокол_Key"] == NEW_KEY
+    assert first["ТемаСовещания_Key"] == THEME["Ref_Key"]
+    assert first["ИдентификаторЗадачи"] == mpw.task_register_id(NEW_KEY, 1)
+    assert first["Задача"] == "Проверить в outlook регистрацию вх.корр в 1с"
+    assert first["Ответственный_Key"] == PERSONS["Жалыбин Максим Дмитриевич"]
+    assert first["Автор_Key"] == USERS["Соломичева Светлана Викторовна"]["ref_key"]
+    assert first["СрокИсполнения"].startswith("2026-09-24")
+    assert first["НомерПунктаПротокола"] == 1 and first["Отправлена"] is False
+    assert records[1]["ИдентификаторЗадачи"] != first["ИдентификаторЗадачи"]
+    assert result["task_register"] == {"entity": mpw.TASK_REGISTER, "written": 2, "removed": 0, "errors": []}
+    assert "задач в регистре: 2" in result["summary"]
+
+
+def test_register_failure_is_reported_not_raised(monkeypatch):
+    from app.services.onec_tools import OnecToolError
+
+    def fake_post(args):
+        if args["entity"] == mpw.TASK_REGISTER:
+            raise OnecToolError("1C OData HTTP 401: Доступ запрещен")
+        return {"data": {"Ref_Key": NEW_KEY, "Number": "ДР__062_О_427"}}
+
+    monkeypatch.setattr(mpw, "_odata_post", fake_post)
+    monkeypatch.setattr(mpw, "_odata_patch", _missing_record)
+    result = mpw.handle_protocol_write(_args(), actor_fio="Жалыбин Максим Дмитриевич")
+    assert result["ref_key"] == NEW_KEY
+    assert len(result["task_register"]["errors"]) == 2
+    assert "записаны не все" in result["summary"]
+
+
+def test_register_resave_patches_and_drops_removed_lines(monkeypatch):
+    patched: list[dict] = []
+    deleted: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.append(args) or {"updated": True})
+    monkeypatch.setattr(mpw, "_odata_delete", lambda args: deleted.append(args) or {"deleted": True})
+    rows = [{"LineNumber": "1", "Задача": "Одна задача", "НомерПунктаПротокола": "3"}]
+    result = mpw.sync_task_register(NEW_KEY, THEME["Ref_Key"], rows, previous_count=3)
+    assert result["written"] == 1 and result["removed"] == 2
+    assert patched[0]["key"]["ИдентификаторЗадачи"] == mpw.task_register_id(NEW_KEY, 1)
+    assert "Отправлена" not in patched[0]["body"]
+    assert patched[0]["body"]["НомерПунктаПротокола"] == 3
+    assert [call["key"]["ИдентификаторЗадачи"] for call in deleted] == [
+        mpw.task_register_id(NEW_KEY, 2),
+        mpw.task_register_id(NEW_KEY, 3),
+    ]
+
+
+def test_register_record_key_segment():
+    from app.services.onec_tools import _odata_key_segment
+
+    key = {"Протокол_Key": NEW_KEY, "ТемаСовещания_Key": THEME["Ref_Key"], "ИдентификаторЗадачи": NEW_KEY}
+    assert _odata_key_segment({"key": key}) == (
+        f"Протокол_Key=guid'{NEW_KEY}',ТемаСовещания_Key=guid'{THEME['Ref_Key']}',"
+        f"ИдентификаторЗадачи=guid'{NEW_KEY}'"
+    )
+    assert _odata_key_segment({"ref_key": NEW_KEY}) == f"guid'{NEW_KEY}'"
+
+
+def test_register_theme_change_moves_all_records(monkeypatch):
+    deleted: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: {"updated": True})
+    monkeypatch.setattr(mpw, "_odata_delete", lambda args: deleted.append(args) or {"deleted": True})
+    old_theme = "11111111-2222-3333-4444-555555555555"
+    rows = [{"LineNumber": "1", "Задача": "A"}, {"LineNumber": "2", "Задача": "B"}]
+    mpw.sync_task_register(NEW_KEY, THEME["Ref_Key"], rows, previous_count=2, previous_theme_key=old_theme)
+    assert len(deleted) == 2
+    assert all(call["key"]["ТемаСовещания_Key"] == old_theme for call in deleted)
 
 
 def test_time_parsing_variants():
@@ -361,12 +458,14 @@ def test_read_protocol_form_posted_is_not_editable(monkeypatch):
 
 def test_update_patches_draft_and_keeps_outlook_marker(monkeypatch):
     monkeypatch.setattr(mpw, "_odata_get", _fake_get(_card()))
-    patched: dict = {}
-    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.update(args) or {"updated": True})
-    monkeypatch.setattr(mpw, "_odata_post", lambda *_: pytest.fail("POST must not happen on update"))
+    calls: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: calls.append(args) or {"updated": True})
+    monkeypatch.setattr(mpw, "_odata_delete", lambda args: {"deleted": True})
     args = {**_args(), "action": "update", "ref_key": PROTOCOL_KEY, "comment": "Правки вручную"}
     result = mpw.handle_protocol_write(args, actor_fio="Жалыбин Максим Дмитриевич")
+    patched = calls[0]
     assert patched["entity"] == mpw.PROTOCOL_ENTITY and patched["ref_key"] == PROTOCOL_KEY
+    assert [call["entity"] for call in calls[1:]] == [mpw.TASK_REGISTER, mpw.TASK_REGISTER]
     body = patched["body"]
     for field in ("ДатаСоздания", "Posted", "DeletionMark", "Статус", "Подготовил_Key"):
         assert field not in body
@@ -414,3 +513,158 @@ def test_tool_registered_as_write_tool():
     assert onec_tools.REAL_HANDLERS["onec.meeting_protocol_write"] is mpw.handle_protocol_write
     stub = onec_tools.STUB_HANDLERS["onec.meeting_protocol_write"]({"tasks": ["a"]})
     assert stub["source"] == "stub" and stub["entity"] == mpw.PROTOCOL_ENTITY
+
+
+SENT_ID = "11111111-2222-4333-8444-555555555555"
+OPEN_ID = "66666666-7777-4888-9999-000000000000"
+
+
+def _register_rows() -> list[dict]:
+    base = {"Протокол_Key": PROTOCOL_KEY, "ТемаСовещания_Key": THEME["Ref_Key"], "ПроцессID": ""}
+    return [
+        {**base, "ИдентификаторЗадачи": OPEN_ID, "НомерПунктаПротокола": "2", "Задача": "Открытая задача",
+         "Ответственный_Key": PERSONS["Жалыбин Максим Дмитриевич"], "СрокИсполнения": "2026-10-05T23:59:59",
+         "Отправлена": False},
+        {**base, "ИдентификаторЗадачи": SENT_ID, "НомерПунктаПротокола": "1", "Задача": "Отправленная задача",
+         "Ответственный_Key": PERSONS["Мегрелишвили Михаил Эмзарович"], "Отправлена": True},
+    ]
+
+
+def _fake_get_with_register(card: dict, rows: list[dict]):
+    base = _fake_get(card)
+
+    def fake_get(args):
+        if args.get("entity") == mpw.TASK_REGISTER:
+            assert PROTOCOL_KEY in args.get("filter", "")
+            return {"value": [dict(row) for row in rows]}
+        return base(args)
+
+    return fake_get
+
+
+def test_read_protocol_form_posted_takes_tasks_from_register(monkeypatch):
+    card = _card(Posted=True, Статус="НаИсполнении")
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(card, _register_rows()))
+    form = mpw.read_protocol_form(PROTOCOL_KEY)["form"]
+    assert form["tasks_source"] == "register"
+    assert [task["item"] for task in form["tasks"]] == ["1", "2"]
+    sent, open_task = form["tasks"]
+    assert sent["id"] == SENT_ID and sent["sent"] is True
+    assert open_task["executor"] == "Жалыбин Максим Дмитриевич" and open_task["due"] == "2026-10-05"
+
+
+BASE_KEY = "77777777-8888-4999-8aaa-bbbbbbbbbbbb"
+
+
+def test_read_protocol_form_returns_control_tasks_of_base_protocol(monkeypatch):
+    card = _card(ДокументОснование=BASE_KEY, ДокументОснование_Type="StandardODATA.Document_ТД_Протокол")
+    base = _fake_get(card)
+    control = [
+        {**row, "Протокол_Key": BASE_KEY} for row in _register_rows()
+    ]
+
+    def fake_get(args):
+        if args.get("entity") == mpw.TASK_REGISTER:
+            assert BASE_KEY in args["filter"], "draft reads only the base protocol register"
+            return {"value": control}
+        return base(args)
+
+    monkeypatch.setattr(mpw, "_odata_get", fake_get)
+    form = mpw.read_protocol_form(PROTOCOL_KEY)["form"]
+    assert form["tasks_source"] == "table"
+    assert form["base_ref_key"] == BASE_KEY
+    assert [task["id"] for task in form["control_tasks"]] == [SENT_ID, OPEN_ID]
+
+
+def test_check_tasks_marks_done_without_running_process(monkeypatch):
+    rows = _register_rows()
+    rows[1]["ПроцессID"] = "99999999-aaaa-4bbb-8ccc-dddddddddddd"
+    rows.append({**rows[0], "ИдентификаторЗадачи": "12121212-3434-4565-8787-909090909090", "Выполнена": True})
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(_card(Posted=True, Статус="Закрыт"), rows))
+    patched: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.append(args) or {})
+    result = mpw.handle_protocol_write(
+        {
+            "action": "check_tasks",
+            "ref_key": PROTOCOL_KEY,
+            "tasks": [
+                {"id": OPEN_ID, "done_date": "2026-10-01", "comment": "Подтверждено на совещании [12:30]"},
+                {"id": SENT_ID},
+                {"id": "12121212-3434-4565-8787-909090909090"},
+                {"id": "00000000-1111-4222-8333-444444444444"},
+            ],
+        }
+    )
+    assert len(patched) == 1
+    assert patched[0]["key"]["ИдентификаторЗадачи"] == OPEN_ID
+    assert patched[0]["body"] == {
+        "Выполнена": True,
+        "ДатаИсполнения": "2026-10-01T00:00:00",
+        "Комментарий": "Подтверждено на совещании [12:30]",
+    }
+    assert [item["item"] for item in result["marked"]] == [2]
+    assert len(result["skipped"]) == 2 and any("Документообороте" in text for text in result["skipped"])
+    assert len(result["errors"]) == 1
+
+
+def test_add_tasks_refuses_draft(monkeypatch):
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(_card(), []))
+    with pytest.raises(mpw.ProtocolWriteError, match="черновик"):
+        mpw.handle_protocol_write(
+            {"action": "add_tasks", "ref_key": PROTOCOL_KEY, "tasks": [{"text": "Новая"}]}
+        )
+
+
+def test_add_tasks_numbers_from_register_not_table(monkeypatch):
+    card = _card(Posted=True, Статус="Закрыт")
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(card, []))
+    posted: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_post", lambda args: posted.append(args) or {})
+    mpw.handle_protocol_write({"action": "add_tasks", "ref_key": PROTOCOL_KEY, "tasks": ["Первая", "Вторая"]})
+    assert [call["body"]["НомерПунктаПротокола"] for call in posted] == [1, 2]
+
+
+def test_add_tasks_renumbers_unsent_by_id(monkeypatch):
+    card = _card(Posted=True, Статус="Закрыт")
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(card, _register_rows()))
+    patched: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.append(args) or {})
+    mpw.handle_protocol_write({"action": "add_tasks", "ref_key": PROTOCOL_KEY, "tasks": [{"id": OPEN_ID, "item": 7}]})
+    assert patched[0]["body"] == {"НомерПунктаПротокола": 7}
+
+
+def test_add_tasks_appends_to_register_and_edits_unsent(monkeypatch):
+    card = _card(Posted=True, Статус="НаИсполнении")
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(card, _register_rows()))
+    posted: list[dict] = []
+    patched: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_post", lambda args: posted.append(args) or {})
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.append(args) or {"updated": True})
+    result = mpw.handle_protocol_write(
+        {
+            "action": "add_tasks",
+            "ref_key": PROTOCOL_KEY,
+            "tasks": [
+                {"text": "Новая задача", "executor": "Соломичева", "due": "2026-10-10"},
+                {"id": OPEN_ID, "due": "2026-10-12"},
+                {"id": SENT_ID, "text": "Переписать"},
+                {"text": "Кому-то", "executor": "Неизвестный"},
+            ],
+        }
+    )
+    assert len(posted) == 1
+    record = posted[0]["body"]
+    assert posted[0]["entity"] == mpw.TASK_REGISTER
+    assert record["Протокол_Key"] == PROTOCOL_KEY and record["ТемаСовещания_Key"] == THEME["Ref_Key"]
+    assert record["НомерПунктаПротокола"] == 3
+    assert record["Ответственный_Key"] == PERSONS["Соломичева Светлана Викторовна"]
+    assert record["СрокИсполнения"].startswith("2026-10-10")
+    assert record["ДатаПостановкиЗадачи"] == "2026-09-21T00:00:00"
+    assert record["Отправлена"] is False and record["ИдентификаторЗадачи"] not in (OPEN_ID, SENT_ID)
+    assert len(patched) == 1
+    assert patched[0]["key"]["ИдентификаторЗадачи"] == OPEN_ID
+    assert list(patched[0]["body"]) == ["СрокИсполнения"]
+    assert [item["item"] for item in result["added"]] == [3]
+    assert result["changed"][0]["id"] == OPEN_ID
+    assert any("отправлена" in error for error in result["errors"])
+    assert result["unresolved"] == ["исполнитель задачи «Неизвестный»"]

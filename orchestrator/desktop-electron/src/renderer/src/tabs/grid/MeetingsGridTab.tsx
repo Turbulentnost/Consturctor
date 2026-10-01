@@ -13,6 +13,7 @@ import {
   buildProtocolMessage,
   buildSupplementMessage,
   PROTOCOL_AGENT_TITLE,
+  PROTOCOL_AUDIO_EXTENSIONS as AUDIO_EXTENSIONS,
   resolveProtocolAgentWorkflowId
 } from '../../workplace/meetingProtocolAgent'
 import { useMeetingProtocol } from '../../workplace/meetingProtocolStore'
@@ -68,8 +69,6 @@ import {
   type ProtocolMark
 } from '../../workplace/meetingProtocolMarks'
 import './meetingActions.css'
-
-const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'wma', 'amr', 'webm', 'mp4', 'mkv']
 
 /** File browsing the agent does while drafting — not the protocol itself. */
 const NOISY_TOOLS = new Set([
@@ -237,16 +236,12 @@ function MeetingDetailCard({
       if (!card?.form) {
         throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
       }
-      if (card.editable === false) {
-        throw new Error(
-          `Протокол ${card.number || ''} уже проведён (статус «${card.status || 'проведён'}») — дополнить можно только черновик`
-        )
-      }
 
       const workflowId = await resolveProtocolAgentWorkflowId()
       const message = buildSupplementMessage(meeting, audioPath, {
         number: String(card.number || protocol?.number || ''),
         refKey: protocolRefKey,
+        editable: card.editable !== false,
         form: card.form
       })
       const runId = runs.startRun({
