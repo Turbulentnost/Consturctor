@@ -9,7 +9,8 @@ const EMPTY: PositionKpiCompensation = {
   effectiveFrom: '',
   salary: null,
   bonus: null,
-  total: null
+  total: null,
+  history: []
 }
 
 /** Премия помесячная, как и плитки KPI должности: сервер берёт текущий месяц, календарь периода не влияет. */
@@ -63,7 +64,8 @@ export function usePositionCompensation(): {
       unlocked: false,
       salary: null,
       bonus: null,
-      total: null
+      total: null,
+      history: []
     }))
   }, [])
 

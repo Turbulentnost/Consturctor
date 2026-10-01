@@ -74,6 +74,7 @@ import { SettingsPage } from './admin/pages/SettingsPage'
 import { FinanceEmployeesPage } from './admin/pages/FinanceEmployeesPage'
 import { FinanceUploadPage } from './admin/pages/FinanceUploadPage'
 import { FinanceImportHistoryPage } from './admin/pages/FinanceImportHistoryPage'
+import { FinanceSalarySourceSwitch } from './admin/components/FinanceSalarySourceSwitch'
 import { resolveAdminPanel } from './admin/adminPanels'
 
 const ADMIN_TAB_KEYS: PageKey[] = [
@@ -1055,6 +1056,7 @@ function AppShell(): React.JSX.Element {
             <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
               <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
                 <div className="app-page-header">
+                  {isAdminMode && activeAdminPanel?.key === 'finance' ? <FinanceSalarySourceSwitch /> : null}
                   <UserMenu
                     user={activeUser}
                     avatarUrl={avatarUrl}

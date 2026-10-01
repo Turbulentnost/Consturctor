@@ -734,6 +734,46 @@ def get_or_compute_position_kpi(
     return {**payload, "cached": False, "stale": False}
 
 
+def attach_tile_history(db: Session, payload: dict[str, Any], *, subject: str = "") -> dict[str, Any]:
+    """Факт каждого показателя по дням месяца из дневного кэша — для графика на плитке."""
+    try:
+        period_from = date.fromisoformat(str(payload.get("period_from") or ""))
+        period_to = date.fromisoformat(str(payload.get("period_to") or ""))
+    except ValueError:
+        return payload
+    profile_id = str(payload.get("profile_id") or "")
+    key = subject_key(subject)
+    if key:
+        query = select(PositionKpiSubjectFact.day, PositionKpiSubjectFact.payload).where(
+            PositionKpiSubjectFact.profile_id == profile_id,
+            PositionKpiSubjectFact.subject == key,
+            PositionKpiSubjectFact.period_from == period_from,
+            PositionKpiSubjectFact.period_to == period_to,
+        )
+    else:
+        query = select(PositionKpiDailyFact.day, PositionKpiDailyFact.payload).where(
+            PositionKpiDailyFact.profile_id == profile_id,
+            PositionKpiDailyFact.period_from == period_from,
+            PositionKpiDailyFact.period_to == period_to,
+        )
+    series: dict[str, dict[str, float]] = {}
+    for day, row_payload in db.execute(query).all():
+        tiles = row_payload.get("tiles") if isinstance(row_payload, dict) else None
+        for tile in tiles or []:
+            if isinstance(tile, dict) and tile.get("code") and tile.get("fact") is not None:
+                series.setdefault(str(tile["code"]), {})[day.isoformat()] = float(tile["fact"])
+    as_of = str(payload.get("as_of") or "")
+    tiles_out: list[dict[str, Any]] = []
+    for tile in payload.get("tiles") or []:
+        if not isinstance(tile, dict):
+            continue
+        points = dict(series.get(str(tile.get("code") or ""), {}))
+        if as_of and tile.get("fact") is not None:
+            points[as_of] = float(tile["fact"])
+        tiles_out.append({**tile, "history": [{"day": d, "value": v} for d, v in sorted(points.items())]})
+    return {**payload, "tiles": tiles_out}
+
+
 def _known_subjects(
     db: Session,
     *,

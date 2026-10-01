@@ -16,6 +16,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Не удалось загрузить данные'
 }
 
+function employeeMark(fio: string): string {
+  const parts = fio.trim().split(/\s+/).filter(Boolean)
+  if (!parts.length) return '—'
+  return parts
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toLocaleUpperCase('ru-RU'))
+    .join('')
+}
+
 export function FinanceEmployeesPage(): React.JSX.Element {
   const [employees, setEmployees] = useState<FinanceEmployee[]>([])
   const [salaries, setSalaries] = useState<FinanceSalary[]>([])
@@ -75,7 +84,7 @@ export function FinanceEmployeesPage(): React.JSX.Element {
         {!loading && employees.length > 0 && !visibleEmployees.length ? (
           <p className="finance-empty">По вашему запросу ничего не найдено</p>
         ) : null}
-        <div className="admin-table-area">
+        <div className="admin-table-area finance-employees-table">
           <AdminDataTable
             columns={[
               { id: 'fio', label: 'ФИО' },
@@ -83,17 +92,28 @@ export function FinanceEmployeesPage(): React.JSX.Element {
               { id: 'department', label: 'Подразделение' }
             ]}
             rows={visibleEmployees.map((employee) => [
-              employee.id ? (
-                <button
-                  type="button"
-                  className="finance-link-button"
-                  onClick={() => void openSalaries(employee)}
-                >
-                  {employee.fio}
-                </button>
-              ) : employee.fio,
-              employee.position || '—',
-              employee.department || '—'
+              <span className="finance-employee-name">
+                <span className="finance-employee-name__mark" aria-hidden="true">
+                  {employeeMark(employee.fio)}
+                </span>
+                {employee.id ? (
+                  <button
+                    type="button"
+                    className="finance-link-button"
+                    onClick={() => void openSalaries(employee)}
+                  >
+                    {employee.fio}
+                  </button>
+                ) : (
+                  <span className="finance-employee-name__text">{employee.fio}</span>
+                )}
+              </span>,
+              <span className={employee.position ? 'finance-employee-meta' : 'finance-employee-meta is-empty'}>
+                {employee.position || '—'}
+              </span>,
+              <span className={employee.department ? 'finance-employee-meta' : 'finance-employee-meta is-empty'}>
+                {employee.department || '—'}
+              </span>
             ])}
           />
         </div>
@@ -127,7 +147,7 @@ export function FinanceEmployeesPage(): React.JSX.Element {
                     <p>{salary.department ? `Подразделение: ${salary.department}` : 'Без подразделения — загружен до привязки, перезагрузите'}</p>
                     {salary.reason ? <p>{salary.reason}</p> : null}
                   </div>
-                  <span>{salary.amount || '—'} {salary.currency}</span>
+                  <span className="finance-salary-amount">{salary.amount || '—'} {salary.currency}</span>
                 </article>
               ))}
             </div>

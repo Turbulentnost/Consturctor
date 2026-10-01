@@ -544,10 +544,6 @@
   font-size: 19px;
 }
 
-.kpi-employee-panel--bar .kpi-employee-spark {
-  height: 18px;
-}
-
 .kpi-employee-panel--bar .kpi-employee-footer {
   display: none;
 }
@@ -802,6 +798,46 @@
   white-space: nowrap;
 }
 
+.kpi-salary-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+
+.kpi-salary-switch span {
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.2;
+  opacity: 0.85;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kpi-salary-switch button {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+  color: inherit;
+  cursor: pointer;
+}
+
+.kpi-salary-switch button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.kpi-salary-switch button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 @keyframes kpi-money-reveal {
   from {
     opacity: 0;
@@ -1004,10 +1040,82 @@
   color: #c0392b;
 }
 
-.kpi-employee-spark {
+/* График показателя: плавная кривая по дням, пунктир плана, светящаяся точка «сегодня» */
+.kpi-trend {
+  --kpi-trend-color: #1565c0;
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 16px;
+  margin: 2px -2px 0;
+}
+
+.kpi-trend svg {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  height: 40px;
-  display: block;
+  height: 100%;
+  overflow: visible;
+}
+
+.kpi-trend-line {
+  fill: none;
+  stroke: var(--kpi-trend-color);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.kpi-trend-stop {
+  stop-color: var(--kpi-trend-color);
+}
+
+.kpi-trend-plan {
+  stroke: rgba(16, 32, 51, 0.25);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.kpi-trend-dot {
+  position: absolute;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--kpi-trend-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kpi-trend-color) 25%, transparent);
+  transform: translate(50%, -50%);
+  animation: kpi-trend-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes kpi-trend-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--kpi-trend-color) 30%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--kpi-trend-color) 8%, transparent);
+  }
+}
+
+.kpi-metric-tile .kpi-employee-trend,
+.kpi-metric-weight {
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.kpi-metric-weight {
+  margin-left: auto;
+  background: rgba(16, 32, 51, 0.06);
+  color: var(--content-muted);
+}
+
+.kpi-metric-tile .kpi-employee-tile-values {
+  align-items: center;
+  min-width: 0;
 }
 
 .kpi-employee-footer {
@@ -1293,10 +1401,6 @@
 
 .orch-grid-kpi .kpi-employee-trend {
   font-size: 12px;
-}
-
-.orch-grid-kpi .kpi-employee-spark {
-  height: 26px;
 }
 
 .orch-grid-kpi .kpi-employee-footer {
@@ -1665,9 +1769,9 @@
       rgba(255, 255, 255, 0.8) calc(var(--kpi-hero) + 110px),
       #fff calc(var(--kpi-hero) + var(--kpi-fade))
     ),
-    radial-gradient(48% 62% at 16% 46%, var(--kpi-glow) 0%, transparent 72%),
-    radial-gradient(38% 55% at 62% 8%, var(--kpi-glow2) 0%, transparent 70%),
-    radial-gradient(42% 70% at 100% 55%, rgba(0, 0, 0, 0.32) 0%, transparent 72%),
+    radial-gradient(55% 38% at 10% 0%, var(--kpi-glow) 0%, transparent 75%),
+    radial-gradient(40% 32% at 72% 0%, var(--kpi-glow2) 0%, transparent 75%),
+    radial-gradient(45% 70% at 100% 60%, rgba(0, 0, 0, 0.28) 0%, transparent 72%),
     linear-gradient(180deg, var(--kpi-base) 0%, var(--kpi-mid) 100%);
   background-size: 100% calc(var(--kpi-hero) + var(--kpi-fade));
   background-repeat: no-repeat;
@@ -1678,25 +1782,26 @@
     --kpi-glow2 0.8s ease;
 }
 
+/* Свечение только в шапке; за плитками цвет глубокий и ровный, чтобы белый текст читался. */
 .orch-grid-kpi[data-kpi-tone='good'] {
-  --kpi-base: #041f12;
-  --kpi-mid: #0a4a28;
-  --kpi-glow: rgba(35, 170, 82, 0.85);
-  --kpi-glow2: rgba(84, 214, 122, 0.4);
+  --kpi-base: #04180e;
+  --kpi-mid: #0a3a21;
+  --kpi-glow: rgba(34, 150, 76, 0.55);
+  --kpi-glow2: rgba(80, 200, 115, 0.22);
 }
 
 .orch-grid-kpi[data-kpi-tone='bad'] {
-  --kpi-base: #24060a;
-  --kpi-mid: #64121a;
-  --kpi-glow: rgba(214, 62, 56, 0.85);
-  --kpi-glow2: rgba(255, 120, 96, 0.38);
+  --kpi-base: #1c0508;
+  --kpi-mid: #4c0e15;
+  --kpi-glow: rgba(200, 54, 50, 0.5);
+  --kpi-glow2: rgba(255, 112, 92, 0.2);
 }
 
 .orch-grid-kpi[data-kpi-tone='neutral'] {
-  --kpi-base: #151b24;
-  --kpi-mid: #2c3644;
-  --kpi-glow: rgba(96, 116, 146, 0.75);
-  --kpi-glow2: rgba(140, 160, 190, 0.35);
+  --kpi-base: #11161d;
+  --kpi-mid: #252e3a;
+  --kpi-glow: rgba(92, 110, 138, 0.5);
+  --kpi-glow2: rgba(140, 160, 190, 0.2);
 }
 
 /* Шапка: заголовок, кнопки, пользователь — светлые на цвете */
@@ -1806,12 +1911,21 @@
   color: #ffc2b8;
 }
 
-.orch-grid-kpi[data-kpi-tone] .kpi-employee-spark polyline {
-  stroke: rgba(255, 255, 255, 0.92);
+.orch-grid-kpi[data-kpi-tone] .kpi-trend {
+  --kpi-trend-color: #fff;
 }
 
-.orch-grid-kpi[data-kpi-tone] .kpi-employee-spark stop {
-  stop-color: #fff;
+.orch-grid-kpi[data-kpi-tone] .kpi-trend-plan {
+  stroke: rgba(255, 255, 255, 0.4);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-metric-weight {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--kpi-on-tone-muted);
+}
+
+.orch-grid-kpi[data-kpi-tone] .kpi-employee-trend {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .orch-grid-kpi[data-kpi-tone] .kpi-employee-footer,

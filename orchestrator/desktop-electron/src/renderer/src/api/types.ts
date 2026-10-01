@@ -717,6 +717,8 @@ export interface PositionKpiTile {
   score: number | null
   contrib: number | null
   evidence: string
+  /** Факт по дням месяца из дневного кэша. */
+  history: { day: string; value: number }[]
 }
 
 export interface PositionKpiDaily {
@@ -747,6 +749,13 @@ export interface PositionKpiMethodology {
   }>
 }
 
+export interface PositionKpiSalaryPoint {
+  effectiveFrom: string
+  salary: number | null
+  bonus: number | null
+  total: number | null
+}
+
 export interface PositionKpiCompensation {
   available: boolean
   unlocked: boolean
@@ -755,6 +764,8 @@ export interface PositionKpiCompensation {
   salary: number | null
   bonus: number | null
   total: number | null
+  /** Изменения оклада в 1С, от старого к актуальному. */
+  history: PositionKpiSalaryPoint[]
 }
 
 export interface PositionKpiDataSourceInfo {

@@ -2,7 +2,7 @@ from app.models.user import AppUser
 from app.models.agent_run import AgentRun
 from app.models.calendar_overlay import CalendarOverlay
 from app.models.notification import Notification
-from app.models.finance import FinanceImport, FinanceSalaryEntry
+from app.models.finance import FinanceImport, FinanceSalaryEntry, FinanceSalarySource
 from app.models.org import (
     AdminPanelAssignment,
     AdminUserPanelAssignment,
@@ -35,6 +35,7 @@ __all__ = [
     "Notification",
     "FinanceImport",
     "FinanceSalaryEntry",
+    "FinanceSalarySource",
     "OrgUnit",
     "OrgPosition",
     "OrgPerson",

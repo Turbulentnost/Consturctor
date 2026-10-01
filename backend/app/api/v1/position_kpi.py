@@ -24,6 +24,7 @@ from app.services.position_kpi.compensation import (
 from app.services.position_kpi.daily import (
     PositionKpiNotFound,
     SourceBundle,
+    attach_tile_history,
     get_or_compute_position_kpi,
     month_bounds,
     resolve_profile,
@@ -283,7 +284,7 @@ def read_position_kpi(
         schedule_today_fill(
             name, date_from=date_from, date_to=date_to, subject=subject, department=department
         )
-    return PositionKpiDailyOut.model_validate(payload)
+    return PositionKpiDailyOut.model_validate(attach_tile_history(db, payload, subject=subject))
 
 
 @router.get("/sources")

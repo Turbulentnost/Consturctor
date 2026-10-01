@@ -312,7 +312,11 @@ function parsePositionKpiDaily(raw: Record<string, unknown> | null | undefined):
         fact: asNullableNumber(row.fact),
         score: asNullableNumber(row.score),
         contrib: asNullableNumber(row.contrib),
-        evidence: String(row.evidence ?? '')
+        evidence: String(row.evidence ?? ''),
+        history: (Array.isArray(row.history) ? row.history : [])
+          .map((point) => asRecord(point))
+          .map((point) => ({ day: String(point.day ?? ''), value: asNullableNumber(point.value) }))
+          .filter((point): point is { day: string; value: number } => Boolean(point.day) && point.value != null)
       } satisfies PositionKpiTile
     })
   return {
@@ -366,7 +370,16 @@ function parsePositionKpiCompensation(
     effectiveFrom: String(data.effective_from ?? data.effectiveFrom ?? ''),
     salary: asNullableNumber(data.salary),
     bonus: asNullableNumber(data.bonus),
-    total: asNullableNumber(data.total)
+    total: asNullableNumber(data.total),
+    history: (Array.isArray(data.history) ? data.history : []).map((item) => {
+      const point = asRecord(item)
+      return {
+        effectiveFrom: String(point.effective_from ?? point.effectiveFrom ?? ''),
+        salary: asNullableNumber(point.salary),
+        bonus: asNullableNumber(point.bonus),
+        total: asNullableNumber(point.total)
+      }
+    })
   }
 }
 
@@ -2594,6 +2607,14 @@ export class ApiClient {
   }
 
   // ---------- Admin finance panel ----------
+  async adminFinanceSalarySource(): Promise<unknown> {
+    return this.request<unknown>('GET', '/api/v1/admin/finance/salary-source')
+  }
+
+  async updateAdminFinanceSalarySource(mode: 'file' | 'onec'): Promise<unknown> {
+    return this.request<unknown>('PUT', '/api/v1/admin/finance/salary-source', { body: { mode } })
+  }
+
   async adminFinanceEmployees(): Promise<unknown> {
     return this.request<unknown>('GET', '/api/v1/admin/finance/employees')
   }

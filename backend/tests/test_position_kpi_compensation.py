@@ -12,8 +12,10 @@ from app.db.base import Base
 from app.models.finance import FinanceImport, FinanceSalaryEntry
 from app.models.org import OrgPerson, OrgPosition
 from app.models.position_kpi import PositionCompRule, PositionKpiProfile
+from app.services.admin import salary_source
 from app.services.position_kpi import compensation
 from app.services.position_kpi import pin as kpi_pin
+from app.services.position_kpi.erp_salary import PlannedSalary, revisions_from_rates
 
 
 POSITION = "Помощник Председателя совета директоров"
@@ -122,3 +124,88 @@ def test_unlock_checks_pin_and_calculates_bonus(monkeypatch: pytest.MonkeyPatch)
     assert result["salary"] == "235000.00"
     assert result["bonus"] == "141000.00"
     assert result["total"] == "376000.00"
+
+
+def test_file_source_rejected_until_salary_file_is_confirmed() -> None:
+    db = _session()
+    imported = db.get(FinanceImport, "import-1")
+    assert imported is not None
+    imported.status = "review"
+    db.commit()
+
+    state = salary_source.salary_source_state(db)
+    assert state["mode"] == "onec"
+    assert state["can_use_file"] is False
+    with pytest.raises(salary_source.SalarySourceError) as exc:
+        salary_source.set_salary_source(db, "file")
+    assert exc.value.status_code == 409
+
+    imported.status = "confirmed"
+    db.commit()
+    switched = salary_source.set_salary_source(db, "file")
+    assert switched["mode"] == "file"
+    assert switched["can_use_file"] is True
+
+
+def test_onec_source_sets_bonus_equal_to_salary(monkeypatch: pytest.MonkeyPatch) -> None:
+    db = _session()
+    salary_source.set_salary_source(db, "onec")
+    kpi_pin.set_pin(db, AUTH.user_id, "1111", "1111")
+    monkeypatch.setattr(
+        compensation,
+        "lookup_salary_history",
+        lambda _fio, _as_of: [
+            PlannedSalary(amount=Decimal("35000.00"), effective_from=date(2025, 12, 22)),
+            PlannedSalary(amount=Decimal("40000.00"), effective_from=date(2026, 4, 6)),
+            PlannedSalary(amount=Decimal("57500.00"), effective_from=date(2026, 6, 1)),
+            PlannedSalary(amount=Decimal("60000.00"), effective_from=date(2026, 7, 28)),
+            PlannedSalary(amount=Decimal("75000.00"), effective_from=date(2026, 9, 1)),
+        ],
+    )
+
+    masked = compensation.masked_compensation(db, AUTH, as_of=date(2026, 9, 30))
+    assert masked["available"] is True
+    assert masked["salary"] is None
+
+    result = compensation.unlock_compensation(db, AUTH, pin="1111", date_to=date(2026, 9, 30))
+    assert result["salary"] == "75000.00"
+    assert result["bonus"] == "75000.00"
+    assert result["total"] == "150000.00"
+    assert result["effective_from"] == "2026-09-01"
+    assert [point["effective_from"] for point in result["history"]] == [
+        "2025-12-22",
+        "2026-04-06",
+        "2026-06-01",
+        "2026-07-28",
+        "2026-09-01",
+    ]
+    assert [point["total"] for point in result["history"]] == [
+        "70000.00",
+        "80000.00",
+        "115000.00",
+        "120000.00",
+        "150000.00",
+    ]
+
+
+def test_salary_rates_keep_only_real_changes() -> None:
+    revisions = revisions_from_rates(
+        [
+            (date(2025, 12, 22), Decimal("35000")),
+            (date(2026, 1, 1), Decimal("35000")),
+            (date(2026, 4, 6), Decimal("40000")),
+            (date(2026, 6, 1), Decimal("40000")),
+            (date(2026, 6, 1), Decimal("57500")),
+            (date(2026, 7, 28), Decimal("60000")),
+            (date(2026, 8, 3), Decimal("60000")),
+            (date(2026, 9, 1), Decimal("60000")),
+            (date(2026, 9, 1), Decimal("75000")),
+        ]
+    )
+    assert [(item.effective_from, item.amount) for item in revisions] == [
+        (date(2025, 12, 22), Decimal("35000.00")),
+        (date(2026, 4, 6), Decimal("40000.00")),
+        (date(2026, 6, 1), Decimal("57500.00")),
+        (date(2026, 7, 28), Decimal("60000.00")),
+        (date(2026, 9, 1), Decimal("75000.00")),
+    ]

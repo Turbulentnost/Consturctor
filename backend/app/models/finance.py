@@ -81,3 +81,13 @@ class FinanceSalaryEntry(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class FinanceSalarySource(Base):
+    __tablename__ = "finance_salary_source"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="file")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
