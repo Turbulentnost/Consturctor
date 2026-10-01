@@ -431,6 +431,19 @@ function protocolWrite(args: Record<string, unknown>): ToolExplanation {
       ])
     )
   }
+  if (action === 'check_tasks') {
+    if (refKey) facts.push(`Документ: ${clip(refKey, 40)}`)
+    return explanation(
+      'Выполнение задач протокола',
+      'отметить выполненные задачи протокола в 1С',
+      'Отмечает выполнение задач',
+      facts,
+      joinDetail([
+        `Отметит выполненными задач: ${tasks} — «Выполнена» и дата исполнения в регистре задач протокола.`,
+        'Задачи с запущенным процессом в Документообороте не меняются — их закрывает процесс.'
+      ])
+    )
+  }
   if (action === 'add_tasks') {
     if (refKey) facts.push(`Документ: ${clip(refKey, 40)}`)
     const items = Array.isArray(args.tasks) ? (args.tasks as unknown[]) : []

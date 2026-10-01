@@ -326,6 +326,45 @@ def _task_view(item: dict[str, Any], *, permanent: bool, files: dict[str, dict[s
     }
 
 
+def _register_rows(ref: str) -> list[dict[str, Any]]:
+    """Записи ТД_ЗадачиПротоколов протокола: туда пишут форма 1С и агент по аудио (add_tasks / check_tasks)."""
+    from app.services.meeting_protocol_write import read_task_register
+
+    if not ref:
+        return []
+    try:
+        return read_task_register(ref)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("protocol %s task register failed: %s", ref, str(exc)[:200])
+        return []
+
+
+def _register_task_view(item: dict[str, Any], today: str) -> dict[str, Any]:
+    executed = _flag(item.get("Выполнена"))
+    due = "" if _text(item.get("СрокИсполнения")).startswith("0001") else _date(item.get("СрокИсполнения"))
+    done_at = "" if _text(item.get("ДатаИсполнения")).startswith("0001") else _date(item.get("ДатаИсполнения"))
+    overdue = bool(not executed and due and due[:10] < today)
+    return {
+        "line": 0,
+        "n": int(str(item.get("НомерПунктаПротокола") or "0").strip() or 0),
+        "text": _text(item.get("Задача")),
+        "responsible": _person(item.get("Ответственный_Key")),
+        "responsible_key": _text(item.get("Ответственный_Key")),
+        "author": _person(item.get("Автор_Key")),
+        "set_at": "" if _text(item.get("ДатаПостановкиЗадачи")).startswith("0001") else _date(item.get("ДатаПостановкиЗадачи")),
+        "due": due,
+        "done_at": done_at,
+        "overdue": overdue,
+        "status": TASK_DONE if executed else TASK_OVERDUE if overdue else TASK_OPEN,
+        "priority": _text(item.get("Приоритет")),
+        "sent": _flag(item.get("Отправлена")),
+        "note": "\n".join(filter(None, (_text(item.get("Примечание")), _text(item.get("Комментарий"))))),
+        "files": [],
+        "source": "register",
+        "executed": executed,
+    }
+
+
 def _do_request(config: Any, ref: str) -> list[dict[str, Any]]:
     """Все задачи ДО (и исполненные) с предметом-протоколом: GUID протокола в ДО тот же, что в ERP."""
     from app.tools.onec.dok_soap import bool_value, condition, execute_dm, object_id_value, parse_tasks
@@ -513,8 +552,15 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
         part("ПланФакт"),
     )
     attendees = part("ПрисутствующиеНаСовещании")
+    base_ref = _text(row.get("ДокументОснование")) if "ТД_Протокол" in _text(row.get("ДокументОснование_Type")) else ""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        own_register_job = pool.submit(_register_rows, ref)
+        base_register_job = pool.submit(_register_rows, base_ref if _GUID_RE.match(base_ref) else "")
+        own_register, base_register = own_register_job.result(), base_register_job.result()
     keys: set[str] = set()
     for items, fields in (
+        (own_register, ("Ответственный_Key", "Автор_Key")),
+        (base_register, ("Ответственный_Key", "Автор_Key")),
         (agenda, ("Ответственный_Key",)),
         (variable, ("Ответственный_Key", "Автор_Key")),
         (permanent, ("Автор_Key",)),
@@ -533,9 +579,10 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
     # Вкладки как в 1С: постоянные задачи — «Задачи для контроля», переменные — «Поставленные задачи».
     control = [_task_view(item, permanent=True, files=files, today=today) for item in permanent]
     assigned = [_task_view(item, permanent=False, files=files, today=today) for item in variable]
+    assigned_register = [_register_task_view(item, today) for item in own_register if _text(item.get("Задача"))]
+    control_register = [_register_task_view(item, today) for item in base_register if _text(item.get("Задача"))]
     # Верхний список этих вкладок форма 1С берёт из Документооборота: на контроле — задачи
     # по протоколу-основанию (прошлое совещание), поставленные — задачи по этому протоколу.
-    base_ref = _text(row.get("ДокументОснование")) if "ТД_Протокол" in _text(row.get("ДокументОснование_Type")) else ""
     docflow, docflow_note = _docflow_tasks(args, [ref, base_ref])
     control_docflow = _docflow_task_views(docflow.get(base_ref, []), today) if base_ref else []
     assigned_docflow = _docflow_task_views(docflow.get(ref, []), today)
@@ -548,7 +595,9 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
             base_number = _text(base_rows[0].get("Number")) if base_rows else ""
         except DocflowProtocolError as exc:
             logger.warning("protocol %s base number failed: %s", ref, str(exc)[:200])
-    control_all, assigned_all = control_docflow + control, assigned_docflow + assigned
+    # Регистр — то, что форма 1С показывает во вкладках; таблица документа — его старая копия.
+    control_all = control_docflow + (control_register or control)
+    assigned_all = assigned_docflow + (assigned_register or assigned)
     decision_rows = [
         {
             "n": int(item.get("LineNumber") or 0),
@@ -584,6 +633,8 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
         "assigned_tasks": assigned,
         "control_docflow": control_docflow,
         "assigned_docflow": assigned_docflow,
+        "control_register": control_register,
+        "assigned_register": assigned_register,
         "base_protocol": {"id": base_ref, "number": base_number} if base_ref else None,
         "docflow_note": docflow_note,
         "files": sorted(files.values(), key=lambda item: item["created"], reverse=True),

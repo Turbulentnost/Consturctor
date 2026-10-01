@@ -81,9 +81,11 @@ export type ProtocolTask = {
   sent: boolean
   note: string
   files: ProtocolFile[]
-  /** docflow — задача Документооборота (только чтение), erp — строка таблицы протокола. */
-  source: 'docflow' | 'erp'
+  /** docflow — задача Документооборота (только чтение), erp — строка таблицы протокола, register — ТД_ЗадачиПротоколов. */
+  source: 'docflow' | 'erp' | 'register'
   executed: boolean
+  /** Дата исполнения из регистра задач протоколов. */
+  doneAt: string
 }
 
 /** Карандаш видит только тот, кто подготовил протокол; reason — почему правка сейчас закрыта. */
@@ -117,6 +119,9 @@ export type ProtocolCard = {
   controlDocflow: ProtocolTask[]
   /** Задачи ДО по этому протоколу. */
   assignedDocflow: ProtocolTask[]
+  /** Регистр ТД_ЗадачиПротоколов протокола-основания и этого протокола — то, что видно во вкладках формы 1С. */
+  controlRegister: ProtocolTask[]
+  assignedRegister: ProtocolTask[]
   baseProtocol: { id: string; number: string } | null
   docflowNote: string
   files: ProtocolFile[]
@@ -213,8 +218,9 @@ function mapTask(item: Record<string, unknown>): ProtocolTask {
     sent: Boolean(item.sent),
     note: str(item.note),
     files: mapFiles(item.files),
-    source: item.source === 'docflow' ? 'docflow' : 'erp',
-    executed: Boolean(item.executed)
+    source: item.source === 'docflow' ? 'docflow' : item.source === 'register' ? 'register' : 'erp',
+    executed: Boolean(item.executed),
+    doneAt: str(item.done_at)
   }
 }
 
@@ -302,6 +308,8 @@ export async function loadProtocolCard(user: UserProfile | null, id: string): Pr
     assignedTasks: list(payload.assigned_tasks).map(mapTask),
     controlDocflow: list(payload.control_docflow).map(mapTask),
     assignedDocflow: list(payload.assigned_docflow).map(mapTask),
+    controlRegister: list(payload.control_register).map(mapTask),
+    assignedRegister: list(payload.assigned_register).map(mapTask),
     baseProtocol: payload.base_protocol
       ? { id: str(rec(payload.base_protocol).id), number: str(rec(payload.base_protocol).number) }
       : null,

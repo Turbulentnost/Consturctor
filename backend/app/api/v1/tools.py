@@ -65,7 +65,7 @@ _USERS_TOOLS = frozenset(
         "chat.send_direct",
     }
 )
-_AUDIO_TOOLS = frozenset({"audio.transcribe"})
+_AUDIO_TOOLS = frozenset({"audio.transcribe", "audio.transcript"})
 _SERVER_TOOLS = (
     _IMAP_TOOLS
     | ONEC_TOOLS
@@ -437,7 +437,10 @@ def _invoke_audio_tool(
         set_tool_context,
     )
 
-    _ = tool_name
+    if tool_name == "audio.transcript":
+        from app.services.audio_transcribe import read_transcript
+
+        return read_transcript(str(arguments.get("transcript_path") or ""))
     set_tool_context(run_id="", user_id=auth.user_id)
     try:
         return _invoke_audio_transcribe(arguments)

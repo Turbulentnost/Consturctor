@@ -667,6 +667,79 @@
   color: #9b1c1c;
 }
 
+.docflow-audio-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  font-style: normal;
+  color: #1565c0;
+  vertical-align: middle;
+}
+
+.docflow-audio-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.docflow-audio-row .docflow-audio-progress {
+  align-self: stretch;
+}
+
+.docflow-audio-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.docflow-audio-report section + section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(13, 59, 115, 0.12);
+}
+
+.docflow-audio-report h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.docflow-audio-report h4 span {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 12px;
+  color: #5b6b80;
+}
+
+.docflow-audio-report h5 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+}
+
+.docflow-audio-report li.is-error {
+  color: #c62828;
+}
+
+.docflow-audio-transcript-row {
+  margin: 6px 0;
+}
+
+.docflow-audio-transcript {
+  max-height: 360px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f5f7fa;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .docflow-end {
   padding: 14px 16px;
   font-size: 12px;

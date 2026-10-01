@@ -722,9 +722,21 @@ def read_protocol_form(ref_key: str, *, card: dict[str, Any] | None = None) -> d
             register_rows = read_task_register(_clean(card.get("Ref_Key")) or ref_key)
         except Exception:  # noqa: BLE001
             register_rows = []
+    # «Задачи для контроля» — задачи протокола-основания (прошлое совещание), тоже из регистра.
+    base_ref = _clean(card.get("ДокументОснование"))
+    if "ТД_Протокол" not in _clean(card.get("ДокументОснование_Type")) or not _looks_like_guid(base_ref):
+        base_ref = ""
+    control_rows: list[dict[str, Any]] = []
+    if base_ref:
+        try:
+            control_rows = read_task_register(base_ref)
+        except Exception:  # noqa: BLE001
+            control_rows = []
     cache: dict[str, str] = {}
     _prefetch_descriptions(
-        card, cache, extra_persons=[row.get("Ответственный_Key") for row in register_rows]
+        card,
+        cache,
+        extra_persons=[row.get("Ответственный_Key") for row in register_rows + control_rows],
     )
 
     def user_fio(key: Any) -> str:
@@ -831,6 +843,10 @@ def read_protocol_form(ref_key: str, *, card: dict[str, Any] | None = None) -> d
         "decisions": decisions,
         "tasks": tasks,
         "tasks_source": tasks_source,
+        "base_ref_key": base_ref,
+        "control_tasks": [
+            _register_task_view(row, person_fio) for row in control_rows if _clean(row.get("Задача"))
+        ],
         "comment": _clean(card.get("Комментарий")),
     }
     return {
@@ -1001,6 +1017,7 @@ def _register_task_view(row: dict[str, Any], person_fio: Callable[[Any], str]) -
         "item": _clean(row.get("НомерПунктаПротокола")),
         "sent": row.get("Отправлена") is True,
         "done": row.get("Выполнена") is True,
+        "done_date": _iso_day(row.get("ДатаИсполнения")),
         "confirmed": row.get("Подтверждена") is True,
         "process_started": _looks_like_guid(row.get("ПроцессID"))
         and _clean(row.get("ПроцессID")) != _EMPTY_GUID,
@@ -1145,6 +1162,79 @@ def add_protocol_tasks(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def check_protocol_tasks(args: dict[str, Any]) -> dict[str, Any]:
+    """Отметить выполнение задач протокола в регистре: Выполнена + ДатаИсполнения (+ Комментарий).
+
+    Задачу с запущенным процессом в Документообороте закрывает сам процесс — её не трогаем.
+    """
+    from app.services.onec_tools import OnecToolError
+
+    ref_key = _clean(_first(args, "ref_key", "Ref_Key", "erp_document_id"))
+    if not _looks_like_guid(ref_key):
+        raise ProtocolWriteError("Для action=check_tasks нужен ref_key протокола, которому принадлежат задачи (GUID)")
+    items = [item for item in _as_list(_first(args, "tasks", "done")) if isinstance(item, dict)]
+    if not items:
+        raise ProtocolWriteError("Для action=check_tasks нужен tasks: [{id, done_date, comment}] — только выполненные")
+    try:
+        existing = read_task_register(ref_key)
+    except OnecToolError as exc:
+        raise ProtocolWriteError(f"Не прочитан регистр ТД_ЗадачиПротоколов: {exc}") from exc
+    by_id = {_clean(row.get("ИдентификаторЗадачи")).lower(): row for row in existing}
+    today = datetime.now().strftime("%Y-%m-%dT00:00:00")
+    marked: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    errors: list[str] = []
+    for item in items[:_MAX_ROWS]:
+        task_id = _field_of(item, "id", "task_id", "ИдентификаторЗадачи")
+        base = by_id.get(task_id.lower()) if task_id else None
+        if base is None:
+            errors.append(f"задачи {task_id or '(без id)'} нет в регистре этого протокола")
+            continue
+        point = _point(base.get("НомерПунктаПротокола"), 0)
+        if base.get("Выполнена") is True:
+            skipped.append(f"задача {point} уже отмечена выполненной")
+            continue
+        process = _clean(base.get("ПроцессID"))
+        if _looks_like_guid(process) and process != _EMPTY_GUID:
+            skipped.append(f"задача {point}: процесс в Документообороте запущен — выполнение отмечается там")
+            continue
+        body: dict[str, Any] = {
+            "Выполнена": True,
+            "ДатаИсполнения": _day_value(_field_of(item, "done_date", "date", "ДатаИсполнения")) or today,
+        }
+        comment = _field_of(item, "comment", "note", "Комментарий")
+        if comment:
+            old = _clean(base.get("Комментарий"))
+            body["Комментарий"] = f"{old}\n{comment}".strip() if old and comment not in old else comment
+        key = {
+            "Протокол_Key": ref_key,
+            "ТемаСовещания_Key": _clean(base.get("ТемаСовещания_Key")) or _EMPTY_GUID,
+            "ИдентификаторЗадачи": _clean(base.get("ИдентификаторЗадачи")),
+        }
+        try:
+            _odata_patch({"entity": TASK_REGISTER, "key": key, "body": body})
+            marked.append({"id": key["ИдентификаторЗадачи"], "item": point, "done_date": body["ДатаИсполнения"][:10]})
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"задача {point}: {exc}")
+    card = read_protocol_card(ref_key)
+    number = _clean(card.get("Number")) or ref_key
+    summary = f"Протокол {number}: отмечено выполненными {len(marked)}"
+    if skipped:
+        summary += f", пропущено {len(skipped)}"
+    if errors:
+        summary += f"; ошибок: {len(errors)}"
+    return {
+        "summary": summary,
+        "entity": TASK_REGISTER,
+        "ref_key": ref_key,
+        "number": _clean(card.get("Number")),
+        "marked": marked,
+        "skipped": skipped,
+        "errors": errors,
+        "source": "odata",
+    }
+
+
 def handle_protocol_write(
     args: dict[str, Any],
     *,
@@ -1165,8 +1255,10 @@ def handle_protocol_write(
         return edit_protocol(args, actor_fio=actor_fio)
     if action == "add_tasks":
         return add_protocol_tasks(args)
+    if action == "check_tasks":
+        return check_protocol_tasks(args)
     if action != "create":
-        raise ProtocolWriteError("action: create | update | next | edit | add_tasks | probe")
+        raise ProtocolWriteError("action: create | update | next | edit | add_tasks | check_tasks | probe")
     body, meta = build_protocol_create_body(
         args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
@@ -1599,6 +1691,16 @@ def stub_protocol_write(args: dict[str, Any], **_: Any) -> dict[str, Any]:
             "test_left": False,
         }
     tasks = _as_list(_first(args, "tasks", "assignments") or [])
+    if action == "check_tasks":
+        return {
+            "summary": "stub: выполнение задач в регистре не отмечено (OData не настроена)",
+            "entity": TASK_REGISTER,
+            "ref_key": _clean(args.get("ref_key")),
+            "marked": [],
+            "skipped": [],
+            "errors": [],
+            "source": "stub",
+        }
     if action == "add_tasks":
         return {
             "summary": "stub: задачи в регистр протокола не записаны (OData не настроена)",
@@ -1674,6 +1776,12 @@ def protocol_write_recipe(*, source: str = "odata") -> dict[str, Any]:
             "via": f"odata_post / odata_patch {TASK_REGISTER}",
             "fields": ["ref_key", "tasks[] — новые {text, executor, due} или правка {id, …}"],
             "guard": "проведённый протокол; отправленные задачи неизменны; черновик — через update",
+        },
+        "check_tasks": {
+            "action": "check_tasks",
+            "via": f"odata_patch {TASK_REGISTER}",
+            "fields": ["ref_key протокола-владельца задач", "tasks[] — {id, done_date, comment} выполненных"],
+            "guard": "Выполнена/ДатаИсполнения только без запущенного процесса ДО (ПроцессID пуст)",
         },
         "delete": {"via": "odata_delete"},
         "source": source,

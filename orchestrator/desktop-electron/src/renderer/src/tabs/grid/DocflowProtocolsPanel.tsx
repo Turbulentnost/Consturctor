@@ -49,6 +49,7 @@ import {
   type HeaderDraft,
   type TaskDraft
 } from './DocflowProtocolEdit'
+import { ProtocolAudioBadge, ProtocolAudioSupplement } from './DocflowProtocolAudio'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -207,9 +208,10 @@ function TaskList({ tasks, empty }: { tasks: ProtocolTask[]; empty: string }): R
             </span>
             {task.responsible ? <span>{task.responsible}</span> : null}
             {task.due ? <span className={task.overdue ? 'is-overdue' : ''}>срок {onlyDay(task.due)}</span> : null}
+            {task.doneAt ? <span>исполнена {onlyDay(task.doneAt)}</span> : null}
             {task.setAt ? <span>поставлена {onlyDay(task.setAt)}</span> : null}
             {task.priority ? <span>{task.priority}</span> : null}
-            {task.sent && task.source === 'erp' ? <span>отправлена исполнителю</span> : null}
+            {task.sent && task.source !== 'docflow' ? <span>отправлена исполнителю</span> : null}
             {task.author ? <span>автор {task.author}</span> : null}
           </div>
           <FileChips files={task.files} />
@@ -303,6 +305,8 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
     assignedTasks,
     controlDocflow,
     assignedDocflow,
+    controlRegister,
+    assignedRegister,
     baseProtocol,
     docflowNote,
     files,
@@ -326,10 +330,12 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
       row.responsible,
       row.preparedBy,
       ...row.participants,
-      ...[...assignedTasks, ...assignedDocflow, ...controlDocflow].map((task) => task.responsible)
+      ...[...assignedTasks, ...assignedDocflow, ...controlDocflow, ...assignedRegister, ...controlRegister].map(
+        (task) => task.responsible
+      )
     ]
     return [...new Set(names.map((name) => name.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right, 'ru'))
-  }, [row, assignedTasks, assignedDocflow, controlDocflow])
+  }, [row, assignedTasks, assignedDocflow, controlDocflow, assignedRegister, controlRegister])
   const baseLabel = baseProtocol ? `№ ${baseProtocol.number || 'протокола-основания'}` : ''
   const controlDocflowBlock = (
     <DocflowTaskBlock
@@ -351,6 +357,10 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
       empty="В Документооборот задачи по этому протоколу ещё не отправлены."
     />
   )
+
+  const onAudioDone = useCallback(() => {
+    void onSaved().catch(() => setNotice({ tone: 'error', text: 'Агент закончил, но перечитать карточку не удалось — откройте протокол заново' }))
+  }, [onSaved])
 
   const startEdit = (): void => {
     if (!edit.allowed) {
@@ -436,7 +446,10 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
     <>
       <header className="docflow-detail-head">
         <div>
-          <h3>№ {cell(row.number)}</h3>
+          <h3>
+            № {cell(row.number)}
+            <ProtocolAudioBadge row={row} />
+          </h3>
           <p>
             {onlyDay(row.date)}
             {row.time ? ` · ${row.time}` : ''}
@@ -466,6 +479,7 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
           ) : null}
         </div>
       </header>
+      {editing ? null : <ProtocolAudioSupplement row={row} onFinished={onAudioDone} />}
       {notice ? (
         <p className={`docflow-edit-notice${notice.tone === 'error' ? ' is-error' : ''}`}>
           {notice.text}
@@ -559,6 +573,24 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
             disabled={saving}
             onChange={setAssignedDraft}
           />
+        ) : null}
+        {tab === 'control' && !editing && controlRegister.length ? (
+          <section className="docflow-card-block">
+            <h4>
+              <ListChecks size={14} aria-hidden /> Регистр задач протокола {baseLabel || '-основания'}
+              <span>{taskCounts(controlRegister)}</span>
+            </h4>
+            <TaskList tasks={controlRegister} empty="" />
+          </section>
+        ) : null}
+        {tab === 'assigned' && !editing && assignedRegister.length ? (
+          <section className="docflow-card-block">
+            <h4>
+              <ListChecks size={14} aria-hidden /> Регистр задач протокола в 1С
+              <span>{taskCounts(assignedRegister)}</span>
+            </h4>
+            <TaskList tasks={assignedRegister} empty="" />
+          </section>
         ) : null}
         {tab === 'control' && !editing && controlTasks.length ? (
           <section className="docflow-card-block">
@@ -969,6 +1001,7 @@ export function DocflowProtocolsPanel({
                     <td>{cell(row.time)}</td>
                     <td>
                       {cell(row.number)}
+                      <ProtocolAudioBadge row={row} />
                       {row.secret ? (
                         <em className="docflow-secret-note" title={`Секретно: ${row.access || 'ограниченный доступ'}`}>
                           <Lock size={12} aria-hidden /> секретно

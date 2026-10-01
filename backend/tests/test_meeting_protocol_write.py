@@ -553,6 +553,60 @@ def test_read_protocol_form_posted_takes_tasks_from_register(monkeypatch):
     assert open_task["executor"] == "Жалыбин Максим Дмитриевич" and open_task["due"] == "2026-10-05"
 
 
+BASE_KEY = "77777777-8888-4999-8aaa-bbbbbbbbbbbb"
+
+
+def test_read_protocol_form_returns_control_tasks_of_base_protocol(monkeypatch):
+    card = _card(ДокументОснование=BASE_KEY, ДокументОснование_Type="StandardODATA.Document_ТД_Протокол")
+    base = _fake_get(card)
+    control = [
+        {**row, "Протокол_Key": BASE_KEY} for row in _register_rows()
+    ]
+
+    def fake_get(args):
+        if args.get("entity") == mpw.TASK_REGISTER:
+            assert BASE_KEY in args["filter"], "draft reads only the base protocol register"
+            return {"value": control}
+        return base(args)
+
+    monkeypatch.setattr(mpw, "_odata_get", fake_get)
+    form = mpw.read_protocol_form(PROTOCOL_KEY)["form"]
+    assert form["tasks_source"] == "table"
+    assert form["base_ref_key"] == BASE_KEY
+    assert [task["id"] for task in form["control_tasks"]] == [SENT_ID, OPEN_ID]
+
+
+def test_check_tasks_marks_done_without_running_process(monkeypatch):
+    rows = _register_rows()
+    rows[1]["ПроцессID"] = "99999999-aaaa-4bbb-8ccc-dddddddddddd"
+    rows.append({**rows[0], "ИдентификаторЗадачи": "12121212-3434-4565-8787-909090909090", "Выполнена": True})
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(_card(Posted=True, Статус="Закрыт"), rows))
+    patched: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.append(args) or {})
+    result = mpw.handle_protocol_write(
+        {
+            "action": "check_tasks",
+            "ref_key": PROTOCOL_KEY,
+            "tasks": [
+                {"id": OPEN_ID, "done_date": "2026-10-01", "comment": "Подтверждено на совещании [12:30]"},
+                {"id": SENT_ID},
+                {"id": "12121212-3434-4565-8787-909090909090"},
+                {"id": "00000000-1111-4222-8333-444444444444"},
+            ],
+        }
+    )
+    assert len(patched) == 1
+    assert patched[0]["key"]["ИдентификаторЗадачи"] == OPEN_ID
+    assert patched[0]["body"] == {
+        "Выполнена": True,
+        "ДатаИсполнения": "2026-10-01T00:00:00",
+        "Комментарий": "Подтверждено на совещании [12:30]",
+    }
+    assert [item["item"] for item in result["marked"]] == [2]
+    assert len(result["skipped"]) == 2 and any("Документообороте" in text for text in result["skipped"])
+    assert len(result["errors"]) == 1
+
+
 def test_add_tasks_refuses_draft(monkeypatch):
     monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(_card(), []))
     with pytest.raises(mpw.ProtocolWriteError, match="черновик"):

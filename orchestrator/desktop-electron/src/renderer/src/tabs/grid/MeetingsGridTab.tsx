@@ -13,6 +13,7 @@ import {
   buildProtocolMessage,
   buildSupplementMessage,
   PROTOCOL_AGENT_TITLE,
+  PROTOCOL_AUDIO_EXTENSIONS as AUDIO_EXTENSIONS,
   resolveProtocolAgentWorkflowId
 } from '../../workplace/meetingProtocolAgent'
 import { useMeetingProtocol } from '../../workplace/meetingProtocolStore'
@@ -68,8 +69,6 @@ import {
   type ProtocolMark
 } from '../../workplace/meetingProtocolMarks'
 import './meetingActions.css'
-
-const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'wma', 'amr', 'webm', 'mp4', 'mkv']
 
 /** File browsing the agent does while drafting — not the protocol itself. */
 const NOISY_TOOLS = new Set([
