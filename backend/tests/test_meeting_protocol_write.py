@@ -67,6 +67,12 @@ def _fake_resolvers(monkeypatch):
     monkeypatch.setattr(mpw, "resolve_ref", resolve_ref)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_odata_writes(monkeypatch):
+    for name in ("_odata_post", "_odata_patch", "_odata_delete"):
+        monkeypatch.setattr(mpw, name, lambda args, name=name: pytest.fail(f"unexpected {name}: {args}"))
+
+
 def _args() -> dict:
     return {
         "topic": "Разработка ИИ-агентов",
@@ -223,21 +229,112 @@ def test_empty_protocol_is_rejected(monkeypatch):
         )
 
 
+NEW_KEY = "96396617-b5b0-11f1-9889-6cb31113810c"
+
+
+def _missing_record(args):
+    from app.services.onec_tools import OnecToolError
+
+    raise OnecToolError("1C OData HTTP 404: запись не найдена")
+
+
 def test_create_posts_and_returns_number(monkeypatch):
-    posted: dict = {}
+    posted: list[dict] = []
 
     def fake_post(args):
-        posted.update(args)
-        return {"data": {"Ref_Key": "96396617-b5b0-11f1-9889-6cb31113810c", "Number": "ДР__062_О_427"}}
+        posted.append(args)
+        return {"data": {"Ref_Key": NEW_KEY, "Number": "ДР__062_О_427"}}
 
     monkeypatch.setattr(mpw, "_odata_post", fake_post)
+    monkeypatch.setattr(mpw, "_odata_patch", _missing_record)
     result = mpw.handle_protocol_write(_args(), actor_fio="Жалыбин Максим Дмитриевич")
-    assert posted["entity"] == mpw.PROTOCOL_ENTITY
+    assert posted[0]["entity"] == mpw.PROTOCOL_ENTITY
     assert result["number"] == "ДР__062_О_427"
-    assert result["ref_key"] == "96396617-b5b0-11f1-9889-6cb31113810c"
+    assert result["ref_key"] == NEW_KEY
     assert result["posted"] is False
     assert "ДР__062_О_427" in result["summary"]
     assert result["unresolved"]
+
+
+def test_create_writes_tasks_to_register(monkeypatch):
+    posted: list[dict] = []
+
+    def fake_post(args):
+        posted.append(args)
+        return {"data": {"Ref_Key": NEW_KEY, "Number": "ДР__062_О_427"}}
+
+    monkeypatch.setattr(mpw, "_odata_post", fake_post)
+    monkeypatch.setattr(mpw, "_odata_patch", _missing_record)
+    result = mpw.handle_protocol_write(_args(), actor_fio="Жалыбин Максим Дмитриевич")
+    records = [call["body"] for call in posted if call["entity"] == mpw.TASK_REGISTER]
+    assert len(records) == 2
+    first = records[0]
+    assert first["Протокол_Key"] == NEW_KEY
+    assert first["ТемаСовещания_Key"] == THEME["Ref_Key"]
+    assert first["ИдентификаторЗадачи"] == mpw.task_register_id(NEW_KEY, 1)
+    assert first["Задача"] == "Проверить в outlook регистрацию вх.корр в 1с"
+    assert first["Ответственный_Key"] == PERSONS["Жалыбин Максим Дмитриевич"]
+    assert first["Автор_Key"] == USERS["Соломичева Светлана Викторовна"]["ref_key"]
+    assert first["СрокИсполнения"].startswith("2026-09-24")
+    assert first["НомерПунктаПротокола"] == 1 and first["Отправлена"] is False
+    assert records[1]["ИдентификаторЗадачи"] != first["ИдентификаторЗадачи"]
+    assert result["task_register"] == {"entity": mpw.TASK_REGISTER, "written": 2, "removed": 0, "errors": []}
+    assert "задач в регистре: 2" in result["summary"]
+
+
+def test_register_failure_is_reported_not_raised(monkeypatch):
+    from app.services.onec_tools import OnecToolError
+
+    def fake_post(args):
+        if args["entity"] == mpw.TASK_REGISTER:
+            raise OnecToolError("1C OData HTTP 401: Доступ запрещен")
+        return {"data": {"Ref_Key": NEW_KEY, "Number": "ДР__062_О_427"}}
+
+    monkeypatch.setattr(mpw, "_odata_post", fake_post)
+    monkeypatch.setattr(mpw, "_odata_patch", _missing_record)
+    result = mpw.handle_protocol_write(_args(), actor_fio="Жалыбин Максим Дмитриевич")
+    assert result["ref_key"] == NEW_KEY
+    assert len(result["task_register"]["errors"]) == 2
+    assert "записаны не все" in result["summary"]
+
+
+def test_register_resave_patches_and_drops_removed_lines(monkeypatch):
+    patched: list[dict] = []
+    deleted: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.append(args) or {"updated": True})
+    monkeypatch.setattr(mpw, "_odata_delete", lambda args: deleted.append(args) or {"deleted": True})
+    rows = [{"LineNumber": "1", "Задача": "Одна задача", "НомерПунктаПротокола": "3"}]
+    result = mpw.sync_task_register(NEW_KEY, THEME["Ref_Key"], rows, previous_count=3)
+    assert result["written"] == 1 and result["removed"] == 2
+    assert patched[0]["key"]["ИдентификаторЗадачи"] == mpw.task_register_id(NEW_KEY, 1)
+    assert "Отправлена" not in patched[0]["body"]
+    assert patched[0]["body"]["НомерПунктаПротокола"] == 3
+    assert [call["key"]["ИдентификаторЗадачи"] for call in deleted] == [
+        mpw.task_register_id(NEW_KEY, 2),
+        mpw.task_register_id(NEW_KEY, 3),
+    ]
+
+
+def test_register_record_key_segment():
+    from app.services.onec_tools import _odata_key_segment
+
+    key = {"Протокол_Key": NEW_KEY, "ТемаСовещания_Key": THEME["Ref_Key"], "ИдентификаторЗадачи": NEW_KEY}
+    assert _odata_key_segment({"key": key}) == (
+        f"Протокол_Key=guid'{NEW_KEY}',ТемаСовещания_Key=guid'{THEME['Ref_Key']}',"
+        f"ИдентификаторЗадачи=guid'{NEW_KEY}'"
+    )
+    assert _odata_key_segment({"ref_key": NEW_KEY}) == f"guid'{NEW_KEY}'"
+
+
+def test_register_theme_change_moves_all_records(monkeypatch):
+    deleted: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: {"updated": True})
+    monkeypatch.setattr(mpw, "_odata_delete", lambda args: deleted.append(args) or {"deleted": True})
+    old_theme = "11111111-2222-3333-4444-555555555555"
+    rows = [{"LineNumber": "1", "Задача": "A"}, {"LineNumber": "2", "Задача": "B"}]
+    mpw.sync_task_register(NEW_KEY, THEME["Ref_Key"], rows, previous_count=2, previous_theme_key=old_theme)
+    assert len(deleted) == 2
+    assert all(call["key"]["ТемаСовещания_Key"] == old_theme for call in deleted)
 
 
 def test_time_parsing_variants():
@@ -361,12 +458,14 @@ def test_read_protocol_form_posted_is_not_editable(monkeypatch):
 
 def test_update_patches_draft_and_keeps_outlook_marker(monkeypatch):
     monkeypatch.setattr(mpw, "_odata_get", _fake_get(_card()))
-    patched: dict = {}
-    monkeypatch.setattr(mpw, "_odata_patch", lambda args: patched.update(args) or {"updated": True})
-    monkeypatch.setattr(mpw, "_odata_post", lambda *_: pytest.fail("POST must not happen on update"))
+    calls: list[dict] = []
+    monkeypatch.setattr(mpw, "_odata_patch", lambda args: calls.append(args) or {"updated": True})
+    monkeypatch.setattr(mpw, "_odata_delete", lambda args: {"deleted": True})
     args = {**_args(), "action": "update", "ref_key": PROTOCOL_KEY, "comment": "Правки вручную"}
     result = mpw.handle_protocol_write(args, actor_fio="Жалыбин Максим Дмитриевич")
+    patched = calls[0]
     assert patched["entity"] == mpw.PROTOCOL_ENTITY and patched["ref_key"] == PROTOCOL_KEY
+    assert [call["entity"] for call in calls[1:]] == [mpw.TASK_REGISTER, mpw.TASK_REGISTER]
     body = patched["body"]
     for field in ("ДатаСоздания", "Posted", "DeletionMark", "Статус", "Подготовил_Key"):
         assert field not in body

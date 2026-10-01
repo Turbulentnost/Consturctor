@@ -11,6 +11,8 @@ Mirrors the form Документ.ТД_Протокол.Форма.ФормаС�
   Автор_Key, ДатаПостановкиЗадачи, срок в ДатаФактическогоИсполнения, Отправлена=false).
   Дублируем строку в ПостоянныеЗадачиПротокола (Ответственный = ФИО строкой) — в разных базах
   форма показывает одну из табличных частей; так поручения видны на вкладке «Поставленные».
+- те же задачи пишутся в регистр InformationRegister_ТД_ЗадачиПротоколов (Протокол, ТемаСовещания,
+  ИдентификаторЗадачи) — нынешняя форма читает «Поставленные задачи» оттуда.
 
 Field / catalog mapping discovered live from $metadata and existing protocols
 (see scripts/_probe_td_protocol_result.json). The document is created as a draft
@@ -20,6 +22,7 @@ Field / catalog mapping discovered live from $metadata and existing protocols
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import date, datetime
 from typing import Any, Callable
 
@@ -60,6 +63,10 @@ TOOL_NAME = "onec.meeting_protocol_write"
 TASKS_PART = "ПеременныеЗадачиПротокола"
 # Постоянные задачи протокола. Не вкладка «Поставленные».
 STANDING_TASKS_PART = "ПостоянныеЗадачиПротокола"
+# Форма протокола показывает «Поставленные задачи» из регистра, а не из табличной части.
+# Измерения: Протокол, ТемаСовещания, ИдентификаторЗадачи.
+TASK_REGISTER = "InformationRegister_ТД_ЗадачиПротоколов"
+_TASK_ID_NAMESPACE = uuid.UUID("5b0c7a52-31d4-4f0e-9a51-7d2f3c1e8a40")
 
 _EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 _UNDEFINED_TYPE = "StandardODATA.Undefined"
@@ -90,6 +97,12 @@ def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
     from app.services.onec_tools import _odata_patch
 
     return _odata_patch(args)
+
+
+def _odata_delete(args: dict[str, Any]) -> dict[str, Any]:
+    from app.services.onec_tools import _odata_delete
+
+    return _odata_delete(args)
 
 
 def _escape(value: str) -> str:
@@ -851,6 +864,91 @@ def _ref_from_write(result: dict[str, Any]) -> tuple[str, str]:
     return ref_key, number
 
 
+# --------------------------------------------------------------------------- task register
+
+_TASK_REGISTER_KEYS = ("Протокол_Key", "ТемаСовещания_Key", "ИдентификаторЗадачи")
+
+
+def task_register_id(protocol_key: str, line: Any) -> str:
+    """ИдентификаторЗадачи строки протокола: повторное сохранение перезаписывает ту же запись."""
+    return str(uuid.uuid5(_TASK_ID_NAMESPACE, f"{_clean(protocol_key).lower()}:{line}"))
+
+
+def task_register_record(protocol_key: str, theme_key: str, row: dict[str, Any]) -> dict[str, Any]:
+    """Строка «Поставленных задач» → запись регистра (как ЗаполнитьЗначенияСвойств в форме)."""
+    line = _point(row.get("LineNumber"), 1)
+    return {
+        "Протокол_Key": protocol_key,
+        "ТемаСовещания_Key": _clean(theme_key) or _EMPTY_GUID,
+        "ИдентификаторЗадачи": task_register_id(protocol_key, line),
+        "НомерПунктаПротокола": _point(row.get("НомерПунктаПротокола"), line),
+        "Задача": str(row.get("Задача") or ""),
+        "Ответственный_Key": _clean(row.get("Ответственный_Key")) or _EMPTY_GUID,
+        "Автор_Key": _clean(row.get("Автор_Key")) or _EMPTY_GUID,
+        "ДатаПостановкиЗадачи": _clean(row.get("ДатаПостановкиЗадачи")) or _EMPTY_DATE,
+        "СрокИсполнения": _clean(row.get("ДатаФактическогоИсполнения")) or _EMPTY_DATE,
+        "Примечание": str(row.get("Примечание") or ""),
+        "Приоритет": _clean(row.get("Приоритет")),
+    }
+
+
+def sync_task_register(
+    protocol_key: str,
+    theme_key: str,
+    rows: list[dict[str, Any]],
+    *,
+    previous_count: int = 0,
+    previous_theme_key: str | None = None,
+) -> dict[str, Any]:
+    """Записать задачи протокола в регистр и убрать записи строк, которых больше нет.
+
+    Отправлена / Выполнена / Подтверждена / ПроцессID ведёт 1С — при перезаписи их не трогаем.
+    """
+    from app.services.onec_tools import OnecToolError
+
+    theme = _clean(theme_key) or _EMPTY_GUID
+    old_theme = theme if previous_theme_key is None else (_clean(previous_theme_key) or _EMPTY_GUID)
+    written = 0
+    errors: list[str] = []
+    for row in rows:
+        record = task_register_record(protocol_key, theme, row)
+        key = {name: record[name] for name in _TASK_REGISTER_KEYS}
+        body = {name: value for name, value in record.items() if name not in key}
+        try:
+            try:
+                _odata_patch({"entity": TASK_REGISTER, "key": key, "body": body})
+            except OnecToolError as exc:
+                if "HTTP 404" not in str(exc):
+                    raise
+                _odata_post({"entity": TASK_REGISTER, "body": {**record, "Отправлена": False}})
+            written += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"задача {record['НомерПунктаПротокола']}: {exc}")
+    first_stale = 1 if old_theme.lower() != theme.lower() else len(rows) + 1
+    removed = 0
+    for line in range(first_stale, previous_count + 1):
+        key = {
+            "Протокол_Key": protocol_key,
+            "ТемаСовещания_Key": old_theme,
+            "ИдентификаторЗадачи": task_register_id(protocol_key, line),
+        }
+        try:
+            _odata_delete({"entity": TASK_REGISTER, "key": key})
+            removed += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"удаление строки {line}: {exc}")
+    return {"entity": TASK_REGISTER, "written": written, "removed": removed, "errors": errors}
+
+
+def _register_note(register: dict[str, Any]) -> str:
+    if register.get("errors"):
+        return (
+            f"; задачи в регистр ТД_ЗадачиПротоколов записаны не все "
+            f"({register.get('written', 0)}, ошибок {len(register['errors'])}) — в форме их не видно"
+        )
+    return f"; задач в регистре: {register.get('written', 0)}" if register.get("written") else ""
+
+
 def handle_protocol_write(
     args: dict[str, Any],
     *,
@@ -880,9 +978,11 @@ def handle_protocol_write(
         )
     result = _odata_post({"entity": PROTOCOL_ENTITY, "body": body})
     ref_key, number = _ref_from_write(result)
+    register = sync_task_register(ref_key, body.get("ТемаСовещания_Key", ""), body[TASKS_PART])
     summary = f"Создан протокол {number or ref_key} в 1С (черновик, статус «{body['Статус']}»)"
     if meta["unresolved"]:
         summary += f"; не сопоставлено: {len(meta['unresolved'])}"
+    summary += _register_note(register)
     return {
         "summary": summary,
         "entity": PROTOCOL_ENTITY,
@@ -893,6 +993,7 @@ def handle_protocol_write(
         "posted": False,
         "meta": meta,
         "unresolved": meta["unresolved"],
+        "task_register": register,
         "body": body,
         "source": "odata",
     }
@@ -1011,11 +1112,21 @@ def _update_protocol(
             "Протокол пуст: нужна хотя бы повестка, решения или задачи (agenda / decisions / tasks)"
         )
     _odata_patch({"entity": PROTOCOL_ENTITY, "ref_key": ref_key, "body": body})
+    old_theme = _clean(card.get("ТемаСовещания_Key"))
+    register = sync_task_register(
+        ref_key,
+        body.get("ТемаСовещания_Key") or old_theme,
+        body[TASKS_PART],
+        previous_count=len(_protocol_rows(card, TASKS_PART)),
+        previous_theme_key=old_theme,
+    )
     number = _clean(card.get("Number"))
     summary = f"Обновлён протокол {number or ref_key} в 1С (черновик, статус «{status or DRAFT_STATUS}»)"
     if meta["unresolved"]:
         summary += f"; не сопоставлено: {len(meta['unresolved'])}"
+    summary += _register_note(register)
     return {
+        "task_register": register,
         "summary": summary,
         "entity": PROTOCOL_ENTITY,
         "number": number,
@@ -1245,12 +1356,25 @@ def edit_protocol(args: dict[str, Any], *, actor_fio: str = "") -> dict[str, Any
     if not body:
         return {"summary": f"Протокол {number}: изменений нет", "ref_key": ref_key, "number": number, "updated": False}
     _odata_patch({"entity": PROTOCOL_ENTITY, "ref_key": ref_key, "body": body})
+    old_theme = _clean(card.get("ТемаСовещания_Key"))
+    theme = _clean(body.get("ТемаСовещания_Key", old_theme))
+    register: dict[str, Any] | None = None
+    if TASKS_PART in body or theme.lower() != old_theme.lower():
+        existing = _protocol_rows(card, TASKS_PART)
+        register = sync_task_register(
+            ref_key,
+            theme,
+            body.get(TASKS_PART, existing),
+            previous_count=len(existing),
+            previous_theme_key=old_theme,
+        )
     return {
-        "summary": f"Протокол {number or ref_key} сохранён в 1С",
+        "summary": f"Протокол {number or ref_key} сохранён в 1С" + (_register_note(register) if register else ""),
         "entity": PROTOCOL_ENTITY,
         "ref_key": ref_key,
         "number": number,
         "updated": True,
+        "task_register": register,
         "fields": sorted(key for key in body if not key.endswith("ЗадачиПротокола")),
         "control_tasks": len(body.get(STANDING_TASKS_PART) or []) if STANDING_TASKS_PART in body else None,
         "assigned_tasks": len(body.get(TASKS_PART) or []) if TASKS_PART in body else None,

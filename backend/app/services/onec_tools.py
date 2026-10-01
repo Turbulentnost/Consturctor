@@ -1174,6 +1174,22 @@ def _odata_post(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _odata_key_segment(args: dict[str, Any]) -> str:
+    """`guid'…'` for objects; `Поле=guid'…',…` for register records keyed by dimensions."""
+    key = args.get("key")
+    if isinstance(key, dict) and key:
+        parts = []
+        for name, value in key.items():
+            text = str(value or "").strip()
+            literal = f"guid'{text}'" if _GUID_RE.match(text) else "'" + text.replace("'", "''") + "'"
+            parts.append(f"{name}={literal}")
+        return ",".join(parts)
+    ref_key = str(args.get("ref_key", "")).strip()
+    if not ref_key:
+        raise OnecToolError("ref_key required")
+    return f"guid'{ref_key}'"
+
+
 def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
     entity = validate_odata_entity(
         str(args.get("entity", "")),
@@ -1182,9 +1198,7 @@ def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
     )
     ref_key = str(args.get("ref_key", "")).strip()
     body = args.get("body") or {}
-    if not ref_key:
-        raise OnecToolError("ref_key required")
-    url = _odata_url(f"{entity}(guid'{ref_key}')")
+    url = _odata_url(f"{entity}({_odata_key_segment(args)})")
     auth = _odata_auth(args)
     if not auth:
         raise OnecToolError("OData credentials not configured")
@@ -1202,9 +1216,7 @@ def _odata_delete(args: dict[str, Any]) -> dict[str, Any]:
         extra_allowed=_odata_extra_entities(),
     )
     ref_key = str(args.get("ref_key", "")).strip()
-    if not ref_key:
-        raise OnecToolError("ref_key required")
-    url = _odata_url(f"{entity}(guid'{ref_key}')")
+    url = _odata_url(f"{entity}({_odata_key_segment(args)})")
     auth = _odata_auth(args)
     if not auth:
         raise OnecToolError("OData credentials not configured")
