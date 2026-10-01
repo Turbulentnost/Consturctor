@@ -5137,6 +5137,9 @@ class Sidecar:
         mailbox = str(command.get("mailbox") or "").strip()
         if mailbox:
             input_data["mailbox"] = mailbox
+        owner_fio = str(command.get("ownerFio") or "").strip()
+        if owner_fio:
+            input_data["owner_fio"] = owner_fio
 
         def _work() -> None:
             try:
@@ -5159,6 +5162,8 @@ class Sidecar:
                         "source": output.get("source") or "outlook_com",
                         "mailbox": output.get("mailbox") or "",
                         "mailboxAccess": output.get("mailbox_access") or "",
+                        "profileMailbox": output.get("profile_mailbox") or "",
+                        "warning": output.get("warning") or "",
                         "rangeStart": output.get("range_start") or "",
                         "rangeEnd": output.get("range_end") or "",
                     }

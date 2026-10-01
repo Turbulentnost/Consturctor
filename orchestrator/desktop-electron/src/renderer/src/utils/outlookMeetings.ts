@@ -68,7 +68,7 @@ interface OutlookMeetingRaw {
   importance?: number
 }
 
-const CACHE_KEY = 'orchOutlookMeetings:v6'
+const CACHE_KEY = 'orchOutlookMeetings:v8'
 const REQUEST_TIMEOUT_MS = 180_000
 
 function pad2(n: number): string {
@@ -363,8 +363,12 @@ export async function ensureOutlookMeetings(
   const tracked = readTrackedCalendars(owner).filter(
     (person) => !baseCalendar || !samePersonFio(person, baseCalendar)
   )
-  const calendarOwners = baseCalendar || tracked.length ? [baseCalendar, ...tracked] : []
-  const cacheOwner = calendarOwners.length ? `${owner}@${calendarOwners.join('|')}` : owner
+  const calendarOwners = [baseCalendar || owner, ...tracked].filter(
+    (person, index, all) =>
+      Boolean(person) && all.findIndex((item) => samePersonFio(item, person)) === index
+  )
+  const askOwners = Boolean(baseCalendar || tracked.length)
+  const cacheOwner = askOwners ? `${owner}@${calendarOwners.join('|')}` : owner
 
   if (!options.force) {
     const cache = readCache()
@@ -378,7 +382,7 @@ export async function ensureOutlookMeetings(
       return {
         ok: true,
         meetings: dedupeMeetingEvents(
-          calendarOwners.length
+          askOwners
             ? cache.meetings
             : cache.meetings.filter((item) => meetingInvolvesPerson(item, owner))
         ),
@@ -389,7 +393,7 @@ export async function ensureOutlookMeetings(
   }
 
   const result = await requestOutlookMeetings(
-    calendarOwners.length
+    askOwners
       ? { dateFrom: fromKey, dateTo: toKey, calendarOwners }
       : {
           dateFrom: fromKey,

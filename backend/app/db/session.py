@@ -261,20 +261,6 @@ def _ensure_columns() -> None:
             conn.execute(
                 text("ALTER TABLE platform_tasks ADD COLUMN rework_count INTEGER NOT NULL DEFAULT 0")
             )
-        chat_rows = conn.execute(
-            text(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = 'chat_messages'
-                """
-            )
-        ).fetchall()
-        chat_cols = {str(r[0]) for r in chat_rows}
-        if chat_cols and "edited_at" not in chat_cols:
-            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN edited_at TIMESTAMPTZ NULL"))
-        if chat_cols and "deleted_at" not in chat_cols:
-            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN deleted_at TIMESTAMPTZ NULL"))
         kpi_profile_rows = conn.execute(
             text(
                 """
@@ -430,6 +416,20 @@ def _ensure_columns() -> None:
                     "ON finance_salary_entries (position_id)"
                 )
             )
+        chat_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'chat_messages'
+                """
+            )
+        ).fetchall()
+        chat_cols = {str(r[0]) for r in chat_rows}
+        if chat_cols and "edited_at" not in chat_cols:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN edited_at TIMESTAMPTZ NULL"))
+        if chat_cols and "deleted_at" not in chat_cols:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN deleted_at TIMESTAMPTZ NULL"))
         creation_cols = {str(r[0]) for r in creation_rows}
         if creation_cols and "interview_json" not in creation_cols:
             conn.execute(

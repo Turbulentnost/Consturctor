@@ -383,11 +383,9 @@ export async function loadOrchestratorTurboPortfolio(
 
 export type { OrchestratorMailLoad } from './mailProbe'
 
-/** Неделя писем: IMAP (primary) + Outlook COM + probe today. */
-export async function loadOrchestratorOutlookMailWeek(
-  outlookMailbox: string
-): Promise<OrchestratorMailLoad> {
-  return loadOrchestratorMail(outlookMailbox)
+/** Неделя писем из Outlook этого компьютера. */
+export async function loadOrchestratorOutlookMailWeek(): Promise<OrchestratorMailLoad> {
+  return loadOrchestratorMail()
 }
 
 /** Projects to fetch for «Сегодня → проектные задачи»: pin, все где я руководитель, затем по числу открытых. */
@@ -541,12 +539,9 @@ export async function fetchOrchestratorCoreSources(
 export async function fetchOrchestratorTaskSources(
   user: UserProfile,
   erpFio: string,
-  outlookMailbox: string,
   opts?: { forceRefresh?: boolean; mailPeriod?: { dateFrom: string; dateTo: string } }
 ): Promise<OrchestratorTaskSourcesBundle> {
   const core = await fetchOrchestratorCoreSources(user, erpFio, opts)
-  const mail = await loadOrchestratorMail(outlookMailbox, opts?.mailPeriod, {
-    forceOutlook: opts?.forceRefresh
-  })
+  const mail = await loadOrchestratorMail(opts?.mailPeriod, { forceOutlook: opts?.forceRefresh })
   return { ...core, mail }
 }

@@ -143,6 +143,9 @@ def protocols_from_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "number": number,
                 "topic": topic,
                 "date": protocol_day,
+                "next_meeting": parse_day(
+                    row.get("next_meeting") or row.get("ДатаСледующегоСовещания")
+                ),
                 "issued": protocol_issued(row),
                 "status": str(row.get("status") or ""),
                 "posted": bool(row.get("posted")),
@@ -237,22 +240,30 @@ def score_protocol_kpi(
 
 
 def _meetings_from_protocols(catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Календарь пуст: дата протокола СД/РК и есть дата заседания."""
+    """Календарь пуст: следующее заседание из протокола, иначе дата самого протокола."""
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for item in catalog:
-        key = (item["kind"], item["date"].isoformat())
+
+    def add(kind: str, subject: str, plan_date: date) -> None:
+        key = (kind, plan_date.isoformat())
         if key in seen:
-            continue
+            return
         seen.add(key)
         rows.append(
             {
-                "kind": item["kind"],
-                "subject": item["topic"],
-                "plan_date": item["date"],
-                "deadline": protocol_deadline(item["date"]),
+                "kind": kind,
+                "subject": subject,
+                "plan_date": plan_date,
+                "deadline": protocol_deadline(plan_date),
             }
         )
+
+    for item in catalog:
+        nxt = item.get("next_meeting")
+        if isinstance(nxt, date):
+            add(item["kind"], item["topic"], nxt)
+    for item in catalog:
+        add(item["kind"], item["topic"], item["date"])
     rows.sort(key=lambda item: (item["plan_date"], item["kind"]))
     return rows
 

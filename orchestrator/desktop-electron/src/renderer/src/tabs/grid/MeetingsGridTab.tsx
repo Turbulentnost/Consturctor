@@ -983,7 +983,8 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
           palette: colorIndex(person),
           visible: !hiddenOwners.some((hidden) => samePersonName(hidden, person)),
           removable: !samePersonName(person, selfLabel),
-          hint: status?.hint ? `${person}: ${status.hint}` : person
+          hint: status?.hint ? `${person}: ${status.hint}` : person,
+          note: status?.hint || ''
         }
       }),
     [owners, tracked.statuses, hiddenOwners, ownerColor, colorIndex, selfLabel]

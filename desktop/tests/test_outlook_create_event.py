@@ -249,6 +249,15 @@ def test_unreadable_calendar_has_access_hint() -> None:
     assert not _calendar_access_hint("shared")
 
 
+def test_person_lookup_queries_expand_initials() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _person_lookup_queries
+
+    queries = _person_lookup_queries("Комарькова А.Э.")
+    assert queries[0] == "Комарькова А.Э."
+    assert "Комарькова А" in queries
+    assert "Комарькова" in queries
+
+
 def test_open_shared_calendar_unresolved() -> None:
     class _Recipient:
         Resolved = False

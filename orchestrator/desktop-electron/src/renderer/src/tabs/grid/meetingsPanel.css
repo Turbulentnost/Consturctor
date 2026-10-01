@@ -391,9 +391,20 @@
 
 .meet-rail-calendar-name {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   white-space: nowrap;
   overflow: hidden;
+}
+
+.meet-rail-calendar-note {
+  overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 400;
+  color: var(--muted, #8a4b4b);
 }
 
 .meet-rail-hint {

@@ -33,10 +33,17 @@ from xml.etree import ElementTree as ET
 logger = logging.getLogger(__name__)
 _DEFAULT_LIST_TIMEOUT_SEC = 420.0
 _DEFAULT_CACHE_TTL_SEC = 1800.0
+_LOGIN_CHECK_TIMEOUT_SEC = 30.0
+_SHARED_DISK_FILES = 3
+_OPEN_DUMP_KIND = "open_dump"
 _cache_guard = threading.Lock()
 _key_locks: dict[str, threading.Lock] = {}
 _inbox_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _refreshing: set[str] = set()
+# Полная выгрузка грузит ДО 3–4 минуты; параллельные выгрузки под разными
+# учётками друг друга только замедляют. На весь процесс — одна.
+_dump_gate = threading.BoundedSemaphore(1)
+_verified_logins: dict[str, float] = {}
 
 DM_NS = "http://www.1c.ru/dm"
 NS = {"m": DM_NS}
@@ -306,7 +313,11 @@ def _dump_cache_key(
     soap_secret: str = "",
 ) -> str:
     secret_fp = hashlib.sha256(soap_secret.encode("utf-8")).hexdigest()[:16] if soap_secret else ""
-    return f"dump|{endpoint}|{int(only_open)}|{soap_user}|{secret_fp}"
+    return f"{_dump_scope(endpoint, only_open)}{soap_user}|{secret_fp}"
+
+
+def _dump_scope(endpoint: str, only_open: bool) -> str:
+    return f"dump|{endpoint}|{int(only_open)}|"
 
 
 def _lock_for(key: str) -> threading.Lock:
@@ -481,10 +492,105 @@ def _with_cache_meta(payload: dict[str, Any], *, cached: bool, fetched_at: float
     return out
 
 
+def _shared_disk_dump(
+    endpoint: str, only_open: bool, *, newer_than: float
+) -> tuple[float, dict[str, Any]] | None:
+    try:
+        files = sorted(_cache_dir().glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in files[:_SHARED_DISK_FILES]:
+        try:
+            if path.stat().st_mtime <= newer_than:
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        payload = data.get("payload")
+        fetched_at = float(data.get("fetched_at") or 0)
+        if (
+            isinstance(payload, dict)
+            and payload.get("kind") == _OPEN_DUMP_KIND
+            and payload.get("endpoint") == endpoint
+            and payload.get("only_open") is only_open
+            and fetched_at > newer_than
+        ):
+            return fetched_at, payload
+    return None
+
+
+def _shared_dump(
+    endpoint: str, only_open: bool, *, newer_than: float
+) -> tuple[float, dict[str, Any]] | None:
+    """Самая свежая полная выгрузка этого ДО под любой учёткой сеанса.
+
+    ДО отдаёт в выгрузке одни и те же задачи под любой учёткой, а пользователю
+    уходит только срез по его ФИО из JWT.
+    """
+    scope = _dump_scope(endpoint, only_open)
+    with _cache_guard:
+        hits = [hit for key, hit in list(_inbox_cache.items()) if key.startswith(scope)]
+    best = max(hits, key=lambda hit: hit[0], default=None)
+    if best is not None and best[0] > newer_than:
+        return best
+    return _shared_disk_dump(endpoint, only_open, newer_than=newer_than)
+
+
+def _verify_login(key: str, config: DokConfig, user_fio: str) -> None:
+    """Чужую выгрузку отдаём, только если ДО принял логин и пароль этого сеанса."""
+    with _cache_guard:
+        checked_at = _verified_logins.get(key, 0.0)
+    if time.time() - checked_at < _cache_ttl_sec():
+        return
+    try:
+        find_user(config, user_fio, timeout=_LOGIN_CHECK_TIMEOUT_SEC)
+    except ValueError:
+        pass
+    _mark_login_verified(key)
+
+
+def _mark_login_verified(key: str) -> None:
+    with _cache_guard:
+        _verified_logins[key] = time.time()
+
+
+def _adopt_shared_dump(
+    key: str,
+    *,
+    endpoint: str,
+    only_open: bool,
+    newer_than: float,
+    config: DokConfig,
+    user_fio: str,
+) -> tuple[float, dict[str, Any]] | None:
+    shared = _shared_dump(endpoint, only_open, newer_than=newer_than)
+    if shared is None:
+        return None
+    _verify_login(key, config, user_fio)
+    with _cache_guard:
+        _inbox_cache[key] = shared
+    logger.info(
+        "dok_soap dump shared age=%.0fs raw=%s", time.time() - shared[0], len(_dump_rows(shared[1]))
+    )
+    return shared
+
+
+def _store_own_dump(key: str, config: DokConfig, *, only_open: bool) -> tuple[float, dict[str, Any]]:
+    dump = fetch_open_dump(config, only_open=only_open)
+    _store_cache(key, dump)
+    _mark_login_verified(key)
+    return _inbox_cache.get(key) or (time.time(), dump)
+
+
 def _schedule_refresh(
     key: str,
     *,
+    endpoint: str,
     only_open: bool,
+    user_fio: str,
+    stale_at: float,
     env_file: str | None,
     username: str | None,
     password: str | None,
@@ -497,7 +603,23 @@ def _schedule_refresh(
     def _run() -> None:
         try:
             config = load_config(env_file=env_file, username=username, password=password)
-            _store_cache(key, fetch_open_dump(config, only_open=only_open))
+            newer_than = max(stale_at, time.time() - _cache_ttl_sec())
+            if _adopt_shared_dump(
+                key,
+                endpoint=endpoint,
+                only_open=only_open,
+                newer_than=newer_than,
+                config=config,
+                user_fio=user_fio,
+            ):
+                return
+            # Идёт чужая выгрузка: следующий запрос после неё возьмёт её результат.
+            if not _dump_gate.acquire(blocking=False):
+                return
+            try:
+                _store_own_dump(key, config, only_open=only_open)
+            finally:
+                _dump_gate.release()
         except Exception as exc:  # noqa: BLE001 — background refresh must not crash
             logger.warning("dok_soap background refresh failed: %s", exc)
         finally:
@@ -694,7 +816,7 @@ def parse_tasks(root: ET.Element) -> list[dict[str, Any]]:
     return [row for row in rows if row["id"]]
 
 
-def find_user(config: DokConfig, name: str) -> dict[str, str]:
+def find_user(config: DokConfig, name: str, *, timeout: float | None = None) -> dict[str, str]:
     fio = name.strip()
     if not fio:
         raise ValueError("Пустое ФИО пользователя ДО")
@@ -707,7 +829,7 @@ def find_user(config: DokConfig, name: str) -> dict[str, str]:
         "<dm:limit>5</dm:limit>"
         "</dm:query>"
         "</dm:request>",
-        timeout=max(config.timeout, 30.0),
+        timeout=timeout or max(config.timeout, 30.0),
     )
     users = parse_users(root)
     if not users:
@@ -1331,6 +1453,7 @@ def fetch_open_dump(config: DokConfig, *, only_open: bool = True) -> dict[str, A
     record(f"SOAP dump done in {elapsed:.1f}s raw={len(rows)}")
     logger.info("dok_soap dump list=%.1fs raw=%s", elapsed, len(rows))
     return {
+        "kind": _OPEN_DUMP_KIND,
         "endpoint": config.soap_url(),
         "only_open": only_open,
         "count": len(rows),
@@ -1750,7 +1873,10 @@ def fetch_user_inbox_tasks(
             if not force_refresh and age >= _cache_ttl_sec():
                 _schedule_refresh(
                     key,
+                    endpoint=endpoint,
                     only_open=only_open,
+                    user_fio=user_fio,
+                    stale_at=fetched_at,
                     env_file=env_file,
                     username=username,
                     password=password,
@@ -1759,11 +1885,32 @@ def fetch_user_inbox_tasks(
             return _serve(dump, cached=True, fetched_at=fetched_at)
         try:
             config = load_config(env_file=env_file, username=username, password=password)
-            dump = fetch_open_dump(config, only_open=only_open)
-            _store_cache(key, dump)
-            hit = _cache_entry(key)
-            fetched_at = hit[0] if hit else time.time()
-            return _serve(dump, cached=False, fetched_at=fetched_at)
+            newer_than = requested_at if force_refresh else requested_at - _cache_ttl_sec()
+
+            def _adopt() -> tuple[float, dict[str, Any]] | None:
+                return _adopt_shared_dump(
+                    key,
+                    endpoint=endpoint,
+                    only_open=only_open,
+                    newer_than=newer_than,
+                    config=config,
+                    user_fio=user_fio,
+                )
+
+            shared = _adopt()
+            if shared:
+                return _serve(shared[1], cached=True, fetched_at=shared[0])
+            if not _dump_gate.acquire(timeout=_DEFAULT_LIST_TIMEOUT_SEC):
+                raise RuntimeError("Документооборот занят другой выгрузкой задач, повторите позже")
+            try:
+                # Пока ждали очередь, выгрузку мог закончить другой пользователь.
+                shared = _adopt()
+                cached = shared is not None
+                if shared is None:
+                    shared = _store_own_dump(key, config, only_open=only_open)
+            finally:
+                _dump_gate.release()
+            return _serve(shared[1], cached=cached, fetched_at=shared[0])
         except Exception:
             stale = _cache_entry(key)
             if stale:

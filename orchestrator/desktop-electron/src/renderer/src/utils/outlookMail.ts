@@ -30,6 +30,17 @@ function rememberMailStores(messages: Record<string, unknown>[]): void {
   }
 }
 
+export interface OutlookMailResult {
+  ok: boolean
+  messages: Record<string, unknown>[]
+  error?: string
+  source?: string
+  /** Outlook не подключён к Exchange: письма только из локального кэша. */
+  warning?: string
+  /** Ящик профиля Outlook этого компьютера. */
+  profileMailbox?: string
+}
+
 function requestOutlookMail(range: {
   date?: string
   dateFrom?: string
@@ -37,22 +48,11 @@ function requestOutlookMail(range: {
   folder?: string
   maxResults?: number
   query?: string
-  mailbox?: string
-}): Promise<{
-  ok: boolean
-  messages: Record<string, unknown>[]
-  error?: string
-  source?: string
-}> {
+}): Promise<OutlookMailResult> {
   return new Promise((resolve) => {
     const requestId = `mail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     let settled = false
-    const finish = (result: {
-      ok: boolean
-      messages: Record<string, unknown>[]
-      error?: string
-      source?: string
-    }): void => {
+    const finish = (result: OutlookMailResult): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -75,7 +75,9 @@ function requestOutlookMail(range: {
         finish({
           ok: true,
           messages,
-          source: String(payload.source || 'outlook_com')
+          source: String(payload.source || 'outlook_com'),
+          warning: String(payload.warning || ''),
+          profileMailbox: String(payload.profileMailbox || '')
         })
       } else {
         finish({
@@ -92,17 +94,17 @@ function requestOutlookMail(range: {
       dateTo: range.dateTo,
       folder: range.folder || 'Inbox',
       maxResults: range.maxResults ?? 50,
-      query: range.query,
-      mailbox: range.mailbox || ''
+      query: range.query
     })
   })
 }
 
 const MAIL_FETCH_MAX_DAYS = 90
-const MAIL_CACHE_KEY = 'orchOutlookMail:v2'
+const MAIL_CACHE_KEY = 'orchOutlookMail:v3'
 
 interface OutlookMailCache {
   day: string
+  /** Ящик профиля Outlook, из которого прочитаны письма. */
   mailbox: string
   dateFrom: string
   dateTo: string
@@ -131,38 +133,30 @@ function writeMailCache(cache: OutlookMailCache): void {
 }
 
 /**
- * Письма за период — не чаще одного COM-запроса в день на тот же диапазон
- * (как ensureOutlookMeetings для календаря).
+ * Письма за период из Outlook этого компьютера — ящик его профиля, кто бы ни вошёл в оркестратор.
+ * Не чаще одного COM-запроса в день на тот же диапазон (как ensureOutlookMeetings для календаря).
  */
 export async function ensureOutlookMailRange(
-  mailbox: string,
   dateFrom: string,
   dateTo: string,
   options: { force?: boolean; folder?: string; maxResults?: number } = {}
-): Promise<{
-  ok: boolean
-  messages: Record<string, unknown>[]
-  error?: string
-  cached: boolean
-}> {
+): Promise<OutlookMailResult & { cached: boolean }> {
   const fromKey = (dateFrom || '').trim()
   const toKey = (dateTo || '').trim()
   const today = dayKeyLocal(new Date())
   const folder = options.folder || 'All'
-  const box = (mailbox || '').trim().toLowerCase()
 
   if (!options.force && fromKey && toKey) {
     const cache = readMailCache()
     if (
       cache &&
       cache.day === today &&
-      cache.mailbox === box &&
       cache.dateFrom === fromKey &&
       cache.dateTo === toKey &&
       cache.folder === folder
     ) {
       rememberMailStores(cache.messages)
-      return { ok: true, messages: cache.messages, cached: true }
+      return { ok: true, messages: cache.messages, profileMailbox: cache.mailbox, cached: true }
     }
   }
 
@@ -170,13 +164,13 @@ export async function ensureOutlookMailRange(
     dateFrom: fromKey,
     dateTo: toKey,
     folder,
-    maxResults: options.maxResults ?? 120,
-    mailbox: box
+    maxResults: options.maxResults ?? 120
   })
-  if (result.ok && fromKey && toKey) {
+  // Кэш отключённого Outlook устаревший: после подключения письма надо перечитать сразу.
+  if (result.ok && !result.warning && fromKey && toKey) {
     writeMailCache({
       day: today,
-      mailbox: box,
+      mailbox: result.profileMailbox || '',
       dateFrom: fromKey,
       dateTo: toKey,
       folder,
