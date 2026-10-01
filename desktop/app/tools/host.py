@@ -94,9 +94,15 @@ def _server_tool_timeout(name: str) -> float:
 def _invoke_local_backend_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         if name == "onec.meeting_protocols":
-            # One protocol card (ref_key) and the whole journal (any) are backend-only.
+            # One protocol card (ref_key), the board pair and the whole journal (any) are backend-only.
             kind = str(args.get("meeting_kind") or args.get("kind") or "").strip().casefold()
-            if args.get("ref_key") or kind in {"any", "all", "все", "календарь", "calendar"}:
+            pair = str(args.get("pair") or "").strip().casefold() in {"1", "true", "yes", "да"}
+            if (
+                args.get("ref_key")
+                or pair
+                or args.get("topic")
+                or kind in {"any", "all", "все", "календарь", "calendar"}
+            ):
                 return _invoke_server_tool(name, args)
             from app.tools.meeting_protocols_local import invoke_meeting_protocols
 
@@ -162,6 +168,10 @@ def _write_artifact_bytes(name: str, content: bytes, result: dict[str, Any]) -> 
     dest_dir = Path(tempfile.gettempdir()) / "constructor-onec-artifacts"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / Path(name).name
+    if not dest.suffix:
+        from app.tools.ac.readable_files import suffix_from_bytes
+
+        dest = dest.with_name(dest.name + suffix_from_bytes(content))
     dest.write_bytes(content)
     out = dict(result)
     out.pop("content_base64", None)

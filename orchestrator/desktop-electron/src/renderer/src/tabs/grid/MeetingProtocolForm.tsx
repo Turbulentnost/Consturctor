@@ -18,36 +18,29 @@ import {
   type ProtocolCreateResult,
   type ThemeHint
 } from '../../workplace/meetingProtocolCreate'
+import { FioCombobox } from './FioCombobox'
 
 const MISSING_ROOM = '__missing_room__'
+
+const ALL_EMPLOYEES_LIMIT = 20000
 
 function FioField({
   label,
   value,
   onChange,
-  listId,
-  placeholder,
-  disabled
+  hints,
+  placeholder
 }: {
   label: string
   value: string
   onChange: (value: string) => void
-  listId: string
+  hints: string[]
   placeholder?: string
-  disabled?: boolean
 }): React.JSX.Element {
   return (
     <label className="registry-create-field">
       <span className="modal-label">{label}</span>
-      <input
-        className="onec-reconnect-input"
-        type="text"
-        list={listId}
-        value={value}
-        placeholder={placeholder || 'ФИО из 1С'}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      <FioCombobox value={value} hints={hints} placeholder={placeholder || 'ФИО из 1С'} onChange={onChange} />
     </label>
   )
 }
@@ -71,7 +64,6 @@ export function MeetingProtocolForm({
   onCreated: (result: ProtocolCreateResult) => void
 }): React.JSX.Element | null {
   const titleId = useId()
-  const fioListId = useId()
   const isEdit = mode === 'edit'
   const [draft, setDraft] = useState<ProtocolCreateDraft>(() => draftFromMeeting(meeting, actorFio))
   const [busy, setBusy] = useState(false)
@@ -122,9 +114,12 @@ export function MeetingProtocolForm({
   useEffect(() => {
     if (!open) return
     let cancelled = false
-    void api.searchUsers('').then((items) => {
-      if (!cancelled) setFioHints(items.slice(0, 200))
-    })
+    void api
+      .searchUsers('', ALL_EMPLOYEES_LIMIT)
+      .then((items) => (items.length ? items : api.searchUsers('')))
+      .then((items) => {
+        if (!cancelled) setFioHints(items)
+      })
     void listMeetingRooms().then((items) => {
       if (!cancelled) setRooms(items)
     })
@@ -261,12 +256,6 @@ export function MeetingProtocolForm({
           </div>
         ) : (
           <div className="registry-create-body">
-            <datalist id={fioListId}>
-              {fioHints.map((fio) => (
-                <option key={fio} value={fio} />
-              ))}
-            </datalist>
-
             <fieldset className="meeting-protocol-fieldset" disabled={readOnly}>
             <section className="registry-create-section">
               <label className="registry-create-field registry-create-field--wide">
@@ -364,13 +353,13 @@ export function MeetingProtocolForm({
               </label>
               <FioField
                 label="Руководитель"
-                listId={fioListId}
+                hints={fioHints}
                 value={draft.leader}
                 onChange={(leader) => patch({ leader })}
               />
               <FioField
                 label="Проверяющий"
-                listId={fioListId}
+                hints={fioHints}
                 value={draft.responsible}
                 placeholder="Пусто — из темы или руководитель"
                 onChange={(responsible) => patch({ responsible })}
@@ -490,7 +479,7 @@ export function MeetingProtocolForm({
                     />
                     <FioField
                       label="Ответственный"
-                      listId={fioListId}
+                      hints={fioHints}
                       value={row.responsible}
                       onChange={(responsible) =>
                         patch({
@@ -553,7 +542,7 @@ export function MeetingProtocolForm({
                     <div className="registry-create-line-meta">
                       <FioField
                         label="Ответственный"
-                        listId={fioListId}
+                        hints={fioHints}
                         value={row.executor}
                         onChange={(executor) =>
                           patch({

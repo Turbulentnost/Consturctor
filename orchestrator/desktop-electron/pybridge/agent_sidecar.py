@@ -180,6 +180,7 @@ _NEVER_CONFIRM = frozenset(
     {
         "notify.send",
         "notify",
+        "chat.send_direct",
         "code.write_python",
         "code.run_python",
         "report.export_document",
@@ -619,8 +620,13 @@ SD_MEETING_HINT = (
     "a meeting-series job. 1C is read-only: never call onec.odata_post, onec.odata_patch, "
     "or onec.attach_file. Find the meeting with ONE outlook.read_calendar "
     "(or read the dumped calendar JSON once if COM already wrote it). "
-    "Then onec.meeting_service_notes (OData), onec.meeting_protocols (meeting_kind=sd, OData; "
-    "numbers ПСД_001_О_*, not manual odata_get with startswith СД/СПГ), "
+    "Then onec.meeting_service_notes (OData), ONE onec.meeting_protocols call with meeting_kind=sd "
+    "pair=true date=<meeting day> (current + previous «Совет директоров по ГК» protocols with a "
+    "per-item check of assignments «Решения», «Поставленные задачи» and agenda; put every "
+    "`reconciliation` row into the summary table with its errors, never a general phrase; copy every gap; "
+    "paste `package_table_markdown` (table «Пакет п. 6.4»: item, responsible person, documents in order, "
+    "status) into the summary document and into WORK_RESULT; "
+    "not manual odata_get with startswith СД/СПГ), "
     "and onec.search_documents (OData) for «совет директоров по гк». Do not use COM 1C. "
     "Do not call outlook.search_mail, imap.search, imap.list_unread, glob/grep loops, "
     "onec.odata_get on Document_ТД_Протокол, or onec.odata_catalog without entity+filter. "
@@ -2417,6 +2423,58 @@ def _ensure_result_files_from_answer(
         return []
     _upload_run_outputs(api, workflow_id, created, run_id=run_id)
     return created
+
+
+SD_PACKAGE_TABLE_TITLE = "Пакет п. 6.4"
+
+
+def _find_markdown(value: Any, key: str, depth: int = 0) -> str:
+    if depth > 4:
+        return ""
+    if isinstance(value, dict):
+        found = value.get(key)
+        if isinstance(found, str) and found.strip():
+            return found.strip()
+        for item in value.values():
+            nested = _find_markdown(item, key, depth + 1)
+            if nested:
+                return nested
+    return ""
+
+
+def _sd_package_table_from_events(events: list[dict[str, Any]], run_cwd: str = "") -> str:
+    """Latest п. 6.4 table from onec.meeting_protocols results (inline or externalized file)."""
+    for event in reversed(events or []):
+        if str(event.get("type") or "") != "tool_result":
+            continue
+        result = event.get("result")
+        table = _find_markdown(result, "package_table_markdown")
+        if table:
+            return table
+        rel = str((result or {}).get("result_file") or "") if isinstance(result, dict) else ""
+        if rel and run_cwd and "meeting_protocols" in rel:
+            try:
+                data = json.loads((Path(run_cwd) / rel).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            table = _find_markdown(data, "package_table_markdown")
+            if table:
+                return table
+    return ""
+
+
+def _with_sd_package_table(answer: str, events: list[dict[str, Any]], run_cwd: str = "") -> str:
+    """Board summary must carry the п. 6.4 table; add it when the agent left it out."""
+    text = answer or ""
+    if SD_PACKAGE_TABLE_TITLE in text and "Ответственное лицо" in text:
+        return text
+    table = _sd_package_table_from_events(events, run_cwd)
+    if not table:
+        return text
+    match = re.search(r"^[ \t]*TESTS:\s*PASS\b.*$", text, re.M | re.I)
+    if match:
+        return f"{text[: match.start()].rstrip()}\n\n{table}\n\n{text[match.start():].lstrip()}"
+    return f"{text.rstrip()}\n\n{table}\n"
 
 
 def _work_result_body(answer: str) -> str:
@@ -4245,6 +4303,8 @@ class Sidecar:
                 )
                 if tail:
                     answer = f"{answer}\n\n{tail}"
+            if status == "ok" and _is_sd_meeting_workflow(workflow):
+                answer = _with_sd_package_table(answer, events, run_cwd)
         except Exception as exc:  # noqa: BLE001
             status = "error"
             answer = str(exc)

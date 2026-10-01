@@ -941,7 +941,8 @@ class CursorSdkBridge:
             if isinstance(value, (int, float, bool)) or value is None:
                 summary[key] = value
             elif isinstance(value, str):
-                summary[key] = value[:500]
+                # Ready-made tables the agent must paste verbatim stay whole.
+                summary[key] = value[:12_000] if key.endswith("_markdown") else value[:500]
             elif isinstance(value, list):
                 summary[f"{key}_count"] = len(value)
             elif isinstance(value, dict):

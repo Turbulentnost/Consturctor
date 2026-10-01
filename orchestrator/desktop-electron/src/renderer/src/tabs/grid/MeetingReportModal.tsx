@@ -4,6 +4,7 @@ import mammoth from 'mammoth'
 import { api } from '../../api/client'
 import { fetchProtocolForm } from '../../workplace/meetingProtocolCreate'
 import { protocolPrintTitle, renderProtocolHtml } from '../../workplace/meetingProtocolPrint'
+import './meetingActions.css'
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '')
@@ -210,15 +211,15 @@ export function MeetingReportModal({
             {title}
           </h4>
           <div className="meeting-report-toolbar-actions">
-            <button type="button" className="btn-primary" onClick={() => void printPdf()} disabled={printBusy || !html || Boolean(error)}>
+            <button type="button" className="cal-btn primary" onClick={() => void printPdf()} disabled={printBusy || !html || Boolean(error)}>
               {printBusy ? 'Печать…' : 'Печать в PDF'}
             </button>
             {reportUrl ? (
-              <button type="button" className="btn-ghost" onClick={downloadDocx}>
+              <button type="button" className="cal-btn" onClick={downloadDocx}>
                 Скачать docx
               </button>
             ) : null}
-            <button type="button" className="btn-light" onClick={onClose} disabled={printBusy}>
+            <button type="button" className="cal-btn" onClick={onClose} disabled={printBusy}>
               Закрыть
             </button>
           </div>

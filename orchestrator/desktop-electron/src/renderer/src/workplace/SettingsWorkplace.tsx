@@ -20,6 +20,7 @@ import {
 import {
   Activity,
   Bell,
+  Bot,
   Database,
   Plug,
   ShieldCheck,
@@ -29,10 +30,12 @@ import {
 } from 'lucide-react'
 import { KpiPinSettings } from './KpiPinSettings'
 import { KpiProtectionSettings } from './KpiProtectionSettings'
+import { MyAgentsSection } from './MyAgentsSection'
 import { OneCSessionProfileSection } from './OneCSessionProfileSection'
 
 type SettingsSection =
   | 'general'
+  | 'my_agents'
   | 'notifications'
   | 'access'
   | 'security'
@@ -146,6 +149,7 @@ interface NotifyPrefs {
 
 const TABS: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: 'general', label: 'Общие', icon: SlidersHorizontal },
+  { id: 'my_agents', label: 'Мои агенты', icon: Bot },
   { id: 'notifications', label: 'Уведомления', icon: Bell },
   { id: 'access', label: 'Права доступа', icon: UsersRound },
   { id: 'security', label: 'Безопасность', icon: ShieldCheck },
@@ -343,13 +347,19 @@ export function SettingsWorkplace({
   onDiagnostics,
   onTickets,
   onFiles,
-  onSupport
+  onSupport,
+  onOpenAgent,
+  onOpenPassport,
+  onOpenHistory
 }: {
   user: UserProfile
   onDiagnostics: () => void
   onTickets: () => void
   onFiles: () => void
   onSupport: () => void
+  onOpenAgent: (workflowId: string, title: string) => void
+  onOpenPassport: (workflowId: string, title: string) => void
+  onOpenHistory: (workflowId: string, title: string) => void
 }): React.JSX.Element {
   const [section, setSection] = useState<SettingsSection>('notifications')
   const [prefs, setPrefs] = useState<NotifyPrefs>(() => loadPrefs(user.id))
@@ -606,6 +616,10 @@ export function SettingsWorkplace({
           </section>
           </div>
         </div>
+      ) : null}
+
+      {section === 'my_agents' ? (
+        <MyAgentsSection onOpen={onOpenAgent} onPassport={onOpenPassport} onHistory={onOpenHistory} />
       ) : null}
 
       {section === 'notifications' ? (

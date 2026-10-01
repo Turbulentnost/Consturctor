@@ -97,6 +97,36 @@ def test_download_uses_http_and_unwraps_envelope(
     assert called == [f"http://1c.local/hs/dtw/files/{file_id}"]
 
 
+def test_download_adds_extension_missing_in_1c_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file_id = "1969d020-bbe4-11f1-9891-6cb31113810c"
+    envelope = json.dumps(
+        {"fileName": "doc02715420260929090414", "contentBase64": base64.b64encode(b"%PDF-1.7\nscan").decode("ascii")}
+    ).encode("utf-8")
+    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.services.onec_artifacts._dtw_base_url", lambda: "http://1c.local")
+    monkeypatch.setattr("app.services.onec_artifacts.http_bytes", lambda url, timeout=None: _http_ok(envelope))
+
+    artifact = download_artifact_file(file_id)
+
+    assert artifact.filename == "doc02715420260929090414.pdf"
+    assert artifact.content_type == "application/pdf"
+    assert Path(artifact.saved_path).suffix == ".pdf"
+
+
+def test_cached_file_without_extension_is_renamed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    file_id = "9e7ec8ad-bc16-11f1-9891-6cb31113810c"
+    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
+    (tmp_path / file_id).mkdir()
+    (tmp_path / file_id / "doc11766820260929145406").write_bytes(b"%PDF-1.7\nold cache")
+
+    cached = cached_artifact_download(file_id)
+
+    assert cached is not None and cached.filename == "doc11766820260929145406.pdf"
+    assert Path(cached.saved_path).is_file()
+
+
 def test_download_uses_raw_http_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -92,6 +92,8 @@ export interface WorkflowListItem {
   phase: string
   documentName?: string
   updatedAt?: string
+  paused?: boolean
+  autoRun?: boolean
 }
 
 export interface WorkflowFileItem {
@@ -649,6 +651,8 @@ export interface ChatMessage {
   text: string
   clientId: string
   createdAt: string
+  editedAt: string
+  deleted: boolean
   receipt: string
   attachments: ChatAttachment[]
   agent: AgentSharePayload | null

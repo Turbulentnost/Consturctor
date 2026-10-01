@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Pencil, Trash2, X } from 'lucide-react'
 import { api, parseChatMessage, scheduleDraftFromRecord } from '../api/client'
 import { agentShareFromBoard, encodeAgentMessage } from '../api/chatCodec'
 import { loadUserAvatar } from '../api/avatars'
@@ -14,6 +15,7 @@ import type {
 } from '../api/types'
 import { triggerChipLabel } from './AgentSchedulePage'
 import { localizeStatusText } from '../utils/statusText'
+import './messengerActions.css'
 
 interface MessengerPageProps {
   thread: ChatThread
@@ -282,6 +284,7 @@ export function MessengerPage({
   const [pickerOpen, setPickerOpen] = useState(false)
   const [offer, setOffer] = useState<{ agent: AgentSharePayload; mine: boolean } | null>(null)
   const [agents, setAgents] = useState<BoardAgent[]>([])
+  const [editing, setEditing] = useState<ChatMessage | null>(null)
   const feedRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const isSupport = thread.kind === 'support'
@@ -301,6 +304,7 @@ export function MessengerPage({
     let alive = true
     setMessages([])
     setError('')
+    setEditing(null)
     void loadUserAvatar({ id: thread.peerId, avatarUrl: thread.avatarUrl }).then((url) => {
       if (alive) setAvatar(url)
     })
@@ -369,6 +373,21 @@ export function MessengerPage({
         }
         return
       }
+      if (kind === 'chat_message_updated' || kind === 'chat_message_deleted') {
+        const eventThread = String(payload.thread_id ?? '')
+        const messageId = String(payload.message_id ?? '')
+        if (!messageId || (eventThread && eventThread !== thread.id && thread.id !== 'support')) return
+        setMessages((prev) =>
+          prev.map((item) => {
+            if (item.id !== messageId) return item
+            if (kind === 'chat_message_deleted') {
+              return { ...item, deleted: true, text: '', attachments: [], agent: null }
+            }
+            return { ...item, text: String(payload.text ?? item.text), editedAt: String(payload.edited_at ?? item.editedAt) }
+          })
+        )
+        return
+      }
       if (kind === 'chat_receipt') {
         const eventThread = String(payload.thread_id ?? '')
         const readerId = String(payload.reader_id ?? '')
@@ -432,7 +451,62 @@ export function MessengerPage({
     return items.slice(-6)
   }, [messages])
 
+  function startEdit(message: ChatMessage): void {
+    setEditing(message)
+    setText(message.text)
+    setPendingFiles([])
+    window.setTimeout(() => composerRef.current?.focus(), 0)
+  }
+
+  function cancelEdit(): void {
+    setEditing(null)
+    setText('')
+  }
+
+  async function saveEdit(target: ChatMessage): Promise<void> {
+    const body = text.trim()
+    if (!body || body === target.text) {
+      cancelEdit()
+      return
+    }
+    setBusy(true)
+    setError('')
+    const patchMessage = (value: Partial<ChatMessage>): void =>
+      setMessages((prev) => prev.map((item) => (item.id === target.id ? { ...item, ...value } : item)))
+    patchMessage({ text: body, editedAt: new Date().toISOString() })
+    cancelEdit()
+    try {
+      await api.chatCommand({ type: 'edit_message', message_id: target.id, text: body })
+    } catch (err) {
+      patchMessage({ text: target.text, editedAt: target.editedAt })
+      setError(err instanceof Error ? err.message : 'Не удалось изменить сообщение')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeMessage(target: ChatMessage): Promise<void> {
+    if (!window.confirm('Удалить сообщение? Собеседник его тоже больше не увидит.')) return
+    if (editing?.id === target.id) cancelEdit()
+    setError('')
+    setMessages((prev) =>
+      prev.map((item) =>
+        item.id === target.id ? { ...item, deleted: true, text: '', attachments: [], agent: null } : item
+      )
+    )
+    try {
+      await api.chatCommand({ type: 'delete_message', message_id: target.id })
+    } catch (err) {
+      setMessages((prev) => prev.map((item) => (item.id === target.id ? target : item)))
+      setError(err instanceof Error ? err.message : 'Не удалось удалить сообщение')
+    }
+  }
+
   async function send(agent?: AgentSharePayload): Promise<void> {
+    if (editing && !agent) {
+      await saveEdit(editing)
+      return
+    }
     const body = text.trim()
     if (!body && !pendingFiles.length && !agent) return
     setBusy(true)
@@ -452,6 +526,8 @@ export function MessengerPage({
         text: body,
         clientId,
         createdAt: new Date().toISOString(),
+        editedAt: '',
+        deleted: false,
         receipt: 'sending',
         attachments: uploaded,
         agent: agent ?? null
@@ -557,10 +633,42 @@ export function MessengerPage({
             {messages.map((message, index) => {
               const label = dateLabel(message.createdAt)
               const prev = index > 0 ? dateLabel(messages[index - 1].createdAt) : ''
+              const canManage = message.mine && !message.deleted && !message.id.startsWith('local-')
+              const bubbleClass = [
+                'messenger-bubble',
+                message.mine ? 'mine' : '',
+                message.deleted ? 'deleted' : '',
+                editing?.id === message.id ? 'editing' : ''
+              ]
+                .filter(Boolean)
+                .join(' ')
+              if (message.deleted) {
+                return (
+                  <div key={message.id} className="messenger-item">
+                    {label && label !== prev && <div className="messenger-date">{label}</div>}
+                    <article className={bubbleClass}>
+                      <div className="messenger-bubble-text">Сообщение удалено</div>
+                      <div className="messenger-bubble-time">{formatTime(message.createdAt)}</div>
+                    </article>
+                  </div>
+                )
+              }
               return (
                 <div key={message.id} className="messenger-item">
                   {label && label !== prev && <div className="messenger-date">{label}</div>}
-                  <article className={message.mine ? 'messenger-bubble mine' : 'messenger-bubble'}>
+                  <article className={bubbleClass}>
+                    {canManage && (
+                      <div className="messenger-bubble-actions">
+                        {!message.agent && (
+                          <button type="button" title="Изменить" onClick={() => startEdit(message)}>
+                            <Pencil size={13} aria-hidden />
+                          </button>
+                        )}
+                        <button type="button" title="Удалить" onClick={() => void removeMessage(message)}>
+                          <Trash2 size={13} aria-hidden />
+                        </button>
+                      </div>
+                    )}
                     {message.text && <div className="messenger-bubble-text">{message.text}</div>}
                     {message.agent && (
                       <button
@@ -593,6 +701,7 @@ export function MessengerPage({
                       </button>
                     ))}
                     <div className="messenger-bubble-time">
+                      {message.editedAt && <span className="messenger-edited">изменено</span>}
                       {formatTime(message.createdAt)}
                       {message.mine && <ReceiptTicks status={message.receipt} />}
                     </div>
@@ -613,15 +722,31 @@ export function MessengerPage({
           </div>
         )}
 
+        {editing && (
+          <div className="messenger-editing">
+            <Pencil size={13} aria-hidden />
+            <span>
+              Редактирование: <em>{editing.text}</em>
+            </span>
+            <button type="button" title="Отменить (Esc)" onClick={cancelEdit}>
+              <X size={14} aria-hidden />
+            </button>
+          </div>
+        )}
         <div className="messenger-composer">
           <div className="messenger-composer-box">
             <textarea
               ref={composerRef}
               value={text}
-              placeholder="Сообщение"
+              placeholder={editing ? 'Новый текст сообщения' : 'Сообщение'}
               rows={1}
               onChange={(event) => setText(event.target.value)}
               onKeyDown={(event) => {
+                if (event.key === 'Escape' && editing) {
+                  event.preventDefault()
+                  cancelEdit()
+                  return
+                }
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
                   void send()

@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shutil
+import time
+from datetime import datetime
 from pathlib import Path
 
 from app.api_client import ApiClient, WorkflowFileItem, WorkflowRecord
 
 AGENT_BRIEF_RELATIVE = "materials/agent.md"
 AGENTS_MD_RELATIVE = "AGENTS.md"
+# Written after the workspace is prepared: the output sweep skips files that were
+# already there (restored outputs of the previous run), so they are not re-registered
+# as results of this run with today's date.
+RESTORED_OUTPUTS_RELATIVE = "materials/restored_outputs.json"
 
 
 def _clear_dir_contents(path: Path) -> None:
@@ -282,19 +290,29 @@ def seed_last_agent_outputs(api: ApiClient, workflow_id: str, cwd: str) -> list[
     try:
         files = api.list_workflow_files(wid)
     except Exception:
+        _write_restored_outputs(root, {})
         return []
+    office = [
+        item
+        for item in files.agent_files
+        if Path(_safe_filename(item.filename or "")).suffix.lower() in _STALE_OUTPUT_SUFFIXES
+    ]
+    newest = max(office, key=lambda item: item.created_at or "", default=None)
+    last_run = (newest.run_id or "").strip() if newest is not None else ""
+    if last_run:
+        # Only the previous run's documents: a dated report from weeks ago is not context.
+        office = [item for item in office if (item.run_id or "").strip() == last_run]
     latest: dict[str, WorkflowFileItem] = {}
-    for item in files.agent_files:
+    for item in office:
         name = _safe_filename(item.filename or "")
         if not name:
-            continue
-        if Path(name).suffix.lower() not in _STALE_OUTPUT_SUFFIXES:
             continue
         key = name.casefold()
         previous = latest.get(key)
         if previous is None or (item.created_at or "") >= (previous.created_at or ""):
             latest[key] = item
     restored: list[str] = []
+    hashes: dict[str, str] = {}
     for item in latest.values():
         name = _safe_filename(item.filename or "")
         target = root / name
@@ -304,7 +322,37 @@ def seed_last_agent_outputs(api: ApiClient, workflow_id: str, cwd: str) -> list[
             continue
         if target.is_file():
             restored.append(name)
+            hashes[name.casefold()] = _file_sha256(target)
+            _keep_original_mtime(target, item.created_at)
+    _write_restored_outputs(root, hashes)
     return restored
+
+
+def _file_sha256(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _keep_original_mtime(path: Path, created_at: str) -> None:
+    try:
+        stamp = datetime.fromisoformat(str(created_at or "").replace("Z", "+00:00")).timestamp()
+        os.utime(path, (stamp, stamp))
+    except (ValueError, OSError):
+        pass
+
+
+def _write_restored_outputs(root: Path, hashes: dict[str, str]) -> None:
+    target = root / RESTORED_OUTPUTS_RELATIVE
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps({"prepared_at": time.time(), "files": hashes}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def prepare_sdk_workspace(

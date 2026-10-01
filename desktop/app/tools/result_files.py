@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -86,11 +88,45 @@ def workspace_for(workflow_id: str) -> Path | None:
     return AgentWorkspace(workspaces_root(), wid).directory
 
 
+def _restored_outputs(base: Path) -> tuple[float, dict[str, str]]:
+    """When the workspace was prepared and which previous-run outputs were put back."""
+    from app.sdk_agent.files import RESTORED_OUTPUTS_RELATIVE
+
+    try:
+        payload = json.loads((base / RESTORED_OUTPUTS_RELATIVE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0.0, {}
+    if not isinstance(payload, dict):
+        return 0.0, {}
+    files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
+    try:
+        prepared_at = float(payload.get("prepared_at") or 0.0)
+    except (TypeError, ValueError):
+        prepared_at = 0.0
+    return prepared_at, {str(name): str(digest) for name, digest in files.items()}
+
+
+def _is_leftover(path: Path, *, prepared_at: float, restored: dict[str, str]) -> bool:
+    try:
+        if prepared_at and path.stat().st_mtime < prepared_at:
+            return True
+    except OSError:
+        return True
+    digest = restored.get(path.name.casefold())
+    if not digest:
+        return False
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest() == digest
+    except OSError:
+        return False
+
+
 def collect_output_files_from_dir(root: Path | None) -> list[Path]:
     """Documents the agent wrote into a workspace, not inputs or tool dumps."""
     if root is None or not root.is_dir():
         return []
     base = root.resolve()
+    prepared_at, restored = _restored_outputs(base)
     found: list[Path] = []
     seen: set[str] = set()
     for path in base.rglob("*"):
@@ -107,6 +143,8 @@ def collect_output_files_from_dir(root: Path | None) -> list[Path]:
         if path.suffix.lower() == ".py":
             continue
         if not is_document_path(path):
+            continue
+        if _is_leftover(path, prepared_at=prepared_at, restored=restored):
             continue
         key = str(path.resolve())
         if key in seen:

@@ -71,6 +71,12 @@ export function saveMeetingProtocol(
   writeBucket(userId, bucket)
 }
 
+export function clearMeetingProtocol(userId: string, meeting: MeetingEvent): void {
+  const bucket = readBucket(userId)
+  delete bucket[meetingProtocolKey(meeting)]
+  writeBucket(userId, bucket)
+}
+
 function isAgentProducedFile(item: WorkflowFileItem): boolean {
   const source = String(item.source || '').toLowerCase()
   const origin = String(item.origin || '').toLowerCase()
@@ -163,6 +169,7 @@ export type MeetingProtocolHook = {
   runEntry: RunEntry | undefined
   rememberStart: (next: MeetingProtocolRecord) => void
   patchRecord: (partial: Partial<MeetingProtocolRecord>) => void
+  forgetRecord: () => void
 }
 
 export function useMeetingProtocol(
@@ -366,8 +373,14 @@ export function useMeetingProtocol(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingKey, record?.workflowId])
 
+  const forgetRecord = useCallback(() => {
+    if (!meeting) return
+    clearMeetingProtocol(userId, meeting)
+    setRecord(null)
+  }, [meeting, userId])
+
   return useMemo(
-    () => ({ record, runEntry, rememberStart, patchRecord }),
-    [record, runEntry, rememberStart, patchRecord]
+    () => ({ record, runEntry, rememberStart, patchRecord, forgetRecord }),
+    [record, runEntry, rememberStart, patchRecord, forgetRecord]
   )
 }

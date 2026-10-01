@@ -147,6 +147,7 @@ export function showToast(payload: ToastPayload): void {
       workflowId: payload.workflowId || '',
       runId: payload.runId || '',
       requestId: payload.requestId || '',
+      body: payload.body || '',
       openDecisions: Boolean(payload.openDecisions || payload.requestId)
     })
   })
@@ -343,6 +344,8 @@ export class NotificationGuard {
     }
     if (
       kind === 'chat_message' ||
+      kind === 'chat_message_updated' ||
+      kind === 'chat_message_deleted' ||
       kind === 'thread_opened' ||
       kind === 'chat_receipt' ||
       kind === 'presence' ||

@@ -29,7 +29,7 @@ def _user_map(db: Session, ids: list[str]) -> dict[str, AppUser]:
 def _preview(db: Session, thread_id: str) -> str:
     row = db.execute(
         select(ChatMessage)
-        .where(ChatMessage.thread_id == thread_id)
+        .where(ChatMessage.thread_id == thread_id, ChatMessage.deleted_at.is_(None))
         .order_by(ChatMessage.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
@@ -48,6 +48,7 @@ def _unread(db: Session, thread_id: str, user_id: str) -> int:
     stmt = select(ChatMessage).where(
         ChatMessage.thread_id == thread_id,
         ChatMessage.sender_id != user_id,
+        ChatMessage.deleted_at.is_(None),
     )
     if member and member.last_read_at is not None:
         stmt = stmt.where(ChatMessage.created_at > member.last_read_at)
@@ -155,18 +156,25 @@ def list_messages(db: Session, user_id: str, thread_id: str) -> list[dict]:
     ).scalars().all()
     result = []
     for row in rows:
-        files = db.execute(
-            select(ChatAttachment).where(ChatAttachment.message_id == row.id)
-        ).scalars().all()
+        deleted = row.deleted_at is not None
+        files = (
+            []
+            if deleted
+            else db.execute(
+                select(ChatAttachment).where(ChatAttachment.message_id == row.id)
+            ).scalars().all()
+        )
         result.append(
             {
                 "id": row.id,
                 "thread_id": row.thread_id,
                 "sender_id": row.sender_id,
                 "mine": row.sender_id == user_id,
-                "text": decrypt_text(row.text or ""),
+                "text": "" if deleted else decrypt_text(row.text or ""),
                 "client_id": row.client_id,
                 "created_at": row.created_at.isoformat(),
+                "edited_at": row.edited_at.isoformat() if row.edited_at else None,
+                "deleted": deleted,
                 "receipt": receipt_for(db, row, user_id),
                 "attachments": [
                     {

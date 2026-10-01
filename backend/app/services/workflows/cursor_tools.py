@@ -642,6 +642,8 @@ def invoke_creation_tool(
         return _invoke_users_subordinates(args)
     if tool in {"notify.send", "notify"}:
         return _invoke_notify_send(args)
+    if tool == "chat.send_direct":
+        return _invoke_chat_send_direct(args)
     if tool in {"data.process", "data.process_dataset"}:
         return _invoke_data_process(args)
     if tool in {"audio.transcribe", "transcribe"}:
@@ -1093,6 +1095,12 @@ def _stream_cursor_with_tools_body(
                     on_event,
                     "decision",
                     "«notify.send»: отправляю уведомление на компьютер…",
+                )
+            if name == "chat.send_direct":
+                _emit(
+                    on_event,
+                    "decision",
+                    "«chat.send_direct»: отправляю личное сообщение в чат…",
                 )
             if name in {"audio.transcribe", "transcribe"}:
                 _emit(
@@ -1565,6 +1573,13 @@ def _invoke_notify_send(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _invoke_chat_send_direct(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.modules.chat.agent_messages import send_direct_message
+
+    ctx = current_tool_context()
+    return send_direct_message(ctx[1] if ctx else "", arguments)
+
+
 def _invoke_users_list(arguments: dict[str, Any]) -> dict[str, Any]:
     from app.db.session import SessionLocal
     from app.services.notifications.service import list_directory_users
@@ -1705,6 +1720,11 @@ def _format_tool_output(_name: str, result: dict[str, Any], *, limit: int = 1600
         if result.get("delivered"):
             return "Готово · уведомление на компьютер" + (f": {title}" if title else "")
         return "Уведомление записано, отправка на компьютер" + (f": {title}" if title else "")
+    if _name == "chat.send_direct":
+        who = str(result.get("recipient_fio") or result.get("recipient") or "").strip()
+        if result.get("sent"):
+            return "Готово · личное сообщение в чат" + (f": {who}" if who else "")
+        return str(result.get("note") or "Сообщение не отправлено")
     from pathlib import Path as _Path
 
     for key in ("file", "path", "filename"):

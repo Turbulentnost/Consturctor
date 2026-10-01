@@ -1,0 +1,50 @@
+.spec-detail-actions.meeting-protocol-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  /* Floating «Чат» button (.chat-dock: fixed, bottom 24px, height 48px) sits over the card's bottom-right corner. */
+  margin-bottom: 56px;
+}
+.meeting-protocol-actions .cal-btn {
+  width: 100%;
+  min-height: 36px;
+  height: auto;
+  padding: 7px 12px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: normal;
+}
+.meeting-report-toolbar {
+  flex-wrap: nowrap;
+}
+.meeting-report-toolbar .modal-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.meeting-report-toolbar .meeting-report-toolbar-actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+.meeting-report-toolbar-actions .cal-btn {
+  width: auto;
+  height: 36px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.meeting-protocol-actions .cal-btn:disabled,
+.meeting-report-toolbar-actions .cal-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.meeting-protocol-actions .cal-btn:not(.primary):disabled:hover,
+.meeting-report-toolbar-actions .cal-btn:not(.primary):disabled:hover {
+  background: #fff;
+}
+.meeting-protocol-actions .cal-btn.primary:disabled:hover,
+.meeting-report-toolbar-actions .cal-btn.primary:disabled:hover {
+  background: #1565c0;
+}

@@ -1,7 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import './createOneCTask.css'
 
 const LIST_MAX_HEIGHT = 280
+const LIST_MAX_ITEMS = 200
 
 /** Поле ФИО с прокручиваемым списком подсказок (datalist не даёт задать высоту). */
 export function FioCombobox({
@@ -24,11 +26,13 @@ export function FioCombobox({
 
   const items = useMemo(() => {
     const words = value.trim().toLowerCase().replace(/ё/g, 'е').split(/\s+/).filter(Boolean)
-    if (!words.length) return hints
-    return hints.filter((fio) => {
-      const key = fio.toLowerCase().replace(/ё/g, 'е')
-      return words.every((word) => key.includes(word))
-    })
+    if (!words.length) return hints.slice(0, LIST_MAX_ITEMS)
+    return hints
+      .filter((fio) => {
+        const key = fio.toLowerCase().replace(/ё/g, 'е')
+        return words.every((word) => key.includes(word))
+      })
+      .slice(0, LIST_MAX_ITEMS)
   }, [hints, value])
 
   const place = (): void => {

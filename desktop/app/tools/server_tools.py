@@ -329,12 +329,21 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             "По умолчанию черновики на проверку. date или date_from/date_to. "
             "ref_key - карточка одного протокола (шапка и табличные части с ФИО) для редактирования. "
             "psd_mark=true — только номер с «ПСД», все статусы включая закрытые, "
-            "выборка листается целиком, max_results её не обрезает."
+            "выборка листается целиком, max_results её не обрезает. "
+            "pair=true (sd) — протоколы текущего и прошлого заседания «Совет директоров по ГК» "
+            "с построчной сверкой поручений («Решения»), «Поставленных задач» и повестки "
+            "(reconciliation: строка + ошибки) и списком пробелов."
         ),
         _schema(
             {
                 "meeting_kind": _prop("string", "rk, sd или any (все протоколы за период, для календаря)"),
                 "ref_key": _prop("string", "Ref_Key протокола: вернуть форму одного документа (шапка + разделы)"),
+                "pair": _prop(
+                    "boolean",
+                    "Текущий + прошлый протокол заседания по теме (по умолчанию «Совет директоров по ГК») "
+                    "и проверка задач. date — день текущего заседания; без date — последний черновик",
+                ),
+                "topic": _prop("string", "Точное название темы совещания, например «Совет директоров по ГК»"),
                 "date": _prop("string", "Один день YYYY-MM-DD"),
                 "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
                 "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
@@ -361,11 +370,15 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             "подразделение, проект, кабинет, вид совещания, время), «Присутствующие», "
             "«Повестка совещания», «Решения» и «Поставленные задачи» (задача, исполнитель, срок). "
             "action=update с ref_key перезаписывает черновик «Подготовлен» (проведённый не трогает). "
+            "action=next с source_ref_key — протокол следующего совещания на основе прошлого: шапка, "
+            "присутствующие и повестка копируются, задачи переносятся на контроль исполнения, дата — "
+            "date или «Дата следующего совещания» прошлого протокола; явные поля перекрывают копию. "
             "ФИО передавай как в 1С — сервер сам найдёт ссылки. Требует подтверждения человека. Сервер."
         ),
         _schema(
             {
-                "action": _prop("string", "create | update | probe", default="create"),
+                "action": _prop("string", "create | update | next | probe", default="create"),
+                "source_ref_key": _prop("string", "Ref_Key прошлого протокола (только для action=next)"),
                 "ref_key": _prop("string", "Ref_Key существующего протокола (только для action=update)"),
                 "topic": _prop("string", "Тема совещания как в справочнике «Темы совещаний» 1С"),
                 "date": _prop("string", "Дата совещания YYYY-MM-DD"),
@@ -388,7 +401,7 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 ),
                 "comment": _prop("string", "Комментарий к протоколу"),
             },
-            ["date"],
+            ["action"],
         ),
     ),
     (
@@ -544,6 +557,23 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             ["subject", "start", "attendees"],
         ),
     ),
+    (
+        "chat.send_direct",
+        (
+            "Личное сообщение в чат Constructor от имени владельца агента (с пометкой «[ИИ-агент]»). "
+            "Получатель — user_id из users.list или ФИО как в 1С/протоколе. Если ФИО не найдено или "
+            "неоднозначно, сообщение не уходит, в ответе note — зафиксируй пробел. "
+            "Подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "user_id": _prop("string", "id получателя из users.list"),
+                "fio": _prop("string", "ФИО получателя, если id нет"),
+                "text": _prop("string", "Текст сообщения"),
+            },
+            ["text"],
+        ),
+    ),
 ]
 
 
@@ -565,7 +595,7 @@ SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,
     "onec.meeting_protocols": 300,
-    # faster-whisper small на CPU: ~8 минут на 25 минут аудио, берём запас.
+    # faster-whisper small на CPU, beam 1: ~2,5 минуты на 25 минут аудио; запас на beam 5 и медленные машины.
     "audio.transcribe": 3600,
     # 1C OData + справочники участников; Exchange free/busy по всем участникам.
     "meetings.memo_requests": 180,

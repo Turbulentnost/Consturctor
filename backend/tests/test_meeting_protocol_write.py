@@ -331,8 +331,10 @@ def test_read_protocol_form_maps_guids_to_names(monkeypatch):
     assert form["prepared_by"] == "Жалыбин Максим Дмитриевич"
     # tabular parts sorted by LineNumber, GUIDs resolved
     assert form["participants"] == ["Соломичева Светлана Викторовна", "Жалыбин Максим Дмитриевич"]
-    assert form["agenda"] == [{"question": "Статус ИИ-агентов", "responsible": "Жалыбин Максим Дмитриевич"}]
-    assert form["decisions"] == [{"text": "Расчёт KPI", "due": "2026-09-24"}]
+    assert [(row["question"], row["responsible"]) for row in form["agenda"]] == [
+        ("Статус ИИ-агентов", "Жалыбин Максим Дмитриевич")
+    ]
+    assert [(row["text"], row["due"]) for row in form["decisions"]] == [("Расчёт KPI", "2026-09-24")]
     assert form["tasks"][0]["executor"] == "Мегрелишвили Михаил Эмзарович"
     assert form["tasks"][0]["due"] == "2026-09-22"
     assert form["tasks"][0]["priority"] == "Высокий"

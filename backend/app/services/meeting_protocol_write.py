@@ -20,7 +20,7 @@ Field / catalog mapping discovered live from $metadata and existing protocols
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Callable
 
 from app.services.docflow_document_tasks import fio_matches
@@ -568,6 +568,22 @@ def _iso_day(value: Any) -> str:
     return text[:10]
 
 
+_DUE_IN_TEXT = re.compile(r"\bдо\s+(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})\b", re.IGNORECASE)
+
+
+def _due_from_text(value: Any) -> str:
+    """Last «до ДД.ММ.ГГ» in a decision text — board decisions keep the deadline there."""
+    matches = list(_DUE_IN_TEXT.finditer(_clean(value)))
+    if not matches:
+        return ""
+    day, month, year = matches[-1].groups()
+    year_full = int(year) + 2000 if len(year) == 2 else int(year)
+    try:
+        return date(year_full, int(month), int(day)).isoformat()
+    except ValueError:
+        return ""
+
+
 def _iso_clock(value: Any) -> str:
     text = _clean(value)
     if "T" not in text:
@@ -675,9 +691,9 @@ def _prefetch_descriptions(card: dict[str, Any], cache: dict[str, str]) -> None:
                 cache[f"{entity}:{key}"] = name
 
 
-def read_protocol_form(ref_key: str) -> dict[str, Any]:
+def read_protocol_form(ref_key: str, *, card: dict[str, Any] | None = None) -> dict[str, Any]:
     """Document_ТД_Протокол → form fields (names instead of GUIDs) for the desktop editor."""
-    card = read_protocol_card(ref_key)
+    card = card if isinstance(card, dict) and card else read_protocol_card(ref_key)
     cache: dict[str, str] = {}
     _prefetch_descriptions(card, cache)
 
@@ -703,42 +719,60 @@ def read_protocol_form(ref_key: str) -> dict[str, Any]:
     ]
     agenda = [
         {
+            "item": _clean(row.get("LineNumber")),
             "question": _clean(row.get("Вопрос")),
             "responsible": person_fio(row.get("Ответственный_Key")),
+            "has_file": bool(
+                _clean(row.get("Файл_Base64Data")) or _clean(row.get("ОтметкаОНаличииПриложений"))
+            ),
         }
         for row in _protocol_rows(card, "ПовесткаСовещания")
         if _clean(row.get("Вопрос"))
     ]
     decisions = [
         {
+            "item": _clean(row.get("LineNumber")),
             "text": _clean(row.get("ТекстРешения")),
             "due": _iso_day(row.get("ДатаОкончания")),
+            "due_in_text": _due_from_text(row.get("ТекстРешения")),
+            "since": _iso_day(row.get("ДатаНачала")),
+            "result": _clean(row.get("РезультатРешения")),
+            "done_date": _iso_day(row.get("ДатаИсполнения")),
+            "sent": row.get("Отправлено") is True,
+            "has_artifact": row.get("НаличиеАртефакта") is True,
+            "canceled": row.get("Отменено") is True,
+            "cancel_reason": _clean(row.get("ПричинаОтмены")),
         }
         for row in _protocol_rows(card, "Решения")
         if _clean(row.get("ТекстРешения"))
     ]
     tasks: list[dict[str, Any]] = []
-    seen_tasks: set[tuple[str, str]] = set()
+    seen_tasks: dict[tuple[str, str], dict[str, Any]] = {}
     for part_name in (TASKS_PART, STANDING_TASKS_PART):
         for row in _protocol_rows(card, part_name):
             text = _clean(row.get("Задача"))
             if not text:
                 continue
+            has_file = bool(_clean(row.get("Файл_Base64Data")))
             dedupe = (text, str(row.get("LineNumber") or ""))
             if dedupe in seen_tasks:
+                seen_tasks[dedupe]["has_file"] = seen_tasks[dedupe]["has_file"] or has_file
                 continue
-            seen_tasks.add(dedupe)
-            tasks.append(
-                {
-                    "text": text,
-                    "executor": _clean(row.get("Ответственный"))
-                    or person_fio(row.get("Ответственный_Key")),
-                    "due": _iso_day(row.get("ДатаФактическогоИсполнения")),
-                    "priority": _clean(row.get("Приоритет")),
-                    "note": _clean(row.get("Примечание")),
-                    "item": _clean(row.get("НомерПунктаПротокола")),
-                }
-            )
+            task = {
+                "text": text,
+                "executor": _clean(row.get("Ответственный"))
+                or person_fio(row.get("Ответственный_Key")),
+                "due": _iso_day(row.get("ДатаФактическогоИсполнения")),
+                "priority": _clean(row.get("Приоритет")),
+                "note": _clean(row.get("Примечание")),
+                "item": _clean(row.get("НомерПунктаПротокола")),
+                "sent": row.get("Отправлена") is True,
+                "process_started": _looks_like_guid(row.get("ПроцессID"))
+                and _clean(row.get("ПроцессID")) != _EMPTY_GUID,
+                "has_file": has_file,
+            }
+            seen_tasks[dedupe] = task
+            tasks.append(task)
 
     status = _clean(card.get("Статус"))
     posted = bool(card.get("Posted"))
@@ -833,8 +867,10 @@ def handle_protocol_write(
         return _update_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
     if action == "edit":
         return edit_protocol(args, actor_fio=actor_fio)
+    if action == "next":
+        return _next_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
     if action != "create":
-        raise ProtocolWriteError("action: create | update | edit | probe")
+        raise ProtocolWriteError("action: create | update | edit | next | probe")
     body, meta = build_protocol_create_body(
         args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
@@ -860,6 +896,95 @@ def handle_protocol_write(
         "body": body,
         "source": "odata",
     }
+
+
+_NEXT_SKIP_ARGS = frozenset({"action", "ref_key", "Ref_Key", "source_ref_key", "erp_document_id"})
+
+
+def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    """Create-args for the next meeting built from read_protocol_form() of the previous one.
+
+    Header, attendees and agenda are copied; previous tasks are carried over for execution
+    control and the agenda gets a control item for them. Decisions stay with the old protocol.
+    """
+    form = previous.get("form") if isinstance(previous.get("form"), dict) else {}
+    number = _clean(previous.get("number"))
+    prev_day = _clean(form.get("date"))
+    day = _clean(_first(overrides, "date", "meeting_date")) or _clean(form.get("next_meeting_date"))
+    if not day:
+        raise ProtocolWriteError(
+            f"В прошлом протоколе{(' ' + number) if number else ''} не указана дата следующего совещания — "
+            "передай date (YYYY-MM-DD)"
+        )
+    tasks = [
+        {key: task.get(key) for key in ("text", "executor", "due", "priority", "note", "item")}
+        for task in form.get("tasks") or []
+        if isinstance(task, dict) and _clean(task.get("text"))
+    ]
+    agenda = [
+        {"question": _clean(row.get("question")), "responsible": _clean(row.get("responsible"))}
+        for row in form.get("agenda") or []
+        if isinstance(row, dict) and _clean(row.get("question"))
+    ]
+    control = f"Контроль исполнения поручений протокола {number}".strip() if number else ""
+    if tasks and control and not any(row["question"] == control for row in agenda):
+        agenda.append({"question": control, "responsible": _clean(form.get("responsible"))})
+    basis = f"Подготовлен на основе протокола {number}" + (f" от {prev_day}" if prev_day else "")
+    args: dict[str, Any] = {
+        "topic": form.get("topic"),
+        "theme_key": form.get("theme_key"),
+        "date": day,
+        "time_start": form.get("time_start"),
+        "time_end": form.get("time_end"),
+        "leader": form.get("leader"),
+        "responsible": form.get("responsible"),
+        "room": form.get("room"),
+        "room_key": form.get("room_key"),
+        "department": form.get("department"),
+        "project": form.get("project"),
+        "access": form.get("access"),
+        "meeting_type": form.get("meeting_type"),
+        "participants": list(form.get("participants") or []),
+        "agenda": agenda,
+        "tasks": tasks,
+        "report_period_from": prev_day or day,
+        "report_period_to": day,
+        "comment": basis,
+    }
+    for key, value in overrides.items():
+        if key in _NEXT_SKIP_ARGS or value in (None, "", [], {}):
+            continue
+        args[key] = value
+    extra = _clean(overrides.get("comment"))
+    if extra and basis not in extra:
+        args["comment"] = f"{basis}\n{extra}"
+    return args
+
+
+def _next_protocol(
+    args: dict[str, Any],
+    *,
+    actor_fio: str = "",
+    actor_onec_ref: str = "",
+) -> dict[str, Any]:
+    source = _clean(_first(args, "source_ref_key", "ref_key", "Ref_Key", "erp_document_id"))
+    if not _looks_like_guid(source):
+        raise ProtocolWriteError(
+            "Для action=next нужен source_ref_key прошлого протокола (Ref_Key из onec.meeting_protocols)"
+        )
+    previous = read_protocol_form(source)
+    create_args = next_protocol_args(previous, args)
+    result = handle_protocol_write(
+        {**create_args, "action": "create"}, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
+    )
+    result["source_ref_key"] = source
+    result["source_number"] = _clean(previous.get("number"))
+    result["carried_tasks"] = len(create_args.get("tasks") or [])
+    result["summary"] = (
+        f"{result.get('summary') or 'Создан протокол'}; на основе {result['source_number'] or source}, "
+        f"перенесено задач: {result['carried_tasks']}"
+    )
+    return result
 
 
 def _update_protocol(
