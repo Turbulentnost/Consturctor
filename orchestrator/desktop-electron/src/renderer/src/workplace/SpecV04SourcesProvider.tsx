@@ -61,6 +61,7 @@ const EMPTY: SpecV04SourcesState = {
   mailRows: [],
   mailCount: 0,
   mailLoading: false,
+  mailMailbox: '',
   mailImapPrimary: false,
   mailComError: '',
   mailImapError: '',
@@ -130,6 +131,7 @@ export function SpecV04SourcesProvider({
   const [turboSource, setTurboSource] = useState('—')
   const [mailRows, setMailRows] = useState<SpecMailRow[]>([])
   const [mailSource, setMailSource] = useState('—')
+  const [mailMailbox, setMailMailbox] = useState('')
   const [mailComError, setMailComError] = useState('')
   const [mailImapError, setMailImapError] = useState('')
   const [mailImapPrimary, setMailImapPrimary] = useState(false)
@@ -277,13 +279,13 @@ export function SpecV04SourcesProvider({
     if (!user.id) return
     let alive = true
     void loadOrchestratorMail(
-      outlookMailbox,
       { dateFrom: mailPeriodFrom, dateTo: mailPeriodTo },
-      { forceOutlook: takeHardRefresh(), ownerFio: erpFio }
+      { forceOutlook: takeHardRefresh() }
     ).then((mail) => {
       if (!alive) return
       setMailRows(mail.rows)
       setMailSource(mail.sourceLabel)
+      setMailMailbox(mail.mailbox)
       setMailComError(mail.comError || '')
       setMailImapError(mail.imapError || '')
       setMailImapPrimary(Boolean(mail.imapPrimary))
@@ -293,7 +295,7 @@ export function SpecV04SourcesProvider({
     return () => {
       alive = false
     }
-  }, [user.id, erpFio, outlookMailbox, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
+  }, [user.id, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
 
   useEffect(() => {
     if (!user.id) return
@@ -410,6 +412,7 @@ export function SpecV04SourcesProvider({
       mailRows,
       mailCount: mailRows.length,
       mailLoading: sourcesLoading,
+      mailMailbox,
       mailImapPrimary,
       mailComError,
       mailImapError,
@@ -456,6 +459,7 @@ export function SpecV04SourcesProvider({
       turboTasksError,
       projects,
       mailRows,
+      mailMailbox,
       mailComError,
       mailImapError,
       mailImapPrimary,

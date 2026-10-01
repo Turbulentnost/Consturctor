@@ -7,7 +7,7 @@ import {
   formatMailReceivedLabel,
   formatMailTime
 } from '../utils/outlookMail'
-import { filterMessagesOnDay, OUTLOOK_NO_MAILBOX } from './mailProbe'
+import { filterMessagesOnDay } from './mailProbe'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
@@ -22,11 +22,8 @@ export interface TodayOutlookMailState {
   rows: SpecMailRow[]
 }
 
-export function useTodayOutlookMail(
-  periodDay: Date,
-  mailbox: string,
-  ownerFio = ''
-): TodayOutlookMailState {
+/** Письма дня из Outlook этого компьютера (ящик его профиля). */
+export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
   const generation = useGridRefreshGeneration()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -37,7 +34,7 @@ export function useTodayOutlookMail(
 
   useEffect(() => {
     let alive = true
-    const cacheKey = `today-outlook-mail-inout:${mailbox || ownerFio}:${dayKey}`
+    const cacheKey = `today-outlook-mail-inout:profile:${dayKey}`
     if (!shouldRunGridFetch(cacheKey, generation)) {
       const cached = readGridCache<{ error: string; source: string; rows: SpecMailRow[] }>(cacheKey)
       if (cached) {
@@ -48,22 +45,14 @@ export function useTodayOutlookMail(
         return
       }
     }
-    if (!mailbox.trim() && !ownerFio.trim()) {
-      setRows([])
-      setSource('')
-      setError(OUTLOOK_NO_MAILBOX)
-      setLoading(false)
-      return
-    }
     setLoading(true)
     setError('')
     void (async () => {
       try {
         const dayIso = dayKeyLocal(periodDay)
-        const batch = await ensureOutlookMailRange(mailbox, dayIso, dayIso, {
+        const batch = await ensureOutlookMailRange(dayIso, dayIso, {
           folder: 'All',
-          maxResults: 80,
-          ownerFio
+          maxResults: 80
         })
         if (!alive) return
         if (!batch.ok) {
@@ -98,11 +87,13 @@ export function useTodayOutlookMail(
           return true
         })
         const nextSource = batch.cached ? 'outlook_com (cache)' : 'outlook_com (All)'
-        const nextError = ''
+        const nextError = batch.warning || ''
         setSource(nextSource)
         setRows(nextRows)
         setError(nextRows.length ? '' : nextError)
-        writeGridCache(cacheKey, { error: nextRows.length ? '' : nextError, source: nextSource, rows: nextRows })
+        if (!batch.warning) {
+          writeGridCache(cacheKey, { error: '', source: nextSource, rows: nextRows })
+        }
       } catch (err) {
         if (!alive) return
         setRows([])
@@ -115,7 +106,7 @@ export function useTodayOutlookMail(
     return () => {
       alive = false
     }
-  }, [dayKey, generation, periodDay, mailbox, ownerFio])
+  }, [dayKey, generation, periodDay])
 
   const resolvedRows = useMemo(() => {
     return rows

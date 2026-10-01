@@ -38,6 +38,7 @@ export type MeetingCalendarRow = {
   visible: boolean
   removable: boolean
   hint: string
+  note?: string
 }
 
 const VIEWS: { id: CalendarView; label: string }[] = [
@@ -428,6 +429,7 @@ export function MeetingsSidePanel({
                 </button>
                 <label htmlFor={`${colorIds}-${index}`} className="meet-rail-calendar-name">
                   {formatSurnameInitials(row.person)}
+                  {row.note ? <span className="meet-rail-calendar-note">{row.note}</span> : null}
                 </label>
               </div>
               <span className="meet-rail-calendar-tools">

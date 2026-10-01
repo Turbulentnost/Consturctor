@@ -5162,6 +5162,8 @@ class Sidecar:
                         "source": output.get("source") or "outlook_com",
                         "mailbox": output.get("mailbox") or "",
                         "mailboxAccess": output.get("mailbox_access") or "",
+                        "profileMailbox": output.get("profile_mailbox") or "",
+                        "warning": output.get("warning") or "",
                         "rangeStart": output.get("range_start") or "",
                         "rangeEnd": output.get("range_end") or "",
                     }
