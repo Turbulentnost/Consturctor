@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 from pathlib import Path
@@ -36,6 +37,9 @@ ALLOWED_EXTENSIONS = frozenset(
 
 _SAMPLE_RATE = 16000
 _CHUNK_SECONDS = 600
+# ~10–12 минут речи и ~12 тыс. символов: часть целиком помещается в один ответ инструмента.
+TRANSCRIPT_PART_SEGMENTS = 120
+_SPAN_RE = re.compile(r"^\[([0-9:]+)[–-]([0-9:]+)\]")
 
 _model: Any = None
 _model_name = ""
@@ -160,8 +164,33 @@ def _write_transcript(filename: str, segments: list[dict[str, Any]], duration_se
     return path
 
 
-def read_transcript(transcript_path: str) -> dict[str, Any]:
-    """Текст расшифровки по transcript_path из ответа audio.transcribe — только файлы этой папки."""
+def transcript_parts(segment_count: int) -> int:
+    return max(1, -(-int(segment_count) // TRANSCRIPT_PART_SEGMENTS))
+
+
+def _segment_lines(text: str) -> tuple[list[str], list[str]]:
+    lines = text.splitlines()
+    head: list[str] = []
+    body: list[str] = []
+    for line in lines:
+        if line.startswith("["):
+            body.append(line)
+        elif not body and line.strip():
+            head.append(line)
+    return head, body
+
+
+def _line_span(line: str) -> tuple[str, str]:
+    match = _SPAN_RE.match(line)
+    return (match.group(1), match.group(2)) if match else ("", "")
+
+
+def read_transcript(transcript_path: str, part: Any = None) -> dict[str, Any]:
+    """Текст расшифровки по transcript_path из ответа audio.transcribe — только файлы этой папки.
+
+    part (1…parts) — кусок по TRANSCRIPT_PART_SEGMENTS реплик: чтение агентом целиком
+    обрезает середину длинной записи, а по частям он видит каждую реплику.
+    """
     folder = _transcript_dir().resolve()
     try:
         path = Path(str(transcript_path or "").strip()).resolve()
@@ -171,7 +200,41 @@ def read_transcript(transcript_path: str) -> dict[str, Any]:
         raise RuntimeError("Это не файл расшифровки audio.transcribe")
     if not path.is_file():
         raise RuntimeError("Расшифровка не найдена — её удалили вместе с временными файлами сервера")
-    return {"ok": True, "transcript_path": str(path), "text": path.read_text(encoding="utf-8")}
+    text = path.read_text(encoding="utf-8")
+    head, body = _segment_lines(text)
+    parts = transcript_parts(len(body))
+    result: dict[str, Any] = {
+        "ok": True,
+        "transcript_path": str(path),
+        "segment_count": len(body),
+        "parts": parts,
+    }
+    if part in (None, ""):
+        return {**result, "text": text}
+    try:
+        index = int(part)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("part — номер части, целое число от 1") from exc
+    if index < 1 or index > parts:
+        raise RuntimeError(f"Части {index} нет: в расшифровке {parts} частей (part от 1 до {parts})")
+    start = (index - 1) * TRANSCRIPT_PART_SEGMENTS
+    chunk = body[start : start + TRANSCRIPT_PART_SEGMENTS]
+    begin = _line_span(chunk[0])[0] if chunk else ""
+    end = _line_span(chunk[-1])[1] if chunk else ""
+    title = f"Часть {index} из {parts}, реплики {start + 1}–{start + len(chunk)} из {len(body)}, [{begin}–{end}]"
+    return {
+        **result,
+        "part": index,
+        "from": begin,
+        "to": end,
+        "next_part": index + 1 if index < parts else None,
+        "text": "\n".join([*head, title, "", *chunk]),
+        "note": (
+            f"Прочитай следующую часть: part={index + 1}."
+            if index < parts
+            else "Это последняя часть: расшифровка прочитана целиком."
+        ),
+    }
 
 
 def _disk_cache_path(cache_key: str) -> Path:
@@ -207,19 +270,32 @@ def _short_result(
     prompt: str,
 ) -> dict[str, Any]:
     preview = "\n".join(str(row["text"]) for row in segments[:8]).strip()
+    return _with_parts(
+        {
+            "ok": True,
+            "cached": cached,
+            "filename": filename,
+            "duration_sec": duration_sec,
+            "segment_count": len(segments),
+            "transcript_path": str(path),
+            "preview": preview[:800],
+            "diarization": "none",
+            "names_hint": prompt,
+        }
+    )
+
+
+def _with_parts(result: dict[str, Any]) -> dict[str, Any]:
+    """Число частей и подсказка чтения — и для расшифровок из кэша прежних версий."""
+    parts = transcript_parts(int(result.get("segment_count") or 0))
     return {
-        "ok": True,
-        "cached": cached,
-        "filename": filename,
-        "duration_sec": duration_sec,
-        "segment_count": len(segments),
-        "transcript_path": str(path),
-        "preview": preview[:800],
-        "diarization": "none",
-        "names_hint": prompt,
+        **result,
+        "parts": parts,
         "note": (
-            "Полная расшифровка с таймкодами записана в transcript_path. "
-            "Прочитай этот файл один раз и больше не вызывай audio.transcribe для того же вложения. "
+            f"Полная расшифровка с таймкодами записана в transcript_path, {parts} частей. "
+            f"Прочитай её целиком инструментом audio.transcript: part=1, 2, … {parts} по порядку, "
+            "не пропуская ни одной части. Файл напрямую не читай — длинный текст обрезается посередине. "
+            "Больше не вызывай audio.transcribe для того же вложения. "
             "Меток говорящих нет: реплику подписывай ФИО только при обращении или самопредставлении, иначе «Участник N»."
         ),
     }
@@ -276,11 +352,11 @@ def transcribe_run_attachment(
     with _inflight_lock:
         cached = _cache.get(cache_key)
         if cached is not None and Path(str(cached.get("transcript_path") or "")).is_file():
-            return {**cached, "cached": True}
+            return _with_parts({**cached, "cached": True})
         stored = _read_disk_cache(cache_key)
         if stored is not None:
             _cache[cache_key] = stored
-            return {**stored, "cached": True}
+            return _with_parts({**stored, "cached": True})
         waiter = _inflight.get(cache_key)
         if waiter is None:
             waiter = threading.Event()

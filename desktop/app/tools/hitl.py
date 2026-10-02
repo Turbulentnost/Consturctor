@@ -73,6 +73,7 @@ _READ_EXACT = frozenset(
         "turboproject",
         "users.list",
         "audio.transcribe",
+        "audio.transcript",
         "users.current",
         "users.subordinates",
         "agent.schedule",

@@ -443,7 +443,8 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "Расшифровка аудио-вложения запуска (faster-whisper). Вызывай один раз на файл: "
             "полный текст с таймкодами пишется во временный файл, в ответе transcript_path, "
-            "segment_count и duration_sec. Повторный вызов возвращает тот же файл и не распознаёт заново. "
+            "segment_count, parts и duration_sec. Текст читай через audio.transcript по частям. "
+            "Повторный вызов возвращает тот же файл и не распознаёт заново. "
             "file_id бери из блока «Вложения запуска». names — ФИО из Outlook. "
             "Меток говорящих нет. Только чтение, подтверждение не нужно. Сервер."
         ),
@@ -456,6 +457,21 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 ),
             },
             ["file_id"],
+        ),
+    ),
+    (
+        "audio.transcript",
+        (
+            "Часть расшифровки audio.transcribe: part=1…parts, по 120 реплик с таймкодами. "
+            "Читай все части по порядку, ни одну не пропускай: в ответе part, parts, next_part, "
+            "from/to (таймкоды части) и text. Только чтение, подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "transcript_path": _prop("string", "transcript_path из ответа audio.transcribe"),
+                "part": _prop("integer", "Номер части от 1 до parts"),
+            },
+            ["transcript_path", "part"],
         ),
     ),
     (
