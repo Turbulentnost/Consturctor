@@ -34,6 +34,9 @@ ALLOWED_EXTENSIONS = frozenset(
     }
 )
 
+_SAMPLE_RATE = 16000
+_CHUNK_SECONDS = 600
+
 _model: Any = None
 _model_name = ""
 _model_lock = threading.Lock()
@@ -61,6 +64,27 @@ def _cpu_threads() -> int:
     return max(1, cores - 2)
 
 
+def _install_faster_whisper() -> None:
+    """Desktop app starts backend with the machine's own Python, which may lack the audio stack
+    (faster-whisper + PyAV decoder for wav/mp3/m4a); install it into that interpreter once."""
+    import importlib
+    import subprocess
+    import sys
+
+    command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "faster-whisper>=1.0.0"]
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Не удалось установить faster-whisper на backend: {exc}") from exc
+    if done.returncode != 0:
+        tail = (done.stderr or done.stdout or "").strip().splitlines()[-3:]
+        raise RuntimeError(
+            "Не удалось установить faster-whisper на backend "
+            f"({sys.executable} -m pip install faster-whisper): {' '.join(tail)[:400]}"
+        )
+    importlib.invalidate_caches()
+
+
 def _get_model() -> Any:
     """Синглтон модели faster-whisper: первый вызов скачивает и загружает её."""
     global _model, _model_name
@@ -70,12 +94,14 @@ def _get_model() -> Any:
             return _model
         try:
             from faster_whisper import WhisperModel
-        except ImportError as exc:
-            raise RuntimeError(
-                "Модуль faster-whisper не установлен на backend: "
-                "установите faster-whisper (pip install faster-whisper) "
-                "и перезапустите сервис."
-            ) from exc
+        except ImportError:
+            _install_faster_whisper()
+            try:
+                from faster_whisper import WhisperModel
+            except ImportError as exc:
+                raise RuntimeError(
+                    "faster-whisper установлен, но не импортируется на backend — перезапустите сервис"
+                ) from exc
         _model = WhisperModel(
             wanted, device="cpu", compute_type="int8", cpu_threads=_cpu_threads()
         )
@@ -293,6 +319,13 @@ def transcribe_run_attachment(
             _inflight.pop(cache_key, None)
 
 
+def _decode(path: Path) -> Any:
+    """Mono float32 samples at 16 kHz (PyAV inside faster-whisper: wav, mp3, m4a, …)."""
+    from faster_whisper.audio import decode_audio
+
+    return decode_audio(str(path), sampling_rate=_SAMPLE_RATE)
+
+
 def _transcribe_bytes(
     raw: bytes, *, suffix: str, filename: str, prompt: str
 ) -> tuple[list[dict[str, Any]], float]:
@@ -311,18 +344,25 @@ def _transcribe_bytes(
         }
         if prompt:
             options["initial_prompt"] = prompt
-        segments_iter, info = model.transcribe(str(tmp_path), **options)
-        segments = [
-            {
-                "start": round(float(segment.start or 0.0), 2),
-                "end": round(float(segment.end or 0.0), 2),
-                "text": segment.text.strip(),
-            }
-            for segment in segments_iter
-            if segment.text and segment.text.strip()
-        ]
+        audio = _decode(tmp_path)
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
 
-    return segments, round(float(getattr(info, "duration", 0.0) or 0.0), 2)
+    # Whisper builds the spectrogram of the whole input at once: an hour of audio needs ~0.5 GB
+    # in one block and fails with MemoryError on a busy machine. Chunks keep it to ~80 MB.
+    segments: list[dict[str, Any]] = []
+    step = _CHUNK_SECONDS * _SAMPLE_RATE
+    for begin in range(0, len(audio), step):
+        offset = begin / _SAMPLE_RATE
+        segments_iter, _info = model.transcribe(audio[begin : begin + step], **options)
+        segments.extend(
+            {
+                "start": round(offset + float(segment.start or 0.0), 2),
+                "end": round(offset + float(segment.end or 0.0), 2),
+                "text": segment.text.strip(),
+            }
+            for segment in segments_iter
+            if segment.text and segment.text.strip()
+        )
+    return segments, round(len(audio) / _SAMPLE_RATE, 2)
