@@ -715,6 +715,16 @@
   color: #5b6b80;
 }
 
+.docflow-audio-report .docflow-audio-remove {
+  height: 24px;
+  padding: 0 6px;
+  color: #b42318;
+}
+
+.docflow-audio-report .docflow-audio-remove:hover:not(:disabled) {
+  background: #fdecea;
+}
+
 .docflow-audio-report h5 {
   margin: 12px 0 4px;
   font-size: 13px;

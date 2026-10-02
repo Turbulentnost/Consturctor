@@ -18,6 +18,8 @@ export type ProtocolAudioMark = {
   extra?: boolean
   workflowId: string
   runId: string
+  /** Id запуска на backend: по нему окно отчёта читает ленту с сервера после перезапуска программы. */
+  backendRunId?: string
   at: string
   result?: ProtocolAudioResult
 }
@@ -54,6 +56,25 @@ export function saveProtocolAudioResult(protocolId: string, runId: string, resul
   if (index < 0 || JSON.stringify(list[index].result) === JSON.stringify(result)) return
   list[index] = { ...list[index], result }
   marks[protocolId] = list
+  writeMarks(marks)
+}
+
+export function saveProtocolAudioBackendRun(protocolId: string, runId: string, backendRunId: string): void {
+  const marks = readMarks()
+  const list = marks[protocolId] || []
+  const index = list.findIndex((mark) => mark.runId === runId)
+  if (index < 0 || !backendRunId || list[index].backendRunId === backendRunId) return
+  list[index] = { ...list[index], backendRunId }
+  marks[protocolId] = list
+  writeMarks(marks)
+}
+
+/** Убрать запись из списка протокола. То, что агент уже записал в 1С, остаётся. */
+export function forgetProtocolAudio(protocolId: string, mark: Pick<ProtocolAudioMark, 'runId' | 'at'>): void {
+  const marks = readMarks()
+  const list = (marks[protocolId] || []).filter((item) => !(item.runId === mark.runId && item.at === mark.at))
+  if (list.length) marks[protocolId] = list
+  else delete marks[protocolId]
   writeMarks(marks)
 }
 

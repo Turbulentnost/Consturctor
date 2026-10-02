@@ -1,10 +1,12 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { CassetteTape } from 'lucide-react'
+import { CassetteTape, Trash2 } from 'lucide-react'
 import { api } from '../../api/client'
+import { buildFeedItems, settleOpenFeedTools } from '../../components/agentfeed/build'
 import { MarkdownBody } from '../../components/agentfeed/MarkdownBody'
 import type { RunState } from '../../components/agentfeed/runReducer'
-import type { ToolItem } from '../../components/agentfeed/types'
+import type { FeedItem, ToolItem } from '../../components/agentfeed/types'
+import { isInFlightRunStatus } from '../../store/liveRun'
 import { useRuns } from '../../store/runs'
 import {
   buildSupplementMessage,
@@ -15,8 +17,10 @@ import {
 import type { ProtocolRow } from '../../workplace/fetchDocflowProtocols'
 import {
   audioMarkTitle,
+  forgetProtocolAudio,
   markAudioNames,
   rememberProtocolAudio,
+  saveProtocolAudioBackendRun,
   saveProtocolAudioResult,
   useProtocolAudioMarks,
   type ProtocolAudioMark,
@@ -56,7 +60,11 @@ function toolIs(item: ToolItem, name: string): boolean {
 
 /** Что из ленты запуска показать человеку: расшифровки, записи в 1С, итоговое пояснение агента. */
 function runResult(state: RunState, live: boolean): ProtocolAudioResult {
-  const tools = state.items.filter((item): item is ToolItem => item.kind === 'tool' && item.done)
+  return feedResult(state.items, state.error, !live)
+}
+
+function feedResult(items: FeedItem[], error: string, finished: boolean): ProtocolAudioResult {
+  const tools = items.filter((item): item is ToolItem => item.kind === 'tool' && item.done)
   const transcripts = tools
     .filter((item) => toolIs(item, 'audio.transcribe') && !item.error && item.result?.transcript_path)
     .map((item) => ({
@@ -84,14 +92,61 @@ function runResult(state: RunState, live: boolean): ProtocolAudioResult {
         error: item.error
       }
     })
-  const answers = state.items.filter((item) => item.kind === 'result' || (item.kind === 'message' && item.role === 'agent'))
+  const answers = items.filter((item) => item.kind === 'result' || (item.kind === 'message' && item.role === 'agent'))
   const last = answers.at(-1)
   return {
     transcripts,
     changes,
     explanation: last && 'text' in last ? last.text.trim() : '',
-    error: state.error,
-    finished: !live
+    error,
+    finished
+  }
+}
+
+const RUN_MATCH_BEFORE_MS = 60_000
+const RUN_MATCH_AFTER_MS = 5 * 60_000
+
+/** Старые отметки не знают id запуска на backend — ищем запуск агента, стартовавший рядом с отметкой. */
+async function findBackendRun(mark: ProtocolAudioMark, number: string): Promise<string> {
+  if (mark.backendRunId) return mark.backendRunId
+  const at = Date.parse(mark.at)
+  if (!Number.isFinite(at)) return ''
+  const list = await api.listAgentRuns(mark.workflowId)
+  let best = ''
+  let bestGap = Infinity
+  for (const item of list) {
+    const started = Date.parse(item.startedAt)
+    if (!Number.isFinite(started)) continue
+    if (started < at - RUN_MATCH_BEFORE_MS || started > at + RUN_MATCH_AFTER_MS) continue
+    if (number && item.message && !item.message.includes(number)) continue
+    const gap = Math.abs(started - at)
+    if (gap < bestGap) {
+      best = item.runId
+      bestGap = gap
+    }
+  }
+  return best
+}
+
+/** Лента запуска с сервера: переживает перезапуск программы и не путается с соседними запусками агента. */
+async function loadServerResult(
+  mark: ProtocolAudioMark,
+  number: string
+): Promise<{ backendRunId: string; result: ProtocolAudioResult } | null> {
+  const backendRunId = await findBackendRun(mark, number)
+  if (!backendRunId) return null
+  const detail = await api.getAgentRunDetail(mark.workflowId, backendRunId)
+  const inFlight = isInFlightRunStatus(detail.item.status)
+  let items = buildFeedItems(detail.events, { live: inFlight })
+  if (!inFlight) items = settleOpenFeedTools(items)
+  const answer = (detail.item.answer || detail.item.summary || '').trim()
+  const failed = /error|fail/i.test(detail.item.status)
+  if (!inFlight && !failed && answer && !items.some((item) => item.kind === 'result')) {
+    items = [...items, { kind: 'result', id: `hist-res-${backendRunId}`, text: answer }]
+  }
+  return {
+    backendRunId,
+    result: feedResult(items, failed ? answer || 'Запуск завершился с ошибкой' : '', !inFlight)
   }
 }
 
@@ -117,18 +172,136 @@ function TranscriptView({ path }: { path: string }): React.JSX.Element {
   return <pre className="docflow-audio-transcript">{text}</pre>
 }
 
+function AudioRunSection({
+  protocolId,
+  number,
+  mark,
+  live,
+  open,
+  onToggle
+}: {
+  protocolId: string
+  number: string
+  mark: ProtocolAudioMark
+  live: boolean
+  open: string
+  onToggle: (path: string) => void
+}): React.JSX.Element {
+  const [loading, setLoading] = useState(!live)
+
+  useEffect(() => {
+    if (live) return
+    let alive = true
+    setLoading(true)
+    void loadServerResult(mark, number)
+      .then((loaded) => {
+        if (!alive || !loaded) return
+        saveProtocolAudioBackendRun(protocolId, mark.runId, loaded.backendRunId)
+        saveProtocolAudioResult(protocolId, mark.runId, loaded.result)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+    // Перечитываем ленту, только когда меняется сам запуск, а не его сохранённый результат.
+  }, [protocolId, mark.runId, mark.at, number, live])
+
+  const remove = (): void => {
+    const names = markAudioNames(mark).join(', ') || 'запись'
+    if (!window.confirm(`Убрать «${names}» из списка записей протокола? То, что агент уже записал в 1С, останется.`)) return
+    forgetProtocolAudio(protocolId, mark)
+  }
+
+  const result = mark.result
+  return (
+    <section>
+      <h4>
+        <CassetteTape size={14} aria-hidden /> {mark.extra ? 'Догрузка ГС' : 'Аудиозапись'}: {markAudioNames(mark).join(', ')}
+        <span>{new Date(mark.at).toLocaleString('ru-RU')}</span>
+        <button
+          type="button"
+          className="docflow-edit-btn docflow-audio-remove"
+          disabled={live}
+          title={live ? 'Агент ещё работает с этой записью' : 'Убрать запись из списка протокола'}
+          aria-label="Удалить запись"
+          onClick={remove}
+        >
+          <Trash2 size={13} aria-hidden />
+        </button>
+      </h4>
+      {loading && !result ? <p className="spec-v04-muted">Загружаем ход запуска с сервера…</p> : null}
+      {!loading && !result ? (
+        <p className="spec-v04-muted">Ход этого запуска не найден на сервере.</p>
+      ) : null}
+      {result && !result.finished ? <p className="spec-v04-muted">Агент ещё работает — здесь показано то, что уже сделано.</p> : null}
+      {result?.error ? <p className="meeting-report-error">{result.error}</p> : null}
+      {result ? (
+        <>
+          <h5>Изменения в 1С</h5>
+          {result.changes.length ? (
+            <ul>
+              {result.changes.map((change, index) => (
+                <li key={`${change.action}-${index}`} className={change.error ? 'is-error' : ''}>
+                  <strong>{ACTION_LABELS[change.action] || change.action}</strong>
+                  {change.summary ? ` — ${change.summary}` : ''}
+                  {change.details.length ? (
+                    <ul>
+                      {change.details.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="spec-v04-muted">В 1С агент ничего не записал.</p>
+          )}
+          <h5>Пояснения агента</h5>
+          {result.explanation ? <MarkdownBody text={result.explanation} /> : <p className="spec-v04-muted">Пояснения нет.</p>}
+          <h5>Расшифровка</h5>
+          {result.transcripts.length ? (
+            result.transcripts.map((item) => (
+              <div key={item.path} className="docflow-audio-transcript-row">
+                <button type="button" className="cal-btn" onClick={() => onToggle(item.path)}>
+                  {open === item.path ? 'Скрыть' : 'Показать'} · {item.name || 'запись'}
+                  {item.durationSec ? ` · ${clock(item.durationSec)}` : ''}
+                </button>
+                {open === item.path ? <TranscriptView path={item.path} /> : null}
+              </div>
+            ))
+          ) : (
+            <p className="spec-v04-muted">Расшифровки в этом запуске нет.</p>
+          )}
+        </>
+      ) : null}
+    </section>
+  )
+}
+
 function ProtocolAudioReport({
+  protocolId,
   number,
   marks,
+  liveRunId,
   onClose
 }: {
+  protocolId: string
   number: string
   marks: ProtocolAudioMark[]
+  liveRunId: string
   onClose: () => void
 }): React.JSX.Element {
   const titleId = useId()
   const [open, setOpen] = useState('')
   const history = [...marks].reverse()
+
+  useEffect(() => {
+    if (!marks.length) onClose()
+  }, [marks.length, onClose])
   return createPortal(
     <div className="modal-overlay meeting-report-overlay" onClick={onClose} role="presentation">
       <div
@@ -149,64 +322,17 @@ function ProtocolAudioReport({
           </div>
         </div>
         <div className="meeting-report-body docflow-audio-report">
-          {history.map((mark) => {
-            const result = mark.result
-            return (
-              <section key={mark.runId || mark.at}>
-                <h4>
-                  <CassetteTape size={14} aria-hidden /> {mark.extra ? 'Догрузка ГС' : 'Аудиозапись'}: {markAudioNames(mark).join(', ')}
-                  <span>{new Date(mark.at).toLocaleString('ru-RU')}</span>
-                </h4>
-                {!result ? <p className="spec-v04-muted">Результата этого запуска нет — агент ещё работает или лента запуска не сохранилась.</p> : null}
-                {result && !result.finished ? <p className="spec-v04-muted">Агент ещё работает — здесь показано то, что уже сделано.</p> : null}
-                {result?.error ? <p className="meeting-report-error">{result.error}</p> : null}
-                {result ? (
-                  <>
-                    <h5>Изменения в 1С</h5>
-                    {result.changes.length ? (
-                      <ul>
-                        {result.changes.map((change, index) => (
-                          <li key={`${change.action}-${index}`} className={change.error ? 'is-error' : ''}>
-                            <strong>{ACTION_LABELS[change.action] || change.action}</strong>
-                            {change.summary ? ` — ${change.summary}` : ''}
-                            {change.details.length ? (
-                              <ul>
-                                {change.details.map((line) => (
-                                  <li key={line}>{line}</li>
-                                ))}
-                              </ul>
-                            ) : null}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="spec-v04-muted">В 1С агент ничего не записал.</p>
-                    )}
-                    <h5>Пояснения агента</h5>
-                    {result.explanation ? <MarkdownBody text={result.explanation} /> : <p className="spec-v04-muted">Пояснения нет.</p>}
-                    <h5>Расшифровка</h5>
-                    {result.transcripts.length ? (
-                      result.transcripts.map((item) => (
-                        <div key={item.path} className="docflow-audio-transcript-row">
-                          <button
-                            type="button"
-                            className="cal-btn"
-                            onClick={() => setOpen((value) => (value === item.path ? '' : item.path))}
-                          >
-                            {open === item.path ? 'Скрыть' : 'Показать'} · {item.name || 'запись'}
-                            {item.durationSec ? ` · ${clock(item.durationSec)}` : ''}
-                          </button>
-                          {open === item.path ? <TranscriptView path={item.path} /> : null}
-                        </div>
-                      ))
-                    ) : (
-                      <p className="spec-v04-muted">Расшифровки в этом запуске нет.</p>
-                    )}
-                  </>
-                ) : null}
-              </section>
-            )
-          })}
+          {history.map((mark) => (
+            <AudioRunSection
+              key={`${mark.runId}-${mark.at}`}
+              protocolId={protocolId}
+              number={number}
+              mark={mark}
+              live={Boolean(liveRunId) && mark.runId === liveRunId}
+              open={open}
+              onToggle={(path) => setOpen((value) => (value === path ? '' : path))}
+            />
+          ))}
         </div>
       </div>
     </div>,
@@ -254,6 +380,11 @@ export function ProtocolAudioSupplement({
   useEffect(() => {
     if (state && last?.runId) saveProtocolAudioResult(row.id, last.runId, runResult(state, live))
   }, [state, live, last?.runId, row.id])
+
+  const backendRunId = state && entry ? entry.backendRunId : ''
+  useEffect(() => {
+    if (backendRunId && last?.runId) saveProtocolAudioBackendRun(row.id, last.runId, backendRunId)
+  }, [backendRunId, last?.runId, row.id])
 
   const start = async (extra: boolean): Promise<void> => {
     if (busy || live) return
@@ -306,7 +437,7 @@ export function ProtocolAudioSupplement({
     }
   }
 
-  const hasReport = own.some((mark) => Boolean(mark.result))
+  const hasReport = own.length > 0
   return (
     <div className="docflow-audio-row">
       <div className="docflow-audio-actions">
@@ -385,7 +516,15 @@ export function ProtocolAudioSupplement({
         </div>
       ) : null}
       {last?.result?.error && !live ? <p className="meeting-protocol-error">{last.result.error}</p> : null}
-      {reportOpen ? <ProtocolAudioReport number={row.number} marks={own} onClose={() => setReportOpen(false)} /> : null}
+      {reportOpen ? (
+        <ProtocolAudioReport
+          protocolId={row.id}
+          number={row.number}
+          marks={own}
+          liveRunId={live && last ? last.runId : ''}
+          onClose={() => setReportOpen(false)}
+        />
+      ) : null}
     </div>
   )
 }
