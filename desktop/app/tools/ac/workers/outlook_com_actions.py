@@ -1080,10 +1080,6 @@ OL_PRIMARY_EXCHANGE_MAILBOX = 0
 # OlExchangeConnectionMode: olOffline, olCachedOffline, olDisconnected, olCachedDisconnected —
 # в этих режимах Outlook отдаёт только локальный кэш, новые письма не приходят.
 _OUTLOOK_OFFLINE_MODES = {100, 200, 300, 400}
-OUTLOOK_OFFLINE_WARNING = (
-    "Outlook на этом компьютере не подключён к серверу Exchange — показан только локальный кэш, "
-    "новых писем в нём нет. Откройте Outlook на этом компьютере и дождитесь подключения."
-)
 # Скрытый Outlook, поднятый через COM без открытого окна, кэш с сервера не догружает:
 # свежее письмо во «Входящих» старше этого — значит, Outlook здесь давно не открывали.
 _STALE_INBOX_DAYS = 7
@@ -1278,46 +1274,59 @@ def search_mail(input_data: dict) -> dict:
         scanned_count = 0
         access = ""
         newest_inbox: datetime | None = None
-        for folder_name, folder_id, sort_field, date_attr, direction in folder_specs:
-            _log_progress(f"step=get_mail_folder start folder={folder_name} mailbox={mailbox}")
-            try:
-                folder_obj, status = _mailbox_folder(namespace, mailbox, folder_id)
-            except OutlookAccessError:
-                # «Отправленные» общего ящика часто закрыты при открытых «Входящих».
-                if direction == "sent" and access:
-                    _log_progress(f"step=get_mail_folder skipped folder={folder_name}")
-                    continue
-                raise
-            access = access or status
-            _log_progress(f"step=get_mail_folder ok folder={folder_name} access={status}")
-            store_id = _safe_str(getattr(folder_obj, "StoreID", "")).strip()
-            _log_progress(f"step=get_items start folder={folder_name}")
-            messages = folder_obj.Items
-            _log_progress(f"step=get_items ok folder={folder_name}")
-            _log_progress(f"step=sort_items start folder={folder_name}")
-            messages.Sort(sort_field, True)
-            _log_progress(f"step=sort_items ok folder={folder_name}")
-            if direction == "inbox" and access == "own":
-                newest_inbox = _newest_item_time(messages, date_attr)
 
-            folder_results, folder_scanned = _collect_mail_messages(
-                messages,
-                folder_name=folder_name,
-                date_attr=date_attr,
-                direction=direction,
-                query=_safe_str(query) if query else None,
-                start_at=start_at,
-                end_at=end_at,
-                max_results=max_results - len(results),
-                max_scan_items=max_scan_items,
-            )
-            if store_id and access != "own":
-                for item in folder_results:
-                    item["store_id"] = store_id
-            scanned_count += folder_scanned
-            results.extend(folder_results)
-            if len(results) >= max_results:
-                break
+        def _collect(range_start: datetime, range_end: datetime) -> None:
+            nonlocal scanned_count, access, newest_inbox
+            for folder_name, folder_id, sort_field, date_attr, direction in folder_specs:
+                _log_progress(f"step=get_mail_folder start folder={folder_name} mailbox={mailbox}")
+                try:
+                    folder_obj, status = _mailbox_folder(namespace, mailbox, folder_id)
+                except OutlookAccessError:
+                    # «Отправленные» общего ящика часто закрыты при открытых «Входящих».
+                    if direction == "sent" and access:
+                        _log_progress(f"step=get_mail_folder skipped folder={folder_name}")
+                        continue
+                    raise
+                access = access or status
+                _log_progress(f"step=get_mail_folder ok folder={folder_name} access={status}")
+                store_id = _safe_str(getattr(folder_obj, "StoreID", "")).strip()
+                _log_progress(f"step=get_items start folder={folder_name}")
+                messages = folder_obj.Items
+                _log_progress(f"step=get_items ok folder={folder_name}")
+                _log_progress(f"step=sort_items start folder={folder_name}")
+                messages.Sort(sort_field, True)
+                _log_progress(f"step=sort_items ok folder={folder_name}")
+                if direction == "inbox" and access == "own" and newest_inbox is None:
+                    newest_inbox = _newest_item_time(messages, date_attr)
+
+                folder_results, folder_scanned = _collect_mail_messages(
+                    messages,
+                    folder_name=folder_name,
+                    date_attr=date_attr,
+                    direction=direction,
+                    query=_safe_str(query) if query else None,
+                    start_at=range_start,
+                    end_at=range_end,
+                    max_results=max_results - len(results),
+                    max_scan_items=max_scan_items,
+                )
+                if store_id and access != "own":
+                    for item in folder_results:
+                        item["store_id"] = store_id
+                scanned_count += folder_scanned
+                results.extend(folder_results)
+                if len(results) >= max_results:
+                    break
+
+        _collect(start_at, end_at)
+        # Скрытый Outlook без связи с Exchange не догружает новые письма, но локальный
+        # кэш уже содержит почту. Если за выбранный день пусто — показываем её.
+        cache_fallback = False
+        if not results and (
+            _outlook_offline(namespace) or _stale_inbox_warning(newest_inbox)
+        ):
+            cache_fallback = True
+            _collect(datetime(2000, 1, 1), datetime.now() + timedelta(days=1))
 
         results.sort(key=lambda item: item.get("datetime_sort") or "", reverse=True)
         for item in results:
@@ -1337,12 +1346,9 @@ def search_mail(input_data: dict) -> dict:
             "range_end": end_at.isoformat(),
             "profile_mailbox": _profile_mailbox_label(namespace),
         }
-        warning = _stale_inbox_warning(newest_inbox)
-        if not warning and _outlook_offline(namespace):
-            warning = OUTLOOK_OFFLINE_WARNING
-        if warning:
+        if cache_fallback or _outlook_offline(namespace) or _stale_inbox_warning(newest_inbox):
+            # Кэш не сохраняем как «свежий день»: после открытия Outlook список надо перечитать.
             payload["offline"] = True
-            payload["warning"] = warning
         if not results:
             payload["hint"] = (
                 "Писем по этому query нет. Не повторяй поиск с другими словами "

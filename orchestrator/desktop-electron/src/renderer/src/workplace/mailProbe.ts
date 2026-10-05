@@ -350,7 +350,7 @@ export async function loadOrchestratorMail(
     rows: rows.map(withFormattedMailTime),
     sourceLabel: `Outlook: ${mailbox || 'этот компьютер'}`,
     mailbox,
-    comError: ensured.ok ? ensured.warning || '' : ensured.error || 'Outlook недоступен'
+    comError: ensured.ok ? '' : ensured.error || 'Outlook недоступен'
   }
 }
 

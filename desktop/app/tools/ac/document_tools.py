@@ -99,6 +99,14 @@ class ReportExportDocumentTool(BaseTool):
                             "enum": ["docx", "md"],
                             "description": "Желаемый формат. По умолчанию docx с fallback в md.",
                         },
+                        "transcript_path": {
+                            "type": "string",
+                            "description": (
+                                "transcript_path из audio.transcribe: инструмент сам добавит "
+                                "в конец раздел «Расшифровка» со ВСЕМИ репликами и таймкодами. "
+                                "Текст расшифровки в sections не передавай."
+                            ),
+                        },
                     },
                     "required": ["filename"],
                 },
@@ -117,6 +125,17 @@ class ReportExportDocumentTool(BaseTool):
         theme = str(input_data.get("theme") or "navy").strip()
         kpis = as_kpis(input_data.get("kpis"))
         want = str(input_data.get("format") or "docx").strip().lower()
+        transcript_path = str(input_data.get("transcript_path") or "").strip()
+        transcript_lines = 0
+        if transcript_path:
+            try:
+                transcript = _load_transcript(transcript_path)
+            except RuntimeError as exc:
+                return self._fail("TRANSCRIPT_ERROR", str(exc))
+            lines = [line for line in transcript.splitlines() if line.strip()]
+            transcript_lines = sum(1 for line in lines if line.startswith("["))
+            # Пустая строка между репликами: в Markdown иначе соседние строки сливаются в абзац.
+            sections = [*sections, {"heading": "Расшифровка", "body": "\n\n".join(lines)}]
 
         try:
             workspace = self._resolver.for_agent(
@@ -155,6 +174,7 @@ class ReportExportDocumentTool(BaseTool):
                 "path": str(path),
                 "format": fmt,
                 "section_count": len(sections),
+                "transcript_lines": transcript_lines,
                 "theme": theme if fmt == "docx" else "md",
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
             },
@@ -223,6 +243,23 @@ class ReportExportDocumentTool(BaseTool):
             error_type=error_type,
             error_message=message,
         )
+
+
+def _load_transcript(transcript_path: str) -> str:
+    """Полный текст расшифровки с backend: файл лежит там, а не на этом компьютере."""
+    from app.tools import runtime_api
+
+    data = runtime_api.request(
+        "POST",
+        "/api/v1/tools/invoke",
+        json={"tool": "audio.transcript", "arguments": {"transcript_path": transcript_path}},
+        timeout=60,
+    )
+    result = data.get("result") if isinstance(data, dict) and "result" in data else data
+    text = str((result or {}).get("text") or "").strip() if isinstance(result, dict) else ""
+    if not text:
+        raise RuntimeError("Расшифровка по transcript_path не найдена на сервере")
+    return text
 
 
 def _docx_available() -> bool:

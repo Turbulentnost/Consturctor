@@ -17,6 +17,8 @@ import {
 } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
+import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import { DocflowAttachments } from './DocflowAttachments'
 import {
   loadForwardingCard,
   loadForwardingPage,
@@ -148,7 +150,7 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
   )
 }
 
-function ForwardingCardView({ card }: { card: ForwardingCard }): React.JSX.Element {
+function ForwardingCardView({ card, user }: { card: ForwardingCard; user: UserProfile }): React.JSX.Element {
   const { order: row, cargo, devices, orders, bases, stats } = card
   return (
     <>
@@ -164,6 +166,7 @@ function ForwardingCardView({ card }: { card: ForwardingCard }): React.JSX.Eleme
       </header>
       {row.address ? <p className="docflow-side-subject">{row.address}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowAttachments user={user} entity={ATTACHED_FILES.forwarding} ownerId={row.id} />
         <section className="docflow-card-block">
           <h4>Доставка</h4>
           <dl className="docflow-detail-list">
@@ -639,7 +642,7 @@ export function DocflowForwardingPanel({
             </button>
           </p>
         ) : card ? (
-          <ForwardingCardView card={card} />
+          <ForwardingCardView card={card} user={user} />
         ) : null}
       </aside>
     </div>

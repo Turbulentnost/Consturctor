@@ -658,6 +658,50 @@
   color: var(--content-muted);
 }
 
+.docflow-file-open-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.docflow-file-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #1565c0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.docflow-chips .docflow-file-open {
+  font-size: 11.5px;
+}
+
+.docflow-file-open:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.docflow-file-open:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
+
+.docflow-file-error {
+  display: block;
+  color: #9b1c1c;
+  font-size: 12px;
+  font-style: normal;
+}
+
 .docflow-secret-note {
   display: inline-flex;
   align-items: center;
@@ -713,6 +757,16 @@
   font-weight: 400;
   font-size: 12px;
   color: #5b6b80;
+}
+
+.docflow-audio-report .docflow-audio-remove {
+  height: 24px;
+  padding: 0 6px;
+  color: #b42318;
+}
+
+.docflow-audio-report .docflow-audio-remove:hover:not(:disabled) {
+  background: #fdecea;
 }
 
 .docflow-audio-report h5 {

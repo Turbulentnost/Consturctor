@@ -269,6 +269,41 @@ export function loadDocflowCorrespondenceSession(
   return load
 }
 
+const INCOMING_FILES_ENTITY = 'Catalog_ТД_ВходящаяКорреспонденцияПрисоединенныеФайлы'
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Письмо, из которого зарегистрирована входящая: .msg в присоединённых файлах документа.
+ * Тома 1С (\\srv2\erp_file) пользователям закрыты, поэтому байты идут через hs/dtw/files backend.
+ */
+export async function openIncomingLetter(user: UserProfile | null, row: CorrespondenceRow): Promise<void> {
+  if (!GUID_RE.test(row.id)) throw new Error('У документа нет ссылки 1С')
+  const res = await api.invokeServerTool(
+    'onec.odata_get',
+    onecGatewayInvokeArgs(user, {
+      entity: INCOMING_FILES_ENTITY,
+      filter: `ВладелецФайла_Key eq guid'${row.id}' and Расширение eq 'msg' and DeletionMark eq false`,
+      select: 'Ref_Key,Description,Расширение,ДатаСоздания',
+      orderby: 'ДатаСоздания desc',
+      top: 1
+    }),
+    60_000
+  )
+  if (!res.ok) throw new Error(res.error || 'Не удалось прочитать файлы документа в 1С')
+  const file = rowsFromResult(res.result)[0]
+  const fileId = String(file?.Ref_Key || '')
+  if (!fileId) throw new Error('К документу не приложено письмо (.msg)')
+  const name = String(file?.Description || row.number || 'letter').replace(/[\\/:*?"<>|]+/g, '_')
+  const result = await window.api.download({
+    url: `/api/v1/tools/onec-artifacts/${encodeURIComponent(fileId)}`,
+    defaultName: `${name}.msg`,
+    token: api.getToken(),
+    temporary: true,
+    openAfter: true
+  })
+  if (!result.ok) throw new Error(result.error || 'Не удалось открыть письмо')
+}
+
 export function correspondenceInPeriod<T extends { date: string }>(rows: T[], from: string, to: string): T[] {
   return rows.filter((row) => {
     const day = row.date.slice(0, 10)

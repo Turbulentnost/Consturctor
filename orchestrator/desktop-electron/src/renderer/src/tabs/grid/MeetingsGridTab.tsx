@@ -19,6 +19,7 @@ import {
 import { useMeetingProtocol } from '../../workplace/meetingProtocolStore'
 import {
   ensureOutlookMeetings,
+  findNextMeetingOccurrence,
   formatMeetingStamp,
   isOutlookFolderOwner,
   meetingFormatHint,
@@ -182,8 +183,14 @@ function MeetingDetailCard({
       const audioPath = paths?.[0]
       if (!audioPath) return
 
-      const workflowId = await resolveProtocolAgentWorkflowId()
-      const message = buildProtocolMessage(meeting, audioPath)
+      const [workflowId, nextMeetingStart] = await Promise.all([
+        resolveProtocolAgentWorkflowId(),
+        Promise.race([
+          findNextMeetingOccurrence(meeting, actorFio).catch(() => ''),
+          new Promise<string>((resolve) => window.setTimeout(() => resolve(''), 20_000))
+        ])
+      ])
+      const message = buildProtocolMessage(meeting, audioPath, { nextMeetingStart })
       const runId = runs.startRun({
         workflowId,
         title: PROTOCOL_AGENT_TITLE,
@@ -207,7 +214,7 @@ function MeetingDetailCard({
     } finally {
       setBusy(false)
     }
-  }, [busy, isRunning, meeting, rememberStart, runs])
+  }, [actorFio, busy, isRunning, meeting, rememberStart, runs])
 
   const hasDocx = Boolean(record?.reportFileId) && (record?.status === 'done' || Boolean(protocol?.number))
   const protocolRefKey = (resolvedProtocolRef || protocol?.refKey || '').trim()

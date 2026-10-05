@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 from app.services.docflow_document_tasks import fio_matches
@@ -283,6 +283,50 @@ def _field_of(item: Any, *keys: str) -> str:
 # --------------------------------------------------------------------------- body
 
 
+def previous_theme_protocol(theme_key: str, day: str) -> dict[str, Any] | None:
+    """Последний непомеченный протокол той же темы раньше дня совещания; проведённый важнее черновика."""
+    theme = _clean(theme_key)
+    if not _looks_like_guid(theme) or theme == _EMPTY_GUID:
+        return None
+    try:
+        rows = _rows(
+            _odata_get(
+                {
+                    "entity": PROTOCOL_ENTITY,
+                    "filter": (
+                        f"ТемаСовещания_Key eq guid'{theme}' and Date lt datetime'{_clean(day)[:10]}T00:00:00' "
+                        "and DeletionMark eq false"
+                    ),
+                    "select": "Ref_Key,Number,Date,Posted,Кабинет_Key,ДатаСледующегоСовещания",
+                    "top": _MAX_ROWS,
+                }
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    rows = [row for row in rows if isinstance(row, dict) and _clean(row.get("Date"))]
+    if not rows:
+        return None
+    return max(rows, key=lambda row: (bool(row.get("Posted")), _clean(row.get("Date"))))
+
+
+def _next_day_by_cadence(previous: dict[str, Any], day: str) -> str:
+    """Дата следующего совещания с тем же шагом, что у прошлого протокола (его Date → ДатаСледующегоСовещания)."""
+    try:
+        prev_day = date.fromisoformat(_clean(previous.get("Date"))[:10])
+        prev_next = date.fromisoformat(_clean(previous.get("ДатаСледующегоСовещания"))[:10])
+        current = date.fromisoformat(_clean(day)[:10])
+    except ValueError:
+        return ""
+    step = (prev_next - prev_day).days
+    if step <= 0 or step > 92:
+        return ""
+    target = current + timedelta(days=step)
+    while step < 7 and target.weekday() >= 5:
+        target += timedelta(days=1)
+    return f"{target.isoformat()}T00:00:00"
+
+
 def build_protocol_create_body(
     args: dict[str, Any],
     *,
@@ -380,8 +424,22 @@ def build_protocol_create_body(
         room_key = resolve_ref(ROOM_ENTITY, _ROOM_ALIASES.get(room_query.lower(), room_query))
         if not room_key:
             unresolved.append(f"кабинет «{room_query}»")
-    if not room_key and theme and _looks_like_guid(theme.get("Кабинет_Key")):
+    if not room_key and theme and _looks_like_guid(theme.get("Кабинет_Key")) and theme["Кабинет_Key"] != _EMPTY_GUID:
         room_key = str(theme["Кабинет_Key"])
+
+    next_day = _day_value(_first(args, "next_meeting_date", "ДатаСледующегоСовещания"))
+    if theme_key and (not room_key or not next_day):
+        previous = previous_theme_protocol(theme_key, day_only)
+        if previous:
+            meta["previous_protocol"] = _clean(previous.get("Number"))
+            previous_room = _clean(previous.get("Кабинет_Key"))
+            if not room_key and _looks_like_guid(previous_room) and previous_room != _EMPTY_GUID:
+                room_key = previous_room
+                meta["room_source"] = f"протокол {meta['previous_protocol']}"
+            if not next_day:
+                next_day = _next_day_by_cadence(previous, day_only)
+                if next_day:
+                    meta["next_meeting_source"] = f"периодичность по протоколу {meta['previous_protocol']}"
 
     access_query = _clean(_first(args, "access", "ГрифДоступа")) or DEFAULT_ACCESS_LABEL
     access_key = _clean(_first(args, "access_key", "ГрифДоступа_Key")) or resolve_ref(
@@ -462,8 +520,9 @@ def build_protocol_create_body(
         decision_rows.append(row)
 
     # ----- tasks («Поставленные задачи»)
+    # ПостоянныеЗадачиПротокола — нижняя таблица вкладки «Задачи для контроля»: задача,
+    # записанная ещё и туда, показывается в форме дважды. Её ведут вручную в 1С.
     task_rows: list[dict[str, Any]] = []
-    standing_rows: list[dict[str, Any]] = []
     for item in _as_list(_first(args, "tasks", "assignments", "Задачи", "Поручения"))[:_MAX_ROWS]:
         text = _text_of(item, "text", "task", "title", "Задача", "what")
         if not text:
@@ -481,32 +540,15 @@ def build_protocol_create_body(
             "Отправлена": False,
         }
         executor = _field_of(item, "executor", "responsible", "who", "assignee", "Ответственный")
-        executor_fio = _clean(executor)
         if executor:
             try:
-                resolved = resolve_person(executor)
-                row["Ответственный_Key"] = resolved["ref_key"]
-                executor_fio = resolved["fio"] or executor_fio
+                row["Ответственный_Key"] = resolve_person(executor)["ref_key"]
             except ProtocolWriteError:
                 unresolved.append(f"исполнитель задачи «{executor}»")
         due = _day_value(_field_of(item, "due", "deadline", "term", "Срок"), end=True)
         if due:
             row["ДатаФактическогоИсполнения"] = due
         task_rows.append(row)
-        mirror: dict[str, Any] = {
-            "LineNumber": line_no,
-            "НомерПунктаПротокола": point,
-            "Задача": text,
-            "Автор_Key": leader["ref_key"],
-            "ДатаПостановкиЗадачи": day_only,
-            "Примечание": row["Примечание"],
-            "Приоритет": row["Приоритет"],
-        }
-        if executor_fio:
-            mirror["Ответственный"] = executor_fio
-        if due:
-            mirror["ДатаФактическогоИсполнения"] = due
-        standing_rows.append(mirror)
 
     raw_comment = _UNRESOLVED_NOTE_RE.sub("", str(_first(args, "comment", "Комментарий") or ""))
     comment = "\n".join(filter(None, (_clean(line) for line in raw_comment.splitlines())))
@@ -533,7 +575,6 @@ def build_protocol_create_body(
         "ПовесткаСовещания": agenda_rows,
         "Решения": decision_rows,
         TASKS_PART: task_rows,
-        STANDING_TASKS_PART: standing_rows,
     }
     if theme_key:
         body["ТемаСовещания_Key"] = theme_key
@@ -551,7 +592,6 @@ def build_protocol_create_body(
         body["ВремяНачалаСовещания"] = start
     if end:
         body["ВремяОкончанияСовещания"] = end
-    next_day = _day_value(_first(args, "next_meeting_date", "ДатаСледующегоСовещания"))
     if next_day:
         body["ДатаСледующегоСовещания"] = next_day
     period_from = _day_value(_first(args, "report_period_from", "ОтчетныйПериодДатаНачала"))
@@ -886,6 +926,18 @@ def build_protocol_update_body(
         if marker not in new_comment:
             new_comment = f"{new_comment}\n{marker}".strip()
     body["Комментарий"] = new_comment
+    standing = _protocol_rows(card, STANDING_TASKS_PART)
+    task_texts = {
+        _clean(row.get("Задача")).casefold()
+        for row in [*_protocol_rows(card, TASKS_PART), *body[TASKS_PART]]
+        if _clean(row.get("Задача"))
+    }
+    kept = [row for row in standing if _clean(row.get("Задача")).casefold() not in task_texts]
+    if len(kept) != len(standing) and not task_table_block(standing):
+        body[STANDING_TASKS_PART] = [
+            {**_row_copy(row), "LineNumber": str(index)} for index, row in enumerate(kept, start=1)
+        ]
+        meta["control_copies_removed"] = len(standing) - len(kept)
     return body, meta
 
 
@@ -1272,6 +1324,13 @@ def handle_protocol_write(
     summary = f"Создан протокол {number or ref_key} в 1С (черновик, статус «{body['Статус']}»)"
     if meta["unresolved"]:
         summary += f"; не сопоставлено: {len(meta['unresolved'])}"
+    if meta.get("room_source"):
+        summary += f"; кабинет взят из {meta['room_source']}"
+    if meta.get("next_meeting_source"):
+        summary += (
+            f"; дата следующего совещания {body['ДатаСледующегоСовещания'][:10]} — {meta['next_meeting_source']}, "
+            "проверь по календарю"
+        )
     summary += _register_note(register)
     return {
         "summary": summary,
@@ -1295,8 +1354,10 @@ _NEXT_SKIP_ARGS = frozenset({"action", "ref_key", "Ref_Key", "source_ref_key", "
 def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     """Create-args for the next meeting built from read_protocol_form() of the previous one.
 
-    Header, attendees and agenda are copied; previous tasks are carried over for execution
-    control and the agenda gets a control item for them. Decisions stay with the old protocol.
+    Header, attendees and agenda are copied; decisions stay with the old protocol. Open tasks
+    of the theme reach «Задачи для контроля» from the task register by themselves — copied into
+    the new protocol they would be assigned again and listed twice — so only a control agenda
+    item is added for them.
     """
     form = previous.get("form") if isinstance(previous.get("form"), dict) else {}
     number = _clean(previous.get("number"))
@@ -1307,11 +1368,7 @@ def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> d
             f"В прошлом протоколе{(' ' + number) if number else ''} не указана дата следующего совещания — "
             "передай date (YYYY-MM-DD)"
         )
-    tasks = [
-        {key: task.get(key) for key in ("text", "executor", "due", "priority", "note", "item")}
-        for task in form.get("tasks") or []
-        if isinstance(task, dict) and _clean(task.get("text"))
-    ]
+    tasks = [task for task in form.get("tasks") or [] if isinstance(task, dict) and _clean(task.get("text"))]
     agenda = [
         {"question": _clean(row.get("question")), "responsible": _clean(row.get("responsible"))}
         for row in form.get("agenda") or []
@@ -1337,7 +1394,6 @@ def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> d
         "meeting_type": form.get("meeting_type"),
         "participants": list(form.get("participants") or []),
         "agenda": agenda,
-        "tasks": tasks,
         "report_period_from": prev_day or day,
         "report_period_to": day,
         "comment": basis,
@@ -1370,10 +1426,12 @@ def _next_protocol(
     )
     result["source_ref_key"] = source
     result["source_number"] = _clean(previous.get("number"))
-    result["carried_tasks"] = len(create_args.get("tasks") or [])
+    result["control_tasks"] = sum(
+        1 for task in previous.get("form", {}).get("tasks") or [] if isinstance(task, dict) and _clean(task.get("text"))
+    )
     result["summary"] = (
         f"{result.get('summary') or 'Создан протокол'}; на основе {result['source_number'] or source}, "
-        f"перенесено задач: {result['carried_tasks']}"
+        f"задач прошлого протокола на контроле: {result['control_tasks']}"
     )
     return result
 

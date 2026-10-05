@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 from pathlib import Path
@@ -34,6 +35,12 @@ ALLOWED_EXTENSIONS = frozenset(
     }
 )
 
+_SAMPLE_RATE = 16000
+_CHUNK_SECONDS = 600
+# ~10–12 минут речи и ~12 тыс. символов: часть целиком помещается в один ответ инструмента.
+TRANSCRIPT_PART_SEGMENTS = 120
+_SPAN_RE = re.compile(r"^\[([0-9:]+)[–-]([0-9:]+)\]")
+
 _model: Any = None
 _model_name = ""
 _model_lock = threading.Lock()
@@ -42,23 +49,48 @@ _inflight: dict[str, threading.Event] = {}
 _inflight_lock = threading.Lock()
 
 
+DEFAULT_MODEL = "small"
+DEFAULT_BEAM_SIZE = 5
+
+
 def _wanted_model() -> str:
-    return (os.environ.get("WHISPER_MODEL") or "small").strip() or "small"
+    return (os.environ.get("WHISPER_MODEL") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
 
 def _beam_size() -> int:
-    """Greedy decoding by default: ~3x faster than beam 5 on CPU with the same text on meetings."""
+    """Beam 5 by default for accuracy; WHISPER_BEAM_SIZE=1 is ~3x faster on CPU."""
     raw = (os.environ.get("WHISPER_BEAM_SIZE") or "").strip()
     try:
-        return max(1, min(10, int(raw))) if raw else 1
+        return max(1, min(10, int(raw))) if raw else DEFAULT_BEAM_SIZE
     except ValueError:
-        return 1
+        return DEFAULT_BEAM_SIZE
 
 
 def _cpu_threads() -> int:
     """Leave a couple of cores so /health and the rest of the API stay responsive."""
     cores = os.cpu_count() or 2
     return max(1, cores - 2)
+
+
+def _install_faster_whisper() -> None:
+    """Desktop app starts backend with the machine's own Python, which may lack the audio stack
+    (faster-whisper + PyAV decoder for wav/mp3/m4a); install it into that interpreter once."""
+    import importlib
+    import subprocess
+    import sys
+
+    command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "faster-whisper>=1.0.0"]
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Не удалось установить faster-whisper на backend: {exc}") from exc
+    if done.returncode != 0:
+        tail = (done.stderr or done.stdout or "").strip().splitlines()[-3:]
+        raise RuntimeError(
+            "Не удалось установить faster-whisper на backend "
+            f"({sys.executable} -m pip install faster-whisper): {' '.join(tail)[:400]}"
+        )
+    importlib.invalidate_caches()
 
 
 def _get_model() -> Any:
@@ -70,12 +102,14 @@ def _get_model() -> Any:
             return _model
         try:
             from faster_whisper import WhisperModel
-        except ImportError as exc:
-            raise RuntimeError(
-                "Модуль faster-whisper не установлен на backend: "
-                "установите faster-whisper (pip install faster-whisper) "
-                "и перезапустите сервис."
-            ) from exc
+        except ImportError:
+            _install_faster_whisper()
+            try:
+                from faster_whisper import WhisperModel
+            except ImportError as exc:
+                raise RuntimeError(
+                    "faster-whisper установлен, но не импортируется на backend — перезапустите сервис"
+                ) from exc
         _model = WhisperModel(
             wanted, device="cpu", compute_type="int8", cpu_threads=_cpu_threads()
         )
@@ -134,8 +168,33 @@ def _write_transcript(filename: str, segments: list[dict[str, Any]], duration_se
     return path
 
 
-def read_transcript(transcript_path: str) -> dict[str, Any]:
-    """Текст расшифровки по transcript_path из ответа audio.transcribe — только файлы этой папки."""
+def transcript_parts(segment_count: int) -> int:
+    return max(1, -(-int(segment_count) // TRANSCRIPT_PART_SEGMENTS))
+
+
+def _segment_lines(text: str) -> tuple[list[str], list[str]]:
+    lines = text.splitlines()
+    head: list[str] = []
+    body: list[str] = []
+    for line in lines:
+        if line.startswith("["):
+            body.append(line)
+        elif not body and line.strip():
+            head.append(line)
+    return head, body
+
+
+def _line_span(line: str) -> tuple[str, str]:
+    match = _SPAN_RE.match(line)
+    return (match.group(1), match.group(2)) if match else ("", "")
+
+
+def read_transcript(transcript_path: str, part: Any = None) -> dict[str, Any]:
+    """Текст расшифровки по transcript_path из ответа audio.transcribe — только файлы этой папки.
+
+    part (1…parts) — кусок по TRANSCRIPT_PART_SEGMENTS реплик: чтение агентом целиком
+    обрезает середину длинной записи, а по частям он видит каждую реплику.
+    """
     folder = _transcript_dir().resolve()
     try:
         path = Path(str(transcript_path or "").strip()).resolve()
@@ -145,7 +204,41 @@ def read_transcript(transcript_path: str) -> dict[str, Any]:
         raise RuntimeError("Это не файл расшифровки audio.transcribe")
     if not path.is_file():
         raise RuntimeError("Расшифровка не найдена — её удалили вместе с временными файлами сервера")
-    return {"ok": True, "transcript_path": str(path), "text": path.read_text(encoding="utf-8")}
+    text = path.read_text(encoding="utf-8")
+    head, body = _segment_lines(text)
+    parts = transcript_parts(len(body))
+    result: dict[str, Any] = {
+        "ok": True,
+        "transcript_path": str(path),
+        "segment_count": len(body),
+        "parts": parts,
+    }
+    if part in (None, ""):
+        return {**result, "text": text}
+    try:
+        index = int(part)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("part — номер части, целое число от 1") from exc
+    if index < 1 or index > parts:
+        raise RuntimeError(f"Части {index} нет: в расшифровке {parts} частей (part от 1 до {parts})")
+    start = (index - 1) * TRANSCRIPT_PART_SEGMENTS
+    chunk = body[start : start + TRANSCRIPT_PART_SEGMENTS]
+    begin = _line_span(chunk[0])[0] if chunk else ""
+    end = _line_span(chunk[-1])[1] if chunk else ""
+    title = f"Часть {index} из {parts}, реплики {start + 1}–{start + len(chunk)} из {len(body)}, [{begin}–{end}]"
+    return {
+        **result,
+        "part": index,
+        "from": begin,
+        "to": end,
+        "next_part": index + 1 if index < parts else None,
+        "text": "\n".join([*head, title, "", *chunk]),
+        "note": (
+            f"Прочитай следующую часть: part={index + 1}."
+            if index < parts
+            else "Это последняя часть: расшифровка прочитана целиком."
+        ),
+    }
 
 
 def _disk_cache_path(cache_key: str) -> Path:
@@ -181,19 +274,32 @@ def _short_result(
     prompt: str,
 ) -> dict[str, Any]:
     preview = "\n".join(str(row["text"]) for row in segments[:8]).strip()
+    return _with_parts(
+        {
+            "ok": True,
+            "cached": cached,
+            "filename": filename,
+            "duration_sec": duration_sec,
+            "segment_count": len(segments),
+            "transcript_path": str(path),
+            "preview": preview[:800],
+            "diarization": "none",
+            "names_hint": prompt,
+        }
+    )
+
+
+def _with_parts(result: dict[str, Any]) -> dict[str, Any]:
+    """Число частей и подсказка чтения — и для расшифровок из кэша прежних версий."""
+    parts = transcript_parts(int(result.get("segment_count") or 0))
     return {
-        "ok": True,
-        "cached": cached,
-        "filename": filename,
-        "duration_sec": duration_sec,
-        "segment_count": len(segments),
-        "transcript_path": str(path),
-        "preview": preview[:800],
-        "diarization": "none",
-        "names_hint": prompt,
+        **result,
+        "parts": parts,
         "note": (
-            "Полная расшифровка с таймкодами записана в transcript_path. "
-            "Прочитай этот файл один раз и больше не вызывай audio.transcribe для того же вложения. "
+            f"Полная расшифровка с таймкодами записана в transcript_path, {parts} частей. "
+            f"Прочитай её целиком инструментом audio.transcript: part=1, 2, … {parts} по порядку, "
+            "не пропуская ни одной части. Файл напрямую не читай — длинный текст обрезается посередине. "
+            "Больше не вызывай audio.transcribe для того же вложения. "
             "Меток говорящих нет: реплику подписывай ФИО только при обращении или самопредставлении, иначе «Участник N»."
         ),
     }
@@ -250,11 +356,11 @@ def transcribe_run_attachment(
     with _inflight_lock:
         cached = _cache.get(cache_key)
         if cached is not None and Path(str(cached.get("transcript_path") or "")).is_file():
-            return {**cached, "cached": True}
+            return _with_parts({**cached, "cached": True})
         stored = _read_disk_cache(cache_key)
         if stored is not None:
             _cache[cache_key] = stored
-            return {**stored, "cached": True}
+            return _with_parts({**stored, "cached": True})
         waiter = _inflight.get(cache_key)
         if waiter is None:
             waiter = threading.Event()
@@ -265,7 +371,7 @@ def transcribe_run_attachment(
     if not owner:
         # A retry of the same file waits for the run already in progress
         # instead of starting a second transcription and starving the API.
-        waiter.wait(timeout=3600)
+        waiter.wait(timeout=7200)
         with _inflight_lock:
             cached = _cache.get(cache_key)
         if cached is not None:
@@ -293,6 +399,13 @@ def transcribe_run_attachment(
             _inflight.pop(cache_key, None)
 
 
+def _decode(path: Path) -> Any:
+    """Mono float32 samples at 16 kHz (PyAV inside faster-whisper: wav, mp3, m4a, …)."""
+    from faster_whisper.audio import decode_audio
+
+    return decode_audio(str(path), sampling_rate=_SAMPLE_RATE)
+
+
 def _transcribe_bytes(
     raw: bytes, *, suffix: str, filename: str, prompt: str
 ) -> tuple[list[dict[str, Any]], float]:
@@ -311,18 +424,25 @@ def _transcribe_bytes(
         }
         if prompt:
             options["initial_prompt"] = prompt
-        segments_iter, info = model.transcribe(str(tmp_path), **options)
-        segments = [
-            {
-                "start": round(float(segment.start or 0.0), 2),
-                "end": round(float(segment.end or 0.0), 2),
-                "text": segment.text.strip(),
-            }
-            for segment in segments_iter
-            if segment.text and segment.text.strip()
-        ]
+        audio = _decode(tmp_path)
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
 
-    return segments, round(float(getattr(info, "duration", 0.0) or 0.0), 2)
+    # Whisper builds the spectrogram of the whole input at once: an hour of audio needs ~0.5 GB
+    # in one block and fails with MemoryError on a busy machine. Chunks keep it to ~80 MB.
+    segments: list[dict[str, Any]] = []
+    step = _CHUNK_SECONDS * _SAMPLE_RATE
+    for begin in range(0, len(audio), step):
+        offset = begin / _SAMPLE_RATE
+        segments_iter, _info = model.transcribe(audio[begin : begin + step], **options)
+        segments.extend(
+            {
+                "start": round(offset + float(segment.start or 0.0), 2),
+                "end": round(offset + float(segment.end or 0.0), 2),
+                "text": segment.text.strip(),
+            }
+            for segment in segments_iter
+            if segment.text and segment.text.strip()
+        )
+    return segments, round(len(audio) / _SAMPLE_RATE, 2)

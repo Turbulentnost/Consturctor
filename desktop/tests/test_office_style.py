@@ -161,6 +161,30 @@ def test_export_document_styles_word_table(tmp_path: Path) -> None:
     assert fill.upper() == "1B4F72"
 
 
+def test_export_document_inserts_full_transcript(tmp_path: Path, monkeypatch) -> None:
+    from app.tools.ac import document_tools
+
+    lines = [f"[00:{i:02d}–00:{i:02d}] реплика {i}" for i in range(40)]
+    monkeypatch.setattr(
+        document_tools, "_load_transcript", lambda path: "Файл: a.wav\n\n" + "\n".join(lines)
+    )
+    result = ReportExportDocumentTool(AgentWorkspaceResolver(tmp_path)).execute(
+        {
+            "workflow_id": "wf-transcript",
+            "filename": "transcript-2026-10-01",
+            "format": "md",
+            "title": "Расшифровка",
+            "sections": [{"heading": "Сведения", "body": "Дата: 2026-10-01"}],
+            "transcript_path": "C:/tmp/abc-a.txt",
+        }
+    )
+    assert result.ok
+    assert result.output_data["transcript_lines"] == 40
+    text = Path(result.output_data["path"]).read_text(encoding="utf-8")
+    assert "## Расшифровка" in text
+    assert all(line in text for line in lines)
+
+
 def test_normalize_excel_newlines_keeps_windows_paths() -> None:
     from app.tools.ac.office_style import _normalize_excel_newlines
 

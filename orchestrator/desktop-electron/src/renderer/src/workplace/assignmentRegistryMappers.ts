@@ -75,12 +75,22 @@ export function resolveRegistryRowTone(
   return 'neutral'
 }
 
+export function isCancelledStatus(status: string): boolean {
+  return /отмен/i.test(status)
+}
+
+/** Выполненные и отменённые: оба закрывают поручение. */
+export function isCompletedAssignment(row: Pick<AssignmentRegistryRow, 'open' | 'status'>): boolean {
+  return !row.open || isCancelledStatus(row.status)
+}
+
 export function mapAssignmentFromApi(row: Record<string, unknown>): AssignmentRegistryRow {
   const number = String(row.number || '').trim()
   const ref = String(row.ref_key || '').trim()
   const status = String(row.status || '').trim() || '—'
-  const open = row.open !== false && !/принято|закрыто|исполнено|отменено/i.test(status)
-  const overdue = Boolean(row.overdue)
+  const cancelled = isCancelledStatus(status)
+  const open = !cancelled && row.open !== false && !/принято|закрыто|исполнено/i.test(status)
+  const overdue = !cancelled && Boolean(row.overdue)
   const linesRaw = Array.isArray(row.lines) ? row.lines : []
   const lines = linesRaw
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')

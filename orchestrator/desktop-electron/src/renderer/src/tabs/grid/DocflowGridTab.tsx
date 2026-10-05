@@ -5,6 +5,7 @@ import {
   FileText,
   Inbox,
   Mail,
+  MailOpen,
   NotebookPen,
   ScrollText,
   Send,
@@ -20,9 +21,12 @@ import {
   correspondenceInPeriod,
   formatCorrespondenceDate,
   loadDocflowCorrespondenceSession,
+  openIncomingLetter,
   type CorrespondenceKind,
   type CorrespondenceRow
 } from '../../workplace/fetchDocflowCorrespondence'
+import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import { DocflowAttachments } from './DocflowAttachments'
 import { DocflowAssignmentsPanel } from './DocflowAssignmentsPanel'
 import { DocflowIncentiveOrdersPanel } from './DocflowIncentiveOrdersPanel'
 import { DocflowForwardingPanel } from './DocflowForwardingPanel'
@@ -140,7 +144,33 @@ function correspondenceSortValue(row: CorrespondenceRow, key: string): string {
   return map[key] ?? ''
 }
 
-function CorrespondenceCard({ row }: { row: CorrespondenceRow }): React.JSX.Element {
+function CorrespondenceCard({
+  row,
+  user,
+  kind
+}: {
+  row: CorrespondenceRow
+  user: UserProfile
+  kind: CorrespondenceKind
+}): React.JSX.Element {
+  const [opening, setOpening] = useState(false)
+  const [letterError, setLetterError] = useState('')
+
+  useEffect(() => setLetterError(''), [row.id])
+
+  const openLetter = async (): Promise<void> => {
+    if (opening) return
+    setOpening(true)
+    setLetterError('')
+    try {
+      await openIncomingLetter(user, row)
+    } catch (err) {
+      setLetterError(err instanceof Error ? err.message : 'Не удалось открыть письмо')
+    } finally {
+      setOpening(false)
+    }
+  }
+
   return (
     <>
       <header className="docflow-detail-head">
@@ -148,9 +178,28 @@ function CorrespondenceCard({ row }: { row: CorrespondenceRow }): React.JSX.Elem
           <h3>№ {cell(row.number)}</h3>
           <p>{formatCorrespondenceDate(row.date)}</p>
         </div>
+        {kind === 'incoming' ? (
+          <div className="docflow-detail-actions">
+            <button
+              type="button"
+              className="docflow-edit-btn"
+              disabled={opening}
+              title="Открыть письмо, из которого зарегистрирован документ"
+              onClick={() => void openLetter()}
+            >
+              <MailOpen size={14} aria-hidden /> {opening ? 'Открываем…' : 'Открыть письмо'}
+            </button>
+          </div>
+        ) : null}
       </header>
+      {letterError ? <p className="docflow-edit-notice is-error">{letterError}</p> : null}
       {row.comment ? <p className="docflow-side-subject">{row.comment}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowAttachments
+          user={user}
+          entity={kind === 'incoming' ? ATTACHED_FILES.incoming : ATTACHED_FILES.outgoing}
+          ownerId={row.id}
+        />
         <section className="docflow-card-block">
           <h4>Реквизиты</h4>
           <dl className="docflow-detail-list">
@@ -454,7 +503,7 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
                 </div>
                 <aside className="docflow-side wp-card" aria-label="Карточка письма">
                   {selected ? (
-                    <CorrespondenceCard row={selected} />
+                    <CorrespondenceCard row={selected} user={user} kind={kind} />
                   ) : (
                     <p className="docflow-status">Выберите письмо, чтобы увидеть карточку</p>
                   )}

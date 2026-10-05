@@ -61,7 +61,8 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
           setError(batch.error || 'Outlook недоступен')
           return
         }
-        const combined = filterMessagesOnDay(batch.messages, dayIso).sort((left, right) =>
+        const onDay = filterMessagesOnDay(batch.messages, dayIso)
+        const combined = (onDay.length ? onDay : batch.messages).sort((left, right) =>
           String(right.datetime || right.sent_at || right.received_at || '').localeCompare(
             String(left.datetime || left.sent_at || left.received_at || '')
           )
@@ -87,11 +88,10 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
           return true
         })
         const nextSource = batch.cached ? 'outlook_com (cache)' : 'outlook_com (All)'
-        const nextError = batch.warning || ''
         setSource(nextSource)
         setRows(nextRows)
-        setError(nextRows.length ? '' : nextError)
-        if (!batch.warning) {
+        setError('')
+        if (onDay.length && !batch.warning && !batch.offline) {
           writeGridCache(cacheKey, { error: '', source: nextSource, rows: nextRows })
         }
       } catch (err) {

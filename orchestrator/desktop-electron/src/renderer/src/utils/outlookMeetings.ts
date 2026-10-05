@@ -349,6 +349,47 @@ export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()
   }).length
 }
 
+function calendarScope(owner: string): { baseCalendar: string; calendarOwners: string[]; askOwners: boolean } {
+  const baseCalendar = sharedMeetingCalendarFor(owner)
+  const tracked = readTrackedCalendars(owner).filter(
+    (person) => !baseCalendar || !samePersonFio(person, baseCalendar)
+  )
+  const calendarOwners = [baseCalendar || owner, ...tracked].filter(
+    (person, index, all) =>
+      Boolean(person) && all.findIndex((item) => samePersonFio(item, person)) === index
+  )
+  return { baseCalendar, calendarOwners, askOwners: Boolean(baseCalendar || tracked.length) }
+}
+
+function subjectKey(subject: string): string {
+  return (subject || '').toLowerCase().replace(/^(re|fw|fwd|rv|ответ|пересл)\s*:\s*/i, '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Start of the next meeting of the same series (same subject) after `meeting`, up to 45 days
+ * ahead; '' when Outlook has none or does not answer. Bypasses the day cache: it holds only
+ * the window the calendar grid shows.
+ */
+export async function findNextMeetingOccurrence(meeting: MeetingEvent, owner: string): Promise<string> {
+  const start = parseMeetingTime(meeting.start)
+  const key = subjectKey(meeting.subject)
+  if (!start || !key) return ''
+  const from = addDays(new Date(start.getFullYear(), start.getMonth(), start.getDate()), 1)
+  const { calendarOwners, askOwners } = calendarScope((owner || '').trim())
+  const result = await requestOutlookMeetings({
+    dateFrom: dayKey(from),
+    dateTo: dayKey(addDays(from, 45)),
+    ...(askOwners ? { calendarOwners } : {})
+  })
+  if (!result.ok) return ''
+  const next = result.meetings
+    .filter((item) => subjectKey(item.subject) === key)
+    .map((item) => ({ item, at: parseMeetingTime(item.start) }))
+    .filter((row): row is { item: MeetingEvent; at: Date } => Boolean(row.at) && row.at!.getTime() >= from.getTime())
+    .sort((a, b) => a.at.getTime() - b.at.getTime())[0]
+  return next ? next.item.start : ''
+}
+
 export async function ensureOutlookMeetings(
   view: CalendarView,
   anchor: Date,
@@ -359,15 +400,7 @@ export async function ensureOutlookMeetings(
   const toKey = dayKey(addDays(win.to, -1))
   const today = dayKey(new Date())
   const owner = (options.owner || '').trim()
-  const baseCalendar = sharedMeetingCalendarFor(owner)
-  const tracked = readTrackedCalendars(owner).filter(
-    (person) => !baseCalendar || !samePersonFio(person, baseCalendar)
-  )
-  const calendarOwners = [baseCalendar || owner, ...tracked].filter(
-    (person, index, all) =>
-      Boolean(person) && all.findIndex((item) => samePersonFio(item, person)) === index
-  )
-  const askOwners = Boolean(baseCalendar || tracked.length)
+  const { baseCalendar, calendarOwners, askOwners } = calendarScope(owner)
   const cacheOwner = askOwners ? `${owner}@${calendarOwners.join('|')}` : owner
 
   if (!options.force) {

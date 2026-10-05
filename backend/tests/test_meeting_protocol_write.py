@@ -65,6 +65,7 @@ def _fake_resolvers(monkeypatch):
     monkeypatch.setattr(mpw, "resolve_person", resolve_person)
     monkeypatch.setattr(mpw, "resolve_theme", resolve_theme)
     monkeypatch.setattr(mpw, "resolve_ref", resolve_ref)
+    monkeypatch.setattr(mpw, "previous_theme_protocol", lambda theme_key, day: None)
 
 
 @pytest.fixture(autouse=True)
@@ -133,8 +134,8 @@ def test_tabular_sections_map_to_1c_fields():
     assert decisions[1]["ДатаОкончания"] == "2026-09-24T23:59:59"
 
     tasks = body["ПеременныеЗадачиПротокола"]
-    standing = body["ПостоянныеЗадачиПротокола"]
-    assert len(tasks) == len(standing) == 2
+    assert len(tasks) == 2
+    assert "ПостоянныеЗадачиПротокола" not in body  # иначе задача дважды на вкладке «Задачи для контроля»
     assert tasks[0]["Задача"].startswith("Проверить в outlook")
     assert tasks[0]["Ответственный_Key"] == PERSONS["Жалыбин Максим Дмитриевич"]
     assert "Ответственный" not in tasks[0]
@@ -471,13 +472,69 @@ def test_update_patches_draft_and_keeps_outlook_marker(monkeypatch):
         assert field not in body
     assert body["ПовесткаСовещания"][0]["Вопрос"] == "Статус ИИ-агентов"
     assert len(body["Решения"]) == 2 and len(body["ПеременныеЗадачиПротокола"]) == 2
-    assert len(body["ПостоянныеЗадачиПротокола"]) == 2
+    assert "ПостоянныеЗадачиПротокола" not in body
     assert body["ПеременныеЗадачиПротокола"][0]["Ответственный_Key"] == PERSONS["Жалыбин Максим Дмитриевич"]
-    assert body["ПостоянныеЗадачиПротокола"][0]["Ответственный"] == "Жалыбин Максим Дмитриевич"
     assert body["Комментарий"].startswith("Правки вручную")
     assert "outlook:AAMkAGI2" in body["Комментарий"]
     assert result["updated"] is True and result["number"] == "ДР__062_О_426"
     assert result["ref_key"] == PROTOCOL_KEY
+
+
+def test_update_drops_agent_copies_from_control_tab_keeps_manual_rows(monkeypatch):
+    card = _card(
+        ПостоянныеЗадачиПротокола=[
+            {"LineNumber": "1", "Задача": "Сделать расчёт КПИ", "Ответственный": "Мегрелишвили Михаил Эмзарович"},
+            {"LineNumber": "2", "Задача": "Постоянная задача", "Ответственный": "Давлетов Руслан Игоревич"},
+            {"LineNumber": "3", "Задача": "Проверить в outlook регистрацию вх.корр в 1с", "Ответственный": ""},
+        ]
+    )
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get(card))
+    body, meta = mpw.build_protocol_update_body(_args(), card, actor_fio="Жалыбин Максим Дмитриевич")
+    assert [(row["LineNumber"], row["Задача"]) for row in body["ПостоянныеЗадачиПротокола"]] == [
+        ("1", "Постоянная задача")
+    ]
+    assert meta["control_copies_removed"] == 2
+
+
+def test_create_takes_room_and_next_date_from_previous_theme_protocol(monkeypatch):
+    seen: list[tuple[str, str]] = []
+
+    def previous(theme_key, day):
+        seen.append((theme_key, day))
+        return {
+            "Number": "ДР__062_О_440",
+            "Date": "2026-09-17T09:00:00",
+            "Posted": True,
+            "Кабинет_Key": "84107ae4-e273-11ec-88d8-ac1f6b05524d",
+            "ДатаСледующегоСовещания": "2026-09-18T00:00:00",
+        }
+
+    monkeypatch.setattr(mpw, "previous_theme_protocol", previous)
+    args = _args()
+    args.pop("room")
+    body, meta = mpw.build_protocol_create_body(args, actor_fio="Жалыбин Максим Дмитриевич")
+    assert seen == [(THEME["Ref_Key"], "2026-09-21T00:00:00")]
+    assert body["Кабинет_Key"] == "84107ae4-e273-11ec-88d8-ac1f6b05524d"
+    assert body["ДатаСледующегоСовещания"] == "2026-09-22T00:00:00"
+    assert meta["room_source"] == "протокол ДР__062_О_440"
+    assert "ДР__062_О_440" in meta["next_meeting_source"]
+
+
+def test_explicit_room_and_next_date_win_over_previous_protocol(monkeypatch):
+    monkeypatch.setattr(mpw, "previous_theme_protocol", lambda *_: pytest.fail("no lookup needed"))
+    args = {**_args(), "next_meeting_date": "2026-09-28"}
+    body, meta = mpw.build_protocol_create_body(args, actor_fio="Жалыбин Максим Дмитриевич")
+    assert body["Кабинет_Key"] == "35ccfb35-ad89-11f0-9720-6cb31113810e"
+    assert body["ДатаСледующегоСовещания"] == "2026-09-28T00:00:00"
+    assert "room_source" not in meta and "next_meeting_source" not in meta
+
+
+def test_next_day_by_cadence_skips_weekend_for_daily_meetings():
+    previous = {"Date": "2026-09-28T08:15:00", "ДатаСледующегоСовещания": "2026-09-29T00:00:00"}
+    assert mpw._next_day_by_cadence(previous, "2026-10-02T00:00:00") == "2026-10-05T00:00:00"
+    weekly = {"Date": "2026-09-21T00:00:00", "ДатаСледующегоСовещания": "2026-09-28T00:00:00"}
+    assert mpw._next_day_by_cadence(weekly, "2026-10-01T00:00:00") == "2026-10-08T00:00:00"
+    assert mpw._next_day_by_cadence({"Date": "2026-09-21", "ДатаСледующегоСовещания": "0001-01-01"}, "2026-10-01") == ""
 
 
 def test_update_refuses_posted_protocol(monkeypatch):
