@@ -25,6 +25,8 @@ import {
   type CorrespondenceKind,
   type CorrespondenceRow
 } from '../../workplace/fetchDocflowCorrespondence'
+import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import { DocflowAttachments } from './DocflowAttachments'
 import { DocflowAssignmentsPanel } from './DocflowAssignmentsPanel'
 import { DocflowIncentiveOrdersPanel } from './DocflowIncentiveOrdersPanel'
 import { DocflowForwardingPanel } from './DocflowForwardingPanel'
@@ -193,6 +195,11 @@ function CorrespondenceCard({
       {letterError ? <p className="docflow-edit-notice is-error">{letterError}</p> : null}
       {row.comment ? <p className="docflow-side-subject">{row.comment}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowAttachments
+          user={user}
+          entity={kind === 'incoming' ? ATTACHED_FILES.incoming : ATTACHED_FILES.outgoing}
+          ownerId={row.id}
+        />
         <section className="docflow-card-block">
           <h4>Реквизиты</h4>
           <dl className="docflow-detail-list">

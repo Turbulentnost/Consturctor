@@ -611,8 +611,8 @@ SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,
     "onec.meeting_protocols": 300,
-    # faster-whisper small на CPU, beam 1: ~2,5 минуты на 25 минут аудио; запас на beam 5 и медленные машины.
-    "audio.transcribe": 3600,
+    # faster-whisper на CPU, beam 5: small ~7 минут на 25 минут аудио, large-v3-turbo — в разы дольше.
+    "audio.transcribe": 7200,
     # 1C OData + справочники участников; Exchange free/busy по всем участникам.
     "meetings.memo_requests": 180,
     "outlook.ews_availability": 180,

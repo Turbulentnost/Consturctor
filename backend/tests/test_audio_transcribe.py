@@ -205,16 +205,16 @@ def test_transcribe_uses_fast_decoding(monkeypatch) -> None:
 
     monkeypatch.setattr("app.services.audio_transcribe._get_model", lambda: _RecordingModel())
     transcribe_run_attachment(file_id="file-1", user_id="user-1")
-    assert seen["beam_size"] == 1
+    assert seen["beam_size"] == 5
     assert seen["condition_on_previous_text"] is False
     assert seen["vad_filter"] is True
 
     import app.services.audio_transcribe as audio_mod
 
     audio_mod._cache.clear()
-    monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "1")
     transcribe_run_attachment(file_id="file-1", user_id="user-1")
-    assert seen["beam_size"] == 5
+    assert seen["beam_size"] == 1
 
 
 def test_transcribe_disk_cache_survives_restart(monkeypatch) -> None:

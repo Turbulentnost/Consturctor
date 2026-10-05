@@ -20,6 +20,8 @@ import {
   type OrderKind,
   type OrderRow
 } from '../../workplace/fetchDocflowCorrespondence'
+import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import { DocflowAttachments } from './DocflowAttachments'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -461,6 +463,11 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
             </header>
             {selected.subject ? <p className="docflow-side-subject">{selected.subject}</p> : null}
             <div className="docflow-side-scroll">
+              <DocflowAttachments
+                user={user}
+                entity={selected.kind === 'order' ? ATTACHED_FILES.order : ATTACHED_FILES.directive}
+                ownerId={selected.id}
+              />
               <section className="docflow-card-block">
                 <h4>
                   <Stamp size={14} aria-hidden /> Согласующие

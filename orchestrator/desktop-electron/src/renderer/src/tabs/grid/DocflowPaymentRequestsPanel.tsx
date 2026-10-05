@@ -17,6 +17,8 @@ import {
 } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
+import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import { DocflowAttachments } from './DocflowAttachments'
 import {
   formatAmount,
   loadPaymentRequestCard,
@@ -140,7 +142,13 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
   )
 }
 
-function PaymentRequestCardView({ card }: { card: PaymentRequestCard }): React.JSX.Element {
+function PaymentRequestCardView({
+  card,
+  user
+}: {
+  card: PaymentRequestCard
+  user: UserProfile
+}): React.JSX.Element {
   const { request: row, breakdown, accounts, documents, employees, stats } = card
   return (
     <>
@@ -156,6 +164,7 @@ function PaymentRequestCardView({ card }: { card: PaymentRequestCard }): React.J
         {row.operation ? ` · ${row.operation}` : ''}
       </p>
       <div className="docflow-side-scroll">
+        <DocflowAttachments user={user} entity={ATTACHED_FILES.payment} ownerId={row.id} />
         <section className="docflow-card-block">
           <h4>Основное</h4>
           <dl className="docflow-detail-list">
@@ -606,7 +615,7 @@ export function DocflowPaymentRequestsPanel({
             </button>
           </p>
         ) : card ? (
-          <PaymentRequestCardView card={card} />
+          <PaymentRequestCardView card={card} user={user} />
         ) : null}
       </aside>
     </div>

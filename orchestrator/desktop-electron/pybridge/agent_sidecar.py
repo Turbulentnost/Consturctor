@@ -5166,6 +5166,7 @@ class Sidecar:
                         "mailboxAccess": output.get("mailbox_access") or "",
                         "profileMailbox": output.get("profile_mailbox") or "",
                         "warning": output.get("warning") or "",
+                        "offline": bool(output.get("offline")),
                         "rangeStart": output.get("range_start") or "",
                         "rangeEnd": output.get("range_end") or "",
                     }

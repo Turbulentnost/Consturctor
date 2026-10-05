@@ -5,6 +5,78 @@
   grid-template-rows: minmax(48px, max-content) minmax(0, 1fr);
 }
 
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile {
+  --registry-tile-fill: #1565c0;
+  background: #fff;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.tone-blue {
+  --registry-tile-fill: #1565c0;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.tone-green {
+  --registry-tile-fill: #2e9a6f;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.tone-red {
+  --registry-tile-fill: #c62828;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.tone-orange {
+  --registry-tile-fill: #e67e22;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.tone-purple {
+  --registry-tile-fill: #7b4fd6;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--registry-tile-fill);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile > * {
+  position: relative;
+  z-index: 1;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile:focus,
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile:focus-visible {
+  outline: none;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tiles-rich.spec-v04-tile-solo .spec-v04-tile.is-active {
+  outline: none;
+  box-shadow: none;
+  transform: none;
+  background: #fff;
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tiles-rich.spec-v04-tile-solo .spec-v04-tile.is-active::before {
+  transform: scaleX(1);
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile .spec-v04-tile-label,
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile .spec-v04-tile-value,
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile .spec-v04-tile-hint {
+  transition: color 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-label,
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-value,
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-hint {
+  color: #fff;
+}
+
 .orch-grid-registry .orch-slot-tab-canvas {
   grid-column: 1 / 9;
   grid-row: 2 / -1;

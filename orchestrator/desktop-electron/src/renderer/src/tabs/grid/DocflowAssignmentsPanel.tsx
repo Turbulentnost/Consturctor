@@ -21,6 +21,7 @@ import {
   type AssignmentRow,
   type AssignmentStatus
 } from '../../workplace/fetchDocflowAssignments'
+import { DocflowFileOpenButton } from './DocflowAttachments'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -251,7 +252,10 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
             <ul className="docflow-files">
               {files.map((file) => (
                 <li key={file.id}>
-                  <strong>{file.name}{file.extension ? `.${file.extension}` : ''}</strong>
+                  <DocflowFileOpenButton file={file}>
+                    {file.name}
+                    {file.extension ? `.${file.extension}` : ''}
+                  </DocflowFileOpenButton>
                   <span>{file.created ? day(file.created) : ''}</span>
                 </li>
               ))}

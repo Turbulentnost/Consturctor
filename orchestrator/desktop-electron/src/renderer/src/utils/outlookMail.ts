@@ -35,8 +35,9 @@ export interface OutlookMailResult {
   messages: Record<string, unknown>[]
   error?: string
   source?: string
-  /** Outlook не подключён к Exchange: письма только из локального кэша. */
+  /** Outlook не подключён к Exchange: список из локального кэша, его не запоминаем. */
   warning?: string
+  offline?: boolean
   /** Ящик профиля Outlook этого компьютера. */
   profileMailbox?: string
 }
@@ -77,6 +78,7 @@ function requestOutlookMail(range: {
           messages,
           source: String(payload.source || 'outlook_com'),
           warning: String(payload.warning || ''),
+          offline: Boolean(payload.offline),
           profileMailbox: String(payload.profileMailbox || '')
         })
       } else {
@@ -167,7 +169,7 @@ export async function ensureOutlookMailRange(
     maxResults: options.maxResults ?? 120
   })
   // Кэш отключённого Outlook устаревший: после подключения письма надо перечитать сразу.
-  if (result.ok && !result.warning && fromKey && toKey) {
+  if (result.ok && !result.warning && !result.offline && fromKey && toKey) {
     writeMailCache({
       day: today,
       mailbox: result.profileMailbox || '',

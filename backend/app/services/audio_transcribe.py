@@ -49,17 +49,21 @@ _inflight: dict[str, threading.Event] = {}
 _inflight_lock = threading.Lock()
 
 
+DEFAULT_MODEL = "small"
+DEFAULT_BEAM_SIZE = 5
+
+
 def _wanted_model() -> str:
-    return (os.environ.get("WHISPER_MODEL") or "small").strip() or "small"
+    return (os.environ.get("WHISPER_MODEL") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
 
 def _beam_size() -> int:
-    """Greedy decoding by default: ~3x faster than beam 5 on CPU with the same text on meetings."""
+    """Beam 5 by default for accuracy; WHISPER_BEAM_SIZE=1 is ~3x faster on CPU."""
     raw = (os.environ.get("WHISPER_BEAM_SIZE") or "").strip()
     try:
-        return max(1, min(10, int(raw))) if raw else 1
+        return max(1, min(10, int(raw))) if raw else DEFAULT_BEAM_SIZE
     except ValueError:
-        return 1
+        return DEFAULT_BEAM_SIZE
 
 
 def _cpu_threads() -> int:
@@ -367,7 +371,7 @@ def transcribe_run_attachment(
     if not owner:
         # A retry of the same file waits for the run already in progress
         # instead of starting a second transcription and starving the API.
-        waiter.wait(timeout=3600)
+        waiter.wait(timeout=7200)
         with _inflight_lock:
             cached = _cache.get(cache_key)
         if cached is not None:

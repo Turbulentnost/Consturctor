@@ -24,6 +24,7 @@ import {
   XCircle
 } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
+import { DocflowFileOpenButton } from './DocflowAttachments'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import {
   forgetProtocolCard,
@@ -179,10 +180,10 @@ function FileChips({ files }: { files: ProtocolFile[] }): React.JSX.Element | nu
   return (
     <div className="docflow-chips docflow-files">
       {files.map((file) => (
-        <span key={file.id} title={[file.name, fileSize(file.size)].filter(Boolean).join(' · ')}>
+        <DocflowFileOpenButton key={file.id} file={file}>
           <Paperclip size={11} aria-hidden />
           {file.name || '—'}
-        </span>
+        </DocflowFileOpenButton>
       ))}
     </div>
   )
@@ -682,7 +683,7 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
             <ul className="docflow-lines">
               {files.map((file) => (
                 <li key={file.id}>
-                  <p>{file.name || '—'}</p>
+                  <DocflowFileOpenButton file={file}>{file.name || '—'}</DocflowFileOpenButton>
                   <div>
                     {fileSize(file.size) ? <span>{fileSize(file.size)}</span> : null}
                     {file.created ? <span>{onlyDay(file.created)}</span> : null}

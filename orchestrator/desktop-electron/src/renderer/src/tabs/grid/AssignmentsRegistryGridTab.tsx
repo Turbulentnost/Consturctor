@@ -6,7 +6,7 @@ import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT } from './useTabChromeLayout'
 import { KpiDayPicker } from '../../pages/KpiRangePicker'
 import { useAssignmentRegistry } from '../../workplace/useAssignmentRegistry'
-import { isDueWithinDays } from '../../workplace/assignmentRegistryMappers'
+import { isCompletedAssignment, isDueWithinDays } from '../../workplace/assignmentRegistryMappers'
 import { selectRegistryReportRows } from '../../workplace/registryReportRows'
 import {
   fetchAssignmentLines,
@@ -88,10 +88,25 @@ function isoDate(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
+function startOfYear(now = new Date()): string {
+  return isoDate(new Date(now.getFullYear(), 0, 1))
+}
+
+function legacySixMonthStart(now = new Date()): string {
+  return isoDate(new Date(now.getFullYear(), now.getMonth() - 6, now.getDate()))
+}
+
+/** Старый период «минус полгода» мог остаться в sessionStorage. */
+function isLegacyPeriodStart(saved: string, now = new Date()): boolean {
+  for (let shift = 0; shift <= 21; shift += 1) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - shift)
+    if (legacySixMonthStart(day) === saved) return true
+  }
+  return false
+}
+
 function defaultRange(): { from: string; to: string } {
-  const to = new Date()
-  const from = new Date(to.getFullYear(), to.getMonth() - 6, to.getDate())
-  return { from: isoDate(from), to: isoDate(to) }
+  return { from: startOfYear(), to: isoDate(new Date()) }
 }
 
 function buildRegistryTiles(
@@ -99,22 +114,32 @@ function buildRegistryTiles(
   aiHint: string
 ): SpecSummaryTile[] {
   const open = rows.filter((row) => row.open)
-  const done = rows.filter((row) => !row.open)
+  const done = rows.filter((row) => isCompletedAssignment(row))
   const overdue = open.filter((row) => row.overdue)
   const dueSoon = open.filter((row) => isDueWithinDays(row, 3))
+  const plan = done.length + overdue.length
   return [
+    {
+      id: 'all',
+      label: 'Все',
+      value: String(rows.length),
+      tooltip: 'Все поручения за выбранный период',
+      tone: 'blue'
+    },
     {
       id: 'done',
       label: 'Выполненные',
       value: String(done.length),
-      hint: 'Закрытые / принятые поручения',
+      hint: `план ${plan}`,
+      tooltip: 'Выполненные и отменённые за выбранный период',
       tone: 'green'
     },
     {
       id: 'overdue',
       label: 'Просроченные',
       value: String(overdue.length),
-      hint: 'Открытые с истёкшим сроком',
+      hint: 'план 0',
+      tooltip: 'Открытые с истёкшим сроком. План для просроченных — 0',
       tone: overdue.length ? 'red' : 'neutral'
     },
     {
@@ -164,7 +189,10 @@ export function AssignmentsRegistryGridTab({
         columns?: unknown
       }
       return {
-        from: /^\d{4}-\d{2}-\d{2}$/.test(parsed.from || '') ? String(parsed.from) : fallback.from,
+        from:
+          /^\d{4}-\d{2}-\d{2}$/.test(parsed.from || '') && !isLegacyPeriodStart(String(parsed.from))
+            ? String(parsed.from)
+            : fallback.from,
         to: /^\d{4}-\d{2}-\d{2}$/.test(parsed.to || '') ? String(parsed.to) : fallback.to,
         tile: TILE_FILTER_IDS.has(parsed.tile || '')
           ? (parsed.tile as AssignmentRegistryTileId)
@@ -199,6 +227,12 @@ export function AssignmentsRegistryGridTab({
     setDateFrom(value)
     persistFilters(value, dateTo, tileFilter)
   }
+  useEffect(() => {
+    if (!isLegacyPeriodStart(dateFrom)) return
+    const next = startOfYear()
+    setDateFrom(next)
+    persistFilters(next, dateTo, tileFilter)
+  }, [dateFrom, dateTo, tileFilter])
   const changeDateTo = (value: string): void => {
     setDateTo(value)
     persistFilters(dateFrom, value, tileFilter)
@@ -306,7 +340,7 @@ export function AssignmentsRegistryGridTab({
   const filteredRows = useMemo(() => {
     let list = rowsHydrated
     if (tileFilter === 'report') list = selectRegistryReportRows(list).all
-    else if (tileFilter === 'done') list = list.filter((row) => !row.open)
+    else if (tileFilter === 'done') list = list.filter((row) => isCompletedAssignment(row))
     else if (tileFilter === 'overdue') list = list.filter((row) => row.open && row.overdue)
     else if (tileFilter === 'due_soon') list = list.filter((row) => row.open && isDueWithinDays(row, 3))
 
@@ -365,12 +399,6 @@ export function AssignmentsRegistryGridTab({
     }
   }, [tileFilter, filteredRows])
 
-  const filterRowCountLabel = useMemo((): string | null => {
-    if (!firstRowReady && !filteredRows.length) return null
-    if (loadingMore && filteredRows.length) return `${filteredRows.length} поручений…`
-    return `${filteredRows.length} поручений`
-  }, [filteredRows.length, firstRowReady, loadingMore])
-
   const startClosureCheck = async (): Promise<void> => {
     if (aiStarting) return
     setAiStarting(true)
@@ -401,10 +429,14 @@ export function AssignmentsRegistryGridTab({
       void startClosureCheck()
       return
     }
+    if (id === 'all') {
+      changeTileFilter('all')
+      return
+    }
     changeTileFilter(tileFilter === id ? 'all' : (id as AssignmentRegistryTileId))
   }
 
-  const activeTileId = tileFilter === 'all' || tileFilter === 'report' ? null : tileFilter
+  const activeTileId = tileFilter === 'report' ? null : tileFilter
 
   const resetRegistryFilters = (): void => {
     const next = defaultRange()
@@ -650,11 +682,6 @@ export function AssignmentsRegistryGridTab({
                 <Plus size={14} aria-hidden /> Создать
               </button>
             </div>
-            {filterRowCountLabel ? (
-              <span className="registry-filter-row-count" aria-live="polite">
-                {filterRowCountLabel}
-              </span>
-            ) : null}
             <span className="registry-filter-strip-spacer" aria-hidden />
             <button type="button" className="spec-filter-reset" onClick={resetRegistryFilters}>
               Сбросить

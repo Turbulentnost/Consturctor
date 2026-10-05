@@ -3,6 +3,8 @@ import { CheckCircle2, Circle, Clock3, Lock, User, Users } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import { loadMemoCard, loadMemoPage, type MemoCard, type MemoRow } from '../../workplace/fetchDocflowMemos'
+import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import { DocflowAttachments } from './DocflowAttachments'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -58,7 +60,7 @@ function StatusPill({ approved, status }: { approved: boolean; status: string })
   )
 }
 
-function MemoCardView({ card }: { card: MemoCard }): React.JSX.Element {
+function MemoCardView({ card, user }: { card: MemoCard; user: UserProfile }): React.JSX.Element {
   const { memo, tasks, route } = card
   const hidden = new Set(['Number', 'Date', 'Статус', 'ТемаСлужебнойЗаписки', 'ТекстСлужебнойЗаписки'])
   return (
@@ -72,6 +74,7 @@ function MemoCardView({ card }: { card: MemoCard }): React.JSX.Element {
       </header>
       {memo.subject ? <p className="docflow-side-subject">{memo.subject}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowAttachments user={user} entity={ATTACHED_FILES.memo} ownerId={memo.id} />
         <section className="docflow-card-block">
           <h4>
             <Users size={14} aria-hidden /> Маршрут
@@ -388,7 +391,7 @@ export function DocflowMemosPanel({
             </button>
           </p>
         ) : card ? (
-          <MemoCardView card={card} />
+          <MemoCardView card={card} user={user} />
         ) : null}
       </aside>
     </div>
