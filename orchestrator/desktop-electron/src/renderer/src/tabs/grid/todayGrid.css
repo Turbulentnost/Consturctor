@@ -55,6 +55,10 @@
   min-height: 0;
 }
 
+.orch-today-tiles.orch-today-tiles-wide .spec-v04-tiles-rich {
+  grid-template-columns: repeat(8, minmax(0, 1fr)) !important;
+}
+
 .orch-today-tiles .spec-v04-tiles-rich {
   display: grid !important;
   grid-template-columns: repeat(7, minmax(0, 1fr)) !important;

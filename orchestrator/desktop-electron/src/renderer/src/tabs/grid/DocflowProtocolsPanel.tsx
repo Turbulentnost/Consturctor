@@ -24,6 +24,11 @@ import {
   XCircle
 } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
+import {
+  formatProtocolDay,
+  useBoardReportReadiness,
+  type BoardReportReadiness
+} from '../../workplace/boardReportReadiness'
 import { DocflowFileOpenButton } from './DocflowAttachments'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import {
@@ -699,6 +704,36 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
   )
 }
 
+function BoardReadyBar({
+  loading,
+  error,
+  readiness
+}: {
+  loading: boolean
+  error: string
+  readiness: BoardReportReadiness
+}): React.JSX.Element {
+  const width = readiness.total ? readiness.percent : 0
+  const caption = readiness.protocolNumber
+    ? `${readiness.protocolNumber}${readiness.protocolDate ? ` · ${formatProtocolDay(readiness.protocolDate)}` : ''}${
+        readiness.currentMonth ? '' : ' · последний протокол'
+      }`
+    : 'Протокол совета директоров по ГК'
+  return (
+    <div className="ready-bar" title="Поставленные задачи: управленческая отчётность за 2 рабочих дня до совета директоров по ГК">
+      <div className="ready-bar-head">
+        <span>Готовность к совету директоров</span>
+        <em>{loading ? 'считаем…' : error ? error : caption}</em>
+        <strong>{loading ? '—' : `${readiness.percent}%`}</strong>
+      </div>
+      <div className="ready-bar-track" role="progressbar" aria-valuenow={width} aria-valuemin={0} aria-valuemax={100}>
+        <i style={{ width: `${width}%` }} />
+      </div>
+      <small>{loading ? '' : readiness.total ? `выполнено ${readiness.done} из ${readiness.total}` : 'поставленных задач нет'}</small>
+    </div>
+  )
+}
+
 export function DocflowProtocolsPanel({
   user,
   from,
@@ -708,6 +743,7 @@ export function DocflowProtocolsPanel({
   from: string
   to: string
 }): React.JSX.Element {
+  const board = useBoardReportReadiness(user)
   const [rows, setRows] = useState<ProtocolRow[]>([])
   const [statuses, setStatuses] = useState<ProtocolOption[]>(FALLBACK_STATUSES)
   const [kinds, setKinds] = useState<ProtocolOption[]>(FALLBACK_KINDS)
@@ -897,6 +933,7 @@ export function DocflowProtocolsPanel({
   return (
     <div className="docflow-split docflow-split-orders">
       <div className="docflow-table-card wp-card">
+        {board.enabled ? <BoardReadyBar loading={board.loading} error={board.error} readiness={board.readiness} /> : null}
         <div className="docflow-order-filters">
           <label className="docflow-search">
             <Search size={14} aria-hidden />

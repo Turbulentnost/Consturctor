@@ -15,7 +15,13 @@ export type DocflowUiAction = DocflowActionId | 'open_card'
 
 export type TurboUiAction = 'open_project' | 'mark_done' | 'refresh'
 
-export type TaskActionResult = { ok: boolean; message: string }
+export type TaskActionResult = {
+  ok: boolean
+  message: string
+  /** 1С закрыла задачу. Строку списка убираем только в этом случае. */
+  closed?: boolean
+  needsForm?: boolean
+}
 
 export function docflowKindOfContext(ctx: TaskActionContext): DocflowTaskKind {
   return ctx.docflowKind ?? docflowTaskKind(ctx.step, ctx.taskName)
@@ -80,14 +86,21 @@ export async function runDocflowAction(
       title: ctx.title,
       comment: comment.trim()
     }),
-    180_000
+    30_000
   )
   if (res.ok) {
     const payload = res.result && typeof res.result === 'object' ? (res.result as Record<string, unknown>) : {}
-    const summary = String(payload.summary || payload.message || 'Действие отправлено в 1С:Документооборот.')
-    return { ok: true, message: summary }
+    const summary = String(payload.summary || payload.message || '').trim()
+    const closed = payload.closed === true
+    const needsForm = payload.needs_form === true || payload.needsForm === true
+    return {
+      ok: closed,
+      closed,
+      needsForm,
+      message: summary || (closed ? 'Задача закрыта в 1С.' : 'Документооборот не закрыл задачу.')
+    }
   }
-  return { ok: false, message: res.error || 'Документооборот не принял действие.' }
+  return { ok: false, closed: false, message: res.error || 'Документооборот не принял действие.' }
 }
 
 export async function runTurboAction(

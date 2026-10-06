@@ -485,6 +485,77 @@ def invalidate_inbox_cache() -> None:
         logger.warning("dok_soap cache drop failed: %s", exc)
 
 
+def _payload_without_tasks(payload: dict[str, Any], wanted: set[str]) -> dict[str, Any] | None:
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return None
+    kept = [
+        row
+        for row in rows
+        if str((row or {}).get("id") or "").strip().casefold() not in wanted
+    ]
+    if len(kept) == len(rows):
+        return None
+    updated = dict(payload)
+    updated["rows"] = kept
+    if "count" in updated:
+        updated["count"] = len(kept)
+    return updated
+
+
+def _drop_task_on_disk(wanted: set[str]) -> None:
+    try:
+        files = list(_cache_dir().glob("*.json"))
+    except OSError as exc:
+        logger.warning("dok_soap cache list failed: %s", exc)
+        return
+    for path in files:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        payload = data.get("payload") if isinstance(data, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        updated = _payload_without_tasks(payload, wanted)
+        if updated is None:
+            continue
+        data["payload"] = updated
+        tmp = path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            logger.warning("dok_soap cache task drop failed: %s", exc)
+
+
+def drop_task_from_inbox_cache(*task_ids: str) -> None:
+    """Убрать закрытые задачи из кеша ящика, не стирая остальную выгрузку.
+
+    Общая выгрузка ДО одна на все учётки. Сброс всего кеша заставил бы
+    следующий просмотр снова качать журнал несколько минут.
+    """
+    wanted = {str(item or "").strip().casefold() for item in task_ids if str(item or "").strip()}
+    if not wanted:
+        return
+    changed: list[tuple[str, float, dict[str, Any]]] = []
+    with _cache_guard:
+        for key, (fetched_at, payload) in list(_inbox_cache.items()):
+            if not isinstance(payload, dict):
+                continue
+            updated = _payload_without_tasks(payload, wanted)
+            if updated is None:
+                continue
+            _inbox_cache[key] = (fetched_at, updated)
+            changed.append((key, fetched_at, updated))
+    for key, fetched_at, payload in changed:
+        try:
+            _write_disk_cache(key, fetched_at, payload)
+        except OSError as exc:
+            logger.warning("dok_soap cache task drop failed: %s", exc)
+    _drop_task_on_disk(wanted)
+
+
 def _with_cache_meta(payload: dict[str, Any], *, cached: bool, fetched_at: float) -> dict[str, Any]:
     out = dict(payload)
     out["cached"] = cached

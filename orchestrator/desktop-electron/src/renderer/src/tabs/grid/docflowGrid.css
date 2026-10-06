@@ -266,6 +266,62 @@
   overflow: auto;
 }
 
+.ready-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 12px 0;
+  padding: 8px 10px 7px;
+  border-radius: 10px;
+  background: #f4f8fc;
+  border: 1px solid rgba(21, 101, 192, 0.16);
+}
+
+.ready-bar-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: #0d3b73;
+}
+
+.ready-bar-head em {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+  color: #5c6b7a;
+}
+
+.ready-bar-head strong {
+  flex: 0 0 auto;
+  font-size: 16px;
+  color: #1565c0;
+}
+
+.ready-bar-track {
+  height: 8px;
+  border-radius: 8px;
+  background: rgba(21, 101, 192, 0.12);
+  overflow: hidden;
+}
+
+.ready-bar-track i {
+  display: block;
+  height: 100%;
+  border-radius: 8px;
+  background: #1565c0;
+  transition: width 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ready-bar small {
+  color: #5c6b7a;
+  font-size: 11px;
+}
+
 .docflow-order-filters {
   display: flex;
   flex-wrap: wrap;

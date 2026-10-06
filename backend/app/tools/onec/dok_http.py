@@ -177,6 +177,120 @@ def patch_task_deadline(process_uid: str, due: datetime, *, method: str = "PATCH
     return text
 
 
+class TaskActionNotPublished(RuntimeError):
+    """HTTP-метод TaskAction в базе ДО ещё не опубликован."""
+
+
+_TASK_ACTION_TIMEOUT_SEC = 25.0
+
+_SUMMARY_KEYS = (
+    "summary",
+    "message",
+    "text",
+    "Описание",
+    "ОписаниеРезультата",
+    "Description",
+)
+
+
+def _flag(payload: dict[str, Any], *keys: str) -> bool | None:
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "да"}
+        return bool(value)
+    return None
+
+
+def parse_task_action_response(payload: Any, *, raw_text: str = "") -> dict[str, Any]:
+    """Ответ TaskAction: ok, closed, needs_form и текст для человека как есть."""
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "closed": False,
+            "needs_form": False,
+            "summary": (raw_text or "").strip(),
+        }
+    ok = _flag(payload, "ok", "Ok", "Успех")
+    closed = _flag(payload, "closed", "Closed", "Закрыта")
+    needs_form = _flag(payload, "needs_form", "needsForm", "НужнаФорма")
+    summary = ""
+    for key in _SUMMARY_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            summary = value.strip()
+            break
+    if closed is None:
+        closed = bool(ok)
+    if ok is None:
+        ok = bool(closed)
+    return {
+        "ok": bool(ok),
+        "closed": bool(closed),
+        "needs_form": bool(needs_form),
+        "summary": summary,
+    }
+
+
+def post_task_action(
+    task_id: str,
+    button: int,
+    *,
+    comment: str = "",
+    actual_performer: str = "",
+    auth: tuple[str, str] | None = None,
+) -> dict[str, Any]:
+    """POST /hs/dterp/TaskAction — та же процедура, что кнопки формы 1С.
+
+    Тело: task_id, button (1..3), comment, actual_performer.
+    404 означает, что метод ещё не опубликован: вызывающий не должен
+    закрывать задачу отметкой SOAP.
+    """
+    credentials = auth or _resolve_auth()
+    base = dok_http_base_url()
+    uid = (task_id or "").strip()
+    if not base:
+        raise RuntimeError("HTTP документооборота не настроен (DOK_HTTP_*)")
+    if not credentials:
+        raise RuntimeError("Нужны учётные данные сеанса 1С для базы документооборота")
+    if not uid:
+        raise RuntimeError("Не указан UID задачи")
+    point = int(button)
+    if point not in {1, 2, 3}:
+        raise RuntimeError(f"Номер кнопки точки маршрута должен быть 1, 2 или 3, получено: {button}")
+    body: dict[str, Any] = {"task_id": uid, "button": point, "comment": comment or ""}
+    performer = (actual_performer or "").strip()
+    if performer:
+        body["actual_performer"] = performer
+    url = f"{base}/TaskAction"
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    with httpx.Client(timeout=_TASK_ACTION_TIMEOUT_SEC, auth=credentials) as client:
+        response = client.post(url, json=body, headers=headers)
+    text = (response.text or "").strip()
+    logger.info(
+        "TaskAction UID=%s button=%s HTTP %s body=%s",
+        uid,
+        point,
+        response.status_code,
+        text[:500].replace("\n", " ") or "<empty>",
+    )
+    if response.status_code == 404:
+        raise TaskActionNotPublished("Метод TaskAction не опубликован в базе документооборота")
+    if response.status_code in {401, 403}:
+        raise RuntimeError(f"HTTP {response.status_code}: документооборот отклонил учётку")
+    if response.status_code >= 400:
+        raise RuntimeError(f"HTTP {response.status_code}: {text[:200] or response.reason_phrase}")
+    if not text:
+        return parse_task_action_response({})
+    try:
+        payload = response.json()
+    except json.JSONDecodeError:
+        return parse_task_action_response(None, raw_text=text)
+    return parse_task_action_response(payload, raw_text=text)
+
+
 def _http_post_json(url: str, *, auth: tuple[str, str], body: dict[str, Any]) -> Any:
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     timeout = max(15.0, float(settings.odata_timeout_sec or 60))
