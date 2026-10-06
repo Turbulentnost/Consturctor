@@ -720,6 +720,7 @@ def board_report_readiness(args: dict[str, Any] | None = None) -> dict[str, Any]
         "done": 0,
         "percent": 0,
         "current_month": False,
+        "tasks": [],
     }
     if not isinstance(theme, dict) or not _text(theme.get("Ref_Key")):
         return empty
@@ -742,8 +743,10 @@ def board_report_readiness(args: dict[str, Any] | None = None) -> dict[str, Any]
         logger.warning("board readiness register %s failed: %s", ref, str(exc)[:200])
         register = []
     tasks = [row for row in register if is_board_report_task(_text(row.get("Задача")))]
-    done = sum(1 for row in tasks if _flag(row.get("Выполнена")))
-    total = len(tasks)
+    _resolve_names({_text(row.get("Ответственный_Key")) for row in tasks})
+    items = [_board_task_view(row) for row in tasks]
+    done = sum(1 for item in items if item["done"])
+    total = len(items)
     stamp = _text(chosen.get("Date"))[:10]
     percent = round(done * 100 / total) if total else 0
     status = _text(chosen.get("Статус"))
@@ -760,6 +763,16 @@ def board_report_readiness(args: dict[str, Any] | None = None) -> dict[str, Any]
         "done": done,
         "percent": percent,
         "current_month": stamp.startswith(today.strftime("%Y-%m")),
+        "tasks": items,
+    }
+
+
+def _board_task_view(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "text": _text(row.get("Задача")),
+        "done": _flag(row.get("Выполнена")),
+        "responsible": _person(row.get("Ответственный_Key")),
+        "point": _text(row.get("НомерПунктаПротокола")),
     }
 
 

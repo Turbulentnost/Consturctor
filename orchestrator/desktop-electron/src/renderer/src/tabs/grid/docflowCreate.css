@@ -167,6 +167,13 @@
   padding: 14px 16px 16px;
 }
 
+.df1c-fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
 .df1c-columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -618,6 +625,69 @@
 
 .df1c-files > .df1c-btn {
   align-self: flex-start;
+}
+
+.df1c-window .onec-reconnect-input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid #d5dbe3;
+  border-radius: 10px;
+  background: #fff;
+  color: #10141a;
+  font: inherit;
+  margin: 0;
+}
+
+.df1c-window .onec-reconnect-input:focus {
+  outline: none;
+  border-color: #0d3b73;
+  box-shadow: 0 0 0 2px rgba(13, 59, 115, 0.18);
+}
+
+.df1c-table .df1c-input,
+.df1c-table .onec-reconnect-input {
+  height: 32px;
+  border-radius: 8px;
+}
+
+.df1c-table .df1c-textarea {
+  min-height: 52px;
+}
+
+.df1c-themes {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.df1c-themes button {
+  border: 1px solid #d5dbe3;
+  border-radius: 999px;
+  background: #f5f9fe;
+  color: #0d3b73;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.df1c-themes button:hover {
+  background: #e8f1fb;
+  border-color: #1565c0;
+}
+
+.df1c-hint {
+  display: block;
+  margin-top: 4px;
+  color: #6b7380;
+  font-size: 12px;
 }
 
 @media (max-width: 860px) {

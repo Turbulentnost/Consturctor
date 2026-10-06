@@ -3,6 +3,13 @@ import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
 import { onecGatewayInvokeArgs } from './userContext'
 
+export type BoardReportTask = {
+  text: string
+  done: boolean
+  responsible: string
+  point: string
+}
+
 export type BoardReportReadiness = {
   protocolNumber: string
   protocolDate: string
@@ -10,6 +17,7 @@ export type BoardReportReadiness = {
   done: number
   percent: number
   currentMonth: boolean
+  tasks: BoardReportTask[]
 }
 
 const EMPTY: BoardReportReadiness = {
@@ -18,7 +26,8 @@ const EMPTY: BoardReportReadiness = {
   total: 0,
   done: 0,
   percent: 0,
-  currentMonth: false
+  currentMonth: false,
+  tasks: []
 }
 
 export function isIlchenkoAccount(user: UserProfile | null): boolean {
@@ -50,13 +59,23 @@ export async function loadBoardReportReadiness(user: UserProfile | null): Promis
   const protocol = rec(payload.protocol)
   const total = Number(payload.total) || 0
   const done = Number(payload.done) || 0
+  const tasks = Array.isArray(payload.tasks) ? payload.tasks.map((item) => {
+    const task = rec(item)
+    return {
+      text: str(task.text),
+      done: Boolean(task.done),
+      responsible: str(task.responsible),
+      point: str(task.point)
+    }
+  }) : []
   return {
     protocolNumber: str(protocol.number),
     protocolDate: str(protocol.date).slice(0, 10),
     total,
     done,
     percent: total ? Math.round((done * 100) / total) : Number(payload.percent) || 0,
-    currentMonth: Boolean(payload.current_month)
+    currentMonth: Boolean(payload.current_month),
+    tasks
   }
 }
 

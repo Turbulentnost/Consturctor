@@ -569,8 +569,7 @@ def build_protocol_create_body(
         "Комментарий": comment,
         "КраткийСоставДокумента": "; ".join(participant_names)[:1000],
         "ЗадачиРазосланы": False,
-        "ДокументОснование": "",
-        "ДокументОснование_Type": _UNDEFINED_TYPE,
+        **_basis_link(_first(args, "basis_ref_key", "basis_ref")),
         "ПрисутствующиеНаСовещании": participants,
         "ПовесткаСовещания": agenda_rows,
         "Решения": decision_rows,
@@ -1351,13 +1350,27 @@ def handle_protocol_write(
 _NEXT_SKIP_ARGS = frozenset({"action", "ref_key", "Ref_Key", "source_ref_key", "erp_document_id"})
 
 
+def _basis_link(ref: Any) -> dict[str, str]:
+    """Как «Создать на основании» в форме 1С: ссылка, без копии задач в новый документ.
+
+    Форма читает «Задачи для контроля» из регистра протокола-основания, поэтому переносятся
+    все его задачи — и выполненные, и открытые. Копия в «Поставленные» назначила бы их заново.
+    """
+    key = _clean(ref)
+    if _looks_like_guid(key):
+        return {
+            "ДокументОснование": key,
+            "ДокументОснование_Type": f"StandardODATA.{PROTOCOL_ENTITY}",
+        }
+    return {"ДокументОснование": "", "ДокументОснование_Type": _UNDEFINED_TYPE}
+
+
 def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     """Create-args for the next meeting built from read_protocol_form() of the previous one.
 
-    Header, attendees and agenda are copied; decisions stay with the old protocol. Open tasks
-    of the theme reach «Задачи для контроля» from the task register by themselves — copied into
-    the new protocol they would be assigned again and listed twice — so only a control agenda
-    item is added for them.
+    Header, attendees and agenda are copied; decisions stay with the old protocol.
+    basis_ref_key links ДокументОснование, so every task of the source shows on
+    «Задачи для контроля» — the same way the 1C form fills a protocol created on basis.
     """
     form = previous.get("form") if isinstance(previous.get("form"), dict) else {}
     number = _clean(previous.get("number"))
@@ -1397,6 +1410,7 @@ def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> d
         "report_period_from": prev_day or day,
         "report_period_to": day,
         "comment": basis,
+        "basis_ref_key": _clean(previous.get("ref_key")),
     }
     for key, value in overrides.items():
         if key in _NEXT_SKIP_ARGS or value in (None, "", [], {}):
@@ -1430,8 +1444,8 @@ def _next_protocol(
         1 for task in previous.get("form", {}).get("tasks") or [] if isinstance(task, dict) and _clean(task.get("text"))
     )
     result["summary"] = (
-        f"{result.get('summary') or 'Создан протокол'}; на основе {result['source_number'] or source}, "
-        f"задач прошлого протокола на контроле: {result['control_tasks']}"
+        f"{result.get('summary') or 'Создан протокол'}; на основании {result['source_number'] or source}, "
+        f"все задачи прошлого протокола на контроле: {result['control_tasks']}"
     )
     return result
 
