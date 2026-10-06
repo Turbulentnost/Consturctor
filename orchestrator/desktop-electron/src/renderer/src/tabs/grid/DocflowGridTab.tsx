@@ -7,6 +7,7 @@ import {
   Mail,
   MailOpen,
   NotebookPen,
+  Plus,
   ScrollText,
   Send,
   Truck,
@@ -19,6 +20,8 @@ import { KpiRangePicker, type KpiRangeShortcut } from '../../pages/KpiRangePicke
 import { rollingKpiRange } from '../../workplace/kpiPeriod'
 import {
   correspondenceInPeriod,
+  forgetDocflowCorrespondenceSession,
+  forgetDocflowOrdersSession,
   formatCorrespondenceDate,
   loadDocflowCorrespondenceSession,
   openIncomingLetter,
@@ -37,6 +40,39 @@ import { DocflowProtocolsPanel } from './DocflowProtocolsPanel'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 import './docflowGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
+import {
+  loadDocflowCreateSchema,
+  type DocflowKindId,
+  type DocflowKindSchema
+} from '../../workplace/docflowDocumentCreate'
+import { erpActorFio } from '../../workplace/userContext'
+import type { MeetingEvent } from '../../utils/outlookMeetings'
+import { AssignmentsRegistryCreateDialog } from './AssignmentsRegistryCreateDialog'
+import { DocflowCreateDialog } from './DocflowCreateDialog'
+import { MeetingProtocolForm } from './MeetingProtocolForm'
+
+type CreateTarget = DocflowKindId | 'assignment' | 'protocol'
+
+const CREATE_BUTTONS: Record<JournalId, { target: CreateTarget; label: string }[]> = {
+  correspondence: [],
+  memos: [{ target: 'memo', label: 'Создать записку' }],
+  orders: [
+    { target: 'order', label: 'Приказ' },
+    { target: 'directive', label: 'Распоряжение' }
+  ],
+  incentives: [{ target: 'incentive', label: 'Создать приказ' }],
+  assignments: [{ target: 'assignment', label: 'Создать поручение' }],
+  protocols: [{ target: 'protocol', label: 'Создать протокол' }],
+  payments: [{ target: 'payment', label: 'Создать заявку' }],
+  forwarding: [{ target: 'forwarding', label: 'Создать поручение' }]
+}
+
+function blankMeeting(): MeetingEvent {
+  const now = new Date()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const start = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:00`
+  return { id: `manual-${now.getTime()}`, subject: '', start, end: '', location: '', organizer: '', attendees: '', owner: '' }
+}
 
 const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; tone: string }[] = [
   { id: 'correspondence', title: 'Корреспонденция', hint: 'Входящие и исходящие письма', icon: Mail, tone: 'blue' },
@@ -227,6 +263,45 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [selectedId, setSelectedId] = useState('')
+  const [createTarget, setCreateTarget] = useState<CreateTarget | null>(null)
+  const [createSchemas, setCreateSchemas] = useState<DocflowKindSchema[]>([])
+  const [createNotice, setCreateNotice] = useState<{ text: string; error: boolean } | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [protocolMeeting, setProtocolMeeting] = useState<MeetingEvent>(blankMeeting)
+
+  const createButtons =
+    journal === 'correspondence'
+      ? [{ target: kind as CreateTarget, label: kind === 'incoming' ? 'Зарегистрировать входящее' : 'Создать исходящее' }]
+      : CREATE_BUTTONS[journal]
+  const createSchema =
+    createTarget && createTarget !== 'assignment' && createTarget !== 'protocol'
+      ? createSchemas.find((item) => item.id === createTarget) || null
+      : null
+
+  const openCreate = (target: CreateTarget): void => {
+    setCreateNotice(null)
+    if (target === 'protocol') setProtocolMeeting(blankMeeting())
+    if (target === 'assignment' || target === 'protocol' || createSchemas.some((item) => item.id === target)) {
+      setCreateTarget(target)
+      return
+    }
+    void loadDocflowCreateSchema(user)
+      .then((schemas) => {
+        setCreateSchemas(schemas)
+        if (schemas.some((item) => item.id === target)) setCreateTarget(target)
+        else setCreateNotice({ text: 'Форма этого документа в 1С недоступна', error: true })
+      })
+      .catch((err: unknown) =>
+        setCreateNotice({ text: err instanceof Error ? err.message : 'Не удалось открыть форму', error: true })
+      )
+  }
+
+  const onCreated = (text: string): void => {
+    setCreateNotice({ text, error: false })
+    if (journal === 'correspondence') forgetDocflowCorrespondenceSession(user, kind)
+    if (journal === 'orders') forgetDocflowOrdersSession(user)
+    setReloadKey((value) => value + 1)
+  }
 
   const activeJournal = JOURNALS.find((item) => item.id === journal) || JOURNALS[0]
   const activeMail = MAIL_VIEWS.find((item) => item.id === kind) || MAIL_VIEWS[0]
@@ -256,7 +331,9 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
     return () => {
       alive = false
     }
-  }, [user, journal, kind])
+  }, [user, journal, kind, reloadKey])
+
+  useEffect(() => setCreateNotice(null), [journal])
 
   const periodRows = useMemo(() => correspondenceInPeriod(cachedRows, from, to), [cachedRows, from, to])
   const table = useDocflowTable(periodRows, {
@@ -342,6 +419,17 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
                 </p>
               </div>
             </div>
+            <div className="docflow-head-tools">
+              {createButtons.map((button) => (
+                <button
+                  key={button.target}
+                  type="button"
+                  className="docflow-edit-btn is-primary docflow-create-btn"
+                  onClick={() => openCreate(button.target)}
+                >
+                  <Plus size={14} aria-hidden /> {button.label}
+                </button>
+              ))}
             {PERIOD_JOURNALS.has(journal) ? (
               <KpiRangePicker
                 from={from}
@@ -360,7 +448,11 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
                 }}
               />
             ) : null}
+            </div>
           </header>
+          {createNotice ? (
+            <p className={`docflow-edit-notice${createNotice.error ? ' is-error' : ''}`}>{createNotice.text}</p>
+          ) : null}
 
           {journal === 'correspondence' ? (
             <>
@@ -511,19 +603,19 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
               </div>
             </>
           ) : journal === 'memos' ? (
-            <DocflowMemosPanel user={user} from={from} to={to} />
+            <DocflowMemosPanel key={reloadKey} user={user} from={from} to={to} />
           ) : journal === 'orders' ? (
-            <DocflowOrdersPanel user={user} />
+            <DocflowOrdersPanel key={reloadKey} user={user} />
           ) : journal === 'incentives' ? (
-            <DocflowIncentiveOrdersPanel user={user} from={from} to={to} />
+            <DocflowIncentiveOrdersPanel key={reloadKey} user={user} from={from} to={to} />
           ) : journal === 'assignments' ? (
-            <DocflowAssignmentsPanel user={user} from={from} to={to} />
+            <DocflowAssignmentsPanel key={reloadKey} user={user} from={from} to={to} />
           ) : journal === 'protocols' ? (
-            <DocflowProtocolsPanel user={user} from={from} to={to} />
+            <DocflowProtocolsPanel key={reloadKey} user={user} from={from} to={to} />
           ) : journal === 'payments' ? (
-            <DocflowPaymentRequestsPanel user={user} from={from} to={to} />
+            <DocflowPaymentRequestsPanel key={reloadKey} user={user} from={from} to={to} />
           ) : journal === 'forwarding' ? (
-            <DocflowForwardingPanel user={user} from={from} to={to} />
+            <DocflowForwardingPanel key={reloadKey} user={user} from={from} to={to} />
           ) : (
             <div className="docflow-table-card wp-card docflow-placeholder">
               <span className={`docflow-nav-icon docflow-placeholder-icon tone-${activeJournal.tone}`} aria-hidden>
@@ -535,6 +627,29 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
           )}
         </div>
       </section>
+      <DocflowCreateDialog
+        open={createSchema !== null}
+        user={user}
+        schema={createSchema}
+        onClose={() => setCreateTarget(null)}
+        onCreated={onCreated}
+      />
+      <AssignmentsRegistryCreateDialog
+        open={createTarget === 'assignment'}
+        onClose={() => setCreateTarget(null)}
+        onCreated={onCreated}
+      />
+      {createTarget === 'protocol' ? (
+        <MeetingProtocolForm
+          open
+          meeting={protocolMeeting}
+          actorFio={erpActorFio(user)}
+          onClose={() => setCreateTarget(null)}
+          onCreated={(result) =>
+            onCreated(result.number ? `Создан протокол ${result.number}` : result.summary || 'Протокол создан в 1С')
+          }
+        />
+      ) : null}
     </OrchSlotMain>
   )
 }

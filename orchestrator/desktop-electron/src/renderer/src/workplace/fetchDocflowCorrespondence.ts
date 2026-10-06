@@ -269,6 +269,10 @@ export function loadDocflowCorrespondenceSession(
   return load
 }
 
+export function forgetDocflowCorrespondenceSession(user: UserProfile | null, kind: CorrespondenceKind): void {
+  sessionCache.delete(cacheKey(user, kind))
+}
+
 const INCOMING_FILES_ENTITY = 'Catalog_ТД_ВходящаяКорреспонденцияПрисоединенныеФайлы'
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -390,6 +394,10 @@ async function loadOrderEntity(
 
 const orderCache = new Map<string, { rows: OrderRow[]; error: string }>()
 const orderLoads = new Map<string, Promise<{ rows: OrderRow[]; error: string }>>()
+
+export function forgetDocflowOrdersSession(user: UserProfile | null): void {
+  orderCache.delete(cacheKey(user, 'orders'))
+}
 
 /** Приказы и распоряжения из документов 1С. Один запрос каждого вида за сессию. */
 export function loadDocflowOrdersSession(user: UserProfile | null): Promise<{ rows: OrderRow[]; error: string }> {

@@ -315,6 +315,35 @@ def _raw_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "onec.docflow_document_create",
+            "description": (
+                "Черновик документа журнала «Документооборот» в 1С (не проведён, маршрут не запущен): "
+                "incoming, outgoing, memo, payment, forwarding, order, directive — ERP; incentive — "
+                "база ДО под учёткой сеанса. action=schema — поля формы и списки значений; action=lookup + "
+                "kind + catalog + query — поиск в справочнике формы; action=create + kind + values "
+                "{поле: значение} (+ tables) — создать. Ссылки передавай наименованием как в 1С. "
+                "Перед первой записью вида сервер сам делает пробу CONSTRUCTOR_PROBE и удаляет её. "
+                "Требует подтверждения человека."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": _prop("string", "schema | lookup | probe | create", default="schema"),
+                    "kind": _prop(
+                        "string",
+                        "incoming | outgoing | memo | payment | forwarding | order | directive | incentive",
+                    ),
+                    "catalog": _prop("string", "Справочник поля формы (action=lookup)"),
+                    "query": _prop("string", "Текст поиска (action=lookup)"),
+                    "values": _prop("object", "Значения полей формы: ключи из action=schema"),
+                    "tables": _prop("object", "Табличные части: {ключ: [{колонка: значение}]}"),
+                    "files": _prop("array", "Файлы к документу ERP: [{name, base64}], до 10 шт. по 20 МБ"),
+                },
+                "required": ["action"],
+            },
+        },
+        {
             "name": "onec.sql_query",
             "description": "Только SELECT к ERP SQL (allowlist таблиц, сервер).",
             "execution": "server",
@@ -1221,6 +1250,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         ("create", "update"),
         ["action"],
         ["ref_key", "number"],
+        "none",
+    ),
+    "onec.docflow_document_create": (
+        "onec",
+        "docflow_document",
+        ("list", "search", "create"),
+        ["action"],
+        ["ref_key", "number", "kinds", "items"],
         "none",
     ),
     "onec.sql_query": ("onec", "sql_table", "search", ["sql"], ["rows"], "count"),

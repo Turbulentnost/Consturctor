@@ -26,6 +26,11 @@ from app.services.docflow_create import (
     handle_docflow_create as _docflow_create,
     stub_docflow_create as _stub_docflow_create,
 )
+from app.services.docflow_document_create import (
+    DocumentCreateError,
+    handle_docflow_document_create as _docflow_document_create,
+    stub_docflow_document_create as _stub_docflow_document_create,
+)
 from app.services.docflow_assignments import (
     handle_docflow_assignment_card as _docflow_assignment_card,
     handle_docflow_assignments as _docflow_assignments,
@@ -219,6 +224,7 @@ ONEC_TOOLS = frozenset(
         "onec.docflow_incentive_order_card",
         "onec.meeting_protocols",
         "onec.meeting_protocol_write",
+        "onec.docflow_document_create",
     }
 )
 ONEC_ODATA_WRITE_TOOLS = frozenset(
@@ -235,6 +241,7 @@ ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset(
         "onec.docflow_task_action",
         "onec.docflow_create",
         "onec.meeting_protocol_write",
+        "onec.docflow_document_create",
     }
 )
 _ERP_TASK_TOOLS = frozenset(
@@ -251,6 +258,7 @@ _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
     "onec.docflow_create",
     "onec.erp_write_probe",
     "onec.meeting_protocol_write",
+    "onec.docflow_document_create",
 }
 _ACCESS_TOOLS = frozenset(
     {
@@ -411,6 +419,7 @@ def invoke_onec(
         IncomingCorrespondenceError,
         ArtifactError,
         ProtocolWriteError,
+        DocumentCreateError,
     ) as exc:
         raise OnecToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -1648,6 +1657,7 @@ STUB_HANDLERS = {
     "onec.docflow_incentive_order_card": _docflow_incentive_order_card,
     "onec.meeting_protocols": _stub_meeting_protocols,
     "onec.meeting_protocol_write": _stub_meeting_protocol_write,
+    "onec.docflow_document_create": _stub_docflow_document_create,
 }
 
 REAL_HANDLERS = {
@@ -1685,4 +1695,5 @@ REAL_HANDLERS = {
     "onec.docflow_incentive_order_card": _docflow_incentive_order_card,
     "onec.meeting_protocols": _list_meeting_protocols,
     "onec.meeting_protocol_write": _meeting_protocol_write,
+    "onec.docflow_document_create": _docflow_document_create,
 }

@@ -145,6 +145,20 @@
   gap: 16px;
 }
 
+.docflow-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.docflow-create-btn {
+  height: 32px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
 .docflow-head-title {
   display: flex;
   align-items: center;
