@@ -331,6 +331,7 @@
 .df1c-table table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .df1c-table th {
@@ -345,12 +346,21 @@
 .df1c-table td {
   border: 1px solid #e3eaf3;
   padding: 3px 4px;
+  vertical-align: top;
+  overflow: hidden;
 }
 
 .df1c-num {
   width: 32px;
   text-align: center;
   color: #6b7380;
+}
+
+.df1c-table .df1c-col-delete {
+  width: 36px;
+  padding: 2px;
+  text-align: center;
+  vertical-align: middle;
 }
 
 .df1c-icon-btn {
@@ -648,13 +658,71 @@
 }
 
 .df1c-table .df1c-input,
-.df1c-table .onec-reconnect-input {
+.df1c-table .onec-reconnect-input,
+.df1c-table .df1c-textarea {
   height: 32px;
-  border-radius: 8px;
+  padding: 4px 8px;
+  line-height: 22px;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
 }
 
-.df1c-table .df1c-textarea {
-  min-height: 52px;
+.df1c-table select.df1c-input {
+  cursor: pointer;
+  height: 28px;
+  padding-right: 2px;
+}
+
+.df1c-table .df1c-readonly,
+.df1c-table select.df1c-input:disabled {
+  color: #10141a;
+  opacity: 1;
+}
+
+.df1c-table .df1c-col-date {
+  width: 8.4rem;
+}
+
+.df1c-table .df1c-col-enum {
+  width: 8.6rem;
+}
+
+.df1c-table .df1c-col-ref {
+  width: 22%;
+}
+
+.df1c-table .df1c-col-date .df1c-input {
+  padding-left: 4px;
+  padding-right: 2px;
+  min-width: 0;
+}
+
+.df1c-table textarea.df1c-grow,
+.df1c-table .df1c-col-measure .df1c-static {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  max-height: none;
+  height: auto;
+  margin: 0;
+  padding: 4px 2px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow: hidden;
+  resize: none;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.df1c-table .df1c-ref-btn {
+  width: 22px;
+  height: 28px;
+  border: none;
+  background: transparent;
 }
 
 .df1c-themes {

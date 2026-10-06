@@ -137,6 +137,39 @@ function RefInput({
   )
 }
 
+function GrowText({
+  value,
+  placeholder,
+  onChange
+}: {
+  value: string
+  placeholder?: string
+  onChange: (value: string) => void
+}): React.JSX.Element {
+  const ref = useRef<HTMLTextAreaElement | null>(null)
+  useEffect(() => {
+    const node = ref.current
+    if (!node) return
+    node.style.height = '0px'
+    node.style.height = `${node.scrollHeight}px`
+  }, [value])
+  return (
+    <textarea
+      ref={ref}
+      className="df1c-input df1c-textarea df1c-grow"
+      rows={1}
+      value={value}
+      placeholder={placeholder}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  )
+}
+
+const ASSIGNMENT_PRIORITIES = [
+  { value: 'Критический', label: 'Критический' },
+  { value: 'Высокий', label: 'Высокий' }
+]
+
 function FieldInput({
   user,
   kind,
@@ -154,22 +187,17 @@ function FieldInput({
   readOnly: boolean
   onChange: (value: string) => void
 }): React.JSX.Element {
-  if (readOnly) {
-    const shown = field.type === 'date' ? dateLabel(value) : displayValue(field, value)
-    if (field.type === 'textarea') {
-      return <div className="df1c-input df1c-readonly df1c-textarea df1c-static">{shown}</div>
-    }
-    return <input className="df1c-input df1c-readonly" value={shown} readOnly title={shown} />
-  }
-  if (field.type === 'ref') {
-    return <RefInput user={user} kind={kind} field={field} value={value} userHints={userHints} onChange={onChange} />
-  }
+  const wraps = field.type === 'textarea' || field.key === 'Мероприятие'
   if (field.type === 'enum') {
     const known = !value || (field.options || []).some((item) => item.value === value)
     return (
-      <select className="df1c-input" value={value} onChange={(event) => onChange(event.target.value)}>
+      <select
+        className="df1c-input"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
         <option value="" />
-        {known ? null : <option value={value}>{value}</option>}
+        {known ? null : <option value={value}>{displayValue(field, value)}</option>}
         {(field.options || []).map((item) => (
           <option key={item.value} value={item.value}>
             {item.label}
@@ -178,16 +206,18 @@ function FieldInput({
       </select>
     )
   }
-  if (field.type === 'textarea') {
-    return (
-      <textarea
-        className="df1c-input df1c-textarea"
-        rows={4}
-        value={value}
-        placeholder={field.hint}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    )
+  if (readOnly) {
+    const shown = field.type === 'date' ? dateLabel(value) : displayValue(field, value)
+    if (wraps) {
+      return <div className="df1c-input df1c-readonly df1c-textarea df1c-static">{shown}</div>
+    }
+    return <input className="df1c-input df1c-readonly" value={shown} readOnly title={shown} />
+  }
+  if (field.type === 'ref') {
+    return <RefInput user={user} kind={kind} field={field} value={value} userHints={userHints} onChange={onChange} />
+  }
+  if (wraps) {
+    return <GrowText value={value} placeholder={field.hint} onChange={onChange} />
   }
   return (
     <input
@@ -937,9 +967,11 @@ export function DocflowCreateDialog({
                         <tr>
                           <th className="df1c-num">N</th>
                           {table.columns.map((column) => (
-                            <th key={column.key}>{column.label}</th>
+                            <th key={column.key} className={`df1c-col-${column.type}${column.key === 'Мероприятие' ? ' df1c-col-measure' : ''}`}>
+                              {column.label}
+                            </th>
                           ))}
-                          {!readOnly ? <th /> : null}
+                          {!readOnly ? <th className="df1c-col-delete" /> : null}
                         </tr>
                       </thead>
                       <tbody>
@@ -947,11 +979,15 @@ export function DocflowCreateDialog({
                           <tr key={row.id}>
                             <td className="df1c-num">{index + 1}</td>
                             {table.columns.map((column) => (
-                              <td key={column.key}>
+                              <td key={column.key} className={`df1c-col-${column.type}${column.key === 'Мероприятие' ? ' df1c-col-measure' : ''}`}>
                                 <FieldInput
                                   user={user}
                                   kind={schema.id}
-                                  field={column}
+                                  field={
+                                    schema.id === 'assignment' && column.key === 'Приоритет'
+                                      ? { ...column, type: 'enum', options: ASSIGNMENT_PRIORITIES }
+                                      : column
+                                  }
                                   value={row.cells[column.key] || ''}
                                   userHints={userHints}
                                   readOnly={readOnly}
@@ -960,7 +996,7 @@ export function DocflowCreateDialog({
                               </td>
                             ))}
                             {!readOnly ? (
-                              <td>
+                              <td className="df1c-col-delete">
                                 <button
                                   type="button"
                                   className="df1c-icon-btn"
