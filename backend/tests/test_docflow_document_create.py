@@ -107,6 +107,35 @@ def test_build_body_resolves_refs_and_composites(fake: FakeClient) -> None:
     assert body["ДокументОснование"] == ""
 
 
+def test_build_body_posts_when_asked(fake: FakeClient) -> None:
+    body = dc.build_body(
+        "outgoing",
+        _outgoing_values(),
+        client=fake,
+        actor_fio="Жалыбин Максим Дмитриевич",
+        sample=fake.sample,
+        post=True,
+    )
+    assert body["Posted"] is True
+
+
+def test_create_document_posts_erp(fake: FakeClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dc, "ensure_probe", lambda *args, **kwargs: None)
+    result = dc.create_document(
+        "outgoing",
+        {"values": _outgoing_values(), "post": True},
+        actor_fio="Жалыбин Максим Дмитриевич",
+    )
+    assert result["posted"] is True
+    assert fake.posted[-1]["Posted"] is True
+    assert "проведён" in result["summary"]
+
+
+def test_catalog_document_cannot_be_posted() -> None:
+    with pytest.raises(dc.DocumentCreateError, match="не проводится"):
+        dc.create_document("incentive", {"post": True, "values": {}}, actor_fio="Жалыбин")
+
+
 def test_build_body_requires_fields(fake: FakeClient) -> None:
     with pytest.raises(dc.DocumentCreateError, match="Тема"):
         dc.build_body("outgoing", {"Организация_Key": ORG}, client=fake, actor_fio="Жалыбин", sample={})
@@ -292,4 +321,131 @@ def test_schema_lists_all_kinds(fake: FakeClient, monkeypatch: pytest.MonkeyPatc
     assert incoming["files"] is True
     incentive = next(kind for kind in result["kinds"] if kind["id"] == "incentive")
     assert incentive["files"] is False
-    assert result["existing_forms"] == {"assignments": "assignment", "protocols": "protocol"}
+    assert result["existing_forms"] == {"protocols": "protocol"}
+    outgoing = next(kind for kind in result["kinds"] if kind["id"] == "outgoing")
+    assert outgoing["copy"] is True
+    assert {"id": "assignment", "title": dc.KINDS["assignment"]["title"]} in outgoing["basis_targets"]
+    assert incoming["copy"] is False
+
+
+DOC = "abababab-abab-abab-abab-abababababab"
+
+
+def _stored_outgoing(fake: FakeClient, **extra: Any) -> None:
+    fake.stored[DOC] = {
+        "Ref_Key": DOC,
+        "Number": "ИСХ-0042",
+        "Date": "2026-02-10T12:00:00",
+        "Posted": False,
+        "DeletionMark": False,
+        "Организация_Key": ORG,
+        "Ответственный_Key": USER,
+        "Контрагент_Key": CONTRACTOR,
+        "Партнер_Key": PARTNER,
+        "ТемаСлужебнойЗаписки": "Старая тема",
+        "ТемаСлужебнойЗаписки_Type": "Edm.String",
+        "Направление": "КоммерческийДиректор",
+        **extra,
+    }
+
+
+def test_read_document_resolves_names_and_keys(fake: FakeClient) -> None:
+    _stored_outgoing(fake)
+    result = dc.handle_docflow_document_create({"action": "read", "kind": "outgoing", "ref_key": DOC})
+    assert result["number"] == "ИСХ-0042"
+    assert result["editable"] is True
+    assert result["values"]["Организация_Key"] == "НПО Турбулентность-ДОН"
+    assert result["keys"]["Организация_Key"] == ORG
+    assert result["values"]["ТемаСлужебнойЗаписки"] == "Старая тема"
+    assert result["values"]["Направление"] == "КоммерческийДиректор"
+
+
+def test_update_patches_only_changed_fields(fake: FakeClient) -> None:
+    _stored_outgoing(fake)
+    fake.stored[DOC]["Контрагент_Key"] = "deadbeef-dead-beef-dead-beefdeadbeef"
+    result = dc.handle_docflow_document_create(
+        {
+            "action": "update",
+            "kind": "outgoing",
+            "ref_key": DOC,
+            "values": {"ТемаСлужебнойЗаписки": "Новая тема", "Контрагент_Key": "ООО Ромашка"},
+            "changed": ["ТемаСлужебнойЗаписки"],
+        },
+        actor_fio="Жалыбин Максим Дмитриевич",
+    )
+    assert result["ok"] is True
+    assert fake.stored[DOC]["ТемаСлужебнойЗаписки"] == "Новая тема"
+    assert fake.stored[DOC]["Контрагент_Key"] == "deadbeef-dead-beef-dead-beefdeadbeef"
+
+
+def test_update_clears_optional_and_keeps_required(fake: FakeClient) -> None:
+    _stored_outgoing(fake)
+    with pytest.raises(dc.DocumentCreateError, match="Тема"):
+        dc.handle_docflow_document_create(
+            {"action": "update", "kind": "outgoing", "ref_key": DOC, "values": {}, "changed": ["ТемаСлужебнойЗаписки"]},
+            actor_fio="Жалыбин Максим Дмитриевич",
+        )
+
+
+def test_posted_document_is_read_only_but_takes_files(fake: FakeClient) -> None:
+    import base64
+
+    _stored_outgoing(fake, Posted=True)
+    read = dc.handle_docflow_document_create({"action": "read", "kind": "outgoing", "ref_key": DOC})
+    assert read["editable"] is False
+    assert "проведён" in read["readonly_reason"]
+    with pytest.raises(dc.DocumentCreateError, match="проведён"):
+        dc.handle_docflow_document_create(
+            {"action": "update", "kind": "outgoing", "ref_key": DOC, "values": {}, "changed": []},
+            actor_fio="Жалыбин Максим Дмитриевич",
+        )
+    files = [{"name": "письмо.pdf", "base64": base64.b64encode(b"%PDF").decode()}]
+    attached = dc.handle_docflow_document_create(
+        {"action": "attach", "kind": "outgoing", "ref_key": DOC, "files": files},
+        actor_fio="Жалыбин Максим Дмитриевич",
+    )
+    assert attached["attached"] == ["письмо.pdf"]
+    assert fake.files[-1]["ВладелецФайла_Key"] == DOC
+
+
+def test_basis_outgoing_to_assignment_and_copy(fake: FakeClient) -> None:
+    _stored_outgoing(fake)
+    basis = dc.handle_docflow_document_create(
+        {"action": "basis", "kind": "outgoing", "ref_key": DOC, "target": "assignment"}
+    )
+    assert basis["values"]["ОЧем"] == "Старая тема"
+    assert "ИСХ-0042" in basis["values"]["Основание"]
+    assert basis["keys"]["Организация_Key"] == ORG
+    assert "Ответственный_Key" not in basis["values"]
+    copy = dc.handle_docflow_document_create({"action": "basis", "kind": "outgoing", "ref_key": DOC, "target": "outgoing"})
+    assert copy["values"]["Контрагент_Key"] == "ООО Ромашка"
+    assert copy["basis"] is None
+    memo = dc.handle_docflow_document_create({"action": "basis", "kind": "incoming", "ref_key": DOC, "target": "outgoing"})
+    assert memo["basis"] == {"kind": "incoming", "ref_key": DOC}
+    with pytest.raises(dc.DocumentCreateError, match="нельзя создать"):
+        dc.handle_docflow_document_create({"action": "basis", "kind": "outgoing", "ref_key": DOC, "target": "payment"})
+
+
+def test_basis_link_written_on_create(fake: FakeClient) -> None:
+    _stored_outgoing(fake)
+    dc.create_document(
+        "outgoing",
+        {"values": _outgoing_values(), "basis": {"kind": "outgoing", "ref_key": DOC}},
+        actor_fio="Жалыбин Максим Дмитриевич",
+    )
+    body = fake.posted[-1]
+    assert body["ДокументОснование"] == DOC
+    assert body["ДокументОснование_Type"] == "StandardODATA.Document_ТД_ИсходящаяКорреспонденция"
+
+
+def test_assignment_gets_default_event_row(fake: FakeClient) -> None:
+    body = dc.build_body(
+        "assignment",
+        {"Организация_Key": ORG, "ОЧем": "Подготовить отчёт", "СрокПолногоУстраненияНарушений": "2026-04-01"},
+        client=fake,
+        actor_fio="Жалыбин Максим Дмитриевич",
+        sample={},
+    )
+    assert body["Руководитель_Key"] == USER
+    assert body["Поручения"][0]["Мероприятие"] == "Подготовить отчёт"
+    assert body["Основание_Type"] == "Edm.String"

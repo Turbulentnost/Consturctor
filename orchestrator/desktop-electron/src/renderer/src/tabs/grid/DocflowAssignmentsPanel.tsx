@@ -22,6 +22,8 @@ import {
   type AssignmentStatus
 } from '../../workplace/fetchDocflowAssignments'
 import { DocflowFileOpenButton } from './DocflowAttachments'
+import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -270,11 +272,13 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
 export function DocflowAssignmentsPanel({
   user,
   from,
-  to
+  to,
+  onOpenDocument
 }: {
   user: UserProfile
   from: string
   to: string
+  onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<AssignmentRow[]>([])
   const [statuses, setStatuses] = useState<AssignmentStatus[]>(FALLBACK_STATUSES)
@@ -525,6 +529,7 @@ export function DocflowAssignmentsPanel({
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}
+                    onDoubleClick={() => onOpenDocument?.('assignment', row.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -552,6 +557,12 @@ export function DocflowAssignmentsPanel({
         </div>
       </div>
       <aside className="docflow-side wp-card" aria-label="Карточка поручения">
+        {selected ? (
+          <DocflowOpenFormBar
+            refKey={selected.id}
+            onOpen={onOpenDocument && (() => onOpenDocument('assignment', selected.id))}
+          />
+        ) : null}
         {!selected ? (
           <p className="docflow-status">Выберите поручение, чтобы увидеть карточку</p>
         ) : cardLoading ? (

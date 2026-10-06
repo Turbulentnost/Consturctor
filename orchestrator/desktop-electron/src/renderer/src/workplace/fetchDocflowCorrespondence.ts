@@ -59,6 +59,10 @@ const FIELD_LABELS: Record<string, string> = {
   СрокИсполнения: 'Срок исполнения',
   ТекстСлужебнойЗаписки: 'Текст',
   БизнесПроцессСтартован: 'Процесс запущен',
+  БизнесПроцессЗапущен: 'Процесс запущен',
+  ИсточникПоступления: 'Источник поступления',
+  Претензия: 'Претензия',
+  Subject: 'Тема',
   УтвержденоНачальникомУД: 'Утверждено начальником УД',
   ТекстHTML: 'Текст',
   ГрифДоступа: 'Гриф доступа'
@@ -105,6 +109,22 @@ function field(row: Record<string, unknown>, key: string): string {
   return textOf(row[`${key}_Name`]) || textOf(row[key])
 }
 
+function humanizeIdentifier(value: string): string {
+  const spaced = value
+    .replace(/_/g, ' ')
+    .replace(/([а-яёa-z])([А-ЯЁA-Z])/g, '$1 $2')
+    .replace(/([А-ЯЁA-Z])([А-ЯЁA-Z][а-яёa-z])/g, '$1 $2')
+    .trim()
+  return spaced
+    .split(/\s+/)
+    .map((word, index) => (index === 0 ? word : word.charAt(0).toLowerCase() + word.slice(1)))
+    .join(' ')
+}
+
+function looksLikeEnum(value: string): boolean {
+  return value.length > 2 && value.length < 48 && !/[\s\-«»]/.test(value) && /[а-яёa-z]/.test(value) && /[А-ЯЁA-Z]/.test(value.slice(1))
+}
+
 function displayValue(key: string, value: string): string {
   if (key === 'Date' || key.startsWith('Дата') || key.startsWith('Срок') || key.startsWith('Время')) {
     return formatCorrespondenceDate(value)
@@ -112,6 +132,7 @@ function displayValue(key: string, value: string): string {
   if (value === 'true') return 'Да'
   if (value === 'false') return 'Нет'
   if (key === 'ТекстСлужебнойЗаписки' || key === 'ТекстHTML') return stripHtml(value)
+  if (looksLikeEnum(value)) return humanizeIdentifier(value)
   return value
 }
 
@@ -137,7 +158,7 @@ function detailFields(
     if (SKIP_FIELD.test(key) || key.endsWith('_Name')) continue
     const value = field(row, key)
     if (!value) continue
-    const label = labels[key] || FIELD_LABELS[key] || key
+    const label = labels[key] || FIELD_LABELS[key] || humanizeIdentifier(key)
     if (seen.has(label)) continue
     seen.add(label)
     fields.push({ label, value: displayValue(key, value) })

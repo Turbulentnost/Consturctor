@@ -2,8 +2,8 @@
 
 Состав полей каждой формы взят из $metadata ERP и из того, какие реквизиты
 реально заполнены в последних документах журнала (так выглядит форма в 1С).
-Документ пишется черновиком: Posted=false, без запуска маршрута — провести
-и отправить его человек может уже в самой 1С.
+Документ пишется черновиком (Posted=false). post=true проводит документ ERP.
+Маршрут согласования из формы не запускается.
 
 Каждый вид документа пишется только после пробы на этом же виде: проба
 создаёт документ с меткой CONSTRUCTOR_PROBE, читает его обратно и удаляет.
@@ -59,6 +59,14 @@ CONTRACTORS = "Catalog_Контрагенты"
 DEPARTMENTS = "Catalog_СтруктураПредприятия"
 GRIFS = "Catalog_ТД_ГрифыДоступа"
 
+INCOMING_SOURCES = _enum(
+    ("EMAIL", "E-MAIL"),
+    ("ОфициальныйЗапрос", "Официальный запрос"),
+    ("ЮридическийАдресМосква", "Юридический адрес (Москва)"),
+    ("ПочтовоеПисьмо", "Почтовое письмо"),
+    ("Прочее", "Прочее"),
+)
+
 ORDER_FIELDS: list[dict[str, Any]] = [
     {"key": "Организация_Key", "label": "Организация", "type": "ref", "catalog": ORGS, "required": True},
     {"key": "ТемаСлужебнойЗаписки", "label": "Тема", "type": "text", "required": True, "composite": True},
@@ -80,16 +88,79 @@ KINDS: dict[str, dict[str, Any]] = {
         "entity": "Document_ТД_ВходящаяКорреспонденция",
         "writer": "incoming",
         "mark_field": "theme",
+        "read_mark": "ТемаСлужебнойЗаписки",
         "fields": [
-            {"key": "theme", "label": "Тема", "type": "text", "required": True},
-            {"key": "partner", "label": "Партнёр (от кого)", "type": "text", "required": True},
-            {"key": "department_id", "label": "Кому (подразделение)", "type": "enum", "required": True, "options_from": "departments"},
             {"key": "organization", "label": "Организация", "type": "enum", "options_from": "organizations", "default": "НП"},
-            {"key": "payer", "label": "Плательщик / направление", "type": "enum", "options_from": "payers"},
+            {"key": "theme", "label": "Тема", "type": "text", "required": True},
+            {"key": "department_id", "label": "Кому (подразделение)", "type": "enum", "required": True, "options_from": "departments"},
+            {"key": "НомерИсходящий", "label": "Номер исх.", "type": "text", "raw": True},
+            {"key": "ДатаИсходящая", "label": "Дата исх.", "type": "date", "raw": True},
+            {"key": "partner", "label": "Партнёр (от кого)", "type": "text", "required": True},
+            {"key": "ИсточникПоступления", "label": "Источник поступления", "type": "enum", "raw": True, "default": "EMAIL", "options": INCOMING_SOURCES},
             {"key": "email_sender", "label": "Email отправителя", "type": "text"},
+            {"key": "email_recipient", "label": "Email получателя письма", "type": "text"},
+            {"key": "payer", "label": "Плательщик-направление", "type": "enum", "options_from": "payers"},
             {"key": "content", "label": "Содержание", "type": "textarea"},
         ],
+        # Карточка уже записанного документа — реквизиты 1С как есть.
+        "edit_fields": [
+            {"key": "Организация_Key", "label": "Организация", "type": "ref", "catalog": ORGS, "required": True},
+            {"key": "Ответственный_Key", "label": "Ответственный", "type": "ref", "catalog": USERS},
+            {"key": "ТемаСлужебнойЗаписки", "label": "Тема", "type": "text", "required": True, "composite": True},
+            {"key": "КомуПодразделениеСсылка_Key", "label": "Кому (подразделение)", "type": "ref", "catalog": DEPARTMENTS, "mirror": "ПодразделениеИсполнитель_Key"},
+            {"key": "НомерИсходящий", "label": "Номер исх.", "type": "text"},
+            {"key": "ДатаИсходящая", "label": "Дата исх.", "type": "date"},
+            {"key": "Статус", "label": "Статус", "type": "enum", "options": _enum(
+                ("Подготовлен", "Подготовлен"),
+                ("НаИсполнении", "На исполнении"),
+                ("Исполнен", "Исполнен"),
+            )},
+            {"key": "Партнер", "label": "Партнёр", "type": "ref", "catalog": PARTNERS, "required": True, "composite": True, "allow_text": True},
+            {"key": "Контрагент_Key", "label": "Контрагент", "type": "ref", "catalog": CONTRACTORS},
+            {"key": "ИсточникПоступления", "label": "Источник поступления", "type": "enum", "options": INCOMING_SOURCES},
+            {"key": "EmailОтправителяПисьма", "label": "Email отправителя", "type": "text"},
+            {"key": "EmailПолучателяПисьма", "label": "Email получателя письма", "type": "text"},
+            {"key": "ГрифДоступа_Key", "label": "Гриф доступа", "type": "ref", "catalog": GRIFS},
+            {"key": "Содержание", "label": "Содержание", "type": "textarea"},
+            {"key": "Комментарий", "label": "Комментарий", "type": "textarea"},
+        ],
         "tables": [],
+    },
+    "assignment": {
+        "title": "Поручение",
+        "journal": "assignments",
+        "base": "erp",
+        "entity": "Document_ТД_Поручения",
+        "number_series": "АСТ00-",
+        "mark_field": "ОЧем",
+        "defaults": {"Статус": "Создано"},
+        "fields": [
+            {"key": "Организация_Key", "label": "Организация", "type": "ref", "catalog": ORGS, "required": True},
+            {"key": "ОЧем", "label": "О чём", "type": "text", "required": True},
+            {"key": "Основание", "label": "Основание", "type": "text", "composite": True, "default": "Устное поручение"},
+            {"key": "Руководитель_Key", "label": "Руководитель (заказчик)", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
+            {"key": "СрокПолногоУстраненияНарушений", "label": "Срок полного устранения", "type": "date", "required": True},
+            {"key": "ДатаЕженедельногоОтчетаОВыполненииМероприятий", "label": "Еженедельный отчёт", "type": "date"},
+            {"key": "ДатаИтоговогоДоклада", "label": "Итоговый доклад", "type": "date"},
+            {"key": "КтоДоложитОЗавершенииМероприятий_Key", "label": "Кто доложит", "type": "ref", "catalog": USERS},
+            {"key": "СекретарьРК_Key", "label": "Секретарь", "type": "ref", "catalog": USERS},
+        ],
+        "tables": [
+            {
+                "key": "Поручения",
+                "label": "Мероприятия",
+                "columns": [
+                    {"key": "Мероприятие", "label": "Мероприятие", "type": "text", "required": True},
+                    {"key": "ОтветственноеЛицо_Key", "label": "Исполнитель", "type": "ref", "catalog": USERS},
+                    {"key": "СрокИсполнения", "label": "Срок", "type": "date"},
+                    {"key": "Приоритет", "label": "Приоритет", "type": "enum", "options": _enum(
+                        ("Высокий", "Высокий"),
+                        ("Средний", "Средний"),
+                        ("Низкий", "Низкий"),
+                    )},
+                ],
+            }
+        ],
     },
     "outgoing": {
         "title": "Исходящая корреспонденция",
@@ -308,7 +379,28 @@ KINDS: dict[str, dict[str, Any]] = {
 }
 
 # Журналы, у которых уже есть своя форма создания в приложении.
-EXISTING_FORMS = {"assignments": "assignment", "protocols": "protocol"}
+EXISTING_FORMS = {"protocols": "protocol"}
+
+# «Создать на основании»: что можно создать из документа. Тот же вид — это «Скопировать».
+BASIS_TARGETS: dict[str, list[str]] = {
+    "incoming": ["outgoing", "memo", "assignment"],
+    "outgoing": ["outgoing", "memo", "assignment"],
+    "memo": ["memo", "order", "directive", "assignment", "payment", "forwarding"],
+    "order": ["order", "assignment"],
+    "directive": ["directive", "assignment"],
+    "payment": ["payment"],
+    "forwarding": ["forwarding"],
+    "assignment": ["assignment", "memo"],
+    "incentive": ["incentive"],
+}
+
+# Реквизит-ссылка на документ-основание и какие виды он принимает (по данным журналов 1С).
+BASIS_LINK: dict[str, tuple[str, set[str]]] = {
+    "outgoing": ("ДокументОснование", {"incoming", "outgoing"}),
+    "order": ("ДокументОснование", {"order", "directive"}),
+    "directive": ("ДокументОснование", {"order", "directive"}),
+    "assignment": ("Основание", {"incoming"}),
+}
 
 # Присоединённые файлы БСП: у каждого документа ERP свой справочник.
 FILE_CATALOGS: dict[str, str] = {
@@ -319,13 +411,35 @@ FILE_CATALOGS: dict[str, str] = {
     "directive": "Catalog_ТД_РаспоряжениеПрисоединенныеФайлы",
     "payment": "Catalog_ЗаявкаНаРасходованиеДенежныхСредствПрисоединенныеФайлы",
     "forwarding": "Catalog_ПоручениеЭкспедиторуПрисоединенныеФайлы",
+    "assignment": "Catalog_ТД_ПорученияПрисоединенныеФайлы",
 }
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_FILES = 10
 
 # Правая колонка формы — как в карточке документа 1С. Многострочные поля идут под колонками.
 RIGHT_COLUMN: dict[str, set[str]] = {
-    "incoming": {"partner", "email_sender", "payer"},
+    "incoming": {
+        "НомерИсходящий",
+        "ДатаИсходящая",
+        "partner",
+        "ИсточникПоступления",
+        "email_sender",
+        "email_recipient",
+        "payer",
+        "Статус",
+        "Партнер",
+        "Контрагент_Key",
+        "EmailОтправителяПисьма",
+        "EmailПолучателяПисьма",
+        "ГрифДоступа_Key",
+    },
+    "assignment": {
+        "СрокПолногоУстраненияНарушений",
+        "ДатаЕженедельногоОтчетаОВыполненииМероприятий",
+        "ДатаИтоговогоДоклада",
+        "КтоДоложитОЗавершенииМероприятий_Key",
+        "СекретарьРК_Key",
+    },
     "outgoing": {"НомерВходящий", "ДатаВходящая", "EmailПолучателяПисьма", "ГрифДоступа_Key", "Ответственный_Key"},
     "memo": {"СрокИсполнения", "Приоритет_Key", "Проект_Key", "ГрифДоступа_Key", "Ответственный_Key"},
     "payment": {
@@ -574,6 +688,11 @@ def _convert(
     kind = field["type"]
     label = field["label"]
     if kind == "ref":
+        if field.get("allow_text"):
+            try:
+                return _resolve_ref(client, field["catalog"], str(raw or ""), label)
+            except DocumentCreateError:
+                return TextValue(" ".join(str(raw or "").split()))
         return _resolve_ref(client, field["catalog"], str(raw or ""), label)
     if kind == "date":
         return _day(raw, label)
@@ -593,6 +712,27 @@ def _convert(
                     raise DocumentCreateError(f"«{label}»: значение не из списка 1С")
         return text
     return " ".join(str(raw or "").split()) if kind == "text" else str(raw or "").strip()
+
+
+class TextValue(str):
+    """Составной реквизит «ссылка или строка»: в справочнике не нашли — пишем строкой, как в 1С."""
+
+
+def put_value(body: dict[str, Any], field: dict[str, Any], value: Any) -> None:
+    key = field["key"]
+    if field["type"] == "ref" and field.get("composite"):
+        if isinstance(value, TextValue) or not _GUID_RE.match(str(value or "")):
+            body[key] = str(value or "")
+            body[f"{key}_Type"] = STRING_TYPE
+        else:
+            body[key] = value
+            body[f"{key}_Type"] = f"StandardODATA.{field['catalog']}"
+    else:
+        body[key] = value
+        if field.get("composite"):
+            body[f"{key}_Type"] = STRING_TYPE
+    if field.get("mirror"):
+        body[field["mirror"]] = value
 
 
 def _filled(value: Any) -> bool:
@@ -669,6 +809,8 @@ def build_body(
     actor_fio: str,
     tables: dict[str, Any] | None = None,
     sample: dict[str, Any] | None = None,
+    basis: dict[str, str] | None = None,
+    post: bool = False,
 ) -> dict[str, Any]:
     kind = _kind(kind_id)
     merged = _values_with_defaults(kind, values, actor_fio)
@@ -677,7 +819,7 @@ def build_body(
         raise DocumentCreateError("Заполните обязательные поля: " + ", ".join(missing))
     body: dict[str, Any] = {"DeletionMark": False}
     if kind["base"] == "erp":
-        body["Posted"] = False
+        body["Posted"] = bool(post)
         body["Date"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     body.update(kind.get("defaults") or {})
     body.update(kind.get("fixed") or {})
@@ -692,9 +834,7 @@ def build_body(
         if field.get("property"):
             properties.append((field["property"], value, field))
             continue
-        body[field["key"]] = value
-        if field.get("composite"):
-            body[f"{field['key']}_Type"] = STRING_TYPE
+        put_value(body, field, value)
     _fill_from_source(client, kind, body)
     if kind_id == "payment":
         body["ДатаПлатежа"] = body.get("ЖелательнаяДатаПлатежа", "")
@@ -713,10 +853,19 @@ def build_body(
                     "Организация_Key": body.get("Организация_Key", EMPTY_GUID),
                 }
             ]
+        if not rows and kind_id == "assignment":
+            rows = [{"LineNumber": "1", "Мероприятие": body.get("ОЧем", "")}]
+            if body.get("СрокПолногоУстраненияНарушений"):
+                rows[0]["СрокИсполнения"] = body["СрокПолногоУстраненияНарушений"]
         if rows:
             body[table["key"]] = rows
     if properties:
         body["ДополнительныеРеквизиты"] = _property_rows(client, properties)
+    if basis and kind_id in BASIS_LINK and _GUID_RE.match(basis.get("ref_key") or ""):
+        link_field, sources = BASIS_LINK[kind_id]
+        if basis.get("kind") in sources:
+            body[link_field] = basis["ref_key"]
+            body[f"{link_field}_Type"] = f"StandardODATA.{KINDS[basis['kind']]['entity']}"
     _composite_defaults(sample or {}, body)
     return body
 
@@ -791,16 +940,19 @@ def _remember_probe(kind_id: str, result: dict[str, Any]) -> None:
             "summary": result.get("summary"),
             "error": result.get("error") or "",
             "files": bool(result.get("files")),
+            "update": bool(result.get("update")),
         }
         _PROBES_PATH.parent.mkdir(parents=True, exist_ok=True)
         _PROBES_PATH.write_text(json.dumps(store, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def probe_passed(kind_id: str, *, files: bool = False) -> bool:
+def probe_passed(kind_id: str, *, files: bool = False, update: bool = False) -> bool:
     record = _probe_store().get(kind_id, {})
     if not record.get("ok"):
         return False
-    return bool(record.get("files")) or not files or kind_id not in FILE_CATALOGS
+    if files and kind_id in FILE_CATALOGS and not record.get("files"):
+        return False
+    return not update or bool(record.get("update"))
 
 
 def _delete_probe(client: _ODataClient, entity: str, ref_key: str) -> bool:
@@ -823,6 +975,7 @@ def _probe_values(kind_id: str, client: _ODataClient, actor_fio: str, topic: str
     """Обязательные поля пробы: первая подходящая запись справочника или первое значение списка."""
     kind = _kind(kind_id)
     values: dict[str, Any] = {}
+    sample = _sample(client, kind["entity"]) if kind.get("writer") != "incoming" else {}
     for field in kind["fields"]:
         if not field.get("required"):
             continue
@@ -831,13 +984,17 @@ def _probe_values(kind_id: str, client: _ODataClient, actor_fio: str, topic: str
             values[key] = _default_value(field, actor_fio)
             if field["type"] != "ref" or values[key]:
                 continue
-        if field["type"] == "ref":
+        if field["type"] == "ref" and _filled(sample.get(key)) and _GUID_RE.match(str(sample.get(key))):
+            values[key] = str(sample[key])
+        elif field["type"] == "ref":
             items = lookup_catalog(client, field["catalog"], "", limit=20)
             if not items:
                 raise DocumentCreateError(f"Справочник {field['catalog']} пуст — проба невозможна")
             values[key] = items[0]["key"]
         elif field["type"] == "enum":
             options = field.get("options") or []
+            if not options and field.get("options_from"):
+                options = _incoming_options().get(field["options_from"], [])
             values[key] = options[0]["value"] if options else ""
         elif field["type"] == "number":
             values[key] = 1
@@ -849,33 +1006,49 @@ def _probe_values(kind_id: str, client: _ODataClient, actor_fio: str, topic: str
     return values
 
 
+def _probe_create(kind_id: str, client: _ODataClient, actor_fio: str, topic: str) -> str:
+    kind = _kind(kind_id)
+    values = _probe_values(kind_id, client, actor_fio, topic)
+    if kind.get("writer") == "incoming":
+        return _create_incoming(_values_with_defaults(kind, values, actor_fio))["ref_key"]
+    body = build_body(kind_id, values, client=client, actor_fio=actor_fio, sample=_sample(client, kind["entity"]))
+    return str(_post_document(client, kind, body).get("Ref_Key") or "")
+
+
+def _post_document(client: _ODataClient, kind: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    """Счётчик поручений АСТ00 в ERP отстал и выдаёт занятые номера — номер «последний + 1» ставим сами."""
+    series = kind.get("number_series")
+    if not series:
+        return client.post(kind["entity"], body)
+    for _ in range(3):
+        rows = client.get(kind["entity"], filt=f"substringof('{_quote(series)}', Number)", top=5000)
+        tails = [str(row.get("Number") or "")[len(series):] for row in rows]
+        last = max((int(tail) for tail in tails if tail.isdigit()), default=0)
+        body["Number"] = f"{series}{last + 1:05d}"
+        try:
+            return client.post(kind["entity"], body)
+        except DocumentCreateError as exc:
+            if "не уникально" not in str(exc):
+                raise
+    raise DocumentCreateError(f"1С трижды отклонила номер {body['Number']} как занятый — попробуйте ещё раз")
+
+
 def run_probe(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> dict[str, Any]:
+    """Создать → прочитать → прикрепить файл → изменить → удалить всё. Каждый шаг на этом же виде."""
     kind = _kind(kind_id)
     entity = kind["entity"]
-    if kind.get("writer") == "incoming":
-        # Документ и .msg в этот же справочник файлов пишет регистрация почты — путь уже проверен.
-        result = {
-            "ok": True,
-            "files": True,
-            "entity": entity,
-            "summary": "Входящая пишется проверенным onec.incoming_correspondence_write",
-        }
-        _remember_probe(kind_id, result)
-        return result
+    mark = kind.get("read_mark") or kind["mark_field"]
     client = _client(kind, args)
     topic = f"{PROBE_MARK} {datetime.now().strftime('%Y%m%d-%H%M%S')}"
     created_key = ""
     file_entity = FILE_CATALOGS.get(kind_id, "")
     file_key = ""
     try:
-        values = _probe_values(kind_id, client, actor_fio, topic)
-        body = build_body(kind_id, values, client=client, actor_fio=actor_fio, sample=_sample(client, entity))
-        created = client.post(entity, body)
-        created_key = str(created.get("Ref_Key") or "")
+        created_key = _probe_create(kind_id, client, actor_fio, topic)
         if not created_key:
             raise DocumentCreateError("1С не вернула Ref_Key созданного документа")
         back = client.get(entity, ref_key=created_key)
-        if not back or PROBE_MARK not in str(back[0].get(kind["mark_field"]) or ""):
+        if not back or PROBE_MARK not in str(back[0].get(mark) or ""):
             raise DocumentCreateError("Прочитанный документ не совпал с пробой")
         if file_entity:
             file_key = _post_file(
@@ -887,6 +1060,14 @@ def run_probe(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> dict[str
             if not _delete_probe(client, file_entity, file_key):
                 raise DocumentCreateError(f"Файл пробы {file_key} не удалился — удалите его в 1С")
             file_key = ""
+        changed = f"{topic} upd"
+        patch: dict[str, Any] = {mark: changed}
+        if f"{mark}_Type" in back[0]:
+            patch[f"{mark}_Type"] = STRING_TYPE
+        client.patch(entity, created_key, patch)
+        again = client.get(entity, ref_key=created_key)
+        if not again or str(again[0].get(mark) or "") != changed:
+            raise DocumentCreateError("Изменение документа не сохранилось в 1С")
         if not _delete_probe(client, entity, created_key):
             result = {
                 "ok": False,
@@ -898,10 +1079,11 @@ def run_probe(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> dict[str
             result = {
                 "ok": True,
                 "files": bool(file_entity),
+                "update": True,
                 "entity": entity,
-                "summary": f"Проба записи {kind['title']}"
-                + (" с файлом" if file_entity else "")
-                + ": создан, прочитан и удалён",
+                "summary": f"Проба {kind['title']}: создан, "
+                + ("файл прикреплён, " if file_entity else "")
+                + "изменён, удалён",
             }
     except Exception as exc:  # noqa: BLE001
         if file_key:
@@ -1009,33 +1191,73 @@ def _web_url(kind: dict[str, Any], ref_key: str) -> str:
     return f"{base}/#e1cib/data/{quote(metadata)}?ref={ref}" if base else ""
 
 
-def _create_incoming(values: dict[str, Any]) -> dict[str, Any]:
+def _wants_post(args: dict[str, Any]) -> bool:
+    raw = args.get("post")
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _create_incoming(values: dict[str, Any], *, post: bool = False) -> dict[str, Any]:
     from app.services.erp_incoming import handle_incoming_correspondence_write
 
-    result = handle_incoming_correspondence_write({**values, "action": "create", "attach_msg": "false"})
+    kind = KINDS["incoming"]
+    writer_args: dict[str, Any] = {}
+    extra: dict[str, Any] = {}
+    for field in kind["fields"]:
+        raw = values.get(field["key"])
+        if not str(raw if raw is not None else "").strip():
+            continue
+        if field.get("raw"):
+            extra[field["key"]] = _day(raw, field["label"]) if field["type"] == "date" else str(raw).strip()
+        else:
+            writer_args[field["key"]] = raw
+    if post:
+        extra["Posted"] = True
+    if extra:
+        writer_args["extra_fields"] = extra
+    result = handle_incoming_correspondence_write({**writer_args, "action": "create", "attach_msg": "false"})
     return {
         "ref_key": str(result.get("erp_document_id") or ""),
         "number": str(result.get("number") or ""),
     }
 
 
+def ensure_probe(kind_id: str, args: dict[str, Any], *, actor_fio: str, files: bool = False, update: bool = False) -> None:
+    if probe_passed(kind_id, files=files, update=update):
+        return
+    probe = run_probe(kind_id, args, actor_fio=actor_fio)
+    if not probe.get("ok"):
+        raise DocumentCreateError(
+            f"Проба записи «{_kind(kind_id)['title']}» не прошла, в 1С ничего не записано: {probe.get('error') or '—'}"
+        )
+
+
+def _basis_arg(raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or "").strip()
+    ref_key = str(raw.get("ref_key") or "").strip()
+    if kind in KINDS and _GUID_RE.match(ref_key):
+        return {"kind": kind, "ref_key": ref_key}
+    return None
+
+
 def create_document(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> dict[str, Any]:
     kind = _kind(kind_id)
+    post = _wants_post(args)
+    if post and kind["base"] != "erp":
+        raise DocumentCreateError("Этот документ не проводится из формы: запишите его и отправьте на согласование в 1С")
     values = args.get("values") if isinstance(args.get("values"), dict) else {}
     files = _decode_files(args.get("files"))
     if files and kind_id not in FILE_CATALOGS:
         raise DocumentCreateError("К этому виду документа файлы прикрепляются в самой 1С")
-    if not probe_passed(kind_id, files=bool(files)):
-        probe = run_probe(kind_id, args, actor_fio=actor_fio)
-        if not probe.get("ok"):
-            raise DocumentCreateError(
-                f"Проба записи «{kind['title']}» не прошла, документ не создан: {probe.get('error') or '—'}"
-            )
+    ensure_probe(kind_id, args, actor_fio=actor_fio, files=bool(files))
     if kind.get("writer") == "incoming":
         missing = _missing(kind, _values_with_defaults(kind, values, actor_fio))
         if missing:
             raise DocumentCreateError("Заполните обязательные поля: " + ", ".join(missing))
-        created = _create_incoming(_values_with_defaults(kind, values, actor_fio))
+        created = _create_incoming(_values_with_defaults(kind, values, actor_fio), post=post)
     else:
         client = _client(kind, args)
         body = build_body(
@@ -1045,20 +1267,19 @@ def create_document(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> di
             actor_fio=actor_fio,
             tables=args.get("tables") if isinstance(args.get("tables"), dict) else None,
             sample=_sample(client, kind["entity"]),
+            basis=_basis_arg(args.get("basis")),
+            post=post,
         )
-        data = client.post(kind["entity"], body)
+        data = _post_document(client, kind, body)
         created = {"ref_key": str(data.get("Ref_Key") or ""), "number": str(data.get("Number") or data.get("Code") or "")}
     ref_key = created["ref_key"]
     number = created["number"]
     title = kind["title"]
-    summary = f"{title} создан(а) в 1С черновиком" + (f": {number}" if number else "")
+    summary = f"{title} {'проведён' if post else 'записан черновиком'} в 1С" + (f": {number}" if number else "")
     file_result: dict[str, Any] = {"attached": [], "failed": []}
     if files and ref_key:
         file_result = attach_files(kind_id, ref_key, files, args=args, actor_fio=actor_fio)
-        if file_result["attached"]:
-            summary += f". Файлов прикреплено: {len(file_result['attached'])}"
-        if file_result["failed"]:
-            summary += ". Не прикрепились: " + ", ".join(item["name"] for item in file_result["failed"])
+        summary += files_summary(file_result)
     return {
         "ok": bool(ref_key),
         "summary": summary,
@@ -1066,60 +1287,96 @@ def create_document(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> di
         "entity": kind["entity"],
         "ref_key": ref_key,
         "number": number,
+        "posted": post,
         "web_url": _web_url(kind, ref_key),
         **file_result,
     }
+
+
+def files_summary(file_result: dict[str, Any]) -> str:
+    out = ""
+    if file_result.get("attached"):
+        out += f". Файлов прикреплено: {len(file_result['attached'])}"
+    if file_result.get("failed"):
+        out += ". Не прикрепились: " + ", ".join(item["name"] for item in file_result["failed"])
+    return out
 
 
 # ---------------------------------------------------------------- schema
 
 
 def _incoming_options() -> dict[str, list[dict[str, str]]]:
-    from app.services.erp_incoming import handle_incoming_correspondence
+    from app.services.erp_incoming import _load_json_map, handle_incoming_correspondence
 
     meta = handle_incoming_correspondence({"action": "meta"})
-    return {
+    out = {
         name: [{"value": str(item["code"]), "label": str(item["name"])} for item in meta.get(name) or []]
         for name in ("departments", "organizations", "payers")
     }
+    mapped = _load_json_map("odata_department_keys.json")
+    if mapped:
+        out["departments"] = [item for item in out["departments"] if mapped.get(item["value"])]
+    return out
+
+
+def edit_fields(kind: dict[str, Any]) -> list[dict[str, Any]]:
+    return kind.get("edit_fields") or kind["fields"]
+
+
+def form_catalogs(kind: dict[str, Any]) -> set[str]:
+    fields = kind["fields"] + (kind.get("edit_fields") or [])
+    fields += [column for table in kind.get("tables") or [] for column in table["columns"]]
+    return {str(field["catalog"]) for field in fields if field.get("catalog")}
+
+
+def _public_fields(
+    kind_id: str, fields: list[dict[str, Any]], options_cache: dict[str, Any]
+) -> list[dict[str, Any]]:
+    out = []
+    for field in fields:
+        item = {k: v for k, v in field.items() if k not in {"property", "fill_from", "mirror", "raw"}}
+        if field.get("fill_from"):
+            item["required"] = False
+        item["side"] = field_side(kind_id, field)
+        if field.get("options_from"):
+            if "value" not in options_cache:
+                try:
+                    options_cache["value"] = _incoming_options()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Списки входящей не прочитаны: %s", exc)
+                    options_cache["value"] = {}
+            item["options"] = options_cache["value"].get(field["options_from"], [])
+        out.append(item)
+    return out
 
 
 def schema(kind_id: str = "") -> dict[str, Any]:
     kinds = []
-    incoming_options: dict[str, list[dict[str, str]]] | None = None
+    options_cache: dict[str, Any] = {}
     for key, kind in KINDS.items():
         if kind_id and key != kind_id:
             continue
-        fields = []
-        for field in kind["fields"]:
-            item = {k: v for k, v in field.items() if k not in {"property", "fill_from"}}
-            if field.get("fill_from"):
-                item["required"] = False
-            item["side"] = field_side(key, field)
-            if field.get("options_from"):
-                if incoming_options is None:
-                    try:
-                        incoming_options = _incoming_options()
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("Списки входящей не прочитаны: %s", exc)
-                        incoming_options = {}
-                item["options"] = incoming_options.get(field["options_from"], [])
-            fields.append(item)
+        targets = BASIS_TARGETS.get(key, [])
         kinds.append(
             {
                 "id": key,
                 "title": kind["title"],
                 "journal": kind["journal"],
                 "base": kind["base"],
-                "fields": fields,
+                "fields": _public_fields(key, kind["fields"], options_cache),
+                "edit_fields": _public_fields(key, edit_fields(kind), options_cache),
                 "tables": kind.get("tables") or [],
                 "probe_ok": probe_passed(key),
                 "files": key in FILE_CATALOGS,
                 "max_file_mb": MAX_FILE_BYTES // (1024 * 1024),
                 "max_files": MAX_FILES,
+                "copy": key in targets and not kind.get("edit_fields"),
+                "basis_targets": [
+                    {"id": target, "title": KINDS[target]["title"]} for target in targets if target != key
+                ],
             }
         )
-    return {"summary": f"Формы создания: {len(kinds)}", "kinds": kinds, "existing_forms": EXISTING_FORMS}
+    return {"summary": f"Формы документов: {len(kinds)}", "kinds": kinds, "existing_forms": EXISTING_FORMS}
 
 
 # ---------------------------------------------------------------- tool
@@ -1131,6 +1388,8 @@ def handle_docflow_document_create(
     actor_fio: str = "",
     actor_user_id: str = "",
 ) -> dict[str, Any]:
+    from app.services import docflow_document_edit as edit
+
     del actor_user_id
     action = str(args.get("action") or "schema").strip().lower()
     kind_id = str(args.get("kind") or "").strip()
@@ -1140,12 +1399,7 @@ def handle_docflow_document_create(
     if action == "lookup":
         kind = _kind(kind_id)
         catalog = str(args.get("catalog") or "").strip()
-        allowed = {
-            field.get("catalog")
-            for field in kind["fields"] + [c for t in kind.get("tables") or [] for c in t["columns"]]
-            if field.get("catalog")
-        }
-        if catalog not in allowed:
+        if catalog not in form_catalogs(kind):
             raise DocumentCreateError(f"Справочник {catalog or '—'} не используется в форме «{kind['title']}»")
         items = lookup_catalog(_client(kind, args), catalog, str(args.get("query") or ""))
         return {"summary": f"Найдено: {len(items)}", "items": items}
@@ -1153,7 +1407,19 @@ def handle_docflow_document_create(
         return run_probe(kind_id, args, actor_fio=actor)
     if action == "create":
         return create_document(kind_id, args, actor_fio=actor)
-    raise DocumentCreateError("action: schema | lookup | probe | create")
+    if action == "post":
+        return edit.post_document(kind_id, str(args.get("ref_key") or ""), args)
+    if action == "read":
+        return edit.read_document(kind_id, str(args.get("ref_key") or ""), args)
+    if action == "update":
+        return edit.update_document(kind_id, str(args.get("ref_key") or ""), args, actor_fio=actor)
+    if action == "attach":
+        return edit.attach_to_document(kind_id, str(args.get("ref_key") or ""), args, actor_fio=actor)
+    if action == "basis":
+        return edit.basis_values(
+            kind_id, str(args.get("ref_key") or ""), str(args.get("target") or ""), args, actor_fio=actor
+        )
+    raise DocumentCreateError("action: schema | lookup | probe | create | read | update | post | attach | basis")
 
 
 def stub_docflow_document_create(args: dict[str, Any], **_: Any) -> dict[str, Any]:

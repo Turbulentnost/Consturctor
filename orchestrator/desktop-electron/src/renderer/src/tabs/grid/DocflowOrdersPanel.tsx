@@ -21,7 +21,9 @@ import {
   type OrderRow
 } from '../../workplace/fetchDocflowCorrespondence'
 import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
 import { DocflowAttachments } from './DocflowAttachments'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -153,7 +155,13 @@ function FilterSelect({
   )
 }
 
-export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.Element {
+export function DocflowOrdersPanel({
+  user,
+  onOpenDocument
+}: {
+  user: UserProfile
+  onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
+}): React.JSX.Element {
   const [rows, setRows] = useState<OrderRow[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -420,6 +428,7 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
                     className={`docflow-row${selected?.id === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => setSelectedId(row.id)}
+                    onDoubleClick={() => onOpenDocument?.(row.kind === 'order' ? 'order' : 'directive', row.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -461,6 +470,13 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
               </div>
               <StatusPill row={selected} />
             </header>
+            <DocflowOpenFormBar
+              refKey={selected.id}
+              onOpen={
+                onOpenDocument &&
+                (() => onOpenDocument(selected.kind === 'order' ? 'order' : 'directive', selected.id))
+              }
+            />
             {selected.subject ? <p className="docflow-side-subject">{selected.subject}</p> : null}
             <div className="docflow-side-scroll">
               <DocflowAttachments

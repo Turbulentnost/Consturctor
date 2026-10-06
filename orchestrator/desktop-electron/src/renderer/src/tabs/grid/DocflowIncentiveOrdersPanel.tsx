@@ -18,6 +18,8 @@ import {
   type IncentiveOrderRow
 } from '../../workplace/fetchDocflowIncentiveOrders'
 import { formatAmount } from '../../workplace/fetchDocflowPaymentRequests'
+import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 
 function cell(value: string): string {
@@ -211,11 +213,13 @@ function IncentiveOrderCardView({ row }: { row: IncentiveOrderRow }): React.JSX.
 export function DocflowIncentiveOrdersPanel({
   user,
   from,
-  to
+  to,
+  onOpenDocument
 }: {
   user: UserProfile
   from: string
   to: string
+  onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<IncentiveOrderRow[]>([])
   const [statuses, setStatuses] = useState<IncentiveOrderOption[]>([])
@@ -475,6 +479,7 @@ export function DocflowIncentiveOrdersPanel({
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}
+                    onDoubleClick={() => onOpenDocument?.('incentive', row.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -509,6 +514,12 @@ export function DocflowIncentiveOrdersPanel({
         </div>
       </div>
       <aside className="docflow-side wp-card" aria-label="Карточка приказа о мерах материального стимулирования">
+        {selected ? (
+          <DocflowOpenFormBar
+            refKey={selected.id}
+            onOpen={onOpenDocument && (() => onOpenDocument('incentive', selected.id))}
+          />
+        ) : null}
         {!selected ? (
           <p className="docflow-status">Выберите приказ, чтобы увидеть карточку</p>
         ) : cardLoading ? (

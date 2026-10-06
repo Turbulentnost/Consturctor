@@ -153,6 +153,22 @@
   justify-content: flex-end;
 }
 
+.docflow-open-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #f5f9fe;
+}
+
+.docflow-open-form span {
+  color: #6b7380;
+  font-size: 12px;
+}
+
 .docflow-create-btn {
   height: 32px;
   padding: 0 12px;
@@ -430,10 +446,33 @@
 .docflow-card-block .docflow-detail-list {
   margin: 0;
   overflow: visible;
+  gap: 0;
 }
 
 .docflow-card-block .docflow-detail-list div {
-  grid-template-columns: 130px minmax(0, 1fr);
+  grid-template-columns: 1fr;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(13, 59, 115, 0.08);
+}
+
+.docflow-card-block .docflow-detail-list div:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.docflow-card-block .docflow-detail-list dt {
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.docflow-card-block .docflow-detail-list dd {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #102033;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .docflow-card-text {
