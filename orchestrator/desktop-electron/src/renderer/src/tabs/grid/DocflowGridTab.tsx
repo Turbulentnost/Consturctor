@@ -7,6 +7,7 @@ import {
   Mail,
   MailOpen,
   NotebookPen,
+  Plus,
   ScrollText,
   Send,
   Truck,
@@ -19,6 +20,8 @@ import { KpiRangePicker, type KpiRangeShortcut } from '../../pages/KpiRangePicke
 import { rollingKpiRange } from '../../workplace/kpiPeriod'
 import {
   correspondenceInPeriod,
+  forgetDocflowCorrespondenceSession,
+  forgetDocflowOrdersSession,
   formatCorrespondenceDate,
   loadDocflowCorrespondenceSession,
   openIncomingLetter,
@@ -37,6 +40,40 @@ import { DocflowProtocolsPanel } from './DocflowProtocolsPanel'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 import './docflowGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
+import {
+  loadDocflowCreateSchema,
+  type DocflowFormRequest,
+  type DocflowKindId,
+  type DocflowKindSchema
+} from '../../workplace/docflowDocumentCreate'
+import { erpActorFio } from '../../workplace/userContext'
+import type { MeetingEvent } from '../../utils/outlookMeetings'
+import { DocflowCreateDialog } from './DocflowCreateDialog'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { MeetingProtocolForm } from './MeetingProtocolForm'
+
+type CreateTarget = DocflowKindId | 'protocol'
+
+const CREATE_BUTTONS: Record<JournalId, { target: CreateTarget; label: string }[]> = {
+  correspondence: [],
+  memos: [{ target: 'memo', label: 'Создать записку' }],
+  orders: [
+    { target: 'order', label: 'Приказ' },
+    { target: 'directive', label: 'Распоряжение' }
+  ],
+  incentives: [{ target: 'incentive', label: 'Создать приказ' }],
+  assignments: [{ target: 'assignment', label: 'Создать поручение' }],
+  protocols: [{ target: 'protocol', label: 'Создать протокол' }],
+  payments: [{ target: 'payment', label: 'Создать заявку' }],
+  forwarding: [{ target: 'forwarding', label: 'Создать поручение' }]
+}
+
+function blankMeeting(): MeetingEvent {
+  const now = new Date()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const start = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:00`
+  return { id: `manual-${now.getTime()}`, subject: '', start, end: '', location: '', organizer: '', attendees: '', owner: '' }
+}
 
 const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; tone: string }[] = [
   { id: 'correspondence', title: 'Корреспонденция', hint: 'Входящие и исходящие письма', icon: Mail, tone: 'blue' },
@@ -147,11 +184,13 @@ function correspondenceSortValue(row: CorrespondenceRow, key: string): string {
 function CorrespondenceCard({
   row,
   user,
-  kind
+  kind,
+  onOpenDocument
 }: {
   row: CorrespondenceRow
   user: UserProfile
   kind: CorrespondenceKind
+  onOpenDocument: (kind: DocflowKindId, refKey: string) => void
 }): React.JSX.Element {
   const [opening, setOpening] = useState(false)
   const [letterError, setLetterError] = useState('')
@@ -192,6 +231,7 @@ function CorrespondenceCard({
           </div>
         ) : null}
       </header>
+      <DocflowOpenFormBar refKey={row.id} onOpen={() => onOpenDocument(kind, row.id)} />
       {letterError ? <p className="docflow-edit-notice is-error">{letterError}</p> : null}
       {row.comment ? <p className="docflow-side-subject">{row.comment}</p> : null}
       <div className="docflow-side-scroll">
@@ -227,6 +267,71 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [selectedId, setSelectedId] = useState('')
+  const [protocolOpen, setProtocolOpen] = useState(false)
+  const [formRequest, setFormRequest] = useState<DocflowFormRequest | null>(null)
+  const [createSchemas, setCreateSchemas] = useState<DocflowKindSchema[]>([])
+  const [createNotice, setCreateNotice] = useState<{ text: string; error: boolean } | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [savedWhileOpen, setSavedWhileOpen] = useState(false)
+  const [protocolMeeting, setProtocolMeeting] = useState<MeetingEvent>(blankMeeting)
+
+  const createButtons =
+    journal === 'correspondence'
+      ? [{ target: kind as CreateTarget, label: kind === 'incoming' ? 'Зарегистрировать входящее' : 'Создать исходящее' }]
+      : CREATE_BUTTONS[journal]
+
+  const openForm = (next: DocflowFormRequest): void => {
+    setCreateNotice(null)
+    if (createSchemas.some((item) => item.id === next.kind)) {
+      setFormRequest(next)
+      return
+    }
+    void loadDocflowCreateSchema(user)
+      .then((schemas) => {
+        setCreateSchemas(schemas)
+        if (schemas.some((item) => item.id === next.kind)) setFormRequest(next)
+        else setCreateNotice({ text: 'Форма этого документа в 1С недоступна', error: true })
+      })
+      .catch((err: unknown) =>
+        setCreateNotice({ text: err instanceof Error ? err.message : 'Не удалось открыть форму', error: true })
+      )
+  }
+
+  const openCreate = (target: CreateTarget): void => {
+    if (target === 'protocol') {
+      setCreateNotice(null)
+      setProtocolMeeting(blankMeeting())
+      setProtocolOpen(true)
+      return
+    }
+    openForm({ mode: 'create', kind: target })
+  }
+
+  const openDocument = (docKind: DocflowKindId, refKey: string): void => {
+    if (refKey) openForm({ mode: 'edit', kind: docKind, refKey })
+  }
+
+  const refreshJournal = (): void => {
+    if (journal === 'correspondence') forgetDocflowCorrespondenceSession(user, kind)
+    if (journal === 'orders') forgetDocflowOrdersSession(user)
+    setReloadKey((value) => value + 1)
+  }
+
+  const onCreated = (text: string): void => {
+    setCreateNotice({ text, error: false })
+    refreshJournal()
+  }
+
+  const onFormSaved = (text: string): void => {
+    setCreateNotice({ text, error: false })
+    setSavedWhileOpen(true)
+  }
+
+  const closeForm = (): void => {
+    setFormRequest(null)
+    if (savedWhileOpen) refreshJournal()
+    setSavedWhileOpen(false)
+  }
 
   const activeJournal = JOURNALS.find((item) => item.id === journal) || JOURNALS[0]
   const activeMail = MAIL_VIEWS.find((item) => item.id === kind) || MAIL_VIEWS[0]
@@ -256,7 +361,9 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
     return () => {
       alive = false
     }
-  }, [user, journal, kind])
+  }, [user, journal, kind, reloadKey])
+
+  useEffect(() => setCreateNotice(null), [journal])
 
   const periodRows = useMemo(() => correspondenceInPeriod(cachedRows, from, to), [cachedRows, from, to])
   const table = useDocflowTable(periodRows, {
@@ -342,6 +449,17 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
                 </p>
               </div>
             </div>
+            <div className="docflow-head-tools">
+              {createButtons.map((button) => (
+                <button
+                  key={button.target}
+                  type="button"
+                  className="docflow-edit-btn is-primary docflow-create-btn"
+                  onClick={() => openCreate(button.target)}
+                >
+                  <Plus size={14} aria-hidden /> {button.label}
+                </button>
+              ))}
             {PERIOD_JOURNALS.has(journal) ? (
               <KpiRangePicker
                 from={from}
@@ -360,7 +478,11 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
                 }}
               />
             ) : null}
+            </div>
           </header>
+          {createNotice ? (
+            <p className={`docflow-edit-notice${createNotice.error ? ' is-error' : ''}`}>{createNotice.text}</p>
+          ) : null}
 
           {journal === 'correspondence' ? (
             <>
@@ -467,6 +589,7 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
                                 className={`docflow-row${selectedId === key ? ' is-selected' : ''}`}
                                 tabIndex={0}
                                 onClick={() => setSelectedId(key)}
+                                onDoubleClick={() => openDocument(kind, row.id)}
                                 onKeyDown={(event) => {
                                   if (event.key === 'Enter' || event.key === ' ') {
                                     event.preventDefault()
@@ -503,7 +626,7 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
                 </div>
                 <aside className="docflow-side wp-card" aria-label="Карточка письма">
                   {selected ? (
-                    <CorrespondenceCard row={selected} user={user} kind={kind} />
+                    <CorrespondenceCard row={selected} user={user} kind={kind} onOpenDocument={openDocument} />
                   ) : (
                     <p className="docflow-status">Выберите письмо, чтобы увидеть карточку</p>
                   )}
@@ -511,19 +634,19 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
               </div>
             </>
           ) : journal === 'memos' ? (
-            <DocflowMemosPanel user={user} from={from} to={to} />
+            <DocflowMemosPanel key={reloadKey} user={user} from={from} to={to} onOpenDocument={openDocument} />
           ) : journal === 'orders' ? (
-            <DocflowOrdersPanel user={user} />
+            <DocflowOrdersPanel key={reloadKey} user={user} onOpenDocument={openDocument} />
           ) : journal === 'incentives' ? (
-            <DocflowIncentiveOrdersPanel user={user} from={from} to={to} />
+            <DocflowIncentiveOrdersPanel key={reloadKey} user={user} from={from} to={to} onOpenDocument={openDocument} />
           ) : journal === 'assignments' ? (
-            <DocflowAssignmentsPanel user={user} from={from} to={to} />
+            <DocflowAssignmentsPanel key={reloadKey} user={user} from={from} to={to} onOpenDocument={openDocument} />
           ) : journal === 'protocols' ? (
-            <DocflowProtocolsPanel user={user} from={from} to={to} />
+            <DocflowProtocolsPanel key={reloadKey} user={user} from={from} to={to} />
           ) : journal === 'payments' ? (
-            <DocflowPaymentRequestsPanel user={user} from={from} to={to} />
+            <DocflowPaymentRequestsPanel key={reloadKey} user={user} from={from} to={to} onOpenDocument={openDocument} />
           ) : journal === 'forwarding' ? (
-            <DocflowForwardingPanel user={user} from={from} to={to} />
+            <DocflowForwardingPanel key={reloadKey} user={user} from={from} to={to} onOpenDocument={openDocument} />
           ) : (
             <div className="docflow-table-card wp-card docflow-placeholder">
               <span className={`docflow-nav-icon docflow-placeholder-icon tone-${activeJournal.tone}`} aria-hidden>
@@ -535,6 +658,25 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
           )}
         </div>
       </section>
+      <DocflowCreateDialog
+        user={user}
+        request={formRequest}
+        schemas={createSchemas}
+        onClose={closeForm}
+        onRequest={openForm}
+        onSaved={onFormSaved}
+      />
+      {protocolOpen ? (
+        <MeetingProtocolForm
+          open
+          meeting={protocolMeeting}
+          actorFio={erpActorFio(user)}
+          onClose={() => setProtocolOpen(false)}
+          onCreated={(result) =>
+            onCreated(result.number ? `Создан протокол ${result.number}` : result.summary || 'Протокол создан в 1С')
+          }
+        />
+      ) : null}
     </OrchSlotMain>
   )
 }

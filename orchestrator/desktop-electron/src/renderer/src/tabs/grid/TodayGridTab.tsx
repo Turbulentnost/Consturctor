@@ -17,6 +17,7 @@ import {
 import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useTodayKpiData } from '../../workplace/useTodayKpiData'
+import { formatProtocolDay, useBoardReportReadiness } from '../../workplace/boardReportReadiness'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
 import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecSessionHints'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
@@ -335,7 +336,7 @@ async function runTodayTaskAction(
   hooks: {
     setBusy: (value: boolean) => void
     setNote: (value: string) => void
-    onDone: () => void
+    onDone: (mode?: 'local') => void
   }
 ): Promise<void> {
   const spec = docflowKindActions(row.docflowKind ?? docflowTaskKind(row.step, row.taskName)).find(
@@ -365,7 +366,7 @@ async function runTodayTaskAction(
       comment
     )
     hooks.setNote(result.message)
-    if (result.ok) hooks.onDone()
+    if (result.closed) hooks.onDone('local')
   } catch (err) {
     hooks.setNote(err instanceof Error ? err.message : 'Документооборот не принял действие')
   } finally {
@@ -395,6 +396,7 @@ export function TodayGridTab({
   const { forceRefresh } = useGridDataRefreshContext()
   const [periodDay, setPeriodDay] = useState(startOfToday)
   const { data, tiles: allTiles } = useTodayKpiData(user, periodDay)
+  const board = useBoardReportReadiness(user)
   const [tileVisibility, setTileVisibility] = useState(() => readTodayTileVisibility(user.id || ''))
   useEffect(() => {
     const sync = (): void => setTileVisibility(readTodayTileVisibility(user.id || ''))
@@ -402,13 +404,37 @@ export function TodayGridTab({
     window.addEventListener(TODAY_TILE_VISIBILITY_EVENT, sync)
     return () => window.removeEventListener(TODAY_TILE_VISIBILITY_EVENT, sync)
   }, [user.id])
-  const tiles = useMemo(
-    () => allTiles.filter((tile) => tileVisibility[tile.id as TodayTileId] !== false),
-    [allTiles, tileVisibility]
-  )
+  const tiles = useMemo(() => {
+    const visible = allTiles.filter((tile) => tileVisibility[tile.id as TodayTileId] !== false)
+    if (!board.enabled) return visible
+    const hint = board.loading
+      ? 'считаем…'
+      : board.readiness.total
+        ? `${board.readiness.done} из ${board.readiness.total}`
+        : 'нет задач'
+    const protocol = board.readiness.protocolNumber
+      ? `${board.readiness.protocolNumber}${
+          board.readiness.protocolDate ? ` от ${formatProtocolDay(board.readiness.protocolDate)}` : ''
+        }`
+      : 'протокол совета директоров по ГК'
+    return [
+      ...visible,
+      {
+        id: 'sd-board',
+        label: 'Совет директоров',
+        value: board.loading ? '—' : board.readiness.total ? `${board.readiness.percent}%` : '—',
+        hint,
+        tooltip: `Поставленные задачи отчётности за 2 рабочих дня до совета директоров по ГК. ${protocol}. Выполнено ${board.readiness.done} из ${board.readiness.total}.`,
+        tone: 'blue' as const,
+        progress: board.loading || !board.readiness.total ? undefined : board.readiness.percent,
+        ring: false
+      }
+    ]
+  }, [allTiles, tileVisibility, board])
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const [fullPlanOpen, setFullPlanOpen] = useState(false)
   const [taskDetail, setTaskDetail] = useState<TodayTaskDetailRow | null>(null)
+  const [closedTaskIds, setClosedTaskIds] = useState<Set<string>>(() => new Set())
   const [taskActionBusy, setTaskActionBusy] = useState(false)
   const [taskActionNote, setTaskActionNote] = useState('')
   const [kpiTiles, setKpiTiles] = useState(EMPTY_TODAY_KPI_TILE)
@@ -440,6 +466,7 @@ export function TodayGridTab({
       return onecFromMe ? isPlatformTaskFromMe(task) : isPlatformTaskMine(task)
     })
     const onecRows = data.erpTasks.filter((row) => {
+      if (closedTaskIds.has(row.id)) return false
       if (onecFromMe) {
         return isDocflowFromMe(row, erpFio) && isTaskDueOnDay(row, periodDay)
       }
@@ -448,7 +475,7 @@ export function TodayGridTab({
     // Раскладываем по видам задач: строки одного раздела должны идти подряд.
     const all = [...platformRows, ...onecRows]
     return DOCFLOW_GROUP_ORDER.flatMap((key) => all.filter((row) => todayGroupKey(row) === key))
-  }, [data.erpTasks, data.platformTasks, onecFromMe, erpFio, periodDay])
+  }, [data.erpTasks, data.platformTasks, onecFromMe, erpFio, periodDay, closedTaskIds])
   const taskGroupLabels = useMemo(
     () => taskRows.map((row) => docflowGroupLabel(todayGroupKey(row))),
     [taskRows]
@@ -860,7 +887,7 @@ export function TodayGridTab({
   return (
     <>
       <OrchSlotMetrics>
-        <div className="orch-today-tiles">
+        <div className={`orch-today-tiles${tiles.length > 7 ? ' orch-today-tiles-wide' : ''}`}>
           <SpecSummaryTiles
             tiles={tiles}
             activeId={kpiTiles.activeIds}
@@ -918,8 +945,13 @@ export function TodayGridTab({
           void runTodayTaskAction(user, taskDetail, actionId, {
             setBusy: setTaskActionBusy,
             setNote: setTaskActionNote,
-            onDone: () => {
+            onDone: (mode) => {
+              const id = taskDetail?.id || ''
               setTaskDetail(null)
+              if (mode === 'local' && id) {
+                setClosedTaskIds((current) => new Set(current).add(id))
+                return
+              }
               forceRefresh()
             }
           })

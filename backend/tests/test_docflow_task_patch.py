@@ -51,32 +51,26 @@ def test_patch_task_deadline_posts_uid_and_plain_body(monkeypatch) -> None:
     assert captured["auth"]
 
 
-def test_close_action_marks_task_executed(monkeypatch) -> None:
-    seen: dict[str, object] = {}
+def _capture_task_action(monkeypatch, outcome: dict[str, object]) -> list[dict[str, object]]:
+    sent: list[dict[str, object]] = []
 
+    def fake(task_id: str, button: int, **kwargs: object) -> dict[str, object]:
+        sent.append({"task_id": task_id, "button": button, **kwargs})
+        return outcome
+
+    monkeypatch.setattr("app.services.docflow_task_action.post_task_action", fake)
+    monkeypatch.setattr("app.services.docflow_task_action.drop_task_from_inbox_cache", lambda *ids: sent.append({"dropped": ids}))
+    return sent
+
+
+def test_close_action_posts_task_action(monkeypatch) -> None:
     def fail_patch(*_args, **_kwargs) -> str:
         raise AssertionError("закрытие не должно переносить срок процесса")
 
     monkeypatch.setattr("app.tools.onec.dok_http.patch_task_deadline", fail_patch)
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.mark_task_executed",
-        lambda _config, task_id, *, timeout, **kwargs: seen.update(
-            performed=task_id, result="execute", mark=kwargs.get("mark")
-        ),
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.load_config",
-        lambda **kwargs: seen.update(user=kwargs.get("username")) or type("Cfg", (), {"timeout": 5})(),
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.retrieve_task_card",
-        lambda _config, task_id, *, timeout: {"id": task_id, "executed": False},
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.retrieve_tasks",
-        lambda _config, ids, **_kwargs: [
-            {"executed": True, "execution_mark": "ExecutedPositive", "id": ids[0]}
-        ],
+    sent = _capture_task_action(
+        monkeypatch,
+        {"ok": True, "closed": True, "needs_form": False, "summary": "Задача выполнена"},
     )
     result = handle_docflow_task_action(
         {
@@ -87,136 +81,147 @@ def test_close_action_marks_task_executed(monkeypatch) -> None:
         }
     )
     assert result["task_id"] == "1d3729cc-b5b3-11f1-9889-6cb31113810c"
-    assert result["summary"] == "Задача выполнена в документообороте."
-    assert seen["performed"] == "1d3729cc-b5b3-11f1-9889-6cb31113810c"
-    assert seen["result"] == "execute"
-    assert seen["mark"] == "ExecutedPositive"
-    assert seen["user"] == "Мангасарян Давид Карленович"
+    assert result["closed"] is True
+    assert result["summary"] == "Задача выполнена"
+    assert sent[0]["task_id"] == "1d3729cc-b5b3-11f1-9889-6cb31113810c"
+    assert sent[0]["button"] == 1
+    assert sent[0]["auth"] == ("Мангасарян Давид Карленович", "secret")
+    assert sent[1]["dropped"] == ("1d3729cc-b5b3-11f1-9889-6cb31113810c",)
 
 
-def test_close_action_switches_to_live_task_after_rework(monkeypatch) -> None:
-    """Доработка создаёт новую задачу: закрывать надо её, а не старый УИД."""
-    stale = "1d3729cc-b5b3-11f1-9889-6cb31113810c"
-    live = "7c2f1a44-b5c0-11f1-9889-6cb31113810c"
-    performed: list[str] = []
-
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.load_config",
-        lambda **_kwargs: type("Cfg", (), {"timeout": 5})(),
+def test_close_sends_clicked_task_only(monkeypatch) -> None:
+    """Соседние задачи документа не ищутся и не закрываются: это делает 1С."""
+    sent = _capture_task_action(
+        monkeypatch,
+        {"ok": True, "closed": True, "needs_form": False, "summary": "Исполнено"},
     )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.retrieve_task_card",
-        lambda _config, task_id, *, timeout: {
-            "id": task_id,
-            "executed": True,
-            "execution_mark": "ExecutedNeutral",
-            "performer": "Мангасарян Давид Карленович",
-            "description": "Подключить документооборот",
-            "target_id": "96396617-b5b0-11f1-9889-6cb31113810c",
-            "target_type": "DMInternalDocument",
-        },
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.open_tasks_for_target",
-        lambda _config, target_id, target_type, *, timeout: [
-            {
-                "id": live,
-                "executed": False,
-                "performer": "Мангасарян Давид Карленович",
-                "description": "Подключить документооборот",
-            },
-            {
-                "id": "other-task",
-                "executed": False,
-                "performer": "Иванов Иван Иванович",
-                "description": "Ознакомиться",
-            },
-        ],
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.mark_task_executed",
-        lambda _config, task_id, *, timeout, **_kwargs: performed.append(task_id),
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.retrieve_tasks",
-        lambda _config, ids, **_kwargs: [
-            {"executed": True, "execution_mark": "ExecutedPositive", "id": ids[0]}
-        ],
-    )
-
     result = handle_docflow_task_action(
         {
-            "action": "close",
-            "task_id": stale,
+            "action": "execute",
+            "task_id": "stale",
+            "step": "Исполнить",
             "fio": "Мангасарян Давид Карленович",
             "erp_password": "secret",
         }
     )
-    assert performed == [live]
-    assert result["task_id"] == live
-    assert result["closed_task_ids"] == [live]
+    assert [row["task_id"] for row in sent if "task_id" in row] == ["stale"]
+    assert result["task_id"] == "stale"
+    assert result["closed"] is True
 
 
-def _executed_card_monkeypatch(monkeypatch, live_rows: list[dict[str, object]], performed: list[str]) -> None:
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.load_config",
-        lambda **_kwargs: type("Cfg", (), {"timeout": 5})(),
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.retrieve_task_card",
-        lambda _config, task_id, *, timeout: {
-            "id": task_id,
-            "executed": True,
-            "performer": "Мангасарян Давид Карленович",
-            "description": "Проверить все дашборды",
-            "step": "Исполнить",
-            "target_id": "d3d4d9a4-b5b3-11f1-9889-6cb31113810c",
-            "target_type": "DMInternalDocument",
-        },
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.open_tasks_for_target",
-        lambda _config, target_id, target_type, *, timeout: live_rows,
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.mark_task_executed",
-        lambda _config, task_id, *, timeout, **_kwargs: performed.append(task_id),
-    )
+def test_unpublished_task_action_does_not_close(monkeypatch) -> None:
+    from app.tools.onec.dok_http import TaskActionNotPublished
 
+    def missing(*_args, **_kwargs) -> dict[str, object]:
+        raise TaskActionNotPublished("нет метода")
 
-def test_repeat_close_never_touches_other_tasks_of_document(monkeypatch) -> None:
-    """Повторное нажатие по уже исполненной задаче не закрывает соседние задачи протокола."""
-    performed: list[str] = []
-    _executed_card_monkeypatch(
-        monkeypatch,
-        [
-            {"id": "mine-other", "performer": "Мангасарян Давид Карленович",
-             "description": "Убрать дашборды по должностям", "step": "Исполнить"},
-            {"id": "colleague", "performer": "Комарькова Анастасия Эдуардовна",
-             "description": "Проверить все дашборды", "step": "Исполнить"},
-            {"id": "author-check", "performer": "Соломичева Светлана Викторовна",
-             "description": "Проверить все дашборды", "step": "Проверить исполнение"},
-            {"id": "acquaint", "performer": "Мангасарян Давид Карленович",
-             "description": "Проверить все дашборды", "step": "Ознакомиться с результатом рассмотрения"},
-        ],
-        performed,
+    monkeypatch.setattr("app.services.docflow_task_action.post_task_action", missing)
+    monkeypatch.setattr(
+        "app.tools.onec.dok_soap.mark_task_executed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("SOAP-отметка запрещена")),
     )
     result = handle_docflow_task_action(
-        {"action": "close", "task_id": "stale", "fio": "Мангасарян Давид Карленович", "erp_password": "x"}
+        {
+            "action": "execute",
+            "task_id": "1d3729cc-b5b3-11f1-9889-6cb31113810c",
+            "step": "Исполнить",
+            "fio": "Мангасарян Давид Карленович",
+            "erp_password": "secret",
+        }
     )
-    assert performed == []
-    assert result["already_executed"] is True
+    assert result["ok"] is False
+    assert result["closed"] is False
+    assert result["needs_form"] is True
+    assert "карточке 1С" in result["summary"]
 
 
-def test_close_refuses_task_of_another_performer(monkeypatch) -> None:
-    import pytest
+def test_onec_refusal_is_shown_as_is(monkeypatch) -> None:
+    sent = _capture_task_action(
+        monkeypatch,
+        {"ok": False, "closed": False, "needs_form": False, "summary": "Задача не закрыта: нет цены"},
+    )
+    result = handle_docflow_task_action(
+        {
+            "action": "execute",
+            "task_id": "t",
+            "step": "Исполнить",
+            "fio": "Мангасарян Давид Карленович",
+            "erp_password": "x",
+        }
+    )
+    assert result["ok"] is False
+    assert result["closed"] is False
+    assert result["summary"] == "Задача не закрыта: нет цены"
+    assert "dropped" not in sent[-1]
 
-    from app.services.docflow_tasks import DocflowError
 
-    performed: list[str] = []
-    _executed_card_monkeypatch(monkeypatch, [], performed)
-    with pytest.raises(DocflowError, match="не вам"):
-        handle_docflow_task_action(
-            {"action": "close", "task_id": "t", "fio": "Комарькова Анастасия Эдуардовна", "erp_password": "x"}
-        )
-    assert performed == []
+def test_post_task_action_body_and_unpublished(monkeypatch) -> None:
+    from app.tools.onec.dok_http import TaskActionNotPublished, parse_task_action_response, post_task_action
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = request.content.decode("utf-8")
+        if request.url.path.endswith("/missing"):
+            return httpx.Response(404, text="not found")
+        return httpx.Response(200, json={"ok": False, "closed": False, "summary": "нет цены"})
+
+    monkeypatch.setattr(
+        "app.tools.onec.dok_http.dok_http_base_url",
+        lambda: "http://192.168.2.229:81/doc/hs/dterp",
+    )
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        "app.tools.onec.dok_http.httpx.Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    outcome = post_task_action(
+        "1d3729cc-b5b3-11f1-9889-6cb31113810c",
+        2,
+        comment="замечание",
+        actual_performer="Иванов Иван Иванович",
+        auth=("user", "secret"),
+    )
+    assert outcome["summary"] == "нет цены"
+    assert outcome["closed"] is False
+    assert captured["url"] == "http://192.168.2.229:81/doc/hs/dterp/TaskAction"
+    assert '"button": 2' in str(captured["body"]) or '"button":2' in str(captured["body"])
+    assert "Иванов Иван Иванович" in str(captured["body"])
+    parsed = parse_task_action_response({"Успех": "да", "Закрыта": False, "Описание": "как есть"})
+    assert parsed["ok"] is True
+    assert parsed["closed"] is False
+    assert parsed["summary"] == "как есть"
+
+    def missing(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    monkeypatch.setattr(
+        "app.tools.onec.dok_http.httpx.Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(missing), **kwargs),
+    )
+    try:
+        post_task_action("task", 1, auth=("user", "secret"))
+    except TaskActionNotPublished:
+        pass
+    else:
+        raise AssertionError("404 должен означать, что TaskAction не опубликован")
+
+
+def test_drop_task_from_inbox_cache_keeps_other_rows(tmp_path, monkeypatch) -> None:
+    from app.tools.onec import dok_soap
+
+    dok_soap._inbox_cache.clear()
+    monkeypatch.setattr(dok_soap, "_cache_dir", lambda: tmp_path)
+    payload = {"kind": "open_dump", "count": 2, "rows": [{"id": "gone"}, {"id": "stay"}]}
+    key = "dump|http://192.168.2.229/doc|1|user|fp"
+    dok_soap._store_cache(key, payload)
+    dok_soap.drop_task_from_inbox_cache("gone")
+    stored = dok_soap._inbox_cache[key][1]
+    assert [row["id"] for row in stored["rows"]] == ["stay"]
+    assert stored["count"] == 1
+    disk = list(tmp_path.glob("*.json"))
+    assert len(disk) == 1
+    saved = disk[0].read_text(encoding="utf-8")
+    assert "gone" not in saved
+    assert "stay" in saved

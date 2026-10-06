@@ -662,10 +662,113 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+BOARD_THEME_TITLE = "Совет директоров по ГК"
+# Только поставленные задачи, название которых начинается с «За 2 дня» / «За 2 рабочих дня».
+_BOARD_TASK_START = re.compile(r"^(?:\d+[\.)]\s*)?за\s+2(?:\s+рабочих)?\s+дн")
+
+
+def _fold(value: Any) -> str:
+    text = str(value or "").casefold().replace("ё", "е").replace("\u00a0", " ")
+    return " ".join(text.split())
+
+
+def is_board_report_task(text: str) -> bool:
+    """Задача совета директоров: текст начинается с «За 2 дня» или «За 2 рабочих дня»."""
+    return _BOARD_TASK_START.match(_fold(text)) is not None
+
+
+def pick_month_protocol(rows: list[dict[str, Any]], today: date | None = None) -> dict[str, Any] | None:
+    """Протокол совета директоров текущего месяца, иначе последний поставленный."""
+    day = today or date.today()
+    dated: list[tuple[str, dict[str, Any]]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        stamp = _text(row.get("Date"))[:10]
+        if len(stamp) == 10:
+            dated.append((stamp, row))
+    dated.sort(key=lambda item: item[0], reverse=True)
+    if not dated:
+        return None
+    month = day.strftime("%Y-%m")
+    for stamp, row in dated:
+        if stamp.startswith(month):
+            return row
+    return dated[0][1]
+
+
+def board_report_readiness(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """План-факт поставленных задач отчётности к совету директоров по ГК."""
+    _ = args
+    themes = _odata(
+        "Catalog_ТД_ТемыСовещаний?$format=json&$top=5&$select=Ref_Key,Description"
+        f"&$filter={_q(f"DeletionMark eq false and Description eq '{BOARD_THEME_TITLE}'")}"
+    ).get("value") or []
+    theme = next(
+        (
+            row
+            for row in themes
+            if isinstance(row, dict) and _text(row.get("Description")) == BOARD_THEME_TITLE
+        ),
+        None,
+    )
+    empty = {
+        "summary": "Протокол совета директоров по ГК за период не найден",
+        "theme": BOARD_THEME_TITLE,
+        "protocol": None,
+        "total": 0,
+        "done": 0,
+        "percent": 0,
+        "current_month": False,
+    }
+    if not isinstance(theme, dict) or not _text(theme.get("Ref_Key")):
+        return empty
+    theme_key = _text(theme.get("Ref_Key"))
+    found = _odata(
+        f"{ENTITY}?$format=json&$top=8&$orderby=Date desc"
+        "&$select=Ref_Key,Number,Date,Статус"
+        f"&$filter={_q(f"DeletionMark eq false and ТемаСовещания_Key eq guid'{theme_key}'")}"
+    ).get("value") or []
+    today = date.today()
+    chosen = pick_month_protocol([row for row in found if isinstance(row, dict)], today)
+    if not chosen:
+        return empty
+    from app.services.meeting_protocol_write import read_task_register
+
+    ref = _text(chosen.get("Ref_Key"))
+    try:
+        register = read_task_register(ref)
+    except Exception as exc:  # noqa: BLE001 — полоска не должна ронять журнал
+        logger.warning("board readiness register %s failed: %s", ref, str(exc)[:200])
+        register = []
+    tasks = [row for row in register if is_board_report_task(_text(row.get("Задача")))]
+    done = sum(1 for row in tasks if _flag(row.get("Выполнена")))
+    total = len(tasks)
+    stamp = _text(chosen.get("Date"))[:10]
+    percent = round(done * 100 / total) if total else 0
+    status = _text(chosen.get("Статус"))
+    return {
+        "summary": f"Совет директоров: выполнено {done} из {total}",
+        "theme": BOARD_THEME_TITLE,
+        "protocol": {
+            "id": ref,
+            "number": _text(chosen.get("Number")),
+            "date": stamp,
+            "status": _label(status, STATUSES),
+        },
+        "total": total,
+        "done": done,
+        "percent": percent,
+        "current_month": stamp.startswith(today.strftime("%Y-%m")),
+    }
+
+
 def handle_docflow_protocols(args: dict[str, Any], **_: Any) -> dict[str, Any]:
     from app.services.onec_tools import OnecToolError
 
     try:
+        if str((args or {}).get("action") or "") == "board_readiness":
+            return board_report_readiness(args)
         return list_protocols(args)
     except DocflowProtocolError as exc:
         raise OnecToolError(str(exc)) from exc

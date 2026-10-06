@@ -26,6 +26,8 @@ import {
   type ForwardingOption,
   type ForwardingRow
 } from '../../workplace/fetchDocflowForwarding'
+import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 
 const FALLBACK_STATUSES: ForwardingOption[] = [
@@ -321,11 +323,13 @@ function ForwardingCardView({ card, user }: { card: ForwardingCard; user: UserPr
 export function DocflowForwardingPanel({
   user,
   from,
-  to
+  to,
+  onOpenDocument
 }: {
   user: UserProfile
   from: string
   to: string
+  onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<ForwardingRow[]>([])
   const [statuses, setStatuses] = useState<ForwardingOption[]>(FALLBACK_STATUSES)
@@ -596,6 +600,7 @@ export function DocflowForwardingPanel({
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}
+                    onDoubleClick={() => onOpenDocument?.('forwarding', row.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -630,6 +635,12 @@ export function DocflowForwardingPanel({
         </div>
       </div>
       <aside className="docflow-side wp-card" aria-label="Карточка поручения экспедитору">
+        {selected ? (
+          <DocflowOpenFormBar
+            refKey={selected.id}
+            onOpen={onOpenDocument && (() => onOpenDocument('forwarding', selected.id))}
+          />
+        ) : null}
         {!selected ? (
           <p className="docflow-status">Выберите поручение, чтобы увидеть карточку</p>
         ) : cardLoading ? (

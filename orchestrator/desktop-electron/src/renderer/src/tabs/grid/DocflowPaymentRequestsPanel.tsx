@@ -27,6 +27,8 @@ import {
   type PaymentRequestOption,
   type PaymentRequestRow
 } from '../../workplace/fetchDocflowPaymentRequests'
+import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 
 const FALLBACK_STATUSES: PaymentRequestOption[] = [
@@ -292,11 +294,13 @@ function PaymentRequestCardView({
 export function DocflowPaymentRequestsPanel({
   user,
   from,
-  to
+  to,
+  onOpenDocument
 }: {
   user: UserProfile
   from: string
   to: string
+  onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<PaymentRequestRow[]>([])
   const [statuses, setStatuses] = useState<PaymentRequestOption[]>(FALLBACK_STATUSES)
@@ -570,6 +574,7 @@ export function DocflowPaymentRequestsPanel({
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}
+                    onDoubleClick={() => onOpenDocument?.('payment', row.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -603,6 +608,12 @@ export function DocflowPaymentRequestsPanel({
         </div>
       </div>
       <aside className="docflow-side wp-card" aria-label="Карточка заявки на расходование ДС">
+        {selected ? (
+          <DocflowOpenFormBar
+            refKey={selected.id}
+            onOpen={onOpenDocument && (() => onOpenDocument('payment', selected.id))}
+          />
+        ) : null}
         {!selected ? (
           <p className="docflow-status">Выберите заявку, чтобы увидеть карточку</p>
         ) : cardLoading ? (

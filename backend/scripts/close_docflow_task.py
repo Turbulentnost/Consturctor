@@ -77,13 +77,23 @@ def main(argv: list[str]) -> int:
 
     try:
         result = handle_docflow_task_action(
-            {"action": "close", "task_id": task_id, "fio": fio, "erp_password": password}
+            {
+                "action": "close",
+                "task_id": task_id,
+                "step": str(card.get("step") or ""),
+                "title": str(card.get("name") or ""),
+                "fio": fio,
+                "erp_password": password,
+            }
         )
     except DocflowError as exc:
         log(f"ЗАКРЫТИЕ НЕ ПРОШЛО: {exc}")
         REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return 1
-    log(f"Ответ закрытия: {result.get('summary')} (закрыто: {result.get('closed_task_ids')})")
+    log(
+        "Ответ закрытия: "
+        f"{result.get('summary')} (closed={result.get('closed')}, needs_form={result.get('needs_form')})"
+    )
 
     after = open_tasks_for_target(config, target_id, target_type, timeout=max(timeout, 120.0))
     log(f"Открытых задач по предмету после закрытия: {len(after)}")

@@ -1,4 +1,9 @@
-"""Запись по задаче 1С:Документооборот (завершение через DMUpdateRequest / retrieve)."""
+"""Действие по задаче 1С:Документооборот.
+
+Завершение идёт в HTTP TaskAction базы ДО — ту же процедуру вызывают кнопки
+формы 1С. Отметка SOAP (DMUpdateRequest) для кнопок не используется: она
+обходит проверки документа. Чтение карточки и ссылка web_url остаются SOAP.
+"""
 
 from __future__ import annotations
 
@@ -8,20 +13,13 @@ from typing import Any
 from app.services.docflow_tasks import DocflowError, docflow_soap_ready
 from app.tools.onec.docflow_task_kinds import (
     ACTIONS,
+    action_button,
     docflow_task_kind,
     resolve_action,
     web_client_task_url,
 )
-from app.tools.onec.dok_soap import (
-    is_object_locked_error,
-    known_delegates,
-    load_config,
-    mark_task_executed,
-    open_tasks_for_target,
-    person_names_match,
-    retrieve_task_card,
-    retrieve_tasks,
-)
+from app.tools.onec.dok_http import TaskActionNotPublished, post_task_action
+from app.tools.onec.dok_soap import drop_task_from_inbox_cache, load_config, retrieve_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +32,22 @@ def _session_credentials(args: dict[str, Any]) -> tuple[str, str]:
     return user, password
 
 
+_UNPUBLISHED_SUMMARY = (
+    "Действие доступно только в карточке 1С: метод TaskAction ещё не опубликован."
+)
+
+
+def _task_web_url(task_id: str) -> str:
+    from app.config import settings
+
+    return web_client_task_url(
+        settings.dok_http_server,
+        int(settings.dok_http_port or 81),
+        settings.dok_http_base_path or "/doc",
+        task_id,
+    )
+
+
 def _complete_docflow_task(args: dict[str, Any], *, actor_fio: str, action: str) -> dict[str, Any]:
     task_id = str(args.get("task_id") or args.get("uid") or args.get("ref_key") or args.get("id") or "").strip()
     if not task_id:
@@ -44,129 +58,62 @@ def _complete_docflow_task(args: dict[str, Any], *, actor_fio: str, action: str)
     if not user or not password:
         raise DocflowError("Нужны учётные данные сеанса 1С (ФИО и пароль)")
 
-    config = load_config(username=user, password=password, require_user=True)
-    lookup_timeout = min(40.0, float(config.timeout))
-
-    def task_is_executed(uid: str) -> bool:
-        try:
-            cards = retrieve_tasks(config, [uid], timeout=lookup_timeout)
-        except RuntimeError as exc:
-            logger.warning("Повторное чтение задачи %s не удалось: %s", uid, exc)
-            return False
-        if not cards:
-            logger.warning("Документооборот не вернул карточку задачи %s", uid)
-            return False
-        logger.info("Карточка задачи %s после действия: %s", uid, cards[0])
-        mark = str(cards[0].get("execution_mark") or "")
-        # Пометка исполнения — единственный признак, который ДО ставит сам.
-        return bool(cards[0].get("executed")) and mark.startswith("Executed")
-
-    try:
-        card = retrieve_task_card(config, task_id, timeout=lookup_timeout)
-    except RuntimeError as exc:
-        raise DocflowError(f"Карточка задачи не прочитана: {exc}") from exc
-    performer = str(card.get("performer") or "")
-    session_fio = str(args.get("fio") or actor_fio or user)
-    delegates = known_delegates(session_fio, args.get("delegate_fios"))
-    if (
-        performer
-        and not person_names_match(user, performer)
-        and not person_names_match(session_fio, performer)
-        and not any(person_names_match(name, performer) for name in delegates)
-    ):
-        raise DocflowError(f"Задача назначена не вам (исполнитель: {performer}). Отметку не ставлю.")
-
-    step = str(card.get("step") or args.get("step") or "")
-    kind = docflow_task_kind(step, str(card.get("name") or ""))
+    step = str(args.get("step") or "")
+    title = str(args.get("title") or args.get("name") or "")
+    kind = docflow_task_kind(step, title)
     resolved = resolve_action(action, kind)
     if not resolved:
-        raise DocflowError(f"Для задачи «{step or card.get('name') or 'без шага'}» это действие недоступно.")
+        raise DocflowError(f"Для задачи «{step or title or 'без шага'}» это действие недоступно.")
     spec = ACTIONS[resolved]
     comment = " ".join(str(args.get("comment") or "").split())
     if spec.needs_comment and not comment:
         raise DocflowError("Для этого действия 1С требует комментарий.")
+    button = action_button(kind, resolved)
+    actual = str(args.get("actual_performer") or args.get("factual_performer") or "").strip()
 
-    # Доработка процесса создаёт задачу с новым УИД, а в таблице остаётся старый.
-    targets = [task_id]
-    if card.get("executed"):
-        try:
-            live = open_tasks_for_target(
-                config,
-                str(card.get("target_id") or ""),
-                str(card.get("target_type") or ""),
-                timeout=max(float(config.timeout), 120.0),
-            )
-        except RuntimeError as exc:
-            logger.warning("Задачи документа %s не прочитаны: %s", card.get("target_id"), exc)
-            live = []
-        logger.info(
-            "Задача %s уже завершена, открытых задач документа %s: %s",
+    try:
+        outcome = post_task_action(
             task_id,
-            card.get("target_id"),
-            "; ".join(f"{row.get('id')} {row.get('step')} {row.get('performer')}" for row in live)
-            or "нет",
+            button,
+            comment=comment,
+            actual_performer=actual,
+            auth=(user, password),
         )
-        # Подменяем только на ту же задачу, выданную заново этому же исполнителю.
-        # Остальные задачи по документу чужие или про другое — их не трогаем.
-        targets = [
-            str(row["id"])
-            for row in live
-            if performer
-            and str(row.get("performer") or "") == performer
-            and str(row.get("description") or "") == str(card.get("description") or "")
-            and str(row.get("step") or "") == str(card.get("step") or "")
-        ]
-        if not targets:
-            return {
-                "summary": "Задача уже завершена в документообороте.",
-                "action": resolved,
-                "kind": kind,
-                "task_id": task_id,
-                "already_executed": True,
-            }
-
-    # TaskPatch переносит срок и возвращает уже исполненную задачу на доработку,
-    # поэтому задачу завершает только отметка исполнения.
-    perform_error = ""
-    closed: list[str] = []
-    for uid in targets:
-        try:
-            mark_task_executed(config, uid, timeout=lookup_timeout, comment=comment, mark=spec.mark)
-        except RuntimeError as exc:
-            perform_error = str(exc)
-            logger.warning("Отметка %s по задаче %s не прошла: %s", spec.mark, uid, exc)
-            continue
-        if task_is_executed(uid):
-            closed.append(uid)
-
-    if closed:
+    except TaskActionNotPublished:
+        # Пока 1С не опубликовала ту же процедуру, что и кнопки формы,
+        # SOAP-отметка обошла бы проверки документа. Карточку только открываем.
+        logger.info("TaskAction не опубликован, задача %s не закрывается через SOAP", task_id)
         return {
-            "summary": f"{spec.summary} в документообороте.",
+            "ok": False,
+            "closed": False,
+            "needs_form": True,
+            "summary": _UNPUBLISHED_SUMMARY,
             "action": resolved,
             "kind": kind,
-            "execution_mark": spec.mark,
-            "task_id": closed[0],
-            "closed_task_ids": closed,
+            "button": button,
+            "task_id": task_id,
+            "web_url": _task_web_url(task_id),
         }
-    detail = perform_error or "1С не сообщила причину."
-    if is_object_locked_error(perform_error):
-        raise DocflowError(
-            "Задача сейчас заблокирована в 1С (обычно — вашей же прошлой веб-сессией, "
-            "которая ещё не закрылась). Подождите 1–2 минуты и нажмите «Принять» снова: "
-            "блокировка снимется автоматически."
-        )
-    if "абстрактного типа" in perform_error:
-        from app.tools.onec.dok_soap import dm_request_type_names
+    except RuntimeError as exc:
+        raise DocflowError(str(exc)) from exc
 
-        try:
-            names = dm_request_type_names(config, timeout=lookup_timeout)
-        except RuntimeError as exc:
-            logger.warning("Список типов DM не получен: %s", exc)
-        else:
-            task_names = [name for name in names if "Task" in name] or names
-            logger.info("dok_soap запросы задач: %s", ", ".join(task_names))
-            detail = "Сервис не знает наш тип запроса. Он принимает: " + ", ".join(task_names[:20])
-    raise DocflowError(f"Документооборот не принял действие «{spec.summary}». {detail}")
+    summary = str(outcome.get("summary") or "").strip()
+    closed = bool(outcome.get("closed"))
+    if not summary:
+        summary = spec.summary if closed else "Документооборот не закрыл задачу."
+    if closed:
+        drop_task_from_inbox_cache(task_id)
+    return {
+        "ok": bool(outcome.get("ok")),
+        "closed": closed,
+        "needs_form": bool(outcome.get("needs_form")),
+        "summary": summary,
+        "action": resolved,
+        "kind": kind,
+        "button": button,
+        "task_id": task_id,
+        "web_url": _task_web_url(task_id) if outcome.get("needs_form") else "",
+    }
 
 
 def handle_docflow_task_action(

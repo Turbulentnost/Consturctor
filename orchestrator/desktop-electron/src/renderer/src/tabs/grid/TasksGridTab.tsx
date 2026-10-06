@@ -205,7 +205,6 @@ export function TasksGridTab({
   const hideExecuted = (id: string): void => {
     setExecutedIds((current) => new Set(current).add(id))
     setSelectedId('')
-    softRefresh()
   }
   const runRowAction = (row: (typeof taskRows)[number]): void => {
     const action = rowAction(row)
@@ -266,10 +265,7 @@ export function TasksGridTab({
         ? `Ознакомление отмечено: ${done} из ${targets.length}. Не прошло — ${failed.join('; ')}`
         : `Ознакомление отмечено по всем задачам: ${done}.`
     )
-    if (done) {
-      setSelectedId('')
-      softRefresh()
-    }
+    if (done) setSelectedId('')
   }
   const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
   const visibleRows = groups.flatMap((group) => (collapsedGroups.has(group.key) ? [] : group.rows))
