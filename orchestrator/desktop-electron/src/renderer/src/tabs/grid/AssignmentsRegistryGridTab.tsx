@@ -24,7 +24,12 @@ import { usePageSearch, valuesMatchPageSearch } from '../../layout/pageSearchCon
 import { canUseExtension } from '../../extensions/extensionRegistry'
 import { AssignmentsRegistryReportTable, AssignmentsRegistryTable } from './AssignmentsRegistryTable'
 import { AssignmentsRegistryDetailPanel } from './AssignmentsRegistryDetailPanel'
-import { AssignmentsRegistryCreateDialog } from './AssignmentsRegistryCreateDialog'
+import { DocflowCreateDialog } from './DocflowCreateDialog'
+import {
+  loadDocflowCreateSchema,
+  type DocflowFormRequest,
+  type DocflowKindSchema
+} from '../../workplace/docflowDocumentCreate'
 import { useRuns } from '../../store/runs'
 import {
   buildClosureCheckMessage,
@@ -457,8 +462,44 @@ export function AssignmentsRegistryGridTab({
 
   const [printBusy, setPrintBusy] = useState(false)
   const [printError, setPrintError] = useState('')
-  const [createOpen, setCreateOpen] = useState(false)
   const [createNotice, setCreateNotice] = useState('')
+  const [formError, setFormError] = useState('')
+  const [formRequest, setFormRequest] = useState<DocflowFormRequest | null>(null)
+  const [createSchemas, setCreateSchemas] = useState<DocflowKindSchema[]>([])
+  const [savedWhileOpen, setSavedWhileOpen] = useState(false)
+
+  const openForm = (next: DocflowFormRequest): void => {
+    setCreateNotice('')
+    setFormError('')
+    if (createSchemas.some((item) => item.id === next.kind)) {
+      setFormRequest(next)
+      return
+    }
+    void loadDocflowCreateSchema(user)
+      .then((schemas) => {
+        setCreateSchemas(schemas)
+        if (schemas.some((item) => item.id === next.kind)) setFormRequest(next)
+        else setFormError('Форма поручения в 1С недоступна')
+      })
+      .catch((err: unknown) =>
+        setFormError(err instanceof Error ? err.message : 'Не удалось открыть форму поручения')
+      )
+  }
+
+  const openAssignmentForm = (row: AssignmentRegistryRow): void => {
+    const refKey = row.refKey.trim()
+    if (!refKey) {
+      setFormError('У поручения нет ссылки 1С')
+      return
+    }
+    openForm({ mode: 'edit', kind: 'assignment', refKey })
+  }
+
+  const closeForm = (): void => {
+    setFormRequest(null)
+    if (savedWhileOpen) refresh()
+    setSavedWhileOpen(false)
+  }
 
   const hydrateReportRows = async (): Promise<typeof rowsHydrated> => {
     const { all } = selectRegistryReportRows(rowsHydrated)
@@ -589,12 +630,15 @@ export function AssignmentsRegistryGridTab({
 
   return (
     <>
-    <AssignmentsRegistryCreateDialog
-      open={createOpen}
-      onClose={() => setCreateOpen(false)}
-      onCreated={(message) => {
+    <DocflowCreateDialog
+      user={user}
+      request={formRequest}
+      schemas={createSchemas}
+      onClose={closeForm}
+      onRequest={openForm}
+      onSaved={(message) => {
         setCreateNotice(message)
-        refresh()
+        setSavedWhileOpen(true)
       }}
     />
     <StandardTabChrome
@@ -673,11 +717,8 @@ export function AssignmentsRegistryGridTab({
               <button
                 type="button"
                 className="today-filter-layout-btn registry-create-open-btn"
-                title="Создать поручение в журнале АСТ00"
-                onClick={() => {
-                  setCreateNotice('')
-                  setCreateOpen(true)
-                }}
+                title="Создать поручение"
+                onClick={() => openForm({ mode: 'create', kind: 'assignment' })}
               >
                 <Plus size={14} aria-hidden /> Создать
               </button>
@@ -695,6 +736,7 @@ export function AssignmentsRegistryGridTab({
             {printError ? <p className="registry-table-error">{printError}</p> : null}
             {aiError ? <p className="registry-table-error">{aiError}</p> : null}
             {closureNotice ? <p className="registry-table-hint registry-table-success">{closureNotice}</p> : null}
+            {formError ? <p className="registry-table-error">{formError}</p> : null}
             {createNotice ? <p className="registry-table-hint registry-table-success">{createNotice}</p> : null}
             {refreshing && rows.length && !loadingMore ? (
               <p className="registry-table-hint">Обновление данных…</p>
@@ -710,6 +752,7 @@ export function AssignmentsRegistryGridTab({
                 linesLoading={reportLinesLoading}
                 selectedId={selectedId}
                 onSelectRow={(row) => pickRow(row)}
+                onOpenForm={openAssignmentForm}
               />
             ) : (
               <AssignmentsRegistryTable
@@ -727,6 +770,7 @@ export function AssignmentsRegistryGridTab({
                   })
                 }
                 onSelectRow={(row) => pickRow(row)}
+                onOpenForm={openAssignmentForm}
                 columnFilters={tableColumnFilters}
                 emptyText={
                   pageQuery.trim() || Object.values(columnFilters).some(Boolean)
@@ -745,6 +789,7 @@ export function AssignmentsRegistryGridTab({
               row={selectedRow}
               linesLoading={detailLinesLoading}
               onClose={() => pickRow(null)}
+              onOpenForm={selectedRow ? () => openAssignmentForm(selectedRow) : undefined}
             />
           </div>
         )
