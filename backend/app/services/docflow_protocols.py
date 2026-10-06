@@ -663,17 +663,18 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
 
 
 BOARD_THEME_TITLE = "Совет директоров по ГК"
-_BOARD_TASK_MARK = "2 рабочих дня"
+# Только поставленные задачи, название которых начинается с «За 2 дня» / «За 2 рабочих дня».
+_BOARD_TASK_START = re.compile(r"^(?:\d+[\.)]\s*)?за\s+2(?:\s+рабочих)?\s+дн")
 
 
 def _fold(value: Any) -> str:
-    return " ".join(str(value or "").casefold().replace("ё", "е").split())
+    text = str(value or "").casefold().replace("ё", "е").replace("\u00a0", " ")
+    return " ".join(text.split())
 
 
 def is_board_report_task(text: str) -> bool:
-    """Поставленная задача директора: отчётность за 2 рабочих дня до совета директоров по ГК."""
-    folded = _fold(text)
-    return _BOARD_TASK_MARK in folded and "совет" in folded and "отчетност" in folded
+    """Задача совета директоров: текст начинается с «За 2 дня» или «За 2 рабочих дня»."""
+    return _BOARD_TASK_START.match(_fold(text)) is not None
 
 
 def pick_month_protocol(rows: list[dict[str, Any]], today: date | None = None) -> dict[str, Any] | None:

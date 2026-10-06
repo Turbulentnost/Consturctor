@@ -11,7 +11,12 @@ TASK = (
 def test_board_report_task_matches_director_report() -> None:
     assert is_board_report_task(TASK)
     assert is_board_report_task(TASK.replace("отчетность", "отчётность"))
+    assert is_board_report_task("За 2 дня до проведения Совета директоров по ГК предоставить отчёт")
+    assert is_board_report_task("1. За 2 рабочих дня до заседания сдать отчётность")
     assert not is_board_report_task("Доклад по повестке совета директоров")
+    assert not is_board_report_task(
+        "Подготовить презентацию. За 2 рабочих дня до совета сдать отчетность"
+    )
     assert not is_board_report_task("")
 
 
