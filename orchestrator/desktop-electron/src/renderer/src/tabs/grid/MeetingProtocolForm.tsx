@@ -31,6 +31,37 @@ const MEETING_TYPES = ['Отчетное', 'Внеплановое', 'Селек
 type ProtocolFormTab = 'main' | 'attendees' | 'agenda' | 'tasks' | 'decisions'
 type Pending = 'save' | 'save-close' | null
 
+function GrowText({
+  value,
+  placeholder,
+  readOnly,
+  onChange
+}: {
+  value: string
+  placeholder?: string
+  readOnly?: boolean
+  onChange: (value: string) => void
+}): React.JSX.Element {
+  const ref = useRef<HTMLTextAreaElement | null>(null)
+  useEffect(() => {
+    const node = ref.current
+    if (!node) return
+    node.style.height = '0px'
+    node.style.height = `${node.scrollHeight}px`
+  }, [value])
+  return (
+    <textarea
+      ref={ref}
+      className="df1c-input df1c-textarea df1c-grow"
+      rows={1}
+      value={value}
+      placeholder={placeholder}
+      readOnly={readOnly}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  )
+}
+
 function filled(rows: { question?: string; text?: string }[], key: 'question' | 'text'): number {
   return rows.filter((row) => (row[key] || '').trim()).length
 }
@@ -353,7 +384,7 @@ export function MeetingProtocolForm({
           </div>
         ) : (
           <div className="df1c-body">
-            <fieldset className="df1c-fieldset" disabled={readOnly}>
+            <fieldset className="df1c-fieldset">
               {tab === 'main' ? (
                 <>
                   <Row label="Тема совещания" required wide>
@@ -361,6 +392,7 @@ export function MeetingProtocolForm({
                       className="df1c-input"
                       type="text"
                       value={draft.topic}
+                      readOnly={readOnly}
                       placeholder="Как в справочнике «Темы совещаний»"
                       onChange={(event) => patch({ topic: event.target.value, themeKey: '' })}
                     />
@@ -379,21 +411,21 @@ export function MeetingProtocolForm({
                   <div className="df1c-columns">
                     <div className="df1c-col">
                       <Row label="Дата совещания" required>
-                        <input className="df1c-input df1c-date" type="date" value={draft.date} onChange={(event) => patch({ date: event.target.value })} />
+                        <input className="df1c-input df1c-date" type="date" readOnly={readOnly} value={draft.date} onChange={(event) => patch({ date: event.target.value })} />
                       </Row>
                       <Row label="Время">
                         <div className="df1c-inline">
                           <span className="df1c-inline-label">с</span>
-                          <input className="df1c-input" type="time" value={draft.timeStart} onChange={(event) => patch({ timeStart: event.target.value })} />
+                          <input className="df1c-input" type="time" readOnly={readOnly} value={draft.timeStart} onChange={(event) => patch({ timeStart: event.target.value })} />
                           <span className="df1c-inline-label">по</span>
-                          <input className="df1c-input" type="time" value={draft.timeEnd} onChange={(event) => patch({ timeEnd: event.target.value })} />
+                          <input className="df1c-input" type="time" readOnly={readOnly} value={draft.timeEnd} onChange={(event) => patch({ timeEnd: event.target.value })} />
                         </div>
                       </Row>
                       <Row label="Кабинет">
                         <select
                           className="df1c-input"
                           value={draft.roomKey || (roomMissing ? MISSING_ROOM : '')}
-                          disabled={!rooms.length && !draft.roomKey}
+                          disabled={readOnly || (!rooms.length && !draft.roomKey)}
                           onChange={(event) => {
                             const hit = rooms.find((room) => room.key === event.target.value)
                             patch(hit ? { roomKey: hit.key, room: hit.name } : { roomKey: '', room: '' })
@@ -421,11 +453,12 @@ export function MeetingProtocolForm({
                           className="df1c-input df1c-date"
                           type="date"
                           value={draft.nextMeetingDate}
+                          readOnly={readOnly}
                           onChange={(event) => patch({ nextMeetingDate: event.target.value })}
                         />
                       </Row>
                       <Row label="Вид совещания">
-                        <select className="df1c-input" value={draft.meetingType} onChange={(event) => patch({ meetingType: event.target.value })}>
+                        <select className="df1c-input" value={draft.meetingType} disabled={readOnly} onChange={(event) => patch({ meetingType: event.target.value })}>
                           {draft.meetingType && !MEETING_TYPES.includes(draft.meetingType) ? (
                             <option value={draft.meetingType}>{draft.meetingType}</option>
                           ) : null}
@@ -439,30 +472,32 @@ export function MeetingProtocolForm({
                     </div>
                     <div className="df1c-col">
                       <Row label="Руководитель">
-                        <FioCombobox value={draft.leader} hints={fioHints} placeholder="ФИО из 1С" onChange={(leader) => patch({ leader })} />
+                        <FioCombobox value={draft.leader} hints={fioHints} readOnly={readOnly} placeholder="ФИО из 1С" onChange={(leader) => patch({ leader })} />
                       </Row>
                       <Row label="Проверяющий">
                         <FioCombobox
                           value={draft.responsible}
                           hints={fioHints}
+                          readOnly={readOnly}
                           placeholder="Пусто — из темы или руководитель"
                           onChange={(responsible) => patch({ responsible })}
                         />
                       </Row>
                       <Row label="Отчётный период с">
-                        <input className="df1c-input df1c-date" type="date" value={draft.reportFrom} onChange={(event) => patch({ reportFrom: event.target.value })} />
+                        <input className="df1c-input df1c-date" type="date" readOnly={readOnly} value={draft.reportFrom} onChange={(event) => patch({ reportFrom: event.target.value })} />
                       </Row>
                       <Row label="Отчётный период по">
-                        <input className="df1c-input df1c-date" type="date" value={draft.reportTo} onChange={(event) => patch({ reportTo: event.target.value })} />
+                        <input className="df1c-input df1c-date" type="date" readOnly={readOnly} value={draft.reportTo} onChange={(event) => patch({ reportTo: event.target.value })} />
                       </Row>
                       <Row label="Гриф доступа">
-                        <input className="df1c-input" type="text" value={draft.access} onChange={(event) => patch({ access: event.target.value })} />
+                        <input className="df1c-input" type="text" readOnly={readOnly} value={draft.access} onChange={(event) => patch({ access: event.target.value })} />
                       </Row>
                       <Row label="Подразделение">
                         <input
                           className="df1c-input"
                           type="text"
                           value={draft.department}
+                          readOnly={readOnly}
                           placeholder="Пусто — из темы"
                           onChange={(event) => patch({ department: event.target.value })}
                         />
@@ -472,6 +507,7 @@ export function MeetingProtocolForm({
                           className="df1c-input"
                           type="text"
                           value={draft.project}
+                          readOnly={readOnly}
                           placeholder="Пусто — из темы"
                           onChange={(event) => patch({ project: event.target.value })}
                         />
@@ -479,7 +515,7 @@ export function MeetingProtocolForm({
                     </div>
                   </div>
                   <Row label="Комментарий" wide>
-                    <textarea className="df1c-input df1c-textarea" rows={3} value={draft.comment} onChange={(event) => patch({ comment: event.target.value })} />
+                    <textarea className="df1c-input df1c-textarea" rows={3} readOnly={readOnly} value={draft.comment} onChange={(event) => patch({ comment: event.target.value })} />
                   </Row>
                 </>
               ) : null}
@@ -490,6 +526,7 @@ export function MeetingProtocolForm({
                     className="df1c-input df1c-textarea"
                     rows={12}
                     value={draft.participants}
+                    readOnly={readOnly}
                     placeholder="По одному ФИО на строку"
                     onChange={(event) => patch({ participants: event.target.value })}
                   />
@@ -515,34 +552,34 @@ export function MeetingProtocolForm({
                       <thead>
                         <tr>
                           <th className="df1c-num">N</th>
-                          <th>Вопрос</th>
-                          <th>Ответственный</th>
-                          {readOnly ? null : <th />}
+                          <th className="df1c-col-measure">Вопрос</th>
+                          <th className="df1c-col-ref">Ответственный</th>
+                          {readOnly ? null : <th className="df1c-col-delete" />}
                         </tr>
                       </thead>
                       <tbody>
                         {draft.agenda.map((row, index) => (
                           <tr key={row.key}>
                             <td className="df1c-num">{index + 1}</td>
-                            <td>
-                              <input
-                                className="df1c-input"
-                                type="text"
+                            <td className="df1c-col-measure">
+                              <GrowText
                                 placeholder="Вопрос повестки"
+                                readOnly={readOnly}
                                 value={row.question}
-                                onChange={(event) => updateAgenda(row.key, { question: event.target.value })}
+                                onChange={(question) => updateAgenda(row.key, { question })}
                               />
                             </td>
-                            <td>
+                            <td className="df1c-col-ref">
                               <FioCombobox
                                 value={row.responsible}
                                 hints={fioHints}
+                                readOnly={readOnly}
                                 placeholder="ФИО из 1С"
                                 onChange={(responsible) => updateAgenda(row.key, { responsible })}
                               />
                             </td>
                             {readOnly ? null : (
-                              <td>
+                              <td className="df1c-col-delete">
                                 <button
                                   type="button"
                                   className="df1c-icon-btn"
@@ -586,51 +623,46 @@ export function MeetingProtocolForm({
                       <thead>
                         <tr>
                           <th className="df1c-num">N</th>
-                          <th>Задача</th>
-                          <th>Ответственный</th>
-                          <th>Срок</th>
-                          <th>Приоритет</th>
-                          <th>Примечание</th>
-                          {readOnly ? null : <th />}
+                          <th className="df1c-col-measure">Задача</th>
+                          <th className="df1c-col-ref">Ответственный</th>
+                          <th className="df1c-col-date">Срок</th>
+                          <th className="df1c-col-enum">Приоритет</th>
+                          <th className="df1c-col-note">Примечание</th>
+                          {readOnly ? null : <th className="df1c-col-delete" />}
                         </tr>
                       </thead>
                       <tbody>
                         {draft.tasks.map((row, index) => (
                           <tr key={row.key}>
                             <td className="df1c-num">{index + 1}</td>
-                            <td>
-                              <textarea
-                                className="df1c-input df1c-textarea"
-                                rows={2}
-                                placeholder="Текст задачи"
-                                value={row.text}
-                                onChange={(event) => updateTask(row.key, { text: event.target.value })}
-                              />
+                            <td className="df1c-col-measure">
+                              <GrowText placeholder="Текст задачи" readOnly={readOnly} value={row.text} onChange={(text) => updateTask(row.key, { text })} />
                             </td>
-                            <td>
+                            <td className="df1c-col-ref">
                               <FioCombobox
                                 value={row.executor}
                                 hints={fioHints}
+                                readOnly={readOnly}
                                 placeholder="ФИО из 1С"
                                 onChange={(executor) => updateTask(row.key, { executor })}
                               />
                             </td>
-                            <td>
-                              <input className="df1c-input df1c-date" type="date" value={row.due} onChange={(event) => updateTask(row.key, { due: event.target.value })} />
+                            <td className="df1c-col-date">
+                              <input className="df1c-input df1c-date" type="date" readOnly={readOnly} value={row.due} onChange={(event) => updateTask(row.key, { due: event.target.value })} />
                             </td>
-                            <td>
-                              <select className="df1c-input" value={row.priority} onChange={(event) => updateTask(row.key, { priority: event.target.value })}>
+                            <td className="df1c-col-enum">
+                              <select className="df1c-input" value={row.priority} disabled={readOnly} onChange={(event) => updateTask(row.key, { priority: event.target.value })}>
                                 <option value="">Не указан</option>
                                 <option value="Высокий">Высокий</option>
                                 <option value="Средний">Средний</option>
                                 <option value="Низкий">Низкий</option>
                               </select>
                             </td>
-                            <td>
-                              <input className="df1c-input" type="text" value={row.note} onChange={(event) => updateTask(row.key, { note: event.target.value })} />
+                            <td className="df1c-col-note">
+                              <GrowText readOnly={readOnly} value={row.note} onChange={(note) => updateTask(row.key, { note })} />
                             </td>
                             {readOnly ? null : (
-                              <td>
+                              <td className="df1c-col-delete">
                                 <button
                                   type="button"
                                   className="df1c-icon-btn"
@@ -670,29 +702,28 @@ export function MeetingProtocolForm({
                       <thead>
                         <tr>
                           <th className="df1c-num">N</th>
-                          <th>Текст решения</th>
-                          <th>Срок</th>
-                          {readOnly ? null : <th />}
+                          <th className="df1c-col-measure">Текст решения</th>
+                          <th className="df1c-col-date">Срок</th>
+                          {readOnly ? null : <th className="df1c-col-delete" />}
                         </tr>
                       </thead>
                       <tbody>
                         {draft.decisions.map((row, index) => (
                           <tr key={row.key}>
                             <td className="df1c-num">{index + 1}</td>
-                            <td>
-                              <textarea
-                                className="df1c-input df1c-textarea"
-                                rows={2}
+                            <td className="df1c-col-measure">
+                              <GrowText
                                 placeholder="Текст решения"
+                                readOnly={readOnly}
                                 value={row.text}
-                                onChange={(event) => updateDecision(row.key, { text: event.target.value })}
+                                onChange={(text) => updateDecision(row.key, { text })}
                               />
                             </td>
-                            <td>
-                              <input className="df1c-input df1c-date" type="date" value={row.due} onChange={(event) => updateDecision(row.key, { due: event.target.value })} />
+                            <td className="df1c-col-date">
+                              <input className="df1c-input df1c-date" type="date" readOnly={readOnly} value={row.due} onChange={(event) => updateDecision(row.key, { due: event.target.value })} />
                             </td>
                             {readOnly ? null : (
-                              <td>
+                              <td className="df1c-col-delete">
                                 <button
                                   type="button"
                                   className="df1c-icon-btn"

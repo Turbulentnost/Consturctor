@@ -51,6 +51,7 @@ export type UserPageKey =
   | 'knowledge'
   | 'extensions'
   | 'assignments_registry'
+  | 'subordinate_tasks'
   | 'agent_library'
   | 'task_create'
   | 'platform_task_create'
@@ -80,6 +81,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   knowledge: 'База знаний',
   extensions: 'Расширения',
   assignments_registry: 'Реестр поручений',
+  subordinate_tasks: 'Поставленные задачи подчиненным в 1С',
   agent_library: 'Библиотека агентов',
   task_create: 'Создание задачи',
   platform_task_create: 'Задача в платформе',

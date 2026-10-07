@@ -265,6 +265,13 @@
   color: #6b7380;
 }
 
+.df1c-window .df1c-input:read-only,
+.df1c-window textarea:read-only {
+  background: #fff;
+  color: #10141a;
+  cursor: text;
+}
+
 .df1c-row.is-invalid .df1c-input,
 .df1c-row.is-invalid .df1c-ref .onec-reconnect-input {
   border-color: #c0392b;
@@ -681,8 +688,23 @@
   opacity: 1;
 }
 
+.df1c-table textarea {
+  resize: none;
+}
+
+.df1c-table .df1c-col-date,
+.df1c-table .df1c-col-enum,
+.df1c-table .df1c-col-ref,
+.df1c-table .df1c-col-note {
+  vertical-align: middle;
+}
+
 .df1c-table .df1c-col-date {
   width: 8.4rem;
+}
+
+.df1c-table .df1c-col-note {
+  width: 16%;
 }
 
 .df1c-table .df1c-col-enum {

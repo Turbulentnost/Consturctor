@@ -1004,6 +1004,8 @@ function AppShell(): React.JSX.Element {
                     ? 'orch-grid-kpi'
                     : workplaceShellKey === 'assignments_registry'
                       ? 'orch-grid-registry'
+                      : workplaceShellKey === 'subordinate_tasks'
+                        ? 'orch-grid-subtasks'
                       : workplaceShellKey === 'history'
                         ? 'orch-grid-history'
                         : workplaceShellKey === 'extensions'

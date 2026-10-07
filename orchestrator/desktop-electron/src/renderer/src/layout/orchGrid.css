@@ -321,6 +321,17 @@
   min-height: 0;
 }
 
+.orch-grid-subtasks {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.orch-grid-subtasks .orch-slot-main.orch-heavy-embed-slot {
+  grid-column: 1 / 9;
+  grid-row: 2 / 4;
+  overflow: hidden;
+  min-height: 0;
+}
+
 .orch-grid-extensions .extensions-hub {
   grid-column: unset;
   grid-row: unset;

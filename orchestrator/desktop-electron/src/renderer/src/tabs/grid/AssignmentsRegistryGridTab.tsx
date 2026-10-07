@@ -6,7 +6,7 @@ import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT } from './useTabChromeLayout'
 import { KpiDayPicker } from '../../pages/KpiRangePicker'
 import { useAssignmentRegistry } from '../../workplace/useAssignmentRegistry'
-import { isCompletedAssignment, isDueWithinDays } from '../../workplace/assignmentRegistryMappers'
+import { isCompletedAssignment, isDueWithinDays, parseRegistryDay } from '../../workplace/assignmentRegistryMappers'
 import { selectRegistryReportRows } from '../../workplace/registryReportRows'
 import {
   fetchAssignmentLines,
@@ -114,6 +114,18 @@ function defaultRange(): { from: string; to: string } {
   return { from: startOfYear(), to: isoDate(new Date()) }
 }
 
+function dueHasArrived(row: { fullRemediationDue: string }, today = new Date()): boolean {
+  const due = parseRegistryDay(row.fullRemediationDue)
+  if (!due) return false
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  return due.getTime() <= start.getTime()
+}
+
+function percentOf(part: number, total: number): string {
+  if (total <= 0) return '0%'
+  return `${Math.round((part / total) * 100)}%`
+}
+
 function buildRegistryTiles(
   rows: ReturnType<typeof useAssignmentRegistry>['rows'],
   aiHint: string
@@ -122,7 +134,8 @@ function buildRegistryTiles(
   const done = rows.filter((row) => isCompletedAssignment(row))
   const overdue = open.filter((row) => row.overdue)
   const dueSoon = open.filter((row) => isDueWithinDays(row, 3))
-  const plan = done.length + overdue.length
+  const dueReached = rows.filter((row) => dueHasArrived(row))
+  const doneOfDue = dueReached.filter((row) => isCompletedAssignment(row))
   return [
     {
       id: 'all',
@@ -135,16 +148,16 @@ function buildRegistryTiles(
       id: 'done',
       label: 'Выполненные',
       value: String(done.length),
-      hint: `план ${plan}`,
-      tooltip: 'Выполненные и отменённые за выбранный период',
+      note: `(${percentOf(doneOfDue.length, dueReached.length)})`,
+      tooltip: 'Выполненные и отменённые. В скобках — доля среди поручений, у которых срок уже наступил',
       tone: 'green'
     },
     {
       id: 'overdue',
       label: 'Просроченные',
       value: String(overdue.length),
-      hint: 'план 0',
-      tooltip: 'Открытые с истёкшим сроком. План для просроченных — 0',
+      note: `(${percentOf(overdue.length, done.length)})`,
+      tooltip: 'Открытые с истёкшим сроком. В скобках — доля от выполненных',
       tone: overdue.length ? 'red' : 'neutral'
     },
     {

@@ -150,13 +150,8 @@ def prepare_env(backend_url: str) -> str:
         else:
             env_path.write_text("", encoding="utf-8")
 
-    chosen = backend_url.strip().rstrip("/")
-    if not chosen:
-        current = existing_backend_url(env_path)
-        if current and "127.0.0.1" not in current and "localhost" not in current.lower():
-            chosen = current
-        else:
-            chosen = detect_backend_url()
+    # Packaged app starts the backend shipped in resources/backend.
+    chosen = backend_url.strip().rstrip("/") or "http://127.0.0.1:7812"
     set_env_key(env_path, "BACKEND_URL", chosen)
     print(f"backend url: {chosen}", flush=True)
     return chosen
@@ -275,6 +270,41 @@ def enable_embedded_python_site(python_dir: Path) -> None:
         pth.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+BACKEND_RUNTIME_PACKAGES = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "pyjwt>=2.10.0",
+    "pyodbc>=5.2.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.28.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg[binary]>=3.2.0",
+    "python-multipart>=0.0.9",
+    "python-docx>=1.1.2",
+    "openpyxl>=3.1.5",
+    "pdfplumber>=0.11.5",
+    "pymupdf>=1.24.14",
+    "imapclient>=3.0.1",
+    "exchangelib>=5.4",
+    "pika>=1.3.2",
+    "pywin32>=308",
+]
+
+
+def install_backend_runtime() -> None:
+    python_exe = RUNTIME_ROOT / "python" / "python.exe"
+    if not python_exe.is_file():
+        raise RuntimeError(f"embedded python missing: {python_exe}")
+    print("installing backend runtime into embedded python", flush=True)
+    run([str(python_exe), "-m", "pip", "install", *BACKEND_RUNTIME_PACKAGES], cwd=python_exe.parent)
+    run(
+        [str(python_exe), "-c", "import fastapi, uvicorn, sqlalchemy, psycopg, pydantic_settings"],
+        cwd=python_exe.parent,
+    )
+
+
 def prepare_python(skip: bool) -> None:
     python_dir = RUNTIME_ROOT / "python"
     python_exe = python_dir / "python.exe"
@@ -362,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
     prepare_sdk_agent(args.skip_sdk_install)
     prepare_node(args.skip_node, download_node=args.download_node)
     prepare_python(args.skip_python)
+    install_backend_runtime()
     prepare_playwright(args.skip_browsers)
     build_electron(args.dir, backend_url=backend_url)
     return 0

@@ -851,6 +851,16 @@ def _turboproject_advanced_tools() -> list[dict[str, Any]]:
             ["project_id"],
         ),
         (
+            "turboproject.tasks_for_people",
+            "Задачи TurboProject, назначенные переданным сотрудникам. "
+            "Берёт до 8 проектов, где эти люди есть в карточке, и оставляет их задачи.",
+            {
+                "fios": _prop("array", "ФИО сотрудников, чьи задачи нужны"),
+                "limit_projects": _prop("integer", "Сколько проектов открыть, не больше 8"),
+            },
+            ["fios"],
+        ),
+        (
             "turboproject.get_project_metrics",
             "Компактные метрики по ограниченному списку project_ids, не для полного портфеля.",
             {

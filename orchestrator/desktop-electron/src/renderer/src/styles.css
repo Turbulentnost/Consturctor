@@ -12085,6 +12085,11 @@ button.spec-v04-tile {
   font-size: 20px;
   color: var(--main-text);
 }
+.spec-v04-tile-note {
+  color: #8b939e;
+  font-size: 0.72em;
+  font-weight: 500;
+}
 .spec-v04-tile.tone-green {
   border-left: 3px solid #2e9a6f;
 }
