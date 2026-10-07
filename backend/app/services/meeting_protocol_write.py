@@ -1300,16 +1300,16 @@ def handle_protocol_write(
         return probe_protocol_write(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
     if action == "update":
         return _update_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
-    if action == "edit":
-        return edit_protocol(args, actor_fio=actor_fio)
     if action == "next":
         return _next_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
+    if action == "edit":
+        return edit_protocol(args, actor_fio=actor_fio)
     if action == "add_tasks":
         return add_protocol_tasks(args)
     if action == "check_tasks":
         return check_protocol_tasks(args)
     if action != "create":
-        raise ProtocolWriteError("action: create | update | edit | next | add_tasks | check_tasks | probe")
+        raise ProtocolWriteError("action: create | update | next | edit | add_tasks | check_tasks | probe")
     body, meta = build_protocol_create_body(
         args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )

@@ -1,0 +1,56 @@
+Auth API /login request fio=Комарькова Анастасия Эдуардовна
+Auth login start fio=Комарькова Анастасия Эдуардовна client=orchestrator
+Auth login ok id=82FBCC3C4322D93A44439708C0DDC7B5 fio=Комарькова Анастасия Эдуардовна department=Управление делами position=Офис-менеджер
+Auth API /login ok fio=Комарькова Анастасия Эдуардовна user_id=82FBCC3C4322D93A44439708C0DDC7B5 client=orchestrator
+Auth API /login request fio=Ильченко Екатерина Александровна
+Auth login start fio=Ильченко Екатерина Александровна client=orchestrator
+Auth login ok id=A2DCC949FEDEC70D40318ABA83C618F4 fio=Ильченко Екатерина Александровна department=Управление делами position=Помощник Председателя совета директоров
+Auth API /login ok fio=Ильченко Екатерина Александровна user_id=A2DCC949FEDEC70D40318ABA83C618F4 client=orchestrator
+Auth API /login request fio=Мангасарян Давид Каренович
+Auth login start fio=Мангасарян Давид Каренович client=orchestrator
+Auth login ok id=AD5D9B4722E43853483E06807E5B9AE8 fio=Мангасарян Давид Каренович department=Управление делами position=Помощник Председателя совета директоров
+Auth API /login ok fio=Мангасарян Давид Каренович user_id=AD5D9B4722E43853483E06807E5B9AE8 client=orchestrator
+Auth API /login request fio=Ильченко Екатерина Александровна
+Auth login start fio=Ильченко Екатерина Александровна client=orchestrator
+Auth login ok id=A2DCC949FEDEC70D40318ABA83C618F4 fio=Ильченко Екатерина Александровна department=Управление делами position=Помощник Председателя совета директоров
+Auth API /login ok fio=Ильченко Екатерина Александровна user_id=A2DCC949FEDEC70D40318ABA83C618F4 client=orchestrator
+Auth API /login request fio=Ильченко Екатерина Александровна
+Auth login start fio=Ильченко Екатерина Александровна client=orchestrator
+Auth login ok id=A2DCC949FEDEC70D40318ABA83C618F4 fio=Ильченко Екатерина Александровна department=Управление делами position=Помощник Председателя совета директоров
+Auth API /login ok fio=Ильченко Екатерина Александровна user_id=A2DCC949FEDEC70D40318ABA83C618F4 client=orchestrator
+Auth API /login request fio=Ильченко Екатерина Александровна
+Auth login start fio=Ильченко Екатерина Александровна client=orchestrator
+Auth login ok id=A2DCC949FEDEC70D40318ABA83C618F4 fio=Ильченко Екатерина Александровна department=Управление делами position=Помощник Председателя совета директоров
+Auth API /login ok fio=Ильченко Екатерина Александровна user_id=A2DCC949FEDEC70D40318ABA83C618F4 client=orchestrator
+Auth API /login request fio=Ильченко Екатерина Александровна
+Auth login start fio=Ильченко Екатерина Александровна client=orchestrator
+Auth login ok id=A2DCC949FEDEC70D40318ABA83C618F4 fio=Ильченко Екатерина Александровна department=Управление делами position=Помощник Председателя совета директоров
+Auth API /login ok fio=Ильченко Екатерина Александровна user_id=A2DCC949FEDEC70D40318ABA83C618F4 client=orchestrator
+Auth API /login request fio=Уставицкий Андрей Алексеевич
+Auth login start fio=Уставицкий Андрей Алексеевич client=constructor
+Auth login ok id=A8079F76DFA7EB734C7B26F784C9DE4B fio=Уставицкий Андрей Алексеевич department=Сектор по внедрению искусственного интеллекта position=Промпт-инженер 2 категории
+Auth API /login ok fio=Уставицкий Андрей Алексеевич user_id=A8079F76DFA7EB734C7B26F784C9DE4B client=constructor
+Auth API /login request fio=Уставицкий Андрей Алексеевич
+Auth login start fio=Уставицкий Андрей Алексеевич client=constructor
+Auth login ok id=A8079F76DFA7EB734C7B26F784C9DE4B fio=Уставицкий Андрей Алексеевич department=Сектор по внедрению искусственного интеллекта position=Промпт-инженер 2 категории
+Auth API /login ok fio=Уставицкий Андрей Алексеевич user_id=A8079F76DFA7EB734C7B26F784C9DE4B client=constructor
+Auth API /login request fio=Уставицкий Андрей Алексеевич
+Auth login start fio=Уставицкий Андрей Алексеевич client=constructor
+Auth login ok id=A8079F76DFA7EB734C7B26F784C9DE4B fio=Уставицкий Андрей Алексеевич department=Сектор по внедрению искусственного интеллекта position=Промпт-инженер 2 категории
+Auth API /login ok fio=Уставицкий Андрей Алексеевич user_id=A8079F76DFA7EB734C7B26F784C9DE4B client=constructor
+Auth API /login request fio=Уставицкий Андрей Алексеевич
+Auth login start fio=Уставицкий Андрей Алексеевич client=constructor
+Auth login ok id=A8079F76DFA7EB734C7B26F784C9DE4B fio=Уставицкий Андрей Алексеевич department=Сектор по внедрению искусственного интеллекта position=Промпт-инженер 2 категории
+Auth API /login ok fio=Уставицкий Андрей Алексеевич user_id=A8079F76DFA7EB734C7B26F784C9DE4B client=constructor
+Auth API /login request fio=Уставицкий Андрей Алексеевич
+Auth login start fio=Уставицкий Андрей Алексеевич client=constructor
+Auth login ok id=A8079F76DFA7EB734C7B26F784C9DE4B fio=Уставицкий Андрей Алексеевич department=Сектор по внедрению искусственного интеллекта position=Промпт-инженер 2 категории
+Auth API /login ok fio=Уставицкий Андрей Алексеевич user_id=A8079F76DFA7EB734C7B26F784C9DE4B client=constructor
+Auth API /login request fio=Уставицкий Андрей Алексеевич
+Auth login start fio=Уставицкий Андрей Алексеевич client=constructor
+Auth login ok id=A8079F76DFA7EB734C7B26F784C9DE4B fio=Уставицкий Андрей Алексеевич department=Сектор по внедрению искусственного интеллекта position=Промпт-инженер 2 категории
+Auth API /login ok fio=Уставицкий Андрей Алексеевич user_id=A8079F76DFA7EB734C7B26F784C9DE4B client=constructor
+Auth API /login request fio=Уставицкий Андрей Алексеевич
+Auth login start fio=Уставицкий Андрей Алексеевич client=constructor
+Auth login ok id=A8079F76DFA7EB734C7B26F784C9DE4B fio=Уставицкий Андрей Алексеевич department=Сектор по внедрению искусственного интеллекта position=Промпт-инженер 2 категории
+Auth API /login ok fio=Уставицкий Андрей Алексеевич user_id=A8079F76DFA7EB734C7B26F784C9DE4B client=constructor
