@@ -381,8 +381,23 @@ const agent = {
   }
 }
 
+export interface AgentPlatformStatus {
+  ok: boolean
+  url: string
+  starting: boolean
+  error: string
+  root: string
+}
+
+const platform = {
+  ensure: (): Promise<AgentPlatformStatus> => ipcRenderer.invoke('platform:ensure'),
+  status: (): Promise<AgentPlatformStatus> => ipcRenderer.invoke('platform:status')
+}
+
 contextBridge.exposeInMainWorld('api', api)
 contextBridge.exposeInMainWorld('agent', agent)
+contextBridge.exposeInMainWorld('platform', platform)
 
 export type ExposedApi = typeof api
 export type ExposedAgent = typeof agent
+export type ExposedPlatform = typeof platform

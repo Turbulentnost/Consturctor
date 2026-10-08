@@ -12,6 +12,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, copyFileS
 import { tmpdir } from 'node:os'
 import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
+import { AgentPlatform } from './agentPlatform'
 import {
   LOCAL_BACKEND_DEFAULT,
   ensureDesktopBackend,
@@ -228,6 +229,7 @@ function broadcastAgentEvent(message: AgentSidecarMessage): void {
 }
 
 const agentSidecar = new AgentSidecar(CONFIG.backendUrl, broadcastAgentEvent)
+const agentPlatform = new AgentPlatform(CONFIG.backendUrl, () => agentSidecar.status().desktopRoot)
 
 const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
   const kind = String(command.type || '')
@@ -1303,10 +1305,13 @@ function registerMainIpcHandlers(): void {
       credentials?: { login?: string; password?: string; onecComUsr?: string }
     ) => {
       agentSidecar.ready(token ?? null, credentials)
+      agentPlatform.setUser({ fio: credentials?.login, password: credentials?.password, token: token ?? '' })
       return { ok: true }
     }
   )
   ipcHandle('agent:status', () => agentSidecar.status())
+  ipcHandle('platform:ensure', () => agentPlatform.ensure())
+  ipcHandle('platform:status', () => agentPlatform.status())
   ipcHandle('agent:start', (_evt, command: AgentSidecarMessage) => agentSidecar.send(command))
   ipcHandle('agent:answer', (_evt, command: AgentSidecarMessage) =>
     agentSidecar.send({ ...command, type: 'answer' })
@@ -1523,6 +1528,7 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   notifyGuard.stop()
   agentSidecar.stop()
+  agentPlatform.stop()
   stopUpdater()
 })
 

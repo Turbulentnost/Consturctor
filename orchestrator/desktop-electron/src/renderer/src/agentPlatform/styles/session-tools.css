@@ -1,0 +1,715 @@
+.tt-root .tool-state {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.tt-root .tool-state.running {
+  background: var(--accent);
+  animation: tt-session-pulse 1.1s ease-in-out infinite;
+}
+.tt-root .tool-state.error {
+  background: var(--danger);
+}
+.tt-root .tool-end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.tt-root .tool-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tt-root .tool-caption {
+  margin-top: 2px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.tt-root .tool-pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 9px 11px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tt-root .tool-empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+.tt-root .tool-thinking {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tt-root .explore summary, .tt-root .explore-row summary, .tt-root .agent-card summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.tt-root .explore summary::-webkit-details-marker, .tt-root .explore-row summary::-webkit-details-marker, .tt-root .agent-card summary::-webkit-details-marker {
+  display: none;
+}
+.tt-root .explore > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 4px;
+  border-radius: 8px;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+.tt-root .explore > summary:hover {
+  color: var(--text-muted);
+}
+.tt-root .explore-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .explore.live .explore-title {
+  background: linear-gradient(
+      90deg,
+      var(--text-faint) 0%,
+      var(--text-faint) 40%,
+      var(--text) 50%,
+      var(--text-faint) 60%,
+      var(--text-faint) 100%
+    )
+    0 0 / 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: tt-tool-shimmer 1.6s linear infinite;
+}
+.tt-root .explore-errors {
+  flex: none;
+  color: var(--danger);
+  font-size: 12px;
+}
+.tt-root .explore > summary > svg {
+  flex: none;
+  transform: rotate(-90deg);
+  transition: transform 0.16s ease;
+}
+.tt-root .explore[open] > summary > svg {
+  transform: rotate(0deg);
+}
+.tt-root .explore-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 4px 0 2px 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+.tt-root .explore-row > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.tt-root .explore-row > summary:hover {
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+.tt-root .explore-row > summary.static {
+  cursor: default;
+}
+.tt-root .explore-row > summary.static:hover {
+  background: transparent;
+}
+.tt-root .explore-row-icon {
+  display: grid;
+  flex: none;
+  color: var(--text-faint);
+}
+.tt-root .explore-row-label {
+  flex: none;
+  color: var(--text);
+}
+.tt-root .explore-row-target {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .explore-row-meta {
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.tt-root .explore-row.error .explore-row-label {
+  color: var(--danger);
+}
+.tt-root .explore-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 6px 8px 27px;
+}
+.tt-root .tool-paths, .tt-root .tool-matches, .tt-root .tool-tree, .tt-root .tool-tree ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tt-root .tool-paths, .tt-root .tool-matches, .tt-root .tool-tree {
+  max-height: 240px;
+  overflow: auto;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.tt-root .tool-paths li, .tt-root .tool-tree li > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-muted);
+}
+.tt-root .tool-paths li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .tool-paths svg, .tt-root .tool-tree svg {
+  flex: none;
+  color: var(--text-faint);
+}
+.tt-root .tool-matches li {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+.tt-root .tool-match-file {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--accent);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .tool-matches code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .tool-matches .lint-error .tool-match-file {
+  color: var(--danger);
+}
+.tt-root .tool-matches .lint-warning .tool-match-file {
+  color: #d9a441;
+}
+.tt-root .file-card, .tt-root .term-card, .tt-root .todo-card, .tt-root .agent-card, .tt-root .ask-card, .tt-root .image-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+.tt-root .file-card-head, .tt-root .term-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.tt-root .file-card-head > svg, .tt-root .term-head > svg:last-child {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.16s ease;
+}
+.tt-root .file-card-head[aria-expanded='true'] > svg:last-child, .tt-root .term-head[aria-expanded='true'] > svg:last-child {
+  transform: rotate(180deg);
+}
+.tt-root .file-card-icon {
+  display: grid;
+  flex: none;
+  color: var(--text-faint);
+}
+.tt-root .file-card-verb {
+  flex: none;
+  color: var(--text-faint);
+}
+.tt-root .file-card.running .file-card-verb {
+  animation: tt-session-pulse 1.4s ease-in-out infinite;
+}
+.tt-root .file-card-name {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .file-card.deleted.done .file-card-name {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+.tt-root .file-card-dir {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .file-card-stats {
+  display: flex;
+  gap: 6px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+.tt-root .file-card-stats .add {
+  color: var(--ok);
+}
+.tt-root .file-card-stats .del {
+  color: var(--danger);
+}
+.tt-root .file-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+}
+.tt-root .file-card-body > .tool-error {
+  margin: 8px 10px 0;
+}
+.tt-root .file-card > .tool-error {
+  margin: 0 10px 10px;
+}
+.tt-root .diff {
+  max-height: 320px;
+  padding: 4px 0;
+  overflow: auto;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.tt-root .diff-line {
+  display: grid;
+  grid-template-columns: 40px 16px 1fr;
+  min-width: max-content;
+  color: var(--text-muted);
+}
+.tt-root .diff-num {
+  padding-right: 6px;
+  color: var(--text-faint);
+  text-align: right;
+  user-select: none;
+  opacity: 0.7;
+}
+.tt-root .diff-sign {
+  text-align: center;
+  user-select: none;
+}
+.tt-root .diff-text {
+  padding-right: 12px;
+  white-space: pre;
+}
+.tt-root .diff-line.add {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: var(--text);
+}
+.tt-root .diff-line.add .diff-sign {
+  color: var(--ok);
+}
+.tt-root .diff-line.del {
+  background: color-mix(in srgb, var(--danger) 13%, transparent);
+  color: var(--text);
+}
+.tt-root .diff-line.del .diff-sign {
+  color: var(--danger);
+}
+.tt-root .diff-line.hunk {
+  color: var(--text-faint);
+}
+.tt-root .term-head > svg:first-child {
+  flex: none;
+  color: var(--text-faint);
+}
+.tt-root .term-title {
+  flex: none;
+  color: var(--text);
+  font-weight: 500;
+}
+.tt-root .term-card.running .term-title {
+  animation: tt-session-pulse 1.4s ease-in-out infinite;
+}
+.tt-root .term-meta {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.tt-root .term-exit {
+  color: var(--danger);
+}
+.tt-root .term-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 340px;
+  padding: 10px 12px 12px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.tt-root .term-command {
+  display: flex;
+  gap: 8px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tt-root .term-prompt {
+  flex: none;
+  color: var(--ok);
+  user-select: none;
+}
+.tt-root .term-out {
+  margin: 0;
+  color: var(--text-muted);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tt-root .term-out.err {
+  color: var(--danger);
+}
+.tt-root .term-empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-family: inherit;
+}
+.tt-root .todo-head, .tt-root .ask-head, .tt-root .image-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.tt-root .todo-head svg, .tt-root .ask-head svg, .tt-root .image-head svg {
+  flex: none;
+  color: var(--text-faint);
+}
+.tt-root .todo-progress {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+.tt-root .todo-list {
+  margin: 0;
+  padding: 0 12px 10px;
+  list-style: none;
+}
+.tt-root .todo {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 3px 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.tt-root .todo-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  border: 1.5px solid var(--text-faint);
+  border-radius: 50%;
+}
+.tt-root .todo.inProgress .todo-mark {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 2.5px var(--bg), inset 0 0 0 8px var(--accent);
+}
+.tt-root .todo.completed .todo-mark {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: var(--bg);
+}
+.tt-root .todo.completed .todo-text, .tt-root .todo.cancelled .todo-text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+.tt-root .todo.cancelled .todo-mark {
+  border-style: dashed;
+}
+.tt-root .agent-card > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.tt-root .agent-card > summary > svg:first-child {
+  flex: none;
+  color: var(--text-faint);
+}
+.tt-root .agent-card > summary > svg:last-child {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.16s ease;
+}
+.tt-root .agent-card[open] > summary > svg:last-child {
+  transform: rotate(180deg);
+}
+.tt-root .agent-card-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease;
+}
+.tt-root .agent-card-link:hover {
+  background: var(--hover);
+}
+.tt-root .agent-card-link.selected {
+  border-color: color-mix(in srgb, var(--text) 28%, transparent);
+  background: var(--owner-selected);
+}
+.tt-root .agent-card-link > svg:first-child, .tt-root .agent-card-link > svg:last-child {
+  flex: none;
+  color: var(--text-faint);
+}
+.tt-root .agent-card-link > svg:last-child {
+  transition: transform 0.2s ease;
+}
+.tt-root .agent-card-link.selected > svg:last-child {
+  transform: rotate(180deg);
+}
+.tt-root .agent-card-label {
+  flex: none;
+  color: var(--text);
+  font-weight: 500;
+}
+.tt-root .agent-card.running .agent-card-label {
+  animation: tt-session-pulse 1.4s ease-in-out infinite;
+}
+.tt-root .agent-card-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .agent-card-tag {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+.tt-root .agent-card-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.tt-root .agent-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+.tt-root .agent-card-prompt {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tt-root .ask-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+}
+.tt-root .ask-question {
+  padding: 0 12px;
+}
+.tt-root .ask-question p {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.tt-root .ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tt-root .ask-option {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.tt-root .ask-option.chosen {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: color-mix(in srgb, var(--text) 25%, var(--border));
+  background: var(--owner-selected);
+  color: var(--text);
+}
+.tt-root .ask-option.chosen svg {
+  flex: none;
+}
+.tt-root .ask-note {
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+.tt-root .ask-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid color-mix(in srgb, var(--text) 30%, transparent);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.tt-root .ask-answer-label {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.tt-root .ask-answer-text {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.tt-root .ask-answer-empty, .tt-root .ask-skipped {
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.tt-root .ask-skipped {
+  margin: 0 12px;
+}
+.tt-root .ask-card > .tool-caption, .tt-root .ask-card > .tool-pre, .tt-root .ask-card > .tool-error {
+  margin: 0 12px;
+}
+.tt-root .image-title {
+  flex: none;
+}
+.tt-root .image-card.running .image-title {
+  animation: tt-session-pulse 1.4s ease-in-out infinite;
+}
+.tt-root .image-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .image-card img {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  margin: 0 auto;
+  border-top: 1px solid var(--border);
+}
+.tt-root .image-placeholder {
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  padding: 16px;
+  border-top: 1px solid var(--border);
+  background: linear-gradient(
+      100deg,
+      transparent 20%,
+      color-mix(in srgb, var(--text) 6%, transparent) 50%,
+      transparent 80%
+    )
+    0 0 / 250% 100%;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  text-align: center;
+  animation: tt-tool-shimmer 1.8s linear infinite;
+}
+.tt-root .image-card > .tool-error {
+  margin: 0 12px 12px;
+}
+@keyframes tt-tool-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tt-root .tool-state.running, .tt-root .explore.live .explore-title, .tt-root .file-card.running .file-card-verb, .tt-root .term-card.running .term-title, .tt-root .agent-card.running .agent-card-label, .tt-root .image-card.running .image-title, .tt-root .image-placeholder {
+    animation: none;
+  }
+  .tt-root .explore.live .explore-title {
+    background: none;
+    color: var(--text-muted);
+  }
+}

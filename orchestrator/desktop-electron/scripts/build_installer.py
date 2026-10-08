@@ -28,6 +28,7 @@ def resolve_repo_resource(name: str) -> Path:
 
 DESKTOP_ROOT = resolve_repo_resource("desktop")
 TOOLS_ROOT = resolve_repo_resource("tools")
+AGENT_PLATFORM_ROOT = REPO_ROOT / "agent-platform"
 RUNTIME_ROOT = ELECTRON_ROOT / ".installer-runtime"
 CACHE_ROOT = RUNTIME_ROOT / ".cache"
 
@@ -172,6 +173,25 @@ def prepare_sdk_agent(skip_install: bool) -> None:
         raise RuntimeError("desktop/sdk-agent/node_modules is missing")
 
 
+def prepare_agent_platform(skip_install: bool) -> None:
+    """node_modules (@cursor/sdk) для каждой конфигурации платформы агентов."""
+    platform_root = AGENT_PLATFORM_ROOT / "platform"
+    folders = [
+        folder
+        for group in ("configs", "internal")
+        for folder in sorted((platform_root / group).glob("*"))
+        if (folder / "package.json").is_file()
+    ]
+    if not folders:
+        raise RuntimeError(f"agent platform configs not found: {platform_root}")
+    for folder in folders:
+        if not skip_install:
+            command = "ci" if (folder / "package-lock.json").is_file() else "install"
+            run([tool("npm"), command, "--no-audit", "--no-fund"], cwd=folder)
+        if not (folder / "node_modules").is_dir():
+            raise RuntimeError(f"{folder}/node_modules is missing")
+
+
 def node_version(node_exe: Path) -> tuple[int, int, int]:
     try:
         result = subprocess.run(
@@ -248,12 +268,17 @@ def filtered_requirements() -> Path:
     if not src.is_file():
         raise RuntimeError(f"requirements.txt not found: {src}")
     skip_prefixes = ("PySide6", "pyinstaller", "winotify")
+    sources = [src, AGENT_PLATFORM_ROOT / "backend" / "requirements.txt"]
     lines: list[str] = []
-    for raw in src.read_text(encoding="utf-8").splitlines():
-        stripped = raw.strip()
-        if any(stripped.lower().startswith(prefix.lower()) for prefix in skip_prefixes):
-            continue
-        if stripped:
+    for source in sources:
+        if not source.is_file():
+            raise RuntimeError(f"requirements not found: {source}")
+        for raw in source.read_text(encoding="utf-8").splitlines():
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if any(stripped.lower().startswith(prefix.lower()) for prefix in skip_prefixes):
+                continue
             lines.append(stripped)
     target = RUNTIME_ROOT / "requirements-electron-sidecar.txt"
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -280,6 +305,8 @@ def prepare_python(skip: bool) -> None:
     python_exe = python_dir / "python.exe"
     if skip and python_exe.is_file():
         enable_embedded_python_site(python_dir)
+        # Готовый Python мог собираться до платформы агентов: доставляем недостающие пакеты.
+        run([str(python_exe), "-m", "pip", "install", "-r", str(filtered_requirements())], cwd=python_dir)
         return
     version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     archive = CACHE_ROOT / f"python-{version}-embed-amd64.zip"
@@ -360,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
 
     backend_url = prepare_env(args.backend_url)
     prepare_sdk_agent(args.skip_sdk_install)
+    prepare_agent_platform(args.skip_sdk_install)
     prepare_node(args.skip_node, download_node=args.download_node)
     prepare_python(args.skip_python)
     prepare_playwright(args.skip_browsers)
