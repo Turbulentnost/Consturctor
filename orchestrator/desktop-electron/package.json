@@ -1,6 +1,6 @@
 {
   "name": "orchestrator-desktop-electron",
-  "version": "0.1.26",
+  "version": "0.1.28",
   "description": "Orchestrator desktop — slim Constructor workplace per TZ 1.3",
   "author": "Orchestrator",
   "license": "UNLICENSED",
@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test:global-search": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/renderer/src/layout/globalSearchRanking.test.mjs",
     "test:sidebar-folders": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/renderer/src/components/sidebarFolders.test.mjs",
+    "test:sidebar-quick": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/renderer/src/components/sidebarQuickAccess.test.mjs",
     "pack": "python scripts/build_installer.py --dir",
     "dist": "python scripts/build_installer.py",
     "dist:electron": "electron-vite build && electron-builder"

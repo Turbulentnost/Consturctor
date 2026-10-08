@@ -142,6 +142,9 @@ def set_env_key(env_path: Path, key: str, value: str) -> None:
     env_path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
 
 
+LAN_BACKEND = "http://192.168.1.157:7812"
+
+
 def prepare_env(backend_url: str) -> str:
     env_path = DESKTOP_ROOT / ".env"
     if not env_path.is_file():
@@ -151,8 +154,8 @@ def prepare_env(backend_url: str) -> str:
         else:
             env_path.write_text("", encoding="utf-8")
 
-    # Packaged app starts the backend shipped in resources/backend.
-    chosen = backend_url.strip().rstrip("/") or "http://127.0.0.1:7812"
+    # Установщик всегда смотрит на сервер gateway, не на localhost машины сборки.
+    chosen = backend_url.strip().rstrip("/") or LAN_BACKEND
     set_env_key(env_path, "BACKEND_URL", chosen)
     print(f"backend url: {chosen}", flush=True)
     return chosen
