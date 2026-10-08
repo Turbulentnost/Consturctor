@@ -29,6 +29,7 @@ node_modules/
 htmlcov/
 .tox/
 .cache/
+turbo-tester/
 
 # IDE / OS
 .idea/
