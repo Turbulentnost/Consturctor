@@ -148,6 +148,8 @@ _SUBJECT_KEYS = (
     "Комментарий",
 )
 _ODATA_TYPE_PREFIX = "StandardODATA."
+# Журнал приказов читает эти документы списком. Догрузка связей здесь не нужна.
+_ORDER_LIST_ENTITIES = frozenset({"Document_ТД_Приказ", "Document_ТД_Распоряжение"})
 _KIND_RANK = {"document": 0, "other": 1, "register": 2, "catalog": 3}
 _PRIORITY_NAV_FIELDS = (
     "Руководитель",
@@ -892,6 +894,19 @@ def _resolve_navigation_names(row: dict[str, Any], args: dict[str, Any], *, budg
     _refresh_subject(row)
 
 
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes"}:
+        return True
+    if text in {"0", "false", "no"}:
+        return False
+    return None
+
+
 def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
     path = str(args.get("path", "")).strip()
     entity = _entity_from_args(args)
@@ -996,7 +1011,12 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
     tabular_parts: dict[str, list[dict[str, Any]]] = {}
     nav_suffix = cleaned_path.split(")", 1)[-1] if ")" in cleaned_path else ""
     is_navigation = keyed and nav_suffix.startswith("/")
-    if value and not is_navigation:
+    # Список приказа/распоряжения и явный resolve_navigation=false не должны
+    # после страницы журнала ходить в каждую связь и табличную часть: эти
+    # дополнительные GET упираются в таймаут, пока 1С занята выгрузкой задач.
+    resolve_navigation = _as_bool(args.get("resolve_navigation"))
+    light_list = entity in _ORDER_LIST_ENTITIES and not keyed and len(value) > 1
+    if value and not is_navigation and resolve_navigation is not False and not light_list:
         # Journal list: erp_assignments resolves FIO in batches — skip N×M navigation GETs.
         if entity == "Document_ТД_Поручения" and len(value) > 1 and not keyed:
             nav_budget = 0

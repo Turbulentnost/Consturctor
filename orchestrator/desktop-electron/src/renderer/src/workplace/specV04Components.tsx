@@ -115,8 +115,9 @@ export function SpecSummaryTiles({
               </div>
             </div>
             <div className="spec-v04-tile-metrics">
-              <strong className="spec-v04-tile-value" title={tile.value}>
+              <strong className="spec-v04-tile-value" title={tile.note ? `${tile.value} ${tile.note}` : tile.value}>
                 {tile.value}
+                {tile.note ? <span className="spec-v04-tile-note"> {tile.note}</span> : null}
               </strong>
               {tile.hint && tile.hint !== tile.value ? (
                 <small className="spec-v04-tile-hint" title={tile.hint}>

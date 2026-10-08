@@ -534,6 +534,28 @@ def merge_task_lists(
     return out
 
 
+def _owner_for_performer(names: list[str]):
+    """Сопоставляет исполнителя из выгрузки с ФИО подчинённого без сетевых запросов."""
+    from app.tools.onec.dok_soap import normalize_person, person_names_match
+
+    exact = {normalize_person(name): name for name in names if normalize_person(name)}
+
+    def resolve(performer: str) -> str:
+        key = normalize_person(performer)
+        found = exact.get(key)
+        if found:
+            return found
+        text = str(performer or "")
+        if not key or ("." not in text and len(key.split()) >= 3):
+            return ""
+        for name in names:
+            if person_names_match(name, text):
+                return name
+        return ""
+
+    return resolve
+
+
 def _attach_docflow(
     tasks_by_fio: dict[str, list[dict[str, Any]]],
     *,
@@ -543,20 +565,69 @@ def _attach_docflow(
     limit_per_person: int,
     auth_args: dict[str, Any] | None = None,
 ) -> str:
-    from app.services.docflow_tasks import list_docflow_for_people
+    """Доклеивает документооборот из уже готовой выгрузки.
 
-    extra, warning = list_docflow_for_people(
-        list(tasks_by_fio),
-        date_from=date_from,
-        date_to=date_to,
-        only_open=only_open,
-        limit_per_person=limit_per_person,
-        auth_args=auth_args,
+    Поход в 1С на каждого подчинённого здесь не делается: для руководителя
+    это десятки людей, и запрос не успевает вернуться на вкладку.
+    """
+    del auth_args
+    from app.services.docflow_tasks import _task_in_period
+    from app.tools.onec.docflow_inbox_map import map_inbox_row
+    from app.tools.onec.dok_soap import (
+        ROLE_AUTHOR,
+        read_cached_dump_rows,
+        read_cached_left_inbox_rows,
+        task_role_for_user,
     )
+
+    names = [name for name in tasks_by_fio if str(name).strip()]
+    if not names:
+        return ""
+    rows, _includes_completed = read_cached_dump_rows()
+    left = [] if only_open else read_cached_left_inbox_rows()
+    if not rows and not left:
+        return "Документооборот не приложен: нет готовой выгрузки. Показаны задачи из erp_pm."
+    resolve = _owner_for_performer(names)
+    extra: dict[str, list[dict[str, Any]]] = {name: [] for name in names}
+    done_limit = 0 if only_open else max(limit_per_person, 400)
+    open_count = {name: 0 for name in names}
+    done_count = {name: 0 for name in names}
+    for row in [*rows, *left]:
+        owner = resolve(str(row.get("performer") or ""))
+        if not owner:
+            continue
+        role = task_role_for_user(row, owner)
+        if role == ROLE_AUTHOR:
+            continue
+        tagged = dict(row)
+        if role:
+            tagged["role"] = role
+        item = map_inbox_row(tagged, fio=owner)
+        if only_open and item.get("done"):
+            continue
+        due_only = dict(item)
+        due_only["created_at"] = ""
+        if not (
+            _task_in_period(item, date_from, date_to)
+            or _task_in_period(due_only, date_from, date_to)
+        ):
+            continue
+        if item.get("done"):
+            if done_count[owner] >= done_limit:
+                continue
+            done_count[owner] += 1
+        else:
+            if open_count[owner] >= limit_per_person:
+                continue
+            open_count[owner] += 1
+        extra[owner].append(item)
     for name, items in extra.items():
+        if not items:
+            continue
         bucket = tasks_by_fio.setdefault(name, [])
-        tasks_by_fio[name] = merge_task_lists(bucket, items, limit=limit_per_person)
-    return warning
+        cap = limit_per_person if only_open else limit_per_person + done_limit
+        tasks_by_fio[name] = merge_task_lists(bucket, items, limit=cap)
+    return ""
 
 
 def actor_from_args(

@@ -217,12 +217,14 @@ function ReportSection({
   title,
   rows,
   selectedId,
-  onSelectRow
+  onSelectRow,
+  onOpenForm
 }: {
   title: string
   rows: AssignmentRegistryRow[]
   selectedId?: string | null
   onSelectRow?: (row: AssignmentRegistryRow) => void
+  onOpenForm?: (row: AssignmentRegistryRow) => void
 }): React.JSX.Element | null {
   if (!rows.length) return null
   return (
@@ -240,6 +242,7 @@ function ReportSection({
             .filter(Boolean)
             .join(' ')}
           onClick={() => onSelectRow?.(row)}
+          onDoubleClick={() => onOpenForm?.(row)}
         >
           <header className="registry-report-card-head">
             <strong>
@@ -262,12 +265,14 @@ export function AssignmentsRegistryReportTable({
   rows,
   linesLoading,
   selectedId,
-  onSelectRow
+  onSelectRow,
+  onOpenForm
 }: {
   rows: AssignmentRegistryRow[]
   linesLoading?: boolean
   selectedId?: string | null
   onSelectRow?: (row: AssignmentRegistryRow) => void
+  onOpenForm?: (row: AssignmentRegistryRow) => void
 }): React.JSX.Element {
   const { overdue, closedThisWeek, dueSoon } = useMemo(() => selectRegistryReportRows(rows), [rows])
   const empty = !overdue.length && !closedThisWeek.length && !dueSoon.length
@@ -283,18 +288,21 @@ export function AssignmentsRegistryReportTable({
             rows={overdue}
             selectedId={selectedId}
             onSelectRow={onSelectRow}
+            onOpenForm={onOpenForm}
           />
           <ReportSection
             title={`Закрытые за текущую неделю (${closedThisWeek.length})`}
             rows={closedThisWeek}
             selectedId={selectedId}
             onSelectRow={onSelectRow}
+            onOpenForm={onOpenForm}
           />
           <ReportSection
             title={`Срок в ближайшие 3 рабочих дня (${dueSoon.length})`}
             rows={dueSoon}
             selectedId={selectedId}
             onSelectRow={onSelectRow}
+            onOpenForm={onOpenForm}
           />
         </>
       )}
@@ -308,6 +316,7 @@ export function AssignmentsRegistryTable({
   emptyText,
   selectedId,
   onSelectRow,
+  onOpenForm,
   stateKey = '',
   checkedIds,
   onToggleChecked,
@@ -318,6 +327,7 @@ export function AssignmentsRegistryTable({
   emptyText?: string
   selectedId?: string | null
   onSelectRow?: (row: AssignmentRegistryRow) => void
+  onOpenForm?: (row: AssignmentRegistryRow) => void
   /** Ключ sessionStorage для сохранения сортировки и скрытых столбцов. */
   stateKey?: string
   checkedIds?: ReadonlySet<string>
@@ -541,6 +551,7 @@ export function AssignmentsRegistryTable({
                     .filter(Boolean)
                     .join(' ')}
                   onClick={() => onSelectRow?.(row)}
+                  onDoubleClick={() => onOpenForm?.(row)}
                 >
                   {onToggleChecked ? (
                     <td className="registry-td registry-td--check" onClick={(event) => event.stopPropagation()}>

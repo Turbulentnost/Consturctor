@@ -17,6 +17,7 @@ import { loadDocflowApprovalSheet, type DocflowApprovalSheet } from '../../workp
 import {
   formatCorrespondenceDate,
   loadDocflowOrdersSession,
+  loadOrderBody,
   type OrderKind,
   type OrderRow
 } from '../../workplace/fetchDocflowCorrespondence'
@@ -176,6 +177,8 @@ export function DocflowOrdersPanel({
   const [organization, setOrganization] = useState('')
   const [approver, setApprover] = useState('')
   const [selectedId, setSelectedId] = useState('')
+  const [bodyLoading, setBodyLoading] = useState(false)
+  const loadedBody = useRef(new Set<string>())
   const [sheets, setSheets] = useState<Record<string, DocflowApprovalSheet>>({})
   const [sheetProgress, setSheetProgress] = useState('')
   const sheetsRef = useRef(sheets)
@@ -280,6 +283,31 @@ export function DocflowOrdersPanel({
   useRegisterGlobalSearch(GLOBAL_SEARCH_SOURCE, globalSearchEntries)
 
   const selected = visible.find((row) => row.id === selectedId) || listed.find((row) => row.id === selectedId) || null
+
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  useEffect(() => {
+    const row = rowsRef.current.find((item) => item.id === selectedId)
+    if (!selectedId || !row || loadedBody.current.has(selectedId)) {
+      setBodyLoading(false)
+      return
+    }
+    let alive = true
+    setBodyLoading(true)
+    void loadOrderBody(user, row)
+      .then((next) => {
+        if (!alive) return
+        if (!next) return
+        loadedBody.current.add(selectedId)
+        setRows((prev) => prev.map((item) => (item.id === next.id ? next : item)))
+      })
+      .finally(() => {
+        if (alive) setBodyLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [user, selectedId])
   const selectedSheet = selected ? sheets[selected.id] : undefined
   const filtered = Boolean(
     query.trim() || kind || status || access || responsible || organization || approver || period !== 'all'
@@ -517,6 +545,7 @@ export function DocflowOrdersPanel({
               </section>
               <section className="docflow-card-block">
                 <h4>Реквизиты</h4>
+                {bodyLoading ? <p className="docflow-muted">Подгружаем содержание…</p> : null}
                 <dl className="docflow-detail-list">
                   {selected.fields.map((field) => (
                     <div key={field.label}>

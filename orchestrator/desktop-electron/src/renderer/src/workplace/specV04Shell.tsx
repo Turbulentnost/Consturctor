@@ -8,6 +8,8 @@ export interface SpecSummaryTile {
   id: string
   label: string
   value: string
+  /** Серая пометка рядом с числом, уже со скобками: «(42%)». */
+  note?: string
   hint?: string
   /** Подсказка при наведении на плитку (если не задана — label + hint). */
   tooltip?: string
@@ -60,7 +62,10 @@ export function SpecV04Shell({
         {tiles.map((tile) => (
           <article key={tile.id} className={`spec-v04-tile tone-${tile.tone || 'neutral'}`}>
             <span className="spec-v04-tile-label">{tile.label}</span>
-            <strong className="spec-v04-tile-value">{tile.value}</strong>
+            <strong className="spec-v04-tile-value">
+              {tile.value}
+              {tile.note ? <span className="spec-v04-tile-note"> {tile.note}</span> : null}
+            </strong>
             {tile.hint ? <small>{tile.hint}</small> : null}
           </article>
         ))}

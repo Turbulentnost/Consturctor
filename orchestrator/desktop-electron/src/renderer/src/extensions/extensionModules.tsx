@@ -5,10 +5,12 @@ import type { PassportTab } from '../pages/AgentPassportPage'
 import { AssignmentsRegistryGridTab } from '../tabs/grid/AssignmentsRegistryGridTab'
 import { AgentLibraryGridTab } from '../tabs/grid/AgentLibraryGridTab'
 import { ProjectsGridTab } from '../tabs/grid/ProjectsGridTab'
+import { SubordinateTasksGridTab } from '../tabs/grid/SubordinateTasksGridTab'
 import type { ExtensionPositionFilter } from './extensionAudience'
 import {
   canUseAgentLibrary,
   canUseAssignmentsRegistry,
+  canUseSubordinateTasks,
   isChairmanBoardAssistant,
   isPromptEngineer
 } from './extensionAccess'
@@ -66,6 +68,18 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
     renderTab: ({ user, onRunAgent }) => (
       <AssignmentsRegistryGridTab user={user} onRunAgent={onRunAgent} />
     )
+  },
+  {
+    id: 'subordinate_tasks',
+    pageKey: 'subordinate_tasks',
+    navLabel: 'Задачи подчинённых',
+    title: 'Поставленные задачи подчиненным в 1С',
+    subtitle: 'Загрузка и сроки задач, поставленных подчинённым в общей базе 1С',
+    description:
+      'Ежедневный контроль загрузки и сроков подчинённых по общей базе 1С. Каскадную задачу видно по исполнителю, без дубля на рабочем столе руководителя. За период можно выгрузить сводку для KPI.',
+    positionGroups: ['department_heads'],
+    canAccess: canUseSubordinateTasks,
+    renderTab: ({ user }) => <SubordinateTasksGridTab user={user} />
   },
   {
     id: 'agent_library',

@@ -10,11 +10,13 @@ export function FioCombobox({
   value,
   hints,
   placeholder,
+  readOnly,
   onChange
 }: {
   value: string
   hints: string[]
   placeholder?: string
+  readOnly?: boolean
   onChange: (value: string) => void
 }): React.JSX.Element {
   const listId = useId()
@@ -81,13 +83,18 @@ export function FioCombobox({
         autoComplete="off"
         value={value}
         placeholder={placeholder}
-        onFocus={() => setOpen(true)}
+        readOnly={readOnly}
+        onFocus={() => {
+          if (!readOnly) setOpen(true)
+        }}
         onBlur={() => setOpen(false)}
         onChange={(event) => {
+          if (readOnly) return
           onChange(event.target.value)
           setOpen(true)
         }}
         onKeyDown={(event) => {
+          if (readOnly) return
           if (event.key === 'ArrowDown') {
             event.preventDefault()
             setOpen(true)
@@ -103,7 +110,7 @@ export function FioCombobox({
           }
         }}
       />
-      {open && items.length
+      {open && !readOnly && items.length
         ? createPortal(
             <ul
               ref={listRef}

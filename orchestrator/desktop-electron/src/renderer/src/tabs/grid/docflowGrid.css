@@ -307,6 +307,96 @@
   border: 1px solid rgba(21, 101, 192, 0.16);
 }
 
+.ready-bar-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ready-bar-toggle:disabled {
+  cursor: default;
+}
+
+.ready-bar small {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #5c6b7a;
+  font-size: 11px;
+}
+
+.ready-bar small svg {
+  margin-left: auto;
+  transition: transform 0.2s ease;
+}
+
+.ready-bar small svg.is-open {
+  transform: rotate(180deg);
+}
+
+.ready-bar-tasks {
+  list-style: none;
+  margin: 6px 0 2px;
+  padding: 4px 0 0;
+  border-top: 1px solid rgba(21, 101, 192, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.ready-bar-tasks li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 4px;
+  border-radius: 8px;
+  color: #5c6b7a;
+}
+
+.ready-bar-tasks li svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.ready-bar-tasks li.is-done {
+  color: #1b7a4e;
+}
+
+.ready-bar-tasks li span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ready-bar-tasks b {
+  font-size: 13px;
+  font-weight: 600;
+  color: #102033;
+}
+
+.ready-bar-tasks em {
+  font-style: normal;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #3d4a5c;
+}
+
+.ready-bar-tasks i {
+  font-style: normal;
+  font-size: 11px;
+}
+
 .ready-bar-head {
   display: flex;
   align-items: baseline;
@@ -345,11 +435,6 @@
   border-radius: 8px;
   background: #1565c0;
   transition: width 0.55s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.ready-bar small {
-  color: #5c6b7a;
-  font-size: 11px;
 }
 
 .docflow-order-filters {
@@ -963,6 +1048,47 @@
 }
 
 /* Правка своего протокола: карандаш в шапке карточки, форма и редактор задач. */
+.basis-create {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f4f8fc;
+  border: 1px solid rgba(21, 101, 192, 0.16);
+  font-size: 13px;
+}
+
+.basis-create p {
+  margin: 0;
+  color: #3d4a5c;
+  line-height: 1.4;
+}
+
+.basis-create label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #5c6b7a;
+}
+
+.basis-create input {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid rgba(13, 59, 115, 0.2);
+  border-radius: 8px;
+  font: inherit;
+  color: #102033;
+  background: #fff;
+}
+
+.basis-create div {
+  display: flex;
+  gap: 6px;
+}
+
 .docflow-detail-actions {
   display: flex;
   align-items: center;

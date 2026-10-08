@@ -361,6 +361,18 @@ async function invokeProtocolWrite(args: Record<string, unknown>, failMessage: s
   }
 }
 
+/** Черновик на основании протокола: шапка копируется, все задачи основания остаются на контроле. */
+export async function createProtocolOnBasis(sourceRef: string, date: string): Promise<ProtocolCreateResult> {
+  const key = sourceRef.trim()
+  const day = date.trim()
+  if (!key) return { ok: false, error: 'Нет ссылки на протокол-основание' }
+  if (!day) return { ok: false, error: 'Укажите дату нового совещания' }
+  return invokeProtocolWrite(
+    { action: 'next', source_ref_key: key, date: day },
+    'Не удалось создать протокол на основании'
+  )
+}
+
 export async function createProtocolInOneC(
   draft: ProtocolCreateDraft,
   meeting: MeetingEvent

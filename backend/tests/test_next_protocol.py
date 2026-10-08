@@ -45,6 +45,14 @@ PREVIOUS = {
 }
 
 
+def test_basis_link_points_at_the_source_protocol() -> None:
+    assert mpw._basis_link(SOURCE) == {
+        "ДокументОснование": SOURCE,
+        "ДокументОснование_Type": "StandardODATA.Document_ТД_Протокол",
+    }
+    assert mpw._basis_link("")["ДокументОснование_Type"] == "StandardODATA.Undefined"
+
+
 def test_copies_header_participants_agenda_and_leaves_tasks_to_the_register() -> None:
     args = mpw.next_protocol_args(PREVIOUS, {"action": "next", "source_ref_key": SOURCE})
 
@@ -63,6 +71,7 @@ def test_copies_header_participants_agenda_and_leaves_tasks_to_the_register() ->
     assert args["report_period_from"] == "2026-09-10"
     assert args["report_period_to"] == "2026-10-08"
     assert args["comment"] == "Подготовлен на основе протокола ПСД_001_О_012 от 2026-09-10"
+    assert args["basis_ref_key"] == SOURCE
     assert "source_ref_key" not in args and "action" not in args
 
 
@@ -105,7 +114,8 @@ def test_next_action_reads_source_and_creates_draft(monkeypatch: pytest.MonkeyPa
     assert result["source_number"] == "ПСД_001_О_012"
     assert "tasks" not in seen["args"]
     assert result["control_tasks"] == 1
-    assert "на основе ПСД_001_О_012" in result["summary"]
+    assert seen["args"]["basis_ref_key"] == SOURCE
+    assert "на основании ПСД_001_О_012" in result["summary"]
 
 
 def test_next_action_requires_source_guid() -> None:

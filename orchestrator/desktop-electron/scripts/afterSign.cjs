@@ -59,10 +59,24 @@ function skipAgentPlatform(rel) {
   return rel !== 'backend/.env'
 }
 
+function skipBackend(rel) {
+  if (!rel) return true
+  if (!skipCommon(rel)) return false
+  const norm = rel.replace(/\\/g, '/')
+  if (norm === 'logs' || norm.startsWith('logs/')) return false
+  if (norm === 'storage' || norm.startsWith('storage/')) return false
+  if (norm === '.pytest_cache' || norm.startsWith('.pytest_cache/')) return false
+  if (norm === '.env.my' || norm.endsWith('/.env.my')) return false
+  const name = norm.split('/').pop() || ''
+  if (name.startsWith('tmp_') || name.startsWith('_tmp')) return false
+  return true
+}
+
 exports.default = async function afterSign(context) {
   const resources = path.join(context.appOutDir, 'resources')
   fs.mkdirSync(resources, { recursive: true })
 
+  copyTree(resolveRepoResource('backend'), path.join(resources, 'backend'), skipBackend)
   copyTree(path.join(electronRoot, 'pybridge'), path.join(resources, 'pybridge'), skipCommon)
   copyTree(resolveRepoResource('desktop'), path.join(resources, 'desktop'), skipCommon)
   copyTree(resolveRepoResource('tools'), path.join(resources, 'tools'), skipTools)

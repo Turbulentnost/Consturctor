@@ -67,13 +67,15 @@
 
 .orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile .spec-v04-tile-label,
 .orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile .spec-v04-tile-value,
-.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile .spec-v04-tile-hint {
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile .spec-v04-tile-hint,
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile .spec-v04-tile-note {
   transition: color 0.55s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-label,
 .orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-value,
-.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-hint {
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-hint,
+.orch-grid-registry .tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-note {
   color: #fff;
 }
 

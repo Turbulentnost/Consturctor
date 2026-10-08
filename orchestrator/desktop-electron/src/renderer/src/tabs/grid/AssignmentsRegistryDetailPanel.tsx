@@ -1,6 +1,8 @@
-import { Printer, X } from 'lucide-react'
+import { Printer, SquarePen, X } from 'lucide-react'
 import type { AssignmentRegistryRow } from '../../workplace/assignmentRegistryTypes'
 import { buildAssignmentCardPrintHtml } from '../../workplace/registryPrint'
+
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function DetailField({ label, value }: { label: string; value: string }): React.JSX.Element {
   return (
@@ -14,11 +16,13 @@ function DetailField({ label, value }: { label: string; value: string }): React.
 export function AssignmentsRegistryDetailPanel({
   row,
   linesLoading = false,
-  onClose
+  onClose,
+  onOpenForm
 }: {
   row: AssignmentRegistryRow | null
   linesLoading?: boolean
   onClose: () => void
+  onOpenForm?: () => void
 }): React.JSX.Element {
   if (!row) {
     return (
@@ -38,6 +42,11 @@ export function AssignmentsRegistryDetailPanel({
           <p className="registry-detail-subtitle">{row.topic}</p>
         </div>
         <div className="registry-detail-head-actions">
+          {onOpenForm && GUID_RE.test(row.refKey) ? (
+            <button type="button" className="registry-detail-close" title="Открыть форму" onClick={onOpenForm}>
+              <SquarePen size={16} aria-hidden />
+            </button>
+          ) : null}
           <button
             type="button"
             className="registry-detail-close"

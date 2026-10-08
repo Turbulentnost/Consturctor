@@ -1589,38 +1589,73 @@ def _dump_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in raw if isinstance(row, dict)]
 
 
-def read_cached_dump_rows() -> tuple[list[dict[str, Any]], bool]:
-    """Задачи из уже записанного кэша документооборота. Сеть не вызываем.
+def _is_open_dump(payload: dict[str, Any]) -> bool:
+    """Полный список текущих задач, а не срез периода с уже исполненными."""
+    if payload.get("only_open") is False:
+        return False
+    kind = payload.get("kind")
+    return kind in {None, "", _OPEN_DUMP_KIND}
 
-    Второй флаг — есть ли в кэше выполненные задачи, а не только открытые.
-    """
+
+def _dump_row_id(row: dict[str, Any]) -> str:
+    return str(row.get("id") or row.get("number") or "").strip()
+
+
+def _open_dump_snapshots() -> list[tuple[float, list[dict[str, Any]]]]:
+    """Снимки открытого ящика по времени выгрузки, от старого к новому."""
     directory = _cache_dir()
-    merged: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    includes_completed = False
-    for path in sorted(directory.glob("*.json")):
+    snapshots: list[tuple[float, list[dict[str, Any]]]] = []
+    for path in directory.glob("*.json"):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        payload = data.get("payload") if isinstance(data, dict) else None
-        if not isinstance(payload, dict):
+        if not isinstance(data, dict):
             continue
-        batch = _dump_rows(payload)
-        if payload.get("only_open") is False or any(row.get("executed") for row in batch):
-            includes_completed = True
-        for row in batch:
-            key = str(row.get("id") or row.get("number") or "").strip()
-            if not key:
-                key = f"row-{len(order)}"
-            previous = merged.get(key)
-            if previous is None:
-                order.append(key)
-                merged[key] = dict(row)
+        payload = data.get("payload")
+        if not isinstance(payload, dict) or not _is_open_dump(payload):
+            continue
+        snapshots.append((float(data.get("fetched_at") or 0), _dump_rows(payload)))
+    snapshots.sort(key=lambda item: item[0])
+    return snapshots
+
+
+def read_cached_dump_rows() -> tuple[list[dict[str, Any]], bool]:
+    """Текущие задачи из самой свежей выгрузки. Сеть не вызываем.
+
+    Старый снимок не подмешиваем в открытые: после переноса срока или исполнения
+    задача уходит из нового списка «Задачи мне», а в прежнем файле ещё числится открытой.
+    Второй флаг — есть ли в выбранном снимке выполненные задачи.
+    """
+    snapshots = _open_dump_snapshots()
+    if not snapshots:
+        return [], False
+    rows = [dict(row) for row in snapshots[-1][1]]
+    includes_completed = bool(any(row.get("executed") for row in rows))
+    return rows, includes_completed
+
+
+def read_cached_left_inbox_rows() -> list[dict[str, Any]]:
+    """Задачи, которые были в прошлом снимке и уже не в текущем ящике.
+
+    В 1С их нет в «Задачи мне»: срок перенесли и закрыли старую карточку
+    либо задачу исполнили. Для расчёта это выполненные, не просроченные.
+    """
+    snapshots = _open_dump_snapshots()
+    if len(snapshots) < 2:
+        return []
+    current_ids = {_dump_row_id(row) for row in snapshots[-1][1]}
+    current_ids.discard("")
+    left: dict[str, dict[str, Any]] = {}
+    for _fetched_at, rows in reversed(snapshots[:-1]):
+        for row in rows:
+            key = _dump_row_id(row)
+            if not key or key in current_ids or key in left:
                 continue
-            if row.get("executed") and not previous.get("executed"):
-                merged[key] = dict(row)
-    return [merged[key] for key in order], includes_completed
+            item = dict(row)
+            item["executed"] = True
+            left[key] = item
+    return list(left.values())
 
 
 def fetch_performer_period_rows(

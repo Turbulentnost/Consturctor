@@ -53,19 +53,28 @@ function resolveBackendRoot(): string | null {
   return null
 }
 
+function bundledPython(): string {
+  const bundled = join(process.resourcesPath, 'python', process.platform === 'win32' ? 'python.exe' : 'python')
+  if (existsSync(bundled)) return bundled
+  return resolveWindowsPythonExe()
+}
+
 function spawnLocalBackend(backendRoot: string): void {
-  const python = resolveWindowsPythonExe()
-  const child = spawnHidden(python, ['-m', 'app.main'], {
+  const python = bundledPython()
+  const launch = `import runpy, sys; sys.path.insert(0, ${JSON.stringify(backendRoot)}); runpy.run_module('app.main', run_name='__main__')`
+  const child = spawnHidden(python, ['-c', launch], {
     cwd: backendRoot,
     detached: true,
     stdio: 'ignore',
     env: {
       ...process.env,
-      AUTH_SKIP_SESSION_LOCK: process.env.AUTH_SKIP_SESSION_LOCK || '1'
+      API_HOST: '127.0.0.1',
+      AUTH_SKIP_SESSION_LOCK: process.env.AUTH_SKIP_SESSION_LOCK || '1',
+      PYTHONNOUSERSITE: '1'
     }
   })
   child.unref()
-  console.log(`Starting local backend (background, no window) from ${backendRoot}`)
+  console.log(`Starting local backend (background, no window) from ${backendRoot} via ${python}`)
 }
 
 /**
@@ -95,12 +104,12 @@ export async function ensureLocalBackend(backendUrl: string): Promise<boolean> {
     return up
   }
   spawnLocalBackend(root)
-  for (let attempt = 0; attempt < 8; attempt++) {
+  for (let attempt = 0; attempt < 30; attempt++) {
     if (await pingHealth(backendUrl, 1500)) {
       console.log(`Backend ready: ${backendUrl}`)
       return true
     }
-    await sleep(500)
+    await sleep(1000)
   }
   console.warn(`Backend did not become ready at ${backendUrl}`)
   return false

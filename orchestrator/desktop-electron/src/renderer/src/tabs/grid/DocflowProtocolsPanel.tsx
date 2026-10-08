@@ -4,8 +4,10 @@ import {
   BarChart3,
   Building2,
   CheckCircle2,
+  ChevronDown,
   Circle,
   ClipboardList,
+  CopyPlus,
   Crown,
   DoorOpen,
   Gavel,
@@ -24,12 +26,17 @@ import {
   XCircle
 } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
+import type { MeetingEvent } from '../../utils/outlookMeetings'
+import { erpActorFio } from '../../workplace/userContext'
 import {
   formatProtocolDay,
   useBoardReportReadiness,
   type BoardReportReadiness
 } from '../../workplace/boardReportReadiness'
+import { createProtocolOnBasis } from '../../workplace/meetingProtocolCreate'
 import { DocflowFileOpenButton } from './DocflowAttachments'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { MeetingProtocolForm } from './MeetingProtocolForm'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import {
   forgetProtocolCard,
@@ -329,6 +336,9 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
   const [assignedDraft, setAssignedDraft] = useState<TaskDraft[]>([])
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState<Notice | null>(null)
+  const [basisOpen, setBasisOpen] = useState(false)
+  const [basisDate, setBasisDate] = useState('')
+  const [basisBusy, setBasisBusy] = useState(false)
   const planRows = periodDone.length + periodPlan.length + planFact.length
   const people = useMemo(() => {
     const names = [
@@ -367,6 +377,39 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
   const onAudioDone = useCallback(() => {
     void onSaved().catch(() => setNotice({ tone: 'error', text: 'Агент закончил, но перечитать карточку не удалось — откройте протокол заново' }))
   }, [onSaved])
+
+  const carriedTasks = assignedRegister.length || assignedTasks.length
+
+  const openBasis = (): void => {
+    setBasisDate((row.nextMeeting || '').slice(0, 10))
+    setBasisOpen(true)
+    setNotice(null)
+  }
+
+  const createBasis = async (): Promise<void> => {
+    if (basisBusy) return
+    if (!basisDate.trim()) {
+      setNotice({ tone: 'error', text: 'Укажите дату нового совещания' })
+      return
+    }
+    setBasisBusy(true)
+    try {
+      const result = await createProtocolOnBasis(row.id, basisDate)
+      if (!result.ok) {
+        setNotice({ tone: 'error', text: result.error || 'Не удалось создать протокол на основании' })
+        return
+      }
+      setBasisOpen(false)
+      setNotice({
+        tone: 'ok',
+        text:
+          result.summary ||
+          `Создан протокол ${result.number || ''}. Все задачи этого протокола перенесены на контроль.`
+      })
+    } finally {
+      setBasisBusy(false)
+    }
+  }
 
   const startEdit = (): void => {
     if (!edit.allowed) {
@@ -472,7 +515,17 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
                 <X size={14} aria-hidden />
               </button>
             </>
-          ) : edit.author ? (
+          ) : (
+            <>
+              <button
+                type="button"
+                className="docflow-edit-btn"
+                title="Новый протокол на основании этого: шапка копируется, все задачи остаются на контроле"
+                onClick={openBasis}
+              >
+                <CopyPlus size={14} aria-hidden /> На основании
+              </button>
+              {edit.author ? (
             <button
               type="button"
               className={`docflow-edit-btn${edit.allowed ? '' : ' is-locked'}`}
@@ -482,9 +535,39 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
             >
               <Pencil size={14} aria-hidden />
             </button>
-          ) : null}
+              ) : null}
+            </>
+          )}
         </div>
       </header>
+      {basisOpen && !editing ? (
+        <form
+          className="basis-create"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void createBasis()
+          }}
+        >
+          <p>
+            Новый черновик на основании № {cell(row.number)}.{' '}
+            {carriedTasks
+              ? `Все задачи этого протокола (${carriedTasks}) перейдут на контроль — как в 1С, без повторного назначения.`
+              : 'Поставленных задач нет: на контроле в новом протоколе их не будет.'}
+          </p>
+          <label>
+            Дата совещания
+            <input type="date" value={basisDate} onChange={(event) => setBasisDate(event.target.value)} required />
+          </label>
+          <div>
+            <button type="submit" className="docflow-edit-btn is-primary" disabled={basisBusy}>
+              {basisBusy ? 'Создаём…' : 'Создать'}
+            </button>
+            <button type="button" className="docflow-edit-btn" disabled={basisBusy} onClick={() => setBasisOpen(false)}>
+              Отмена
+            </button>
+          </div>
+        </form>
+      ) : null}
       {editing ? null : <ProtocolAudioSupplement row={row} onFinished={onAudioDone} />}
       {notice ? (
         <p className={`docflow-edit-notice${notice.tone === 'error' ? ' is-error' : ''}`}>
@@ -713,23 +796,46 @@ function BoardReadyBar({
   error: string
   readiness: BoardReportReadiness
 }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
   const width = readiness.total ? readiness.percent : 0
   const caption = readiness.protocolNumber
     ? `${readiness.protocolNumber}${readiness.protocolDate ? ` · ${formatProtocolDay(readiness.protocolDate)}` : ''}${
         readiness.currentMonth ? '' : ' · последний протокол'
       }`
     : 'Протокол совета директоров по ГК'
+  const tasks = [...readiness.tasks].sort((left, right) => Number(left.done) - Number(right.done))
   return (
-    <div className="ready-bar" title="Поставленные задачи: управленческая отчётность за 2 рабочих дня до совета директоров по ГК">
-      <div className="ready-bar-head">
-        <span>Готовность к совету директоров</span>
-        <em>{loading ? 'считаем…' : error ? error : caption}</em>
-        <strong>{loading ? '—' : `${readiness.percent}%`}</strong>
-      </div>
-      <div className="ready-bar-track" role="progressbar" aria-valuenow={width} aria-valuemin={0} aria-valuemax={100}>
-        <i style={{ width: `${width}%` }} />
-      </div>
-      <small>{loading ? '' : readiness.total ? `выполнено ${readiness.done} из ${readiness.total}` : 'поставленных задач нет'}</small>
+    <div className={`ready-bar${open ? ' is-open' : ''}`} title="Поставленные задачи: управленческая отчётность за 2 рабочих дня до совета директоров по ГК">
+      <button type="button" className="ready-bar-toggle" disabled={loading || !readiness.total} onClick={() => setOpen((value) => !value)}>
+        <span className="ready-bar-head">
+          <span>Готовность к совету директоров</span>
+          <em>{loading ? 'считаем…' : error ? error : caption}</em>
+          <strong>{loading ? '—' : `${readiness.percent}%`}</strong>
+        </span>
+        <span className="ready-bar-track" role="progressbar" aria-valuenow={width} aria-valuemin={0} aria-valuemax={100}>
+          <i style={{ width: `${width}%` }} />
+        </span>
+        <small>
+          {loading ? '' : readiness.total ? `выполнено ${readiness.done} из ${readiness.total}` : 'поставленных задач нет'}
+          {readiness.total ? (
+            <ChevronDown size={14} aria-hidden className={open ? 'is-open' : ''} />
+          ) : null}
+        </small>
+      </button>
+      {open && tasks.length ? (
+        <ul className="ready-bar-tasks">
+          {tasks.map((task, index) => (
+            <li key={`${task.point}-${index}`} className={task.done ? 'is-done' : ''} title={task.text}>
+              {task.done ? <CheckCircle2 size={15} aria-hidden /> : <Circle size={15} aria-hidden />}
+              <span>
+                <b>{task.responsible || 'Ответственный не указан'}</b>
+                <em>{task.text}</em>
+                <i>{task.done ? 'выполнено' : 'не выполнено'}</i>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   )
 }
@@ -765,6 +871,7 @@ export function DocflowProtocolsPanel({
   const [participant, setParticipant] = useState('')
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState('')
+  const [formRef, setFormRef] = useState('')
   const [card, setCard] = useState<ProtocolCard | null>(null)
   const [cardLoading, setCardLoading] = useState(false)
   const [cardError, setCardError] = useState('')
@@ -929,6 +1036,25 @@ export function DocflowProtocolsPanel({
   }
 
   const selected = rows.find((row) => row.id === selectedId) || null
+  const formRow = rows.find((row) => row.id === formRef) || null
+  const formMeeting = useMemo<MeetingEvent>(
+    () => ({
+      id: '',
+      subject: formRow?.topic || '',
+      start: formRow?.date || '',
+      end: '',
+      location: formRow?.room || '',
+      organizer: formRow?.head || '',
+      attendees: (formRow?.participants || []).join('; '),
+      owner: ''
+    }),
+    [formRow]
+  )
+
+  const openProtocolForm = (row: ProtocolRow): void => {
+    if (selectedId !== row.id) openCard(row)
+    setFormRef(row.id)
+  }
 
   return (
     <div className="docflow-split docflow-split-orders">
@@ -1028,6 +1154,7 @@ export function DocflowProtocolsPanel({
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}
+                    onDoubleClick={() => openProtocolForm(row)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -1064,6 +1191,13 @@ export function DocflowProtocolsPanel({
         </div>
       </div>
       <aside className="docflow-side wp-card" aria-label="Карточка протокола">
+        {selected ? (
+          <DocflowOpenFormBar
+            refKey={selected.id}
+            hint="Показать и изменить протокол в 1С · или двойной щелчок по строке"
+            onOpen={() => openProtocolForm(selected)}
+          />
+        ) : null}
         {!selected ? (
           <p className="docflow-status">Выберите протокол, чтобы увидеть карточку</p>
         ) : cardLoading ? (
@@ -1079,6 +1213,17 @@ export function DocflowProtocolsPanel({
           <ProtocolCardView key={card.protocol.id} card={card} onSaved={() => refreshCard(card.protocol.id)} />
         ) : null}
       </aside>
+      <MeetingProtocolForm
+        open={Boolean(formRef)}
+        meeting={formMeeting}
+        actorFio={erpActorFio(user)}
+        mode="edit"
+        refKey={formRef}
+        onClose={() => setFormRef('')}
+        onCreated={() => {
+          if (formRef) void refreshCard(formRef)
+        }}
+      />
     </div>
   )
 }
