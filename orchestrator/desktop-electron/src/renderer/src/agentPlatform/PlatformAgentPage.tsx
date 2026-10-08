@@ -38,6 +38,15 @@ export function platformAgentIdFromNotes(notes: string): string {
   return match ? match[1].toLowerCase() : ''
 }
 
+/** Id экрана запуска для агента TurboTester без своего workflow: тот же формат, что notes=platform:<id>. */
+export function platformWorkflowId(agentId: string): string {
+  return platformAgentIdFromNotes(`platform:${agentId}`) ? `platform:${agentId.trim().toLowerCase()}` : ''
+}
+
+export function forgetOpenedSession(workflowId: string): void {
+  openedSession.delete(workflowId)
+}
+
 function readShowProgress(): boolean {
   try {
     return localStorage.getItem(SHOW_PROGRESS_KEY) === 'true'

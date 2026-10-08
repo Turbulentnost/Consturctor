@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 
 import httpx
 
@@ -16,6 +18,7 @@ _RETRY_SECONDS = 30.0
 
 _lock = threading.Lock()
 _configured = False
+_configured_token = ""
 _last_error = ""
 _last_attempt = 0.0
 
@@ -24,19 +27,34 @@ class ConstructorSessionError(RuntimeError):
     pass
 
 
+def _given_token() -> str:
+    """JWT, выданный Оркестратором: файл обновляется при каждом его входе, без перезапуска сервиса."""
+    path = os.environ.get("CONSTRUCTOR_API_TOKEN_FILE", "").strip()
+    if path:
+        try:
+            return Path(path).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    return settings.constructor_api_token.strip()
+
+
 def ensure_session() -> bool:
-    """Настроить runtime_api один раз; при неудаче вернуть False и запомнить причину.
+    """Настроить runtime_api; при неудаче вернуть False и запомнить причину.
 
     Не бросает: локальные инструменты должны работать и без сервера Constructor,
     а серверные покажут причину через last_error().
     """
-    global _configured, _last_error, _last_attempt
-    if _configured:
+    global _configured, _configured_token, _last_error, _last_attempt
+    given = _given_token()
+    if _configured and (not given or given == _configured_token):
         return True
     with _lock:
-        if _configured:
+        if _configured and (not given or given == _configured_token):
             return True
-        token = settings.constructor_api_token.strip()
+        token = given
+        if not token and os.environ.get("CONSTRUCTOR_API_TOKEN_FILE", "").strip():
+            _last_error = "Оркестратор ещё не передал сессию Constructor: войдите в Оркестратор заново."
+            return False
         if not token:
             if not has_credentials():
                 return False
@@ -53,6 +71,7 @@ def ensure_session() -> bool:
 
         runtime_api.configure(token=token, base_url=settings.constructor_api_url)
         _configured = True
+        _configured_token = token
         _last_error = ""
         return True
 
@@ -80,9 +99,13 @@ def has_credentials() -> bool:
 
 def access_token() -> str:
     """JWT Constructor: готовый токен, затем вход под пользователем агентов."""
-    token = settings.constructor_api_token.strip()
+    token = _given_token()
     if token:
         return token
+    if os.environ.get("CONSTRUCTOR_API_TOKEN_FILE", "").strip():
+        raise ConstructorSessionError(
+            "Оркестратор ещё не передал сессию Constructor: войдите в Оркестратор заново."
+        )
     pairs = _pairs()
     if not pairs:
         raise ConstructorSessionError(
@@ -99,9 +122,10 @@ def access_token() -> str:
 
 
 def reset_session() -> None:
-    global _configured, _last_error
+    global _configured, _configured_token, _last_error
     with _lock:
         _configured = False
+        _configured_token = ""
         _last_error = ""
 
 

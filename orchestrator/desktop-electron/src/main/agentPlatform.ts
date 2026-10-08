@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { app } from 'electron'
@@ -11,10 +11,29 @@ const START_TIMEOUT_MS = 90_000
 const HEALTH_TIMEOUT_MS = 2_500
 const STDERR_TAIL = 30
 
+/**
+ * Платформа ходит в Constructor под JWT Оркестратора (cid=orchestrator): свой вход как client=constructor
+ * заменил бы сессию программы Constructor этого человека. Логин и пароль — учётка 1С COM, не Constructor.
+ */
 export type AgentPlatformUser = {
   fio: string
-  password: string
   token: string
+  erpLogin: string
+  erpPassword: string
+}
+
+const TOKEN_FILE = 'constructor-token'
+
+/** ФИО из JWT Constructor: users.current вернёт того, кто вошёл в Оркестратор. */
+function fioFromToken(token: string): string {
+  const payload = token.split('.')[1]
+  if (!payload) return ''
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { fio?: unknown }
+    return typeof data.fio === 'string' ? data.fio.trim() : ''
+  } catch {
+    return ''
+  }
 }
 
 export type AgentPlatformStatus = {
@@ -72,7 +91,7 @@ export class AgentPlatform {
   private child: ChildProcess | null = null
   private starting: Promise<AgentPlatformStatus> | null = null
   private port = 0
-  private user: AgentPlatformUser = { fio: '', password: '', token: '' }
+  private user: AgentPlatformUser = { fio: '', token: '', erpLogin: '', erpPassword: '' }
   private launchedFor = ''
   private lastError = ''
   private stderr: string[] = []
@@ -87,9 +106,28 @@ export class AgentPlatform {
     return this.port ? `http://${HOST}:${this.port}` : ''
   }
 
-  // Токен в ключ не входит: его обновление не должно обрывать идущие запуски.
+  // Токен в ключ не входит: его обновление не должно обрывать идущие запуски, сервис перечитывает файл токена.
   private userKey(user: AgentPlatformUser): string {
-    return `${user.fio}\n${user.password}`
+    return `${user.fio}\n${user.erpLogin}\n${user.erpPassword}`
+  }
+
+  private dataDir(): string {
+    const localAppData = process.env.LOCALAPPDATA || app.getPath('appData')
+    const dir = join(localAppData, 'Orchestrator', 'agent-platform')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  private tokenFile(): string {
+    return join(this.dataDir(), TOKEN_FILE)
+  }
+
+  private writeToken(): void {
+    try {
+      writeFileSync(this.tokenFile(), this.user.token, { encoding: 'utf8', mode: 0o600 })
+    } catch (error) {
+      console.warn('[agent-platform] токен не записан:', error instanceof Error ? error.message : error)
+    }
   }
 
   root(): string {
@@ -122,12 +160,12 @@ export class AgentPlatform {
   private environment(port: number): NodeJS.ProcessEnv {
     const desktopRoot = this.desktopRoot()
     const localAppData = process.env.LOCALAPPDATA || app.getPath('appData')
-    const dataDir = join(localAppData, 'Orchestrator', 'agent-platform')
-    mkdirSync(dataDir, { recursive: true })
+    const dataDir = this.dataDir()
     const node = this.node()
     const pathParts = [node ? dirname(node) : '', process.env.PATH || process.env.Path || ''].filter(Boolean)
     const browsers = join(desktopRoot, 'ms-playwright')
-    const { fio, password, token } = this.user
+    const { fio, token, erpLogin, erpPassword } = this.user
+    this.writeToken()
     return {
       ...process.env,
       ...cursorEnvFromDesktop(desktopRoot),
@@ -142,8 +180,13 @@ export class AgentPlatform {
       CONSTRUCTOR_API_URL: this.backendUrl,
       CONSTRUCTOR_DESKTOP_DIR: desktopRoot,
       CONSTRUCTOR_USER_FIO: fio,
-      CONSTRUCTOR_USER_PASSWORD: password,
-      CONSTRUCTOR_API_TOKEN: password ? '' : token,
+      CONSTRUCTOR_USER_PASSWORD: '',
+      CONSTRUCTOR_LOGIN_FIO: '',
+      CONSTRUCTOR_LOGIN_PASSWORD: '',
+      CONSTRUCTOR_API_TOKEN: token,
+      CONSTRUCTOR_API_TOKEN_FILE: this.tokenFile(),
+      ERP_LOGIN: erpLogin,
+      ERP_PASSWORD: erpPassword,
       // Каталог агентов Constructor платформе Оркестратора не нужен: не опрашиваем базу каждую минуту.
       CONSTRUCTOR_SYNC_ENABLED: 'false',
       PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || (existsSync(browsers) ? browsers : ''),
@@ -163,13 +206,16 @@ export class AgentPlatform {
   }
 
   /** Пользователь Оркестратора сменился — сервис перезапускается под ним при следующем обращении. */
-  setUser(user: Partial<AgentPlatformUser>): void {
+  setUser(user: { token?: string | null; erpLogin?: string; erpPassword?: string }): void {
+    const token = String(user.token ?? '').trim()
     const next: AgentPlatformUser = {
-      fio: String(user.fio ?? this.user.fio ?? '').trim(),
-      password: String(user.password ?? this.user.password ?? ''),
-      token: String(user.token ?? this.user.token ?? '')
+      fio: fioFromToken(token),
+      token,
+      erpLogin: String(user.erpLogin ?? this.user.erpLogin ?? '').trim(),
+      erpPassword: String(user.erpPassword ?? this.user.erpPassword ?? '')
     }
     this.user = next
+    if (this.child) this.writeToken()
     if (!this.child || this.userKey(next) === this.launchedFor) return
     console.log('[agent-platform] пользователь сменился — сервис будет перезапущен')
     this.shutdown()
@@ -178,7 +224,7 @@ export class AgentPlatform {
   async ensure(): Promise<AgentPlatformStatus> {
     if (this.starting) return this.starting
     if (this.child && this.url && (await healthy(this.url))) return this.status()
-    if (!this.user.fio) {
+    if (!this.user.token || !this.user.fio) {
       this.lastError = 'Войдите в Оркестратор: агенты запускаются под вашей учётной записью'
       return { ...this.status(), ok: false }
     }

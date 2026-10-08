@@ -1311,7 +1311,7 @@ function registerMainIpcHandlers(): void {
       credentials?: { login?: string; password?: string; onecComUsr?: string }
     ) => {
       agentSidecar.ready(token ?? null, credentials)
-      agentPlatform.setUser({ fio: credentials?.login, password: credentials?.password, token: token ?? '' })
+      agentPlatform.setUser({ token, erpLogin: credentials?.login, erpPassword: credentials?.password })
       return { ok: true }
     }
   )

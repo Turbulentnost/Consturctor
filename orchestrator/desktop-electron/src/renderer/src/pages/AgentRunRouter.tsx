@@ -30,6 +30,12 @@ function formedInConstructor(record: WorkflowRecord): boolean {
   return published && typeof playbook.instructions === 'string' && playbook.instructions.trim() !== ''
 }
 
+// workflowId = platform:<id> — агент TurboTester без workflow в Конструкторе (кнопка «Запустить процесс»).
+function directRoute(workflowId: string): PlatformAgentSource | undefined {
+  const agentId = platformAgentIdFromNotes(workflowId)
+  return agentId ? { kind: 'platform', agentId } : undefined
+}
+
 function routeOf(record: WorkflowRecord): PlatformAgentSource | null {
   const platformId = platformAgentIdFromNotes(record.notes)
   if (platformId) return { kind: 'platform', agentId: platformId }
@@ -44,7 +50,7 @@ export function AgentRunRouter(props: AgentRunRouterProps): React.JSX.Element {
   const { workflowId } = props
   const runs = useRuns()
   const [route, setRoute] = useState<PlatformAgentSource | null | undefined>(() =>
-    isPersonalAgentWorkflowId(workflowId) ? null : routes.get(workflowId)
+    isPersonalAgentWorkflowId(workflowId) ? null : (directRoute(workflowId) ?? routes.get(workflowId))
   )
   const [legacyRunning] = useState(() => Boolean(runs.entries[workflowId]?.state?.running))
 

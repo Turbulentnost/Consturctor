@@ -3,6 +3,22 @@ import type { GlobalSearchTarget } from '../layout/globalSearch'
 
 export const ORCH_OPEN_TAB = 'orchestrator:open-tab'
 export const ORCH_CREATE_TASK = 'orchestrator:create-task'
+export const ORCH_LAUNCH_AGENT = 'orchestrator:launch-agent'
+
+/** Агент TurboTester (turbotest.agents), которого запускает «Запустить процесс». */
+export const MEETING_PLANNER_AGENT = {
+  id: 'd4324cdc-e330-4c66-9e60-0427cdccbb72',
+  title: 'Планировщик совещаний из 1С'
+} as const
+
+export type LaunchAgentDetail = {
+  agentId: string
+  title: string
+}
+
+export function launchPlatformAgent(agentId: string, title: string): void {
+  window.dispatchEvent(new CustomEvent<LaunchAgentDetail>(ORCH_LAUNCH_AGENT, { detail: { agentId, title } }))
+}
 
 export type CreateTaskChannel = 'onec' | 'platform'
 
