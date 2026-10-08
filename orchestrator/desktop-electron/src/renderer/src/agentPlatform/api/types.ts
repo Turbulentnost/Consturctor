@@ -248,6 +248,19 @@ export interface SharedAgentsResponse {
   shared?: { enabled: boolean; source: string; error: string }
 }
 
+/** Агент, сформированный в Конструкторе: план собран из public.workflows (playbook, write_recipe, plan_json). */
+export interface ConstructorBrief {
+  id: string
+  title: string
+  goal: string
+  owner_fio: string
+  owner_position: string
+  tools: string[]
+  steps: string[]
+  /** План в markdown, с которым его исполнит конфигурация 2. */
+  plan: string
+}
+
 /** Человек со страницы входа оркестратора. id пустой, пока он ни разу не входил. */
 export interface PublishUser {
   id: string

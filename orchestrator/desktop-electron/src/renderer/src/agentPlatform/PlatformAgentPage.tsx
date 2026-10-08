@@ -1,18 +1,20 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiGet, apiPost } from './api/client'
 import type {
+  ConstructorBrief,
   PlatformConfig,
   PlatformSession,
   PlatformSessionsResponse,
   SharedAgent,
   SharedAgentsResponse
 } from './api/types'
-import { ChecklistIcon, ChevronLeftIcon, PlayIcon } from './components/Icons'
+import { ChecklistIcon, ChevronLeftIcon, PaperclipIcon, PlayIcon } from './components/Icons'
 import { MarkdownView } from './components/MarkdownView'
 import { Segmented } from './components/Segmented'
 import { formatTime, SESSION_STATUS } from './platformLabels'
 import { AgentSession } from './pages/AgentSession'
 import { AgentIcon, AgentPassportView } from './pages/AgentPassportView'
+import { ComposerFiles, MAX_FILES, pendingFrom, toUpload, type PendingFile } from './pages/SessionAttachments'
 import './styles/index.css'
 
 const SHOW_PROGRESS_KEY = 'orchestrator.agentPlatform.showProgress'
@@ -24,6 +26,9 @@ const AGENT_TABS: { key: AgentTab; label: string }[] = [
   { key: 'passport', label: 'Паспорт' },
   { key: 'prompt', label: 'Промпт' }
 ]
+
+/** Где лежит промпт агента: turbotest.agents (опубликован из TurboTester) или public.workflows (сформирован в Конструкторе). */
+export type PlatformAgentSource = { kind: 'platform'; agentId: string } | { kind: 'constructor' }
 
 // Открытый запуск агента переживает уход со страницы, пока приложение не перезапущено.
 const openedSession = new Map<string, string>()
@@ -56,6 +61,10 @@ function agentMeta(agent: SharedAgent): string {
   return parts.join(' · ')
 }
 
+function briefMeta(brief: ConstructorBrief): string {
+  return [brief.owner_fio, brief.owner_position, 'сформирован в Конструкторе'].filter(Boolean).join(' · ')
+}
+
 async function findAgent(agentId: string, configs: PlatformConfig[]): Promise<{ agent: SharedAgent | null; error: string }> {
   let error = ''
   for (const config of configs.filter((item) => item.plan_instruction)) {
@@ -67,24 +76,61 @@ async function findAgent(agentId: string, configs: PlatformConfig[]): Promise<{ 
   return { agent: null, error }
 }
 
+function ConstructorPassport({ brief }: { brief: ConstructorBrief }): React.JSX.Element {
+  return (
+    <>
+      <section className="pagent-section">
+        <h4>Цель</h4>
+        <p className="pagent-request">{brief.goal || 'Цель не указана.'}</p>
+      </section>
+      {brief.steps.length ? (
+        <section className="pagent-section">
+          <h4>Шаги</h4>
+          <ul className="tt-agent-brief-list">
+            {brief.steps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {brief.tools.length ? (
+        <section className="pagent-section">
+          <h4>Инструменты</h4>
+          <p className="pagent-request">{brief.tools.join(', ')}</p>
+        </section>
+      ) : null}
+    </>
+  )
+}
+
 interface PlatformAgentPageProps {
   workflowId: string
-  platformAgentId: string
+  source: PlatformAgentSource
   title: string
+  /** Кнопка «Запустить» на доске: сразу новый запуск. */
+  autoStart?: boolean
   onBack: () => void
 }
 
-/** Запуск агента, опубликованного из TurboTester: та же конфигурация 2, раннер Cursor SDK и страница хода работы. */
-export function PlatformAgentPage({ workflowId, platformAgentId, title, onBack }: PlatformAgentPageProps): React.JSX.Element {
+/** Запуск ИИ-агента конфигурацией 2: раннер Cursor SDK, инструменты платформы и страница хода работы. */
+export function PlatformAgentPage({ workflowId, source, title, autoStart = false, onBack }: PlatformAgentPageProps): React.JSX.Element {
+  const platformAgentId = source.kind === 'platform' ? source.agentId : ''
+  const runId = platformAgentId || workflowId
+  const fromConstructor = source.kind === 'constructor'
   const [configs, setConfigs] = useState<PlatformConfig[]>([])
   const [agent, setAgent] = useState<SharedAgent | null>(null)
+  const [brief, setBrief] = useState<ConstructorBrief | null>(null)
   const [sessions, setSessions] = useState<PlatformSession[] | null>(null)
   const [loadError, setLoadError] = useState('')
   const [notice, setNotice] = useState('')
   const [starting, setStarting] = useState(false)
+  const [task, setTask] = useState('')
+  const [files, setFiles] = useState<PendingFile[]>([])
   const [tab, setTab] = useState<AgentTab>('passport')
   const [sessionId, setSessionId] = useState<string | null>(() => openedSession.get(workflowId) ?? null)
   const [showProgress, setShowProgressState] = useState(readShowProgress)
+  const pickerRef = useRef<HTMLInputElement | null>(null)
+  const autoStartedRef = useRef(false)
 
   const setShowProgress = useCallback((value: boolean) => {
     setShowProgressState(value)
@@ -104,50 +150,76 @@ export function PlatformAgentPage({ workflowId, platformAgentId, title, onBack }
     [workflowId]
   )
 
-  const load = useCallback(async () => {
-    setLoadError('')
-    try {
-      const configData = await apiGet<{ items: PlatformConfig[] }>('/api/v1/platform/configs')
-      setConfigs(configData.items)
-      const [found, sessionData] = await Promise.all([
-        findAgent(platformAgentId, configData.items),
-        apiGet<PlatformSessionsResponse>(`/api/v1/platform/sessions?limit=${SESSIONS_LIMIT}`)
-      ])
-      setAgent(found.agent)
-      if (!found.agent) {
-        setLoadError(
-          found.error ||
-            'Агент не найден в общей базе TurboTester: автор мог удалить его или ещё не опубликовать план.'
-        )
-      }
-      const own = sessionData.items.filter((item) => item.agent_id === platformAgentId)
-      setSessions(own)
-      const live = own.find((item) => item.status === 'running')
-      if (live && !openedSession.has(workflowId)) openSession(live.id)
-    } catch (reason) {
-      setLoadError(reason instanceof Error ? reason.message : 'Платформа агентов недоступна')
-    }
-  }, [openSession, platformAgentId, workflowId])
-
-  useEffect(() => {
-    if (!sessionId) void load()
-  }, [load, sessionId])
-
-  async function start(): Promise<void> {
-    if (starting) return
+  const start = useCallback(async (): Promise<void> => {
     setStarting(true)
     setNotice('')
     try {
-      const created = await apiPost<PlatformSession>(
-        `/api/v1/platform/agents/${encodeURIComponent(platformAgentId)}/runs`,
-        {}
-      )
+      const body = fromConstructor
+        ? { prompt: task.trim(), attachments: await Promise.all(files.map(toUpload)) }
+        : {}
+      const created = await apiPost<PlatformSession>(`/api/v1/platform/agents/${encodeURIComponent(runId)}/runs`, body)
+      setTask('')
+      setFiles([])
       openSession(created.id)
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : 'Не удалось запустить агента')
     } finally {
       setStarting(false)
     }
+  }, [files, fromConstructor, openSession, runId, task])
+
+  const load = useCallback(async () => {
+    setLoadError('')
+    try {
+      const configData = await apiGet<{ items: PlatformConfig[] }>('/api/v1/platform/configs')
+      setConfigs(configData.items)
+      const sessionsRequest = apiGet<PlatformSessionsResponse>(`/api/v1/platform/sessions?limit=${SESSIONS_LIMIT}`)
+      let ready = false
+      if (!fromConstructor) {
+        const found = await findAgent(platformAgentId, configData.items)
+        setAgent(found.agent)
+        ready = Boolean(found.agent?.instruction)
+        if (!found.agent) {
+          setLoadError(
+            found.error ||
+              'Агент не найден в общей базе TurboTester: автор мог удалить его или ещё не опубликовать план.'
+          )
+        }
+      } else {
+        try {
+          const loaded = await apiGet<ConstructorBrief>(`/api/v1/platform/constructor-agents/${encodeURIComponent(workflowId)}`)
+          setBrief(loaded)
+          ready = Boolean(loaded.plan)
+        } catch (reason) {
+          setLoadError(reason instanceof Error ? reason.message : 'Агент Конструктора недоступен')
+        }
+      }
+      const own = (await sessionsRequest).items.filter((item) => item.agent_id === runId)
+      setSessions(own)
+      const live = own.find((item) => item.status === 'running')
+      if (live && !openedSession.has(workflowId)) openSession(live.id)
+      else if (autoStart && ready && !live && !autoStartedRef.current) {
+        autoStartedRef.current = true
+        void start()
+      }
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : 'Платформа агентов недоступна')
+    }
+    // start читает задачу и файлы на момент вызова; автозапуск идёт без них.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, fromConstructor, openSession, platformAgentId, runId, workflowId])
+
+  useEffect(() => {
+    if (!sessionId) void load()
+  }, [load, sessionId])
+
+  function addFiles(list: File[]): void {
+    if (!list.length) return
+    const room = MAX_FILES - files.length
+    const { added, rejected } = pendingFrom(list.slice(0, Math.max(room, 0)))
+    if (list.length > room) rejected.push(`Не больше ${MAX_FILES} вложений за запуск`)
+    setNotice(rejected.join(' · '))
+    if (added.length) setFiles((current) => [...current, ...added])
   }
 
   if (sessionId) {
@@ -166,8 +238,17 @@ export function PlatformAgentPage({ workflowId, platformAgentId, title, onBack }
     )
   }
 
-  const shownTitle = agent?.title || title
-  const runnable = Boolean(agent?.instruction) && !starting
+  const shownTitle = (fromConstructor ? brief?.title : agent?.title) || title
+  const ready = fromConstructor ? Boolean(brief?.plan) : Boolean(agent?.instruction)
+  const runnable = ready && !starting
+  const meta = fromConstructor
+    ? brief
+      ? briefMeta(brief)
+      : null
+    : agent
+      ? agentMeta(agent)
+      : null
+  const lastStatus = fromConstructor ? sessions?.[0]?.status : agent?.last_run?.status
 
   return (
     <div className="tt-root" data-theme="light">
@@ -186,18 +267,16 @@ export function PlatformAgentPage({ workflowId, platformAgentId, title, onBack }
           </span>
           <div className="pagent-title">
             <strong title={shownTitle}>{shownTitle}</strong>
-            <span>{agent ? agentMeta(agent) : loadError ? 'Агент недоступен' : 'Загружаем…'}</span>
+            <span>{meta ?? (loadError ? 'Агент недоступен' : 'Загружаем…')}</span>
           </div>
-          {agent?.last_run ? (
-            <span className={`session-badge ${agent.last_run.status}`}>
-              {SESSION_STATUS[agent.last_run.status] ?? agent.last_run.status}
-            </span>
+          {lastStatus ? (
+            <span className={`session-badge ${lastStatus}`}>{SESSION_STATUS[lastStatus] ?? lastStatus}</span>
           ) : null}
           <button
             type="button"
             className="send tt-agent-run"
             disabled={!runnable}
-            title={agent?.instruction ? 'Новый запуск по плану' : 'План агента ещё не составлен'}
+            title={ready ? 'Новый запуск по плану' : 'План агента ещё не составлен'}
             onClick={() => void start()}
           >
             <PlayIcon size={14} />
@@ -207,13 +286,81 @@ export function PlatformAgentPage({ workflowId, platformAgentId, title, onBack }
         {loadError ? <p className="agent-error platform-sessions-empty">{loadError}</p> : null}
         {notice ? <p className="agent-error platform-sessions-empty">{notice}</p> : null}
 
+        {fromConstructor && brief ? (
+          <form
+            className={['composer sess-composer tt-agent-launch', files.length ? 'has-files' : ''].join(' ')}
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (runnable) void start()
+            }}
+            onDragOver={(event) => {
+              if (event.dataTransfer.types.includes('Files')) event.preventDefault()
+            }}
+            onDrop={(event) => {
+              event.preventDefault()
+              addFiles([...event.dataTransfer.files])
+            }}
+          >
+            {files.length ? (
+              <ComposerFiles files={files} onRemove={(id) => setFiles((current) => current.filter((item) => item.id !== id))} />
+            ) : null}
+            <button
+              type="button"
+              className="icon-button"
+              title="Прикрепить фото или файл к запуску (можно вставить из буфера или перетащить)"
+              aria-label="Прикрепить фото или файл"
+              disabled={starting || files.length >= MAX_FILES}
+              onClick={() => pickerRef.current?.click()}
+            >
+              <PaperclipIcon />
+            </button>
+            <input
+              ref={pickerRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(event) => {
+                addFiles([...(event.target.files ?? [])])
+                event.target.value = ''
+              }}
+            />
+            <textarea
+              rows={1}
+              value={task}
+              placeholder="Задача к этому запуску — необязательно"
+              onChange={(event) => setTask(event.target.value)}
+              onPaste={(event) => {
+                const pasted = [...event.clipboardData.files]
+                if (!pasted.length) return
+                event.preventDefault()
+                addFiles(pasted)
+              }}
+            />
+          </form>
+        ) : null}
+
         <div key={tab} className="pagent-body">
           {tab === 'passport' ? (
-            agent?.passport ? (
+            fromConstructor ? (
+              brief ? (
+                <ConstructorPassport brief={brief} />
+              ) : null
+            ) : agent?.passport ? (
               <AgentPassportView passport={agent.passport} />
             ) : (
               <p className="agent-muted">Паспорт заполнит облачный агент Cursor после успешного прогона.</p>
             )
+          ) : fromConstructor ? (
+            <section className="pagent-section">
+              <h4>План запуска</h4>
+              {brief?.plan ? (
+                <div className="pagent-plan">
+                  <MarkdownView text={brief.plan} />
+                </div>
+              ) : (
+                <p className="agent-muted">План не собран.</p>
+              )}
+            </section>
           ) : (
             <>
               <section className="pagent-section">

@@ -7,8 +7,9 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from app.constructor.avatars import USER_ID_PATTERN
+from app.constructor.brief import BriefError, ConstructorBrief, build_brief
 from app.constructor.catalog import constructor_catalog
-from app.constructor.db import fetch_agent_detail
+from app.constructor.db import fetch_agent_detail, fetch_agent_run
 from app.constructor.owners import agent_detail
 from app.platform import attachments, profile, shared
 from app.platform.approvals import WAIT_SECONDS as APPROVAL_WAIT_SECONDS
@@ -27,6 +28,8 @@ from app.tools.registry import get_tool
 router = APIRouter(prefix="/platform")
 
 TITLE_CHARS = 60
+# Агентов, сформированных в Конструкторе, исполняет та же конфигурация, что и агентов TurboTester.
+CONSTRUCTOR_CONFIG_ID = "02-plan-instruction"
 
 
 class SessionCreate(BaseModel):
@@ -39,6 +42,13 @@ class SessionCreate(BaseModel):
 
 
 class SessionMessage(BaseModel):
+    prompt: str = ""
+    attachments: list[AttachmentUpload] = Field(default_factory=list)
+
+
+class AgentRun(BaseModel):
+    """Необязательная задача к запуску и вложения (файлы run_inputs агента Конструктора)."""
+
     prompt: str = ""
     attachments: list[AttachmentUpload] = Field(default_factory=list)
 
@@ -113,6 +123,23 @@ def _constructor_instruction(agent_id: str) -> tuple[str, str]:
     if not detail.prompt.strip():
         raise HTTPException(status_code=400, detail="У агента нет инструкции")
     return detail.title, detail.prompt.strip()
+
+
+def _constructor_brief(workflow_id: str) -> ConstructorBrief | None:
+    """План агента Конструктора из public.workflows. None — такой записи нет."""
+    if not USER_ID_PATTERN.fullmatch(workflow_id):
+        return None
+    try:
+        row = fetch_agent_run(workflow_id)
+    except Exception as exc:
+        message = str(exc).splitlines()[0] or "база недоступна"
+        raise HTTPException(status_code=502, detail=f"База Constructor недоступна: {message}") from exc
+    if row is None:
+        return None
+    try:
+        return build_brief(row)
+    except BriefError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 LABEL_PLAN = "Задача на план"
@@ -386,18 +413,56 @@ def post_agent_publish(agent_id: str, body: AgentPublish | None = None) -> dict[
     }
 
 
+@router.get("/constructor-agents/{workflow_id}")
+def get_constructor_agent(workflow_id: str) -> dict[str, object]:
+    """Агент, сформированный в Конструкторе, и план, с которым его запустит платформа."""
+    brief = _constructor_brief(workflow_id)
+    if brief is None:
+        raise HTTPException(status_code=404, detail="Агент не найден в базе Constructor")
+    return brief.model_dump()
+
+
+def _run_constructor_agent(brief: ConstructorBrief, body: AgentRun) -> dict[str, object]:
+    config = _runnable_config(CONSTRUCTOR_CONFIG_ID)
+    files = _decoded_attachments(config, body.attachments)
+    task = body.prompt.strip()
+    session = store.create_session(
+        config_id=config.id,
+        config_title=config.title,
+        source="constructor",
+        agent_id=brief.id,
+        agent_title=brief.title,
+        prompt=task or brief.plan,
+    )
+    workspace = store.workspace(session.id)
+    saved = attachments.save(workspace, files)
+    prompt = run_prompt(brief.plan, workspace)
+    if task:
+        prompt = f"{prompt}\n\n## Задача этого запуска\n{task}"
+    try:
+        start_turn(session.id, config, prompt, brief.title, saved, label=LABEL_RUN, shown=task or None)
+    except ConfigNotRunnable as exc:
+        store.finish(session.id, "error", str(exc))
+    return store.get(session.id).summary()  # type: ignore[union-attr]
+
+
 @router.post("/agents/{agent_id}/runs")
-def post_agent_run(agent_id: str) -> dict[str, object]:
+def post_agent_run(agent_id: str, body: AgentRun | None = None) -> dict[str, object]:
     """Новый запуск агента: его инструкция, а для plan_instruction — ещё история прошлого прогона.
 
     Агента другого пользователя (или более свежую версию своего) сначала берём из общей базы.
+    Нет такого агента TurboTester — это агент Конструктора: план собирается из public.workflows.
     """
+    payload = body or AgentRun()
     agent = store.get_agent(agent_id)
     known = find_config(agent.config_id) if agent else None
     if agent is None or (known is not None and known.plan_instruction):
         remote = shared.fetch_agent(agent_id)
         agent = store.import_agent(remote) if remote is not None else store.get_agent(agent_id)
     if agent is None:
+        brief = _constructor_brief(agent_id)
+        if brief is not None:
+            return _run_constructor_agent(brief, payload)
         raise HTTPException(status_code=404, detail="Агент не найден")
     config = _runnable_config(agent.config_id)
     if not agent.instruction.strip():

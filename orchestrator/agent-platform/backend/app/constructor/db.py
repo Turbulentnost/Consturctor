@@ -110,6 +110,34 @@ _AGENT_DETAIL = text(
     """
 )
 
+# Всё, из чего Конструктор собирает materials/agent.md: план, playbook и проба записи в 1С.
+_AGENT_RUN = text(
+    """
+    SELECT
+        w.id,
+        w.title,
+        w.phase,
+        left(w.notes, 8000) AS notes,
+        w.document_name,
+        left(w.document_text, 20000) AS document_text,
+        left(w.last_result, 8000) AS last_result,
+        w.plan_json,
+        w.local_run -> 'playbook' AS playbook,
+        w.local_run -> 'write_recipe' AS write_recipe,
+        w.local_run ->> 'published' AS published,
+        w.local_run ->> 'status' AS status,
+        w.local_run ->> 'deleted' AS deleted,
+        w.local_run ->> 'kind' AS kind,
+        w.local_run ->> 'unformed' AS unformed,
+        u.fio,
+        u.position,
+        u.department
+    FROM workflows w
+    JOIN users u ON u.id = w.user_id
+    WHERE w.id = :agent_id
+    """
+)
+
 
 def _read(statement: Any, parameters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     with _engine().connect().execution_options(postgresql_readonly=True) as conn:
@@ -122,4 +150,9 @@ def fetch_published_candidates() -> list[dict[str, Any]]:
 
 def fetch_agent_detail(agent_id: str) -> dict[str, Any] | None:
     rows = _read(_AGENT_DETAIL, {"agent_id": agent_id})
+    return rows[0] if rows else None
+
+
+def fetch_agent_run(agent_id: str) -> dict[str, Any] | None:
+    rows = _read(_AGENT_RUN, {"agent_id": agent_id})
     return rows[0] if rows else None

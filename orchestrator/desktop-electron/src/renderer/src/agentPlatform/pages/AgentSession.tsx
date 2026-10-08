@@ -20,7 +20,6 @@ import {
   StopIcon
 } from '../components/Icons'
 import { MarkdownView } from '../components/MarkdownView'
-import { AgentInsights } from './AgentInsights'
 import { SESSION_STATUS, modelLabel } from '../platformLabels'
 import {
   ExploreGroup,
@@ -641,7 +640,7 @@ export function AgentSession({
         ) : null}
       </div>
 
-      <div className="sess-split">
+      <div className={openAgent ? 'sess-split' : 'sess-split solo'}>
         <section className="sess-main" aria-label="Ход работы агента">
           <div className="sess-config">
             <span className="owner-agent-icon">
@@ -848,24 +847,19 @@ export function AgentSession({
           )}
           {notice ? <p className="sess-notice">{notice}</p> : null}
         </section>
-        <div className={openAgent ? 'sess-side subagent' : 'sess-side'}>
-          <div className="sess-side-pane insights" inert={Boolean(openAgent)}>
-            <AgentInsights sessionId={sessionId} running={running} turns={session?.turns ?? 0} remote={!!remote} />
-          </div>
-          {sessionId ? (
-            <div className="sess-side-pane agent" inert={!openAgent}>
-              {shownAgent ? (
-                <SubagentPanel
-                  sessionId={sessionId}
-                  task={subagentTask}
-                  events={subagentEvents}
-                  running={running}
-                  onBack={() => setOpenAgent(null)}
-                />
-              ) : null}
+        {sessionId && openAgent && shownAgent ? (
+          <div className="sess-side subagent">
+            <div className="sess-side-pane agent">
+              <SubagentPanel
+                sessionId={sessionId}
+                task={subagentTask}
+                events={subagentEvents}
+                running={running}
+                onBack={() => setOpenAgent(null)}
+              />
             </div>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </div>
     </div>
   )
