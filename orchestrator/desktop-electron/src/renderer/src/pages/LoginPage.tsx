@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { ApiError, type LoginResult } from '../api/types'
 import { rememberPreference, savedFio, setRememberPreference } from '../store/session'
+import { AppUpdatePanel } from '../components/AppUpdatePanel'
 import { FioSuggest } from '../components/FioSuggest'
 import logoUrl from '../assets/logo.png'
 
@@ -162,6 +163,7 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
               : 'Входим...'
             : 'Войти'}
         </button>
+        <AppUpdatePanel />
       </div>
     </div>
   )

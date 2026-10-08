@@ -1487,6 +1487,10 @@ input {
   text-align: center;
   min-height: 16px;
 }
+.login-card .sidebar-update {
+  margin-top: 6px;
+  padding: 0;
+}
 .login-logo {
   width: 54px;
   height: 54px;

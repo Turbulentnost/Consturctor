@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, Folder, FolderPlus, GripVertical, Pencil, Trash2, X } from 'lucide-react'
+import { AppUpdatePanel } from './AppUpdatePanel'
 import { GlobalSearchSuggest } from './GlobalSearchSuggest'
 import { api, parseChatMessage } from '../api/client'
 import { previewText } from '../api/chatCodec'
@@ -154,28 +155,6 @@ function sameThread(peer: ChatThread, threadId: string, senderId = ''): boolean 
   return Boolean(peer.id.startsWith('dm:') && peer.peerId && (peer.peerId === senderId || peer.peerId === threadId))
 }
 
-type UpdateState = 'idle' | 'available' | 'downloading' | 'installing' | 'error'
-
-interface UpdateStatus {
-  state: UpdateState
-  currentVersion: string
-  availableVersion: string
-  percent: number
-  error: string
-  source: string
-  devMode: boolean
-}
-
-const IDLE_UPDATE: UpdateStatus = {
-  state: 'idle',
-  currentVersion: '',
-  availableVersion: '',
-  percent: 0,
-  error: '',
-  source: '',
-  devMode: false
-}
-
 interface SidebarProps {
   active: PageKey | null
   light?: boolean
@@ -209,8 +188,6 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState(false)
   const [peers, setPeers] = useState<ChatThread[]>([])
   const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
-  const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
-  const [checking, setChecking] = useState(false)
   const { newOneCTaskKeys } = useSpecV04SourcesContext()
   const navBadges: Partial<Record<PageKey, number>> = { tasks: newOneCTaskKeys.size }
   const items = useMemo((): SidebarNavItem[] => {
@@ -466,31 +443,6 @@ export function Sidebar({
       </div>
     )
   }
-
-  const runCheck = (): void => {
-    if (checking) return
-    setChecking(true)
-    void window.api
-      .checkUpdate?.()
-      .then((payload) => {
-        if (payload) setUpdate(payload)
-      })
-      .finally(() => setChecking(false))
-  }
-
-  useEffect(() => {
-    let alive = true
-    void window.api.getUpdateStatus?.().then((payload) => {
-      if (alive && payload) setUpdate(payload)
-    })
-    const unsubscribe = window.api.onUpdateStatus?.((payload) => {
-      setUpdate(payload)
-    })
-    return () => {
-      alive = false
-      unsubscribe?.()
-    }
-  }, [])
 
   useEffect(() => {
     let alive = true
@@ -771,51 +723,7 @@ export function Sidebar({
         })}
       </nav>
 
-      <div className="sidebar-update">
-        {!collapsed ? (
-          <p className="sidebar-update-meta">
-            {update.currentVersion ? `v${update.currentVersion}` : 'Версия —'}
-            {update.availableVersion && update.availableVersion !== update.currentVersion
-              ? ` → ${update.availableVersion}`
-              : ''}
-          </p>
-        ) : null}
-        {update.error && !collapsed ? <p className="sidebar-update-error">{update.error}</p> : null}
-        {update.state === 'downloading' || update.state === 'installing' ? (
-          <div
-            className={update.percent > 0 ? 'sidebar-update-progress' : 'sidebar-update-progress indeterminate'}
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={update.percent}
-          >
-            <i className="sidebar-update-progress-bar" style={update.percent > 0 ? { width: `${update.percent}%` } : undefined} />
-            {!collapsed && (
-              <span className="sidebar-update-progress-label">
-                {update.state === 'installing' ? 'Установка...' : update.percent > 0 ? `${update.percent}%` : 'Загрузка...'}
-              </span>
-            )}
-          </div>
-        ) : update.state === 'available' && !update.devMode ? (
-          <button
-            className="sidebar-update-btn"
-            title={update.error || 'Установить обновление Конструктора и Оркестратора'}
-            onClick={() => void window.api.installUpdate?.()}
-          >
-            {!collapsed && <span>Обновить обе программы</span>}
-            {collapsed && <span className="sidebar-update-mark">!</span>}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="sidebar-update-check"
-          disabled={checking || update.state === 'downloading' || update.state === 'installing'}
-          title="Проверить обновление приложения (не перезагрузка данных сеток)"
-          onClick={runCheck}
-        >
-          {collapsed ? '↻' : checking ? 'Проверяем…' : 'Проверить обновление'}
-        </button>
-      </div>
+      <AppUpdatePanel collapsed={collapsed} />
 
       <div className="sidebar-divider" />
       <div className="sidebar-peers">
