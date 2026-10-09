@@ -14,6 +14,7 @@ import {
   computeTabChromeMetrics,
   TAB_CHROME_SNAP_MIN_ROW,
   isTileWidgetId,
+  isWidgetOnCanvas,
   tileWidgetId,
   type TabChromeMeta,
   useTabChromeLayout
@@ -352,11 +353,7 @@ export function TabChromeGrid({
   const children = useMemo(
     () =>
       ids
-        .filter((id) => {
-          if (meta[id]?.visible === false && !editMode) return false
-          if (meta[id]?.binned && !editMode) return false
-          return true
-        })
+        .filter((id) => isWidgetOnCanvas(meta[id]))
         .map((id) => (
           <div key={id} className="tab-chrome-grid-item">
             <WidgetChrome

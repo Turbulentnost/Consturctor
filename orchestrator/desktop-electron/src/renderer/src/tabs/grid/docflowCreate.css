@@ -370,6 +370,25 @@
   vertical-align: middle;
 }
 
+.df1c-table .df1c-col-action {
+  width: 6.6rem;
+  padding: 2px 4px;
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.df1c-btn--tiny {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.df1c-btn--tiny:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .df1c-icon-btn {
   border: none;
   background: transparent;

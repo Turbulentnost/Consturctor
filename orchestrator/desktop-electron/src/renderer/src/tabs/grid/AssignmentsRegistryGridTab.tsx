@@ -165,7 +165,6 @@ function buildRegistryTiles(
       id: 'in_work',
       label: 'В работе',
       value: String(inWork.length),
-      hint: 'Открытые без просрочки и без срока в ближайшие 3 рабочих дня',
       tone: 'neutral'
     },
     {

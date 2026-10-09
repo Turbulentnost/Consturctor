@@ -394,7 +394,11 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "next_meeting_date": _prop("string", "Дата следующего совещания YYYY-MM-DD"),
                 "participants": _prop("array", "ФИО присутствующих"),
                 "agenda": _prop("array", "Вопросы повестки: строка или {question, responsible}"),
-                "decisions": _prop("array", "Решения: строка или {text, due}"),
+                "decisions": _prop(
+                    "array",
+                    "Решения: строка или {text, since, due}. since — дата начала YYYY-MM-DD, "
+                    "её пишет форма; due — дата окончания, только если названа отдельно",
+                ),
                 "tasks": _prop(
                     "array",
                     "Поставленные задачи: {text, executor (ФИО), due YYYY-MM-DD, priority, note}",

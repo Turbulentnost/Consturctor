@@ -514,6 +514,9 @@ def build_protocol_create_body(
             "Отменено": False,
             "НаличиеАртефакта": False,
         }
+        since = _day_value(_field_of(item, "since", "start", "ДатаНачала"))
+        if since:
+            row["ДатаНачала"] = since
         due = _day_value(_field_of(item, "due", "deadline", "ДатаОкончания"), end=True)
         if due:
             row["ДатаОкончания"] = due
@@ -1898,7 +1901,7 @@ def probe_protocol_write(
         "time_end": "10:30",
         "participants": [leader] if leader else [],
         "agenda": [f"{mark}: тестовый вопрос повестки"],
-        "decisions": [{"text": f"{mark}: тестовое решение", "due": datetime.now().strftime("%Y-%m-%d")}],
+        "decisions": [{"text": f"{mark}: тестовое решение", "since": datetime.now().strftime("%Y-%m-%d")}],
         "tasks": [
             {
                 "text": f"{mark}: тестовая задача",
@@ -1938,7 +1941,7 @@ def probe_protocol_write(
             "agenda": [updated_question],
             "decisions": [
                 *probe_args["decisions"],
-                {"text": f"{mark}: второе решение", "due": datetime.now().strftime("%Y-%m-%d")},
+                {"text": f"{mark}: второе решение", "since": datetime.now().strftime("%Y-%m-%d")},
             ],
         }
         _update_protocol(update_args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)

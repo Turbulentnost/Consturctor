@@ -30,8 +30,10 @@ import {
 import { calendarPalette, type CalendarPalette } from '../../workplace/meetingCalendars'
 import './meetingsCalendar.css'
 
-/** Высота часа в сетке недели: от неё считается высота блока по длительности. */
+/** Высота часа, пока сетка ещё не измерена. */
 const HOUR_H = 52
+/** Ниже этой высоты час не сжимаем: остаётся прокрутка. */
+const MIN_HOUR_H = 28
 /** Ниже заголовок и время под ним уже не поместятся. */
 const MIN_BLOCK_H = 46
 /** Шаг строки заголовка, тот же что в CSS. */
@@ -50,7 +52,8 @@ function titleLines(height: number, withTime: boolean): number {
   const free = height - BLOCK_CHROME_H - (withTime ? TIME_ROW_H : 0)
   return Math.max(1, Math.floor(free / TITLE_LINE_H))
 }
-const DEFAULT_FROM_HOUR = 6
+const DEFAULT_FROM_HOUR = 7
+/** Последняя подпись оси. Окно заканчивается в этот час, не продолжается дальше. */
 const DEFAULT_TO_HOUR = 20
 
 /** Строка режима дня — один календарь, как в «Расписании» Outlook. */
@@ -193,9 +196,58 @@ function buildLanes(
   })
 }
 
-/** Окно сетки всегда 06:00–20:00: всё, что помещается в него, видно без прокрутки. */
+/** Окно сетки 07:00–20:00. Подписи часов включительно, нижняя граница — 20:00. */
 function hourWindow(_lanes: DayLane[]): { from: number; to: number } {
   return { from: DEFAULT_FROM_HOUR, to: DEFAULT_TO_HOUR }
+}
+
+function hourLabels(bounds: { from: number; to: number }): number[] {
+  const count = bounds.to - bounds.from + 1
+  return Array.from({ length: Math.max(0, count) }, (_, index) => bounds.from + index)
+}
+
+/** Часть совещания внутри окна. Вне 07:00–20:00 блок не рисуется. */
+function clipSpan(
+  span: MeetingSpan,
+  bounds: { from: number; to: number }
+): { from: number; to: number } | null {
+  const from = Math.max(span.from, bounds.from * 60)
+  const to = Math.min(span.to, bounds.to * 60)
+  if (to <= from) return null
+  return { from, to }
+}
+
+/**
+ * Высота часа от видимой области сетки, чтобы 07:00–20:00 помещались без прокрутки.
+ * `slots` — число часовых промежутков (20 − 7 = 13), не число подписей.
+ */
+function useFitHourHeight(slots: number): {
+  scrollRef: React.RefObject<HTMLDivElement | null>
+  headRef: React.RefObject<HTMLDivElement | null>
+  hourH: number
+} {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const headRef = useRef<HTMLDivElement>(null)
+  const [hourH, setHourH] = useState(HOUR_H)
+
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current
+    if (!scroll || slots <= 0) return
+    const measure = (): void => {
+      const head = headRef.current?.offsetHeight ?? 0
+      const available = scroll.clientHeight - head
+      if (available <= 0) return
+      const next = Math.max(MIN_HOUR_H, Math.floor(available / slots))
+      setHourH((current) => (current === next ? current : next))
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(scroll)
+    if (headRef.current) observer.observe(headRef.current)
+    return () => observer.disconnect()
+  }, [slots])
+
+  return { scrollRef, headRef, hourH }
 }
 
 /** Совещание уже закончилось: цвет человека сохраняем, блок просто приглушаем. */
@@ -395,15 +447,24 @@ function WeekGrid({
   eventPalette
 }: GridProps): React.JSX.Element {
   const bounds = hourWindow(lanes)
-  const hours = Array.from({ length: bounds.to - bounds.from }, (_, index) => bounds.from + index)
-  const height = hours.length * HOUR_H
+  const hours = hourLabels(bounds)
+  const slots = Math.max(1, bounds.to - bounds.from)
+  const { scrollRef, headRef, hourH } = useFitHourHeight(slots)
+  const height = slots * hourH
   const now = new Date()
-  const perMinute = HOUR_H / 60
+  const perMinute = hourH / 60
   const offset = (minutes: number): number => (minutes - bounds.from * 60) * perMinute
+  const nowMinutes = now.getHours() * 60 + now.getMinutes()
+  const labelTop = (hour: number): number => {
+    const y = offset(hour * 60)
+    if (hour <= bounds.from) return Math.max(8, y)
+    if (hour >= bounds.to) return Math.max(8, height - 8)
+    return y
+  }
 
   return (
-    <div className="cal-scroll mcal-scroll">
-      <div className="mcal-head">
+    <div className="cal-scroll mcal-scroll" ref={scrollRef}>
+      <div className="mcal-head" ref={headRef}>
         <div className="mcal-gutter-cell" />
         {lanes.map((lane) => {
           const today = sameDay(lane.day, now)
@@ -421,8 +482,7 @@ function WeekGrid({
       <div className="mcal-body" style={{ height }}>
           <div className="mcal-gutter">
             {hours.map((hour) => (
-              // Верхнюю метку не даём уехать за край: она центрируется по своей линии.
-              <span key={hour} className="mcal-hour" style={{ top: Math.max(7, offset(hour * 60)) }}>
+              <span key={hour} className="mcal-hour" style={{ top: labelTop(hour) }}>
                 {String(hour).padStart(2, '0')}:00
               </span>
             ))}
@@ -433,23 +493,26 @@ function WeekGrid({
               className={`mcal-col${sameDay(lane.day, now) ? ' is-today' : ''}`}
             >
               {hours.map((hour) => (
-                <div key={hour} className="mcal-line" style={{ top: offset(hour * 60) }} />
+                <div key={hour} className="mcal-line" style={{ top: Math.min(offset(hour * 60), height - 1) }} />
               ))}
-              {sameDay(lane.day, now) ? (
-                <div
-                  className="mcal-now"
-                  style={{ top: offset(now.getHours() * 60 + now.getMinutes()) }}
-                />
+              {sameDay(lane.day, now) && nowMinutes >= bounds.from * 60 && nowMinutes <= bounds.to * 60 ? (
+                <div className="mcal-now" style={{ top: offset(nowMinutes) }} />
               ) : null}
               {lane.blocks.map((block) => {
+                const clipped = clipSpan(block.span, bounds)
+                if (!clipped) return null
                 const key = meetingInstanceKey(block.span.meeting)
-                const blockHeight = Math.max(MIN_BLOCK_H, (block.span.to - block.span.from) * perMinute)
+                const top = offset(clipped.from)
+                const blockHeight = Math.min(
+                  Math.max(MIN_BLOCK_H, (clipped.to - clipped.from) * perMinute),
+                  Math.max(18, height - top)
+                )
                 return (
                   <MeetingBlock
                     key={key}
                     block={block}
                     now={now}
-                    style={{ top: offset(block.span.from) }}
+                    style={{ top }}
                     height={blockHeight}
                     selected={selectedId === key}
                     onClick={onSelect}
@@ -480,14 +543,23 @@ function DayStrip({
   rows?: DayRowSpec[]
   rowKeyOf?: (meeting: MeetingEvent) => string
 }): React.JSX.Element {
+  const bounds = hourWindow(lane ? [lane] : [])
+  const hours = hourLabels(bounds)
+  const slots = Math.max(1, bounds.to - bounds.from)
+  const { scrollRef, headRef, hourH } = useFitHourHeight(slots)
   if (!lane) return <div className="mcal-empty">Нет данных за день</div>
-  const bounds = hourWindow([lane])
-  const hours = Array.from({ length: bounds.to - bounds.from }, (_, index) => bounds.from + index)
-  const height = hours.length * HOUR_H
+  const height = slots * hourH
   const now = new Date()
   const isToday = sameDay(lane.day, now)
-  const perMinute = HOUR_H / 60
+  const perMinute = hourH / 60
   const offset = (minutes: number): number => (minutes - bounds.from * 60) * perMinute
+  const nowMinutes = now.getHours() * 60 + now.getMinutes()
+  const labelTop = (hour: number): number => {
+    const y = offset(hour * 60)
+    if (hour <= bounds.from) return Math.max(8, y)
+    if (hour >= bounds.to) return Math.max(8, height - 8)
+    return y
+  }
 
   const board = (rows?.length ? rows : [{ key: '', label: 'Календарь', palette: undefined }]).map(
     (row) => {
@@ -499,9 +571,9 @@ function DayStrip({
   )
 
   return (
-    <div className="cal-scroll mcal-scroll">
+    <div className="cal-scroll mcal-scroll" ref={scrollRef}>
       <div className="mcal-day-v" style={{ ['--mcal-cols' as string]: board.length }}>
-        <div className="mcal-day-v-head">
+        <div className="mcal-day-v-head" ref={headRef}>
           <div className={`mcal-day-v-corner${isToday ? ' is-today' : ''}`}>
             <span className="mcal-head-dow">{DAYS_SHORT[isoWeekday(lane.day)]}</span>
             <span className="mcal-head-date">{lane.day.getDate()}</span>
@@ -520,7 +592,7 @@ function DayStrip({
         <div className="mcal-day-v-body" style={{ height }}>
           <div className="mcal-gutter">
             {hours.map((hour) => (
-              <span key={hour} className="mcal-hour" style={{ top: Math.max(7, offset(hour * 60)) }}>
+              <span key={hour} className="mcal-hour" style={{ top: labelTop(hour) }}>
                 {String(hour).padStart(2, '0')}:00
               </span>
             ))}
@@ -531,31 +603,34 @@ function DayStrip({
             return (
               <div key={row.key || 'self'} className={`mcal-day-v-col${isToday ? ' is-today' : ''}`}>
                 {hours.map((hour) => (
-                  <div key={hour} className="mcal-line" style={{ top: offset(hour * 60) }} />
+                  <div key={hour} className="mcal-line" style={{ top: Math.min(offset(hour * 60), height - 1) }} />
                 ))}
-                {isToday ? (
-                  <div
-                    className="mcal-now"
-                    style={{ top: offset(now.getHours() * 60 + now.getMinutes()) }}
-                  />
+                {isToday && nowMinutes >= bounds.from * 60 && nowMinutes <= bounds.to * 60 ? (
+                  <div className="mcal-now" style={{ top: offset(nowMinutes) }} />
                 ) : null}
                 {empty ? <span className="mcal-day-free">Свободно</span> : null}
                 {subLanes.map((subLane, index) =>
                   subLane.map((block) => {
+                    const clipped = clipSpan(block.span, bounds)
+                    if (!clipped) return null
                     const key = meetingInstanceKey(block.span.meeting)
                     const share = 100 / laneCount
+                    const top = offset(clipped.from)
                     return (
                       <MeetingBlock
                         key={key}
                         block={block}
                         now={now}
                         style={{
-                          top: offset(block.span.from),
+                          top,
                           left: `calc(${index * share}% + 2px)`,
                           width: `calc(${share}% - 6px)`,
                           right: 'auto'
                         }}
-                        height={Math.max(MIN_BLOCK_H, (block.span.to - block.span.from) * perMinute)}
+                        height={Math.min(
+                          Math.max(MIN_BLOCK_H, (clipped.to - clipped.from) * perMinute),
+                          Math.max(18, height - top)
+                        )}
                         selected={selectedId === key}
                         onClick={onSelect}
                         onConflict={(segment) => onConflict({ day: lane.day, segment })}

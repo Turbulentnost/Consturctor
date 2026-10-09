@@ -28,7 +28,7 @@ const MISSING_ROOM = '__missing_room__'
 const ALL_EMPLOYEES_LIMIT = 20000
 const MEETING_TYPES = ['Отчетное', 'Внеплановое', 'Селекторное']
 
-type ProtocolFormTab = 'main' | 'attendees' | 'agenda' | 'tasks' | 'decisions'
+type ProtocolFormTab = 'main' | 'attendees' | 'agenda' | 'tasks' | 'control' | 'decisions'
 type Pending = 'save' | 'save-close' | null
 
 function GrowText({
@@ -60,6 +60,12 @@ function GrowText({
       onChange={(event) => onChange(event.target.value)}
     />
   )
+}
+
+function ruDay(iso: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso.trim())
+  if (!match) return iso.trim()
+  return `${match[3]}.${match[2]}.${match[1]}`
 }
 
 function filled(rows: { question?: string; text?: string }[], key: 'question' | 'text'): number {
@@ -271,6 +277,7 @@ export function MeetingProtocolForm({
   const agendaCount = filled(draft.agenda, 'question')
   const taskCount = filled(draft.tasks, 'text')
   const decisionCount = filled(draft.decisions, 'text')
+  const controlTasks = (card?.form.control_tasks || []).filter((row) => row.text.trim())
   const attendeeCount = draft.participants
     .split(/\n/)
     .map((line) => line.trim())
@@ -284,6 +291,16 @@ export function MeetingProtocolForm({
   }
   const updateDecision = (key: string, partial: Partial<ProtocolDecisionDraft>): void => {
     patch({ decisions: draft.decisions.map((item) => (item.key === key ? { ...item, ...partial } : item)) })
+  }
+  const taskFromDecision = (row: ProtocolDecisionDraft): void => {
+    const text = row.text.trim()
+    if (!text || readOnly) return
+    const next = { key: newProtocolRowKey(), text, executor: '', due: '', priority: '', note: '' }
+    const kept = draft.tasks.filter(
+      (item) => item.text.trim() || item.executor.trim() || item.due.trim() || item.priority.trim() || item.note.trim()
+    )
+    patch({ tasks: [...kept, next] })
+    setTab('tasks')
   }
 
   return createPortal(
@@ -314,6 +331,7 @@ export function MeetingProtocolForm({
               ['attendees', `Присутствующие${attendeeCount ? ` (${attendeeCount})` : ''}`],
               ['agenda', `Повестка${agendaCount ? ` (${agendaCount})` : ''}`],
               ['tasks', `Задачи${taskCount ? ` (${taskCount})` : ''}`],
+              ['control', `Контроль${controlTasks.length ? ` (${controlTasks.length})` : ''}`],
               ['decisions', `Решения${decisionCount ? ` (${decisionCount})` : ''}`]
             ] as const
           ).map(([id, label]) => (
@@ -683,6 +701,38 @@ export function MeetingProtocolForm({
                 </section>
               ) : null}
 
+              {tab === 'control' ? (
+                <section className="df1c-table">
+                  <div className="df1c-table-head">
+                    <h3>Задачи на контроле</h3>
+                  </div>
+                  {controlTasks.length ? (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th className="df1c-num">N</th>
+                          <th className="df1c-col-measure">Задача</th>
+                          <th className="df1c-col-ref">Исполнитель</th>
+                          <th className="df1c-col-date">Срок</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {controlTasks.map((row, index) => (
+                          <tr key={`${row.text}-${index}`}>
+                            <td className="df1c-num">{index + 1}</td>
+                            <td className="df1c-col-measure">{row.text}</td>
+                            <td className="df1c-col-ref">{row.executor}</td>
+                            <td className="df1c-col-date">{ruDay(row.due)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="df1c-muted">Задач на контроле нет. Они подтягиваются из протокола-основания.</p>
+                  )}
+                </section>
+              ) : null}
+
               {tab === 'decisions' ? (
                 <section className="df1c-table">
                   <div className="df1c-table-head">
@@ -691,7 +741,7 @@ export function MeetingProtocolForm({
                       <button
                         type="button"
                         className="df1c-btn"
-                        onClick={() => patch({ decisions: [...draft.decisions, { key: newProtocolRowKey(), text: '', due: '' }] })}
+                        onClick={() => patch({ decisions: [...draft.decisions, { key: newProtocolRowKey(), text: '', since: '' }] })}
                       >
                         <Plus size={14} aria-hidden /> Добавить
                       </button>
@@ -703,7 +753,8 @@ export function MeetingProtocolForm({
                         <tr>
                           <th className="df1c-num">N</th>
                           <th className="df1c-col-measure">Текст решения</th>
-                          <th className="df1c-col-date">Срок</th>
+                          <th className="df1c-col-date">Дата начала</th>
+                          {readOnly ? null : <th className="df1c-col-action" />}
                           {readOnly ? null : <th className="df1c-col-delete" />}
                         </tr>
                       </thead>
@@ -720,8 +771,21 @@ export function MeetingProtocolForm({
                               />
                             </td>
                             <td className="df1c-col-date">
-                              <input className="df1c-input df1c-date" type="date" readOnly={readOnly} value={row.due} onChange={(event) => updateDecision(row.key, { due: event.target.value })} />
+                              <input className="df1c-input df1c-date" type="date" readOnly={readOnly} value={row.since} onChange={(event) => updateDecision(row.key, { since: event.target.value })} />
                             </td>
+                            {readOnly ? null : (
+                              <td className="df1c-col-action">
+                                <button
+                                  type="button"
+                                  className="df1c-btn df1c-btn--tiny"
+                                  disabled={!row.text.trim()}
+                                  title="Сделать поставленной задачей"
+                                  onClick={() => taskFromDecision(row)}
+                                >
+                                  В задачу
+                                </button>
+                              </td>
+                            )}
                             {readOnly ? null : (
                               <td className="df1c-col-delete">
                                 <button

@@ -79,11 +79,11 @@ export function renderProtocolHtml(card: OnecProtocolForm): string {
   const decisions = form.decisions.length
     ? `<h2>Решения</h2>
 <table>
-<thead><tr><th style="width:36px">№</th><th>Решение</th><th style="width:18%">Срок</th></tr></thead>
+<thead><tr><th style="width:36px">№</th><th>Решение</th><th style="width:18%">Дата начала</th></tr></thead>
 <tbody>${form.decisions
         .map(
           (row, index) =>
-            `<tr><td>${index + 1}</td><td>${multiline(row.text)}</td><td>${esc(ruDate(row.due))}</td></tr>`
+            `<tr><td>${index + 1}</td><td>${multiline(row.text)}</td><td>${esc(ruDate(row.since))}</td></tr>`
         )
         .join('')}</tbody>
 </table>`

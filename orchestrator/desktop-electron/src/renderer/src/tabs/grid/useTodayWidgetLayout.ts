@@ -57,8 +57,7 @@ export const TODAY_WIDGET_IDS = [
   'onec',
   'projects',
   'events',
-  'decisions',
-  'ilchenkoAlert'
+  'decisions'
 ] as const
 
 export type TodayWidgetId = (typeof TODAY_WIDGET_IDS)[number]
@@ -84,8 +83,7 @@ export const DEFAULT_TODAY_WIDGET_LAYOUT: LayoutItem[] = [
   { i: 'results', x: 4, y: 2, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
   { i: 'events', x: 0, y: 4, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
   { i: 'decisions', x: 4, y: 4, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'projects', x: 0, y: 6, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'ilchenkoAlert', x: 6, y: 6, w: 2, h: 2, minW: 2, minH: 1, maxW: 4, maxH: 4 }
+  { i: 'projects', x: 0, y: 6, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 }
 ]
 
 export const DEFAULT_TODAY_WIDGET_VISIBLE: Partial<Record<TodayWidgetId, boolean>> = {
@@ -99,8 +97,7 @@ export const TODAY_WIDGET_LABELS: Record<TodayWidgetId, string> = {
   onec: 'Задачи на сегодня (1С и платформа)',
   projects: 'Проектные задачи',
   events: 'События',
-  decisions: 'Решения',
-  ilchenkoAlert: 'Поручения: просрочка и срок'
+  decisions: 'Решения'
 }
 
 function storageKeyForUser(userId: string): string {
@@ -438,9 +435,7 @@ export function useTodayWidgetLayout(userId: string): {
 
   const layoutWithStatic = useMemo(() => {
     const flagged = applyTodayLayoutStaticFlags(layout, editMode, locked)
-    if (editMode) return flagged
-    const filtered = flagged.filter((item) => visible[item.i as TodayWidgetId] !== false)
-    return filtered.length ? filtered : flagged
+    return flagged.filter((item) => visible[item.i as TodayWidgetId] !== false)
   }, [layout, editMode, locked, visible])
 
   return {

@@ -83,7 +83,7 @@ def _args() -> dict:
         "room": "малый конференц-зал",
         "participants": ["Соломичева Светлана Викторовна", "Жалыбин Максим Дмитриевич", "Неизвестный Гость"],
         "agenda": ["Статус ИИ-агентов", {"question": "Библиотека агентов", "responsible": "Жалыбин"}],
-        "decisions": ["Подключить агента совещаний в библиотеку", {"text": "Расчёт KPI", "due": "2026-09-24"}],
+        "decisions": ["Подключить агента совещаний в библиотеку", {"text": "Расчёт KPI", "since": "2026-09-24"}],
         "tasks": [
             {"text": "Проверить в outlook регистрацию вх.корр в 1с", "executor": "Жалыбин Максим Дмитриевич", "due": "2026-09-24"},
             {"text": "Сделать расчёт КПИ", "executor": "Комаркова", "due": "2026-09-22", "priority": "Высокий"},
@@ -131,7 +131,8 @@ def test_tabular_sections_map_to_1c_fields():
     assert decisions[0]["ТекстРешения"] == "Подключить агента совещаний в библиотеку"
     assert decisions[0]["ДатаНачала"] == "2026-09-21T00:00:00"
     assert decisions[0]["ДокументОснование_Type"] == "StandardODATA.Undefined"
-    assert decisions[1]["ДатаОкончания"] == "2026-09-24T23:59:59"
+    assert decisions[1]["ДатаНачала"] == "2026-09-24T00:00:00"
+    assert "ДатаОкончания" not in decisions[1]
 
     tasks = body["ПеременныеЗадачиПротокола"]
     assert len(tasks) == 2
@@ -374,7 +375,12 @@ def _card(**overrides) -> dict:
             {"LineNumber": "1", "Вопрос": "Статус ИИ-агентов", "Ответственный_Key": PERSONS["Жалыбин Максим Дмитриевич"]},
         ],
         "Решения": [
-            {"LineNumber": "1", "ТекстРешения": "Расчёт KPI", "ДатаОкончания": "2026-09-24T23:59:59"},
+            {
+                "LineNumber": "1",
+                "ТекстРешения": "Расчёт KPI",
+                "ДатаНачала": "2026-09-21T00:00:00",
+                "ДатаОкончания": "2026-09-24T23:59:59",
+            },
         ],
         "ПеременныеЗадачиПротокола": [
             {
@@ -432,7 +438,9 @@ def test_read_protocol_form_maps_guids_to_names(monkeypatch):
     assert [(row["question"], row["responsible"]) for row in form["agenda"]] == [
         ("Статус ИИ-агентов", "Жалыбин Максим Дмитриевич")
     ]
-    assert [(row["text"], row["due"]) for row in form["decisions"]] == [("Расчёт KPI", "2026-09-24")]
+    assert [(row["text"], row["due"], row["since"]) for row in form["decisions"]] == [
+        ("Расчёт KPI", "2026-09-24", "2026-09-21")
+    ]
     assert form["tasks"][0]["executor"] == "Мегрелишвили Михаил Эмзарович"
     assert form["tasks"][0]["due"] == "2026-09-22"
     assert form["tasks"][0]["priority"] == "Высокий"

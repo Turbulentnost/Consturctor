@@ -14380,6 +14380,39 @@ button.spec-v04-tile {
     grid-template-columns: 1fr;
   }
 }
+.set-tile-order {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+
+.set-tile-order-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.set-tile-order-row .set-widget-toggle {
+  flex: 1;
+  text-align: left;
+}
+
+.set-tile-order-move {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(13, 59, 115, 0.18);
+  border-radius: 8px;
+  background: #fff;
+  color: #0d3b73;
+  cursor: pointer;
+}
+
+.set-tile-order-move:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .set-widget-grid-9 {
   display: grid;
   grid-template-columns: repeat(9, minmax(0, 1fr));

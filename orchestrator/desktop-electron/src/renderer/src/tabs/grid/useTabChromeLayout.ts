@@ -605,13 +605,7 @@ export function useTabChromeLayout(
   )
 
   const layoutWithStatic = useMemo(() => {
-    const visibleIds = new Set(
-      widgetIds.filter((id) => {
-        const item = persist.meta[id]
-        if (editMode) return item?.visible !== false
-        return isWidgetOnCanvas(item)
-      })
-    )
+    const visibleIds = new Set(widgetIds.filter((id) => isWidgetOnCanvas(persist.meta[id])))
     return persist.layout
       .filter((item) => visibleIds.has(item.i))
       .map((item) => ({

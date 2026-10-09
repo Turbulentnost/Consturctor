@@ -10,6 +10,13 @@ export type ProtocolQuestionDraft = {
 export type ProtocolDecisionDraft = {
   key: string
   text: string
+  /** ДатаНачала решения, ГГГГ-ММ-ДД. */
+  since: string
+}
+
+export type ProtocolControlTask = {
+  text: string
+  executor: string
   due: string
 }
 
@@ -119,7 +126,7 @@ export function draftFromMeeting(meeting: MeetingEvent, actorFio: string): Proto
       .join('\n'),
     comment: '',
     agenda: [{ key: newProtocolRowKey(), question: '', responsible: '' }],
-    decisions: [{ key: newProtocolRowKey(), text: '', due: '' }],
+    decisions: [{ key: newProtocolRowKey(), text: '', since: '' }],
     tasks: [{ key: newProtocolRowKey(), text: '', executor: '', due: '', priority: '', note: '' }]
   }
 }
@@ -158,8 +165,9 @@ export type OnecProtocolForm = {
     project: string
     participants: string[]
     agenda: { question: string; responsible: string }[]
-    decisions: { text: string; due: string }[]
+    decisions: { text: string; due: string; since: string }[]
     tasks: { text: string; executor: string; due: string; priority: string; note: string; item?: string }[]
+    control_tasks: ProtocolControlTask[]
     comment: string
   }
 }
@@ -208,7 +216,11 @@ export function parseOnecProtocolForm(payload: unknown): OnecProtocolForm | null
       project: str(form.project),
       participants: Array.isArray(form.participants) ? form.participants.map((item) => str(item)).filter(Boolean) : [],
       agenda: list(form.agenda).map((row) => ({ question: str(row.question), responsible: str(row.responsible) })),
-      decisions: list(form.decisions).map((row) => ({ text: str(row.text), due: str(row.due) })),
+      decisions: list(form.decisions).map((row) => ({
+        text: str(row.text),
+        due: str(row.due),
+        since: str(row.since)
+      })),
       tasks: list(form.tasks).map((row) => ({
         text: str(row.text),
         executor: str(row.executor),
@@ -216,6 +228,11 @@ export function parseOnecProtocolForm(payload: unknown): OnecProtocolForm | null
         priority: str(row.priority),
         note: str(row.note),
         item: str(row.item) || undefined
+      })),
+      control_tasks: list(form.control_tasks).map((row) => ({
+        text: str(row.text),
+        executor: str(row.executor),
+        due: str(row.due)
       })),
       comment: str(form.comment)
     }
@@ -273,7 +290,7 @@ export function draftFromOnecForm(card: OnecProtocolForm): ProtocolCreateDraft {
     .map((row) => ({ key: newProtocolRowKey(), question: row.question, responsible: row.responsible }))
   const decisions = form.decisions
     .filter((row) => row.text)
-    .map((row) => ({ key: newProtocolRowKey(), text: row.text, due: row.due }))
+    .map((row) => ({ key: newProtocolRowKey(), text: row.text, since: row.since }))
   const tasks = form.tasks
     .filter((row) => row.text)
     .map((row) => ({
@@ -304,7 +321,7 @@ export function draftFromOnecForm(card: OnecProtocolForm): ProtocolCreateDraft {
     participants: form.participants.join('\n'),
     comment: stripOutlookMarker(form.comment),
     agenda: agenda.length ? agenda : [{ key: newProtocolRowKey(), question: '', responsible: '' }],
-    decisions: decisions.length ? decisions : [{ key: newProtocolRowKey(), text: '', due: '' }],
+    decisions: decisions.length ? decisions : [{ key: newProtocolRowKey(), text: '', since: '' }],
     tasks: tasks.length
       ? tasks
       : [{ key: newProtocolRowKey(), text: '', executor: '', due: '', priority: '', note: '' }]
@@ -323,7 +340,7 @@ function buildWriteArgs(draft: ProtocolCreateDraft, meeting: MeetingEvent): Writ
     .map((row) => ({ question: row.question.trim(), responsible: row.responsible.trim() }))
     .filter((row) => row.question)
   const decisions = draft.decisions
-    .map((row) => ({ text: row.text.trim(), due: row.due.trim() }))
+    .map((row) => ({ text: row.text.trim(), since: row.since.trim() }))
     .filter((row) => row.text)
   const tasks = draft.tasks
     .map((row) => ({

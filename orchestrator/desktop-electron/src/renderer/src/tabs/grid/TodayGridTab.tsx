@@ -4,7 +4,12 @@ import type { UserProfile } from '../../api/types'
 import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
 import { TODAY_WIDGET_IDS, type TodayWidgetId } from './useTodayWidgetLayout'
-import { readTodayTileVisibility, TODAY_TILE_VISIBILITY_EVENT, type TodayTileId } from './todayWidgetSettings'
+import {
+  readTodayTileOrder,
+  readTodayTileVisibility,
+  TODAY_TILE_VISIBILITY_EVENT,
+  type TodayTileId
+} from './todayWidgetSettings'
 import { TodayOutlookMailPanel } from './TodayOutlookMailPanel'
 import { TrackedCalendarsControl } from './TrackedCalendarsControl'
 import {
@@ -12,7 +17,7 @@ import {
   SpecAskOrchestratorBlock,
   SpecPanel,
   SpecPill,
-  SpecSummaryTiles
+  SpecSummaryTileCard
 } from '../../workplace/specV04Components'
 import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
@@ -405,8 +410,12 @@ export function TodayGridTab({
   const { data, tiles: allTiles } = useTodayKpiData(user, periodDay)
   const board = useBoardReportReadiness(user)
   const [tileVisibility, setTileVisibility] = useState(() => readTodayTileVisibility(user.id || ''))
+  const [tileOrder, setTileOrder] = useState(() => readTodayTileOrder(user.id || ''))
   useEffect(() => {
-    const sync = (): void => setTileVisibility(readTodayTileVisibility(user.id || ''))
+    const sync = (): void => {
+      setTileVisibility(readTodayTileVisibility(user.id || ''))
+      setTileOrder(readTodayTileOrder(user.id || ''))
+    }
     sync()
     window.addEventListener(TODAY_TILE_VISIBILITY_EVENT, sync)
     return () => window.removeEventListener(TODAY_TILE_VISIBILITY_EVENT, sync)
@@ -438,6 +447,23 @@ export function TodayGridTab({
       }
     ]
   }, [allTiles, tileVisibility, board])
+  const tileStrip = useMemo(() => {
+    const byId = new Map(tiles.filter((tile) => tile.id !== 'sd-board').map((tile) => [tile.id, tile]))
+    const boardTile = tiles.find((tile) => tile.id === 'sd-board')
+    const showAssignments = isIlchenkoAccount(user) && tileVisibility.assignments !== false
+    const ordered: Array<'assignments' | (typeof tiles)[number]> = []
+    for (const id of tileOrder) {
+      if (id === 'assignments') {
+        if (showAssignments) ordered.push('assignments')
+        continue
+      }
+      if (tileVisibility[id] === false) continue
+      const tile = byId.get(id)
+      if (tile) ordered.push(tile)
+    }
+    if (boardTile) ordered.push(boardTile)
+    return ordered
+  }, [tileOrder, tileVisibility, tiles, user])
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const [taskDetail, setTaskDetail] = useState<TodayTaskDetailRow | null>(null)
   const [closedTaskIds, setClosedTaskIds] = useState<Set<string>>(() => new Set())
@@ -564,11 +590,8 @@ export function TodayGridTab({
   } = useTodayWidgetLayout(user.id || '')
 
   const visibleWidgetIds = useMemo(
-    () =>
-      layoutWithStatic
-        .map((item) => item.i as TodayWidgetId)
-        .filter((id) => id !== 'ilchenkoAlert' || isIlchenkoAccount(user)),
-    [layoutWithStatic, user]
+    () => layoutWithStatic.map((item) => item.i as TodayWidgetId),
+    [layoutWithStatic]
   )
 
   const todayWidgets = useMemo(
@@ -861,11 +884,6 @@ export function TodayGridTab({
         </SpecPanel>
         </TodayWindow>
       ),
-      ilchenkoAlert: isIlchenkoAccount(user) ? (
-        <TodayWindow searchId="ilchenkoAlert">
-          <TodayIlchenkoAlertTile user={user} />
-        </TodayWindow>
-      ) : null,
       ask: (
         <TodayWindow>
           <SpecAskOrchestratorBlock
@@ -917,12 +935,21 @@ export function TodayGridTab({
   return (
     <>
       <OrchSlotMetrics>
-        <div className={`orch-today-tiles${tiles.length > 7 ? ' orch-today-tiles-wide' : ''}`}>
-          <SpecSummaryTiles
-            tiles={tiles}
-            activeId={kpiTiles.activeIds}
-            onSelect={onKpiTileSelect}
-          />
+        <div className={`orch-today-tiles${tileStrip.length > 7 ? ' orch-today-tiles-wide' : ''}`}>
+          <div className="spec-v04-tiles spec-v04-tiles-rich">
+            {tileStrip.map((item) =>
+              item === 'assignments' ? (
+                <TodayIlchenkoAlertTile key="assignments" user={user} />
+              ) : (
+                <SpecSummaryTileCard
+                  key={item.id}
+                  tile={item}
+                  active={kpiTiles.activeIds.includes(item.id)}
+                  onSelect={onKpiTileSelect}
+                />
+              )
+            )}
+          </div>
         </div>
       </OrchSlotMetrics>
 
