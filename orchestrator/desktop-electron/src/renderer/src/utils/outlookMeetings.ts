@@ -177,11 +177,17 @@ function meetingDedupeKey(meeting: MeetingEvent): string {
   return `${start}\0${(meeting.subject || '').trim()}`
 }
 
+/** Outlook помечает отмену префиксом в теме: «Canceled:», «Cancelled:», «Отменено:», «Отмена:». */
+export function isCanceledMeeting(meeting: Pick<MeetingEvent, 'subject'>): boolean {
+  return /canceled|cancelled|отмен[её]н|отмена/i.test(meeting.subject || '')
+}
+
 /** Outlook COM may return the same appointment twice (shared calendars / merged folders). */
 export function dedupeMeetingEvents(meetings: MeetingEvent[]): MeetingEvent[] {
   const seen = new Set<string>()
   const out: MeetingEvent[] = []
   for (const meeting of meetings) {
+    if (isCanceledMeeting(meeting)) continue
     const key = meetingDedupeKey(meeting)
     if (seen.has(key)) continue
     seen.add(key)
@@ -343,6 +349,7 @@ export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()
   const m = anchor.getMonth()
   const d = anchor.getDate()
   return meetings.filter((item) => {
+    if (isCanceledMeeting(item)) return false
     const start = parseMeetingTime(item.start)
     if (!start) return false
     return start.getFullYear() === y && start.getMonth() === m && start.getDate() === d

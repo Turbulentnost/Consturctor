@@ -6,6 +6,14 @@ import './meetingPopover.css'
 /** Зазор до блока и до краёв окна. */
 const GAP = 10
 const EDGE = 12
+/** Окна поверх карточки (диалоги протокола, список ФИО) рисуются порталом в body.
+ *  Их клики, прокрутка и Escape не должны закрывать карточку: иначе вместе с ней пропадает и сама форма. */
+const OVERLAY_SELECTOR = '.modal-overlay, .tc-combo-list'
+
+function insideOverlay(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(OVERLAY_SELECTOR))
+}
+
 /** Ширина карточки в CSS. Её и берём для решения «влезет справа или нет»:
  *  измеренный прямоугольник во время анимации уже уменьшен масштабом. */
 const CARD_W = 380
@@ -88,14 +96,15 @@ export function MeetingPopover({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
+      // Escape в открытой поверх форме закрывает только её.
+      if (event.key === 'Escape' && !insideOverlay(event.target)) onClose()
     }
     const onDown = (event: MouseEvent): void => {
       const target = event.target as HTMLElement | null
       if (!target || cardRef.current?.contains(target)) return
       // Диалоги протокола открываются в портале рядом с карточкой, а не внутри неё:
       // закрыть карточку по клику в них — значит закрыть и сам диалог.
-      if (target.closest('.modal-overlay')) return
+      if (insideOverlay(target)) return
       onClose()
     }
     // Карточка привязана к месту блока на экране, поэтому прокрутка сетки её закрывает.
@@ -105,7 +114,8 @@ export function MeetingPopover({
       armed = true
     }, 0)
     const onScroll = (event: Event): void => {
-      if (!armed || cardRef.current?.contains(event.target as Node)) return
+      // Прокрутка внутри формы или списка ФИО — это не сдвиг сетки: карточку не трогаем.
+      if (!armed || cardRef.current?.contains(event.target as Node) || insideOverlay(event.target)) return
       onClose()
     }
     window.addEventListener('keydown', onKey)

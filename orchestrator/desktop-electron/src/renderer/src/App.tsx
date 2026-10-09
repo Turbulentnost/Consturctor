@@ -919,6 +919,10 @@ function AppShell(): React.JSX.Element {
             user={activeUser}
             onAskOrchestrator={askOrchestratorFromTab}
             onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })}
+            onOpenMeetings={() => {
+              setLastTab('meetings')
+              setView({ kind: 'tab', key: 'meetings' })
+            }}
             onOpenMetrics={() => setView({ kind: 'tab', key: 'kpi' })}
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}

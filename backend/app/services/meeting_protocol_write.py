@@ -747,6 +747,14 @@ def _prefetch_descriptions(
                 cache[f"{entity}:{key}"] = name
 
 
+def _register_rows_or_empty(protocol_key: str) -> list[dict[str, Any]]:
+    """Регистр задач протокола; при сбое чтения — пусто, форма открывается без него."""
+    try:
+        return read_task_register(protocol_key)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def read_protocol_form(ref_key: str, *, card: dict[str, Any] | None = None) -> dict[str, Any]:
     """Document_ТД_Протокол → form fields (names instead of GUIDs) for the desktop editor."""
     card = card if isinstance(card, dict) and card else read_protocol_card(ref_key)
@@ -755,28 +763,33 @@ def read_protocol_form(ref_key: str, *, card: dict[str, Any] | None = None) -> d
     editable = (not posted) and status in ("", DRAFT_STATUS)
     # Черновик Оркестратор пишет в табличную часть и регистр вместе; после проведения
     # задачи добавляют в регистр — у проведённого протокола правда там.
-    register_rows: list[dict[str, Any]] = []
-    if not editable:
-        try:
-            register_rows = read_task_register(_clean(card.get("Ref_Key")) or ref_key)
-        except Exception:  # noqa: BLE001
-            register_rows = []
     # «Задачи для контроля» — задачи протокола-основания (прошлое совещание), тоже из регистра.
     base_ref = _clean(card.get("ДокументОснование"))
     if "ТД_Протокол" not in _clean(card.get("ДокументОснование_Type")) or not _looks_like_guid(base_ref):
         base_ref = ""
-    control_rows: list[dict[str, Any]] = []
-    if base_ref:
-        try:
-            control_rows = read_task_register(base_ref)
-        except Exception:  # noqa: BLE001
-            control_rows = []
+    register_key = "" if editable else (_clean(card.get("Ref_Key")) or ref_key)
     cache: dict[str, str] = {}
-    _prefetch_descriptions(
-        card,
-        cache,
-        extra_persons=[row.get("Ответственный_Key") for row in register_rows + control_rows],
-    )
+    # Регистры двух протоколов и имена из карточки не зависят друг от друга: читаем их параллельно.
+    # Раньше три запроса шли по очереди, и карточка с регистром ждала их сумму.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        register_future = pool.submit(_register_rows_or_empty, register_key) if register_key else None
+        control_future = pool.submit(_register_rows_or_empty, base_ref) if base_ref else None
+        _prefetch_descriptions(card, cache)
+        register_rows = register_future.result() if register_future else []
+        control_rows = control_future.result() if control_future else []
+    # Исполнители из регистров: докачиваем только тех, чьих имён ещё нет в кэше.
+    extra_keys = {
+        _clean(row.get("Ответственный_Key")) for row in register_rows + control_rows
+    }
+    missing = [
+        key
+        for key in extra_keys
+        if _looks_like_guid(key) and f"{PERSON_ENTITY}:{key}" not in cache
+    ]
+    if missing:
+        _prefetch_descriptions({}, cache, extra_persons=missing)
 
     def user_fio(key: Any) -> str:
         return _description_of(USER_ENTITY, key, cache)

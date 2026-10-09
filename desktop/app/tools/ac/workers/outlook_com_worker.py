@@ -11,6 +11,7 @@ from app.tools.ac.workers.outlook_com_actions import (
     save_mail_attachment,
     save_mail_message,
     search_mail,
+    update_event,
 )
 from app.tools.ac.workers.outlook_diagnostics import (
     run_outlook_diagnostics,
@@ -146,6 +147,16 @@ class OutlookComWorker(BaseWorker):
             if not self.allow_direct_com_calls:
                 return self._direct_com_disabled_result(task)
             output_data = create_event(task.input_data)
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=True,
+                output_data=output_data,
+            )
+
+        if task.tool_name == "outlook.update_event":
+            if not self.allow_direct_com_calls:
+                return self._direct_com_disabled_result(task)
+            output_data = update_event(task.input_data)
             return WorkerResult(
                 task_id=task.task_id,
                 ok=True,

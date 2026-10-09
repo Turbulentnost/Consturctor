@@ -90,7 +90,7 @@ export function ClosedOneCTasksModal({
   return createPortal(
     <div className="modal-overlay closed-tasks-overlay" onClick={onClose} role="presentation">
       <div
-        className="modal-card closed-tasks-dialog"
+        className="modal-card is-resizable closed-tasks-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

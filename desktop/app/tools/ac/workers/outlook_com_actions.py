@@ -1783,11 +1783,12 @@ def create_event(input_data: dict) -> dict:
                     appt.Save()
                 except Exception:
                     _log_progress("step=location skipped")
-            try:
-                appt.Categories = AI_AGENT_CATEGORY
-                appt.Save()
-            except Exception:
-                _log_progress("step=category skipped")
+            if spec["stamp"]:
+                try:
+                    appt.Categories = AI_AGENT_CATEGORY
+                    appt.Save()
+                except Exception:
+                    _log_progress("step=category skipped")
             invites_sent = False
             if added and spec["send_invites"]:
                 try:
@@ -1820,6 +1821,78 @@ def create_event(input_data: dict) -> dict:
         }
 
     return _run_com_read(_write, "Ошибка записи встречи в Outlook Calendar")
+
+
+def update_event(input_data: dict) -> dict:
+    """Изменить встречу Outlook по EntryID: тема, время, место, текст, участники и приглашения.
+
+    Поля, которых нет во входе, не трогаем. Приглашения уходят только если есть участники
+    и send_invites не выключен.
+    """
+    entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+    if not entry_id:
+        raise OutlookComError("Нужен entry_id встречи для изменения")
+    store_id = _safe_str(input_data.get("store_id") or "").strip()
+    start = _coerce_datetime(input_data.get("start"))
+    end = _coerce_datetime(input_data.get("end"))
+
+    def _write(win32com_client: Any) -> dict:
+        _log_progress("step=update_event dispatch_outlook start")
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = _mapi_namespace(outlook)
+        try:
+            appt = (
+                namespace.GetItemFromID(entry_id, store_id)
+                if store_id
+                else namespace.GetItemFromID(entry_id)
+            )
+        except Exception as exc:
+            raise OutlookComError(f"Встреча не найдена в Outlook: {exc}") from exc
+        if appt is None:
+            raise OutlookComError("Встреча не найдена в Outlook")
+        if "subject" in input_data:
+            appt.Subject = _safe_str(input_data.get("subject") or "").strip() or "Совещание"
+        if start is not None:
+            finish = end if end is not None and end > start else start + timedelta(minutes=DEFAULT_MEETING_MINUTES)
+            _set_appointment_times(appt, start, finish)
+        if "location" in input_data:
+            appt.Location = _safe_str(input_data.get("location") or "")
+        if "body" in input_data:
+            appt.Body = _safe_str(input_data.get("body") or "")
+        attendees = _people_from_input(input_data)
+        added: list[str] = []
+        if "attendees" in input_data:
+            added = _attach_attendees(appt, attendees)
+        appt.Save()
+        entry = _verify_saved_appointment(outlook, appt)
+        send_invites = _truthy(input_data.get("send_invites", bool(attendees)))
+        invites_sent = False
+        if send_invites and (added or attendees):
+            try:
+                appt.Send()
+                invites_sent = True
+                _log_progress("step=update_event send_invites ok")
+            except Exception as exc:
+                _log_progress(f"step=update_event send_invites failed: {exc}")
+        _log_progress("step=update_event ok")
+        event = {
+            "entry_id": entry,
+            "subject": _safe_str(getattr(appt, "Subject", "") or ""),
+            "start": start.isoformat(timespec="minutes") if start else "",
+            "end": end.isoformat(timespec="minutes") if end else "",
+            "location": _safe_str(getattr(appt, "Location", "") or ""),
+            "attendees": added,
+            "invites_sent": invites_sent,
+        }
+        return {
+            "ok": True,
+            "event": event,
+            "events": [event],
+            "count": 1,
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка изменения встречи в Outlook Calendar")
 
 
 def _dispatch_outlook(win32com_client: Any) -> Any:
@@ -1940,10 +2013,14 @@ def _meeting_specs(input_data: dict) -> list[dict]:
         rows = [input_data]
     specs: list[dict] = []
     for row in rows:
-        subject, body = stamp_ai_agent_meeting(
-            str(row.get("subject") or row.get("title") or ""),
-            str(row.get("body") or row.get("text") or ""),
-        )
+        # Встречи, которые человек создал в форме Orchestrator, не помечаем как ИИ-агентские.
+        stamp = _truthy(row.get("stamp_ai_agent", input_data.get("stamp_ai_agent", True)))
+        raw_subject = str(row.get("subject") or row.get("title") or "")
+        raw_body = str(row.get("body") or row.get("text") or "")
+        if stamp:
+            subject, body = stamp_ai_agent_meeting(raw_subject, raw_body)
+        else:
+            subject, body = raw_subject.strip() or "Совещание", raw_body.strip()
         start = _coerce_datetime(row.get("start") or row.get("start_at"))
         if start is None:
             continue
@@ -1975,6 +2052,7 @@ def _meeting_specs(input_data: dict) -> list[dict]:
                 "attendees": attendees,
                 "organizer": organizer,
                 "send_invites": send_invites,
+                "stamp": stamp,
             }
         )
     return specs

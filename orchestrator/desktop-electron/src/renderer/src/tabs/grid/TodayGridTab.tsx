@@ -23,7 +23,10 @@ import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecS
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import { erpActorFio } from '../../workplace/userContext'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
-import { parseMeetingTime } from '../../utils/outlookMeetings'
+import { isCanceledMeeting, parseMeetingTime } from '../../utils/outlookMeetings'
+import { isIlchenkoAccount } from '../../workplace/boardReportReadiness'
+import { meetingSelfLabel } from '../../workplace/meetingCalendars'
+import { isSelfCalendarMeeting, ownMeetingsHidden, useShowOwnMeetings } from '../../workplace/ownMeetings'
 import { sameDay } from '../../utils/calendar'
 import { useTodayPreparedDecisions } from '../../workplace/useTodayPreparedDecisions'
 import {
@@ -50,7 +53,8 @@ import type { DocflowUiAction } from '../../workplace/taskSourceActions'
 import type { SpecTaskRow } from '../../workplace/specV04DemoData'
 import { acceptPlatformTask, completePlatformTask } from './PlatformTaskDetail'
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
-import { TodayFullPlanModal } from './TodayFullPlanModal'
+import { requestMeetingsDay } from '../../workplace/meetingsFocus'
+import { TodayIlchenkoAlertTile } from './TodayIlchenkoAlertTile'
 import { TodayTaskDetailModal, type TodayTaskDetailRow } from './TodayTaskDetailModal'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
@@ -382,11 +386,14 @@ function startOfToday(): Date {
 export function TodayGridTab({
   user,
   onOpenDecisions,
+  onOpenMeetings,
   onOpenRun,
   onAskOrchestrator
 }: {
   user: UserProfile
   onOpenDecisions: () => void
+  /** Кнопка «Открыть план»: переход во вкладку совещаний на выбранный день. */
+  onOpenMeetings?: (day: Date) => void
   onOpenMetrics: () => void
   onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
@@ -432,7 +439,6 @@ export function TodayGridTab({
     ]
   }, [allTiles, tileVisibility, board])
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
-  const [fullPlanOpen, setFullPlanOpen] = useState(false)
   const [taskDetail, setTaskDetail] = useState<TodayTaskDetailRow | null>(null)
   const [closedTaskIds, setClosedTaskIds] = useState<Set<string>>(() => new Set())
   const [taskActionBusy, setTaskActionBusy] = useState(false)
@@ -448,6 +454,9 @@ export function TodayGridTab({
   const projectAsManager = kpiTiles.projectAsManager
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const erpFio = erpActorFio(user)
+  const [showOwnToday, setShowOwnToday] = useShowOwnMeetings(erpFio)
+  const hideOwnToday = ownMeetingsHidden(user, showOwnToday)
+  const todaySelfLabel = useMemo(() => meetingSelfLabel(erpFio) || erpFio, [erpFio])
   const outlookMail = useTodayOutlookMail(periodDay)
   const preparedDecisions = useTodayPreparedDecisions(periodDay, user.id)
   const projectTasks = useTodayProjectTasks(periodDay, data)
@@ -483,6 +492,8 @@ export function TodayGridTab({
   const meetingRows = useMemo(() => {
     return data.meetings
       .filter((meeting) => {
+        if (isCanceledMeeting(meeting)) return false
+        if (hideOwnToday && isSelfCalendarMeeting(meeting, todaySelfLabel)) return false
         const start = parseMeetingTime(meeting.start)
         return start ? sameDay(start, periodDay) : false
       })
@@ -501,7 +512,7 @@ export function TodayGridTab({
           participants: attendees.length ? `${attendees.length} чел.` : '—'
         }
       })
-  }, [data.meetings, periodDay])
+  }, [data.meetings, periodDay, hideOwnToday, todaySelfLabel])
 
   const ask = (message: string): void => {
     onAskOrchestrator(message, 'Вкладка «Сегодня»')
@@ -553,8 +564,11 @@ export function TodayGridTab({
   } = useTodayWidgetLayout(user.id || '')
 
   const visibleWidgetIds = useMemo(
-    () => layoutWithStatic.map((item) => item.i as TodayWidgetId),
-    [layoutWithStatic]
+    () =>
+      layoutWithStatic
+        .map((item) => item.i as TodayWidgetId)
+        .filter((id) => id !== 'ilchenkoAlert' || isIlchenkoAccount(user)),
+    [layoutWithStatic, user]
   )
 
   const todayWidgets = useMemo(
@@ -565,7 +579,10 @@ export function TodayGridTab({
             periodDay={periodDay}
             userId={user.id || ''}
             fio={erpFio}
-            onOpenFullPlan={() => setFullPlanOpen(true)}
+            onOpenFullPlan={() => {
+              requestMeetingsDay(periodDay)
+              onOpenMeetings?.(periodDay)
+            }}
           />
         </TodayWindow>
       ),
@@ -759,6 +776,14 @@ export function TodayGridTab({
         <TodayWindow searchId="events">
         <MiniTableCard
           title="Предстоящие события"
+          headerAction={
+            isIlchenkoAccount(user) ? (
+              <label className="own-meetings-toggle is-compact">
+                <input type="checkbox" checked={showOwnToday} onChange={(event) => setShowOwnToday(event.target.checked)} />
+                <span>Мои совещания</span>
+              </label>
+            ) : undefined
+          }
           loading={data.sourcesLoading}
           emptyText="Нет событий Outlook на выбранный день"
           columns={['Время', 'Событие', 'Формат', 'Участники']}
@@ -836,6 +861,11 @@ export function TodayGridTab({
         </SpecPanel>
         </TodayWindow>
       ),
+      ilchenkoAlert: isIlchenkoAccount(user) ? (
+        <TodayWindow searchId="ilchenkoAlert">
+          <TodayIlchenkoAlertTile user={user} />
+        </TodayWindow>
+      ) : null,
       ask: (
         <TodayWindow>
           <SpecAskOrchestratorBlock
@@ -956,13 +986,6 @@ export function TodayGridTab({
             }
           })
         }}
-      />
-      <TodayFullPlanModal
-        open={fullPlanOpen}
-        periodDay={periodDay}
-        fio={erpFio}
-        onClose={() => setFullPlanOpen(false)}
-        onOpenRun={onOpenRun}
       />
     </>
   )

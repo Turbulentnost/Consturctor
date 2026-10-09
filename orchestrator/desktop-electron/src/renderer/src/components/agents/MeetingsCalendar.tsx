@@ -1,11 +1,13 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
-import { FileText, X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { FileText, Printer, X } from 'lucide-react'
 import {
   addDays,
   DAYS_SHORT,
   formatPeriod,
   isoWeekday,
   mondayOf,
+  MONTHS_GEN,
   sameDay,
   type CalendarView
 } from '../../utils/calendar'
@@ -15,6 +17,7 @@ import {
   parseMeetingTime,
   type MeetingEvent
 } from '../../utils/outlookMeetings'
+import { PrintSchedule, type PrintField } from './MeetingPrintSchedule'
 import {
   conflictSegments,
   isTopSpan,
@@ -28,13 +31,9 @@ import { calendarPalette, type CalendarPalette } from '../../workplace/meetingCa
 import './meetingsCalendar.css'
 
 /** Высота часа в сетке недели: от неё считается высота блока по длительности. */
-const HOUR_H = 66
+const HOUR_H = 52
 /** Ниже заголовок и время под ним уже не поместятся. */
 const MIN_BLOCK_H = 46
-/** Высота одной дорожки в режиме дня. */
-const DAY_LANE_H = 96
-/** Минимальная ширина блока в режиме дня — та же, что в CSS (.mcal-event.is-horizontal). */
-const DAY_MIN_BLOCK_W = 118
 /** Шаг строки заголовка, тот же что в CSS. */
 const TITLE_LINE_H = 16
 /** Рамки и отступы блока; время идёт сразу под заголовком. */
@@ -51,7 +50,7 @@ function titleLines(height: number, withTime: boolean): number {
   const free = height - BLOCK_CHROME_H - (withTime ? TIME_ROW_H : 0)
   return Math.max(1, Math.floor(free / TITLE_LINE_H))
 }
-const DEFAULT_FROM_HOUR = 8
+const DEFAULT_FROM_HOUR = 6
 const DEFAULT_TO_HOUR = 20
 
 /** Строка режима дня — один календарь, как в «Расписании» Outlook. */
@@ -194,16 +193,9 @@ function buildLanes(
   })
 }
 
-function hourWindow(lanes: DayLane[]): { from: number; to: number } {
-  let from = DEFAULT_FROM_HOUR
-  let to = DEFAULT_TO_HOUR
-  for (const lane of lanes) {
-    for (const { span } of lane.blocks) {
-      from = Math.min(from, Math.floor(span.from / 60))
-      to = Math.max(to, Math.ceil(span.to / 60))
-    }
-  }
-  return { from: Math.max(0, from), to: Math.min(24, Math.max(to, from + 1)) }
+/** Окно сетки всегда 06:00–20:00: всё, что помещается в него, видно без прокрутки. */
+function hourWindow(_lanes: DayLane[]): { from: number; to: number } {
+  return { from: DEFAULT_FROM_HOUR, to: DEFAULT_TO_HOUR }
 }
 
 /** Совещание уже закончилось: цвет человека сохраняем, блок просто приглушаем. */
@@ -217,6 +209,7 @@ export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Elemen
   const { view, anchor, meetings, loading, error, ownerName, showDetailsModal = true } = props
   const [details, setDetails] = useState<MeetingEvent | null>(null)
   const [conflict, setConflict] = useState<ConflictPick | null>(null)
+  const [printOpen, setPrintOpen] = useState(false)
 
   const selectMeeting = (meeting: MeetingEvent, anchor: DOMRect): void => {
     props.onSelectMeeting?.(meeting, anchor)
@@ -254,6 +247,18 @@ export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Elemen
   }, [view, anchor, meetings])
 
   const total = lanes.reduce((sum, lane) => sum + lane.blocks.length, 0)
+
+  // Печать совпадает с открытым режимом: день, семь дней недели или выбранный месяц.
+  const printDays = useMemo(() => {
+    const visible =
+      view === 'month' ? lanes.filter((lane) => lane.day.getMonth() === anchor.getMonth()) : lanes
+    return visible
+      .map((lane) => ({
+        day: lane.day,
+        items: lane.blocks.map((block) => block.span.meeting)
+      }))
+      .filter((group) => group.items.length > 0)
+  }, [lanes, view, anchor])
 
   return (
     <div className="run-calendar meetings-calendar mcal-root">
@@ -309,6 +314,10 @@ export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Elemen
             {total ? '' : ' (пусто в этом периоде)'}
           </span>
         )}
+        <button type="button" className="mcal-print-btn" onClick={() => setPrintOpen(true)}>
+          <Printer size={14} aria-hidden />
+          Печать
+        </button>
       </div>
 
       {view === 'day' ? (
@@ -356,6 +365,13 @@ export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Elemen
 
       {showDetailsModal && details ? (
         <MeetingDetails meeting={details} onClose={() => setDetails(null)} />
+      ) : null}
+      {printOpen ? (
+        <MeetingPrintDialog
+          days={printDays}
+          periodLabel={formatPeriod(view, anchor)}
+          onClose={() => setPrintOpen(false)}
+        />
       ) : null}
     </div>
   )
@@ -464,36 +480,15 @@ function DayStrip({
   rows?: DayRowSpec[]
   rowKeyOf?: (meeting: MeetingEvent) => string
 }): React.JSX.Element {
-  // Ширина дорожки нужна, чтобы понять, какие блоки налезли друг на друга.
-  const [track, setTrack] = useState<HTMLDivElement | null>(null)
-  const [trackWidth, setTrackWidth] = useState(0)
-  useEffect(() => {
-    if (!track) return
-    const update = (): void => setTrackWidth(track.clientWidth)
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(track)
-    return () => observer.disconnect()
-  }, [track])
   if (!lane) return <div className="mcal-empty">Нет данных за день</div>
   const bounds = hourWindow([lane])
   const hours = Array.from({ length: bounds.to - bounds.from }, (_, index) => bounds.from + index)
-  const span = Math.max(1, (bounds.to - bounds.from) * 60)
+  const height = hours.length * HOUR_H
   const now = new Date()
   const isToday = sameDay(lane.day, now)
-  const percent = (minutes: number): number => ((minutes - bounds.from * 60) / span) * 100
-  const lines = hours.map((hour) => (
-    <div key={hour} className="mcal-day-line" style={{ left: `${percent(hour * 60)}%` }} />
-  ))
-  const nowLine = isToday ? (
-    <div
-      className="mcal-day-now"
-      style={{ left: `${percent(now.getHours() * 60 + now.getMinutes())}%` }}
-    />
-  ) : null
+  const perMinute = HOUR_H / 60
+  const offset = (minutes: number): number => (minutes - bounds.from * 60) * perMinute
 
-  // Строка на каждый календарь, как в «Расписании» Outlook. Внутри строки
-  // пересекающиеся совещания раскладываем по дорожкам, чтобы они не перекрывались.
   const board = (rows?.length ? rows : [{ key: '', label: 'Календарь', palette: undefined }]).map(
     (row) => {
       const blocks = row.key
@@ -503,48 +498,16 @@ function DayStrip({
     }
   )
 
-  // Короткая встреча растягивается до DAY_MIN_BLOCK_W и заезжает под соседнюю справа.
-  // Такую подложку размываем, иначе два заголовка читаются вперемешку.
-  const covered = new Set<string>()
-  if (trackWidth > 0) {
-    const pxPerMinute = trackWidth / span
-    for (const { subLanes } of board) {
-      for (const subLane of subLanes) {
-        const ordered = [...subLane].sort((left, right) => left.span.from - right.span.from)
-        ordered.forEach((block, index) => {
-          const next = ordered[index + 1]
-          if (!next) return
-          const width = Math.max(block.span.to - block.span.from, DAY_MIN_BLOCK_W / pxPerMinute)
-          if (block.span.from + width > next.span.from) {
-            covered.add(meetingInstanceKey(block.span.meeting))
-          }
-        })
-      }
-    }
-  }
-
   return (
     <div className="cal-scroll mcal-scroll">
-      <div className="mcal-day">
-        <div className={`mcal-day-corner${isToday ? ' is-today' : ''}`}>
-          <span className="mcal-head-dow">{DAYS_SHORT[isoWeekday(lane.day)]}</span>
-          <span className="mcal-head-date">{lane.day.getDate()}</span>
-        </div>
-        <div className="mcal-day-hours">
-          {hours.map((hour, index) => (
-            // Первую метку не центрируем по её линии, иначе половина уезжает за край.
-            <span
-              key={hour}
-              className={index === 0 ? 'mcal-day-hour is-first' : 'mcal-day-hour'}
-              style={{ left: `${percent(hour * 60)}%` }}
-            >
-              {String(hour).padStart(2, '0')}:00
-            </span>
-          ))}
-        </div>
-        {board.map(({ row, subLanes }, rowIndex) => (
-          <Fragment key={row.key || 'self'}>
-            <div className="mcal-day-name" title={row.key || row.label}>
+      <div className="mcal-day-v" style={{ ['--mcal-cols' as string]: board.length }}>
+        <div className="mcal-day-v-head">
+          <div className={`mcal-day-v-corner${isToday ? ' is-today' : ''}`}>
+            <span className="mcal-head-dow">{DAYS_SHORT[isoWeekday(lane.day)]}</span>
+            <span className="mcal-head-date">{lane.day.getDate()}</span>
+          </div>
+          {board.map(({ row }) => (
+            <div key={row.key || 'self'} className="mcal-day-v-name" title={row.key || row.label}>
               <span
                 className="mcal-day-dot"
                 style={{ background: row.palette?.dot || '#2F6BD8' }}
@@ -552,45 +515,60 @@ function DayStrip({
               />
               <span className="mcal-day-label">{row.label}</span>
             </div>
-            <div
-              className="mcal-day-track"
-              ref={rowIndex === 0 ? setTrack : undefined}
-              style={{ height: subLanes.length * DAY_LANE_H }}
-            >
-              {lines}
-              {nowLine}
-              {subLanes.map((subLane, index) =>
-                subLane.map((block) => {
-                  const key = meetingInstanceKey(block.span.meeting)
-                  const minutes = block.span.to - block.span.from
-                  return (
-                    <MeetingBlock
-                      key={key}
-                      block={block}
-                      now={now}
-                      horizontal
-                      style={{
-                        top: index * DAY_LANE_H + 5,
-                        left: `${percent(block.span.from)}%`,
-                        width: `${Math.max(3, (minutes / span) * 100)}%`
-                      }}
-                      height={DAY_LANE_H - 10}
-                      covered={covered.has(key)}
-                      selected={selectedId === key}
-                      onClick={onSelect}
-                      onConflict={(segment) => onConflict({ day: lane.day, segment })}
-                      protocolNumber={protocolMarks?.get(key)?.number}
-                      palette={eventPalette?.(block.span.meeting)}
-                    />
-                  )
-                })
-              )}
-              {subLanes.length === 1 && !subLanes[0].length ? (
-                <span className="mcal-day-free">Свободно</span>
-              ) : null}
-            </div>
-          </Fragment>
-        ))}
+          ))}
+        </div>
+        <div className="mcal-day-v-body" style={{ height }}>
+          <div className="mcal-gutter">
+            {hours.map((hour) => (
+              <span key={hour} className="mcal-hour" style={{ top: Math.max(7, offset(hour * 60)) }}>
+                {String(hour).padStart(2, '0')}:00
+              </span>
+            ))}
+          </div>
+          {board.map(({ row, subLanes }) => {
+            const laneCount = Math.max(1, subLanes.length)
+            const empty = subLanes.length === 1 && !subLanes[0].length
+            return (
+              <div key={row.key || 'self'} className={`mcal-day-v-col${isToday ? ' is-today' : ''}`}>
+                {hours.map((hour) => (
+                  <div key={hour} className="mcal-line" style={{ top: offset(hour * 60) }} />
+                ))}
+                {isToday ? (
+                  <div
+                    className="mcal-now"
+                    style={{ top: offset(now.getHours() * 60 + now.getMinutes()) }}
+                  />
+                ) : null}
+                {empty ? <span className="mcal-day-free">Свободно</span> : null}
+                {subLanes.map((subLane, index) =>
+                  subLane.map((block) => {
+                    const key = meetingInstanceKey(block.span.meeting)
+                    const share = 100 / laneCount
+                    return (
+                      <MeetingBlock
+                        key={key}
+                        block={block}
+                        now={now}
+                        style={{
+                          top: offset(block.span.from),
+                          left: `calc(${index * share}% + 2px)`,
+                          width: `calc(${share}% - 6px)`,
+                          right: 'auto'
+                        }}
+                        height={Math.max(MIN_BLOCK_H, (block.span.to - block.span.from) * perMinute)}
+                        selected={selectedId === key}
+                        onClick={onSelect}
+                        onConflict={(segment) => onConflict({ day: lane.day, segment })}
+                        protocolNumber={protocolMarks?.get(key)?.number}
+                        palette={eventPalette?.(block.span.meeting)}
+                      />
+                    )
+                  })
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
@@ -679,7 +657,6 @@ function MeetingBlock({
   selected,
   compact,
   horizontal,
-  covered,
   protocolNumber,
   palette
 }: {
@@ -693,8 +670,6 @@ function MeetingBlock({
   selected?: boolean
   compact?: boolean
   horizontal?: boolean
-  /** Соседний блок наехал сверху: уводим этот на задний план. */
-  covered?: boolean
   protocolNumber?: string
   palette?: CalendarPalette
 }): React.JSX.Element {
@@ -707,6 +682,8 @@ function MeetingBlock({
     parts.flatMap((part) => part.meetings.map(meetingInstanceKey))
   )
   overlaps.delete(meetingInstanceKey(span.meeting))
+  // Карточка открывается только по явному клику: отпускание после прокрутки/протяжки не считаем кликом.
+  const pressRef = useRef<{ x: number; y: number } | null>(null)
   const minutes = Math.max(1, span.to - span.from)
   const share = (value: number): string => `${((value / minutes) * 100).toFixed(2)}%`
   const tip = [
@@ -727,7 +704,6 @@ function MeetingBlock({
         horizontal ? 'is-horizontal' : '',
         selected ? 'is-selected' : '',
         parts.length ? (top ? 'has-conflict is-top' : 'has-conflict is-under') : '',
-        covered && !selected ? 'is-covered' : '',
         isPast(span, now) ? 'is-past' : '',
         protocolNumber != null ? 'has-protocol' : ''
       ]
@@ -744,8 +720,14 @@ function MeetingBlock({
         zIndex: 4 + Math.max(0, 40 - span.priority * 2)
       }}
       title={tip}
+      onPointerDown={(event) => {
+        pressRef.current = { x: event.clientX, y: event.clientY }
+      }}
       onClick={(event) => {
         event.stopPropagation()
+        const press = pressRef.current
+        pressRef.current = null
+        if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 4) return
         onClick(span.meeting, event.currentTarget.getBoundingClientRect())
       }}
     >
@@ -871,7 +853,7 @@ function MeetingDetails({
     : ''
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card meeting-details" onClick={(event) => event.stopPropagation()}>
+      <div className="modal-card is-resizable meeting-details" onClick={(event) => event.stopPropagation()}>
         <div className="modal-title">{meeting.subject}</div>
         {when && <p className="meeting-details-row">🕑 {when}</p>}
         {meeting.location && <p className="meeting-details-row">📍 {meeting.location}</p>}
@@ -887,5 +869,142 @@ function MeetingDetails({
         </div>
       </div>
     </div>
+  )
+}
+
+const PRINT_FIELDS_KEY = 'orch.meetings.print-fields'
+
+const PRINT_FIELD_LIST: { id: PrintField; label: string }[] = [
+  { id: 'subject', label: 'Тема' },
+  { id: 'time', label: 'Дата / время' },
+  { id: 'location', label: 'Место' },
+  { id: 'format', label: 'Формат' },
+  { id: 'organizer', label: 'Организатор' },
+  { id: 'attendees', label: 'Участники' },
+  { id: 'owner', label: 'Владелец' }
+]
+
+function readPrintFields(): Record<PrintField, boolean> {
+  const base: Record<PrintField, boolean> = {
+    subject: true,
+    time: true,
+    location: true,
+    format: true,
+    organizer: true,
+    attendees: true,
+    owner: true
+  }
+  try {
+    const raw = window.localStorage.getItem(PRINT_FIELDS_KEY)
+    if (!raw) return base
+    return { ...base, ...(JSON.parse(raw) as Partial<Record<PrintField, boolean>>) }
+  } catch {
+    return base
+  }
+}
+
+function printDayLabel(day: Date): string {
+  return `${String(day.getDate()).padStart(2, '0')} ${MONTHS_GEN[day.getMonth() + 1]} ${day.getFullYear()}`
+}
+
+function MeetingPrintDialog({
+  days,
+  periodLabel,
+  onClose
+}: {
+  days: { day: Date; items: MeetingEvent[] }[]
+  periodLabel: string
+  onClose: () => void
+}): React.JSX.Element {
+  const [fields, setFields] = useState(readPrintFields)
+  const [previewScale, setPreviewScale] = useState(1)
+  const [pageBox, setPageBox] = useState({ w: 1123, h: 794 })
+  const pageRef = useRef<HTMLDivElement>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    window.localStorage.setItem(PRINT_FIELDS_KEY, JSON.stringify(fields))
+  }, [fields])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  useLayoutEffect(() => {
+    const preview = previewRef.current
+    const page = pageRef.current
+    if (!preview || !page) return
+    const fit = (): void => {
+      const pad = 32
+      const width = page.offsetWidth || 1
+      const height = page.offsetHeight || 1
+      const availW = Math.max(1, preview.clientWidth - pad)
+      const availH = Math.max(1, preview.clientHeight - pad)
+      const next = Math.min(availW / width, availH / height)
+      setPageBox({ w: width, h: height })
+      setPreviewScale(Number.isFinite(next) && next > 0 ? Math.min(1, next) : 1)
+    }
+    fit()
+    const observer = new ResizeObserver(fit)
+    observer.observe(preview)
+    return () => observer.disconnect()
+  }, [days, fields])
+
+  return createPortal(
+    <div className="mcal-print-backdrop" role="dialog" aria-label="Печать совещаний">
+      <aside className="mcal-print-settings">
+        <h3>На печати</h3>
+        <p className="mcal-print-period">{periodLabel}</p>
+        {PRINT_FIELD_LIST.map((item) => (
+          <label key={item.id}>
+            <input
+              type="checkbox"
+              checked={fields[item.id]}
+              onChange={(event) =>
+                setFields((current) => ({ ...current, [item.id]: event.target.checked }))
+              }
+            />
+            <span>{item.label}</span>
+          </label>
+        ))}
+        <div className="mcal-print-actions">
+          <button type="button" className="is-primary" onClick={() => window.print()}>
+            Печать
+          </button>
+          <button type="button" onClick={onClose}>
+            Закрыть
+          </button>
+        </div>
+      </aside>
+      <div className="mcal-print-preview" ref={previewRef}>
+        <div
+          className="mcal-print-scale"
+          style={{ width: pageBox.w * previewScale, height: pageBox.h * previewScale }}
+        >
+        <div
+          className="mcal-print-page"
+          ref={pageRef}
+          style={{ transform: `scale(${previewScale})`, transformOrigin: 'top left' }}
+        >
+          <div className="mcal-print-fit">
+            {days.length ? (
+              <PrintSchedule
+                days={days}
+                fields={fields}
+                title={days.length === 1 ? printDayLabel(days[0].day) : periodLabel}
+              />
+            ) : (
+              <p className="mcal-print-empty">В этом периоде нет совещаний</p>
+            )}
+          </div>
+        </div>
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }

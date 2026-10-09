@@ -13575,6 +13575,10 @@ button.spec-v04-tile {
   flex-direction: column;
   gap: 6px;
 }
+.meeting-protocol-attach-status {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
 .meeting-protocol-attach-item {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -14882,4 +14886,198 @@ button.spec-v04-tile {
     flex-direction: column;
     align-items: flex-start;
   }
+}
+
+/* Окна протоколов, поручений и задач: размер меняется тянучкой в правом нижнем углу. */
+.modal-card.is-resizable {
+  resize: both;
+  overflow: auto;
+  min-width: 360px;
+  min-height: 240px;
+  max-width: 98vw;
+  max-height: 96vh;
+}
+
+/* Тумблер «Показывать мои совещания» (только аккаунт Ильченко). */
+.own-meetings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #0d3b73;
+  cursor: pointer;
+  user-select: none;
+}
+
+.own-meetings-toggle.is-compact {
+  margin: 0;
+  font-size: 12px;
+}
+
+.own-meetings-toggle input {
+  accent-color: #0d3b73;
+  cursor: pointer;
+}
+
+/* Плитка Ильченко: просроченные и подходящие ко сроку поручения, красно-оранжевая как в реестре. */
+.today-ilchenko-alert {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  height: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #c62828 0%, #ef6c00 100%);
+  color: #fff;
+  box-sizing: border-box;
+}
+
+.today-ilchenko-alert-item {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.today-ilchenko-alert-label {
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.today-ilchenko-alert-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.today-ilchenko-alert-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+/* Вкладка совещаний: панель над календарём и кнопка создания совещания. */
+.meetings-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 8px;
+}
+
+.meetings-create-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: #0d3b73;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.meetings-create-btn:hover {
+  background: #1565c0;
+}
+
+/* Форма совещания (Outlook-подобная). */
+.meeting-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(560px, 94vw);
+  min-width: 360px;
+  padding: 18px 20px;
+}
+
+.meeting-editor-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meeting-editor-head h3 {
+  margin: 0;
+  font-size: 17px;
+  color: #0d3b73;
+}
+
+.meeting-editor-hint {
+  font-size: 12px;
+  color: #8b939e;
+}
+
+.meeting-editor-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.meeting-editor-row > span {
+  font-weight: 600;
+  color: #35404d;
+}
+
+.meeting-editor-row input,
+.meeting-editor-row textarea,
+.meeting-editor-pair input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid #c9d3de;
+  border-radius: 7px;
+  font: inherit;
+  color: #10141a;
+  background: #fff;
+}
+
+.meeting-editor-row textarea {
+  resize: vertical;
+}
+
+.meeting-editor-times {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.meeting-editor-pair {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 6px;
+}
+
+.meeting-editor-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.meeting-editor-check input {
+  accent-color: #0d3b73;
+}
+
+.meeting-editor-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #fdecea;
+  color: #c62828;
+  font-size: 13px;
+}
+
+.meeting-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
 }
