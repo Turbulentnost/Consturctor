@@ -1,6 +1,7 @@
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
 import { onecGatewayInvokeArgs } from './userContext'
+import { readDocflowPage, writeDocflowPage } from './docflowPageCache'
 
 export type AssignmentLine = {
   n: number
@@ -115,6 +116,9 @@ export async function loadAssignmentPage(
   user: UserProfile | null,
   opts: { from: string; to: string; skip: number; status: string }
 ): Promise<AssignmentPage> {
+  const cacheKey = `assignments:${user?.id || user?.fio || ''}:${opts.from}:${opts.to}:${opts.skip}:${opts.status}`
+  const cached = readDocflowPage<AssignmentPage>(cacheKey)
+  if (cached) return cached
   const res = await api.invokeServerTool(
     'onec.docflow_assignments',
     onecGatewayInvokeArgs(user, {
@@ -129,12 +133,14 @@ export async function loadAssignmentPage(
   if (!res.ok) throw new Error(res.error || 'Не удалось прочитать поручения из 1С')
   const payload = rec(res.result)
   const rows = list(payload.rows).map((row) => mapRow(rec(row)))
-  return {
+  const page: AssignmentPage = {
     rows,
     nextSkip: Number(payload.next_skip) || opts.skip + rows.length,
     hasMore: Boolean(payload.has_more),
     statuses: list(payload.statuses).map((item) => ({ code: str(rec(item).code), label: str(rec(item).label) }))
   }
+  writeDocflowPage(cacheKey, page)
+  return page
 }
 
 const cardCache = new Map<string, AssignmentCard>()

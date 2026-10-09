@@ -74,7 +74,7 @@ export function TodayTaskDetailModal({
   return createPortal(
     <div className="modal-overlay today-task-detail-overlay" onClick={onClose} role="presentation">
       <div
-        className="modal-card today-task-detail"
+        className="modal-card is-resizable today-task-detail"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

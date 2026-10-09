@@ -42,7 +42,7 @@ import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/gl
 import './extensionsGrid.css'
 import './registryGrid.css'
 
-const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon', 'report'])
+const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon', 'in_work', 'report'])
 
 type RegistryColumnFilterKey = 'reporter' | 'secretary' | 'status' | 'manager'
 
@@ -134,6 +134,8 @@ function buildRegistryTiles(
   const done = rows.filter((row) => isCompletedAssignment(row))
   const overdue = open.filter((row) => row.overdue)
   const dueSoon = open.filter((row) => isDueWithinDays(row, 3))
+  // Белые: открытые, но не просроченные и без срока в ближайшие 3 рабочих дня.
+  const inWork = open.filter((row) => !row.overdue && !isDueWithinDays(row, 3))
   const dueReached = rows.filter((row) => dueHasArrived(row))
   const doneOfDue = dueReached.filter((row) => isCompletedAssignment(row))
   return [
@@ -143,14 +145,6 @@ function buildRegistryTiles(
       value: String(rows.length),
       tooltip: 'Все поручения за выбранный период',
       tone: 'blue'
-    },
-    {
-      id: 'done',
-      label: 'Выполненные',
-      value: String(done.length),
-      note: `(${percentOf(doneOfDue.length, dueReached.length)})`,
-      tooltip: 'Выполненные и отменённые. В скобках — доля среди поручений, у которых срок уже наступил',
-      tone: 'green'
     },
     {
       id: 'overdue',
@@ -166,6 +160,21 @@ function buildRegistryTiles(
       value: String(dueSoon.length),
       hint: '3 рабочих дня от сегодня',
       tone: dueSoon.length ? 'orange' : 'neutral'
+    },
+    {
+      id: 'in_work',
+      label: 'В работе',
+      value: String(inWork.length),
+      hint: 'Открытые без просрочки и без срока в ближайшие 3 рабочих дня',
+      tone: 'neutral'
+    },
+    {
+      id: 'done',
+      label: 'Выполненные',
+      value: String(done.length),
+      note: `(${percentOf(doneOfDue.length, dueReached.length)})`,
+      tooltip: 'Выполненные и отменённые. В скобках — доля среди поручений, у которых срок уже наступил',
+      tone: 'green'
     },
     {
       id: 'ai',
@@ -360,6 +369,8 @@ export function AssignmentsRegistryGridTab({
     if (tileFilter === 'report') list = selectRegistryReportRows(list).all
     else if (tileFilter === 'done') list = list.filter((row) => isCompletedAssignment(row))
     else if (tileFilter === 'overdue') list = list.filter((row) => row.open && row.overdue)
+    else if (tileFilter === 'in_work')
+      list = list.filter((row) => row.open && !row.overdue && !isDueWithinDays(row, 3))
     else if (tileFilter === 'due_soon') list = list.filter((row) => row.open && isDueWithinDays(row, 3))
 
     for (const { id } of REGISTRY_COLUMN_FILTERS) {

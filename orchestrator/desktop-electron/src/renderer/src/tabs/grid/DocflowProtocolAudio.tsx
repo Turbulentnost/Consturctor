@@ -305,7 +305,7 @@ function ProtocolAudioReport({
   return createPortal(
     <div className="modal-overlay meeting-report-overlay" onClick={onClose} role="presentation">
       <div
-        className="modal-card meeting-report-dialog"
+        className="modal-card is-resizable meeting-report-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

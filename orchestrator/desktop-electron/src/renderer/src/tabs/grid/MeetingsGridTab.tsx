@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import { createPortal } from 'react-dom'
 import { Bot, Mic, PenLine, Search } from 'lucide-react'
@@ -21,6 +21,7 @@ import {
   ensureOutlookMeetings,
   findNextMeetingOccurrence,
   formatMeetingStamp,
+  isCanceledMeeting,
   isOutlookFolderOwner,
   meetingFormatHint,
   meetingInstanceKey,
@@ -59,9 +60,17 @@ import { usePageSearch } from '../../layout/pageSearchContext'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { MeetingReportModal } from './MeetingReportModal'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
+import { MeetingEditorDialog } from './MeetingEditorDialog'
 import { MeetingPlannerPanel } from './MeetingPlannerPanel'
 import { isMeetingPlannerUser, PLANNER_AGENT_TITLE } from '../../workplace/meetingPlannerAgent'
-import { searchOnecProtocols, type OnecProtocolHit } from '../../workplace/meetingProtocolCreate'
+import { isIlchenkoAccount } from '../../workplace/boardReportReadiness'
+import { clearRequestedMeetingsDay, peekRequestedMeetingsDay } from '../../workplace/meetingsFocus'
+import { isSelfCalendarMeeting, ownMeetingsHidden, useShowOwnMeetings } from '../../workplace/ownMeetings'
+import {
+  PROTOCOL_SEARCH_PAGE,
+  searchOnecProtocols,
+  type OnecProtocolHit
+} from '../../workplace/meetingProtocolCreate'
 import {
   detachProtocolDocument,
   PROTOCOL_CREATED_EVENT,
@@ -106,12 +115,14 @@ function MeetingDetailCard({
   meeting,
   userId,
   actorFio,
-  protocol
+  protocol,
+  onEdit
 }: {
   meeting: MeetingEvent
   userId: string
   actorFio: string
   protocol?: ProtocolMark
+  onEdit?: (meeting: MeetingEvent) => void
 }): React.JSX.Element {
   const runs = useRuns()
   const { record, runEntry, rememberStart, patchRecord, forgetRecord } = useMeetingProtocol(meeting, userId)
@@ -476,6 +487,11 @@ function MeetingDetailCard({
 
       {isRunning && !hasProtocol ? null : (
         <footer className="spec-detail-actions meeting-protocol-actions">
+          {onEdit ? (
+            <button type="button" className="cal-btn" onClick={() => onEdit(meeting)}>
+              Изменить встречу
+            </button>
+          ) : null}
           {hasProtocol ? (
             <button
               type="button"
@@ -599,44 +615,99 @@ function ProtocolAttachDialog({
 }): React.JSX.Element | null {
   const titleId = useId()
   const [query, setQuery] = useState('')
+  // Запрос, по которому получены текущие результаты: для дозагрузки страниц берём его же.
+  const [searched, setSearched] = useState('')
   const [searching, setSearching] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
   const [hits, setHits] = useState<OnecProtocolHit[] | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [nextSkip, setNextSkip] = useState(0)
+  const listRef = useRef<HTMLUListElement>(null)
+  // Новый поиск увеличивает поколение: ответы устаревших запросов отбрасываются.
+  const generationRef = useRef(0)
+  const appendingRef = useRef(false)
+  // onClose из родителя — новая функция на каждом рендере; храним в ref, чтобы не перезапускать поиск.
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
+  // Сброс только при открытии диалога. Ре-рендер родителя во время запроса не должен его обрывать.
   useEffect(() => {
     if (!open) return
+    generationRef.current += 1
+    appendingRef.current = false
+    setSearching(false)
+    setLoadingMore(false)
     setError('')
     setHits(null)
+    setHasMore(false)
+    setNextSkip(0)
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape') onCloseRef.current()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  }, [open])
+
+  /** Одна страница из 1С. append=false — новый поиск с первой страницы, true — следующая страница. */
+  const fetchPage = useCallback(async (text: string, skip: number, append: boolean): Promise<void> => {
+    if (append && appendingRef.current) return
+    const generation = generationRef.current
+    if (append) {
+      appendingRef.current = true
+      setLoadingMore(true)
+    } else {
+      setSearching(true)
+    }
+    setError('')
+    try {
+      const res = await searchOnecProtocols(text, { skip })
+      if (generation !== generationRef.current) return
+      if (!res.ok) {
+        setError(res.error)
+        if (!append) setHits(null)
+        return
+      }
+      setSearched(text)
+      setHits((prev) => (append && prev ? [...prev, ...res.hits] : res.hits))
+      setHasMore(res.hasMore)
+      setNextSkip(skip + PROTOCOL_SEARCH_PAGE)
+    } finally {
+      if (generation === generationRef.current) {
+        if (append) appendingRef.current = false
+        setSearching(false)
+        setLoadingMore(false)
+      }
+    }
+  }, [])
+
+  const loadMore = useCallback((): void => {
+    if (!hits || !hasMore || appendingRef.current || searching) return
+    void fetchPage(searched, nextSkip, true)
+  }, [fetchPage, hasMore, hits, nextSkip, searched, searching])
+
+  // Подгрузка по мере прокрутки: если первая страница не заполняет список, догружаем сразу.
+  useEffect(() => {
+    const node = listRef.current
+    if (!node || !hasMore || loadingMore || searching || error) return
+    if (node.scrollHeight <= node.clientHeight + 8) loadMore()
+  }, [hits, hasMore, loadingMore, searching, error, loadMore])
 
   if (!open) return null
 
-  const search = async (): Promise<void> => {
-    if (searching) return
-    setSearching(true)
-    setError('')
-    try {
-      const res = await searchOnecProtocols(query)
-      if (!res.ok) {
-        setError(res.error)
-        setHits(null)
-        return
-      }
-      setHits(res.hits)
-    } finally {
-      setSearching(false)
-    }
+  const search = (): void => {
+    if (searching || query.trim().length < 3) return
+    generationRef.current += 1
+    appendingRef.current = false
+    void fetchPage(query, 0, false)
   }
 
   return createPortal(
     <div className="modal-overlay" onClick={onClose} role="presentation">
       <div
-        className="modal-card meeting-protocol-attach"
+        className="modal-card is-resizable meeting-protocol-attach"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -672,21 +743,37 @@ function ProtocolAttachDialog({
           <p className="spec-v04-muted">Протоколы с таким номером не найдены или у вас нет к ним доступа.</p>
         ) : null}
         {hits?.length ? (
-          <ul className="meeting-protocol-attach-list">
-            {hits.map((hit) => (
-              <li key={hit.refKey}>
-                <button type="button" className="meeting-protocol-attach-item" onClick={() => onPick(hit)}>
-                  <span className="meeting-protocol-attach-number">{hit.number}</span>
-                  <span className="meeting-protocol-attach-meta">
-                    {[hit.date ? hit.date.split('-').reverse().join('.') : '', hit.status || (hit.posted ? 'Проведён' : '')]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </span>
-                  {hit.topic ? <span className="meeting-protocol-attach-topic">{hit.topic}</span> : null}
-                </button>
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul
+              ref={listRef}
+              className="meeting-protocol-attach-list"
+              onScroll={(event) => {
+                const node = event.currentTarget
+                if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) loadMore()
+              }}
+            >
+              {hits.map((hit) => (
+                <li key={hit.refKey}>
+                  <button type="button" className="meeting-protocol-attach-item" onClick={() => onPick(hit)}>
+                    <span className="meeting-protocol-attach-number">{hit.number}</span>
+                    <span className="meeting-protocol-attach-meta">
+                      {[hit.date ? hit.date.split('-').reverse().join('.') : '', hit.status || (hit.posted ? 'Проведён' : '')]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                    {hit.topic ? <span className="meeting-protocol-attach-topic">{hit.topic}</span> : null}
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <p className="meeting-protocol-attach-status spec-v04-muted">
+              {loadingMore
+                ? 'Загружаем ещё…'
+                : hasMore
+                  ? `Показано ${hits.length} · прокрутите список вниз, чтобы загрузить ещё`
+                  : `Показаны все найденные протоколы (${hits.length})`}
+            </p>
+          </>
         ) : null}
         <div className="modal-actions">
           <button type="button" className="btn-light" onClick={onClose}>
@@ -767,8 +854,13 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   const [meetings, setMeetings] = useState<MeetingEvent[]>(sharedMeetings)
   const [loading, setLoading] = useState(sharedMeetings.length === 0)
   const [error, setError] = useState('')
-  const [view, setView] = useState<CalendarView>('week')
-  const [anchor, setAnchor] = useState(() => new Date())
+  // День из кнопки «Открыть план» на вкладке «Сегодня» открываем сразу в режиме дня.
+  const [requestedDay] = useState(() => peekRequestedMeetingsDay())
+  const [view, setView] = useState<CalendarView>(() => (requestedDay ? 'day' : 'week'))
+  const [anchor, setAnchor] = useState(() => requestedDay ?? new Date())
+  useEffect(() => {
+    clearRequestedMeetingsDay()
+  }, [])
   const [tileFilter, setTileFilter] = useState('all')
   /** Открытая карточка совещания: сам ключ и рамка блока, у которого её показать. */
   const [picked, setPicked] = useState<{ key: string; anchor: DOMRect } | null>(null)
@@ -780,6 +872,9 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   const [quick, setQuick] = useState<MeetingQuickFilters>(EMPTY_MEETING_QUICK_FILTERS)
   const [syncedAt, setSyncedAt] = useState('')
   const [plannerOpen, setPlannerOpen] = useState(false)
+  const [showOwn, setShowOwn] = useShowOwnMeetings(fio)
+  const [editor, setEditor] = useState<{ mode: 'create' | 'edit'; meeting?: MeetingEvent } | null>(null)
+  const hideOwn = ownMeetingsHidden(user, showOwn)
   const canPlan = isMeetingPlannerUser(user)
   const runs = useRuns()
   const plannerState = useMemo(
@@ -859,10 +954,13 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   /** Что вообще показываем: только календари с включённой галочкой. Плитки считаем от этого же. */
   const ownerScoped = useMemo(
     () =>
-      meetings.filter((item) =>
-        visibleOwners.some((person) => samePersonName(meetingOwnerName(item, selfLabel), person))
+      meetings.filter(
+        (item) =>
+          !isCanceledMeeting(item) &&
+          !(hideOwn && isSelfCalendarMeeting(item, selfLabel)) &&
+          visibleOwners.some((person) => samePersonName(meetingOwnerName(item, selfLabel), person))
       ),
-    [meetings, visibleOwners, selfLabel]
+    [meetings, visibleOwners, selfLabel, hideOwn]
   )
 
   const visibleMeetings = useMemo(() => {
@@ -1100,6 +1198,17 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
         ),
         main: (
         <div className="wp-card meetings-grid-calendar">
+          <div className="meetings-toolbar-row">
+            {isIlchenkoAccount(user) ? (
+              <label className="own-meetings-toggle">
+                <input type="checkbox" checked={showOwn} onChange={(event) => setShowOwn(event.target.checked)} />
+                <span>Показывать мои совещания</span>
+              </label>
+            ) : null}
+            <button type="button" className="meetings-create-btn" onClick={() => setEditor({ mode: 'create' })}>
+              + Новое совещание
+            </button>
+          </div>
           <MeetingsCalendar
             view={view}
             anchor={anchor}
@@ -1130,8 +1239,20 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
                 userId={userId}
                 actorFio={fio}
                 protocol={protocolMarks.get(meetingInstanceKey(selected))}
+                onEdit={(item) => setEditor({ mode: 'edit', meeting: item })}
               />
             </MeetingPopover>
+          ) : null}
+          {editor ? (
+            <MeetingEditorDialog
+              mode={editor.mode}
+              meeting={editor.meeting}
+              onClose={() => setEditor(null)}
+              onSaved={() => {
+                void load(true)
+                refreshAfterPlanning()
+              }}
+            />
           ) : null}
         </div>
         )

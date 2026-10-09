@@ -41,7 +41,7 @@ export function useTodayOutlookMeetings(
     if (!shouldRunGridFetch(cacheKey, generation)) {
       const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
       if (cached) {
-        setMeetings(cached.meetings)
+        setMeetings(dedupeMeetingEvents(cached.meetings))
         setError(cached.error)
         setLoading(false)
         return
@@ -80,9 +80,10 @@ export function useTodayOutlookMeetings(
     }
   }, [dayKey, fio, generation, periodDay, userId, trackedVersion])
 
+  const visible = dedupeMeetingEvents(meetings)
   return {
-    loading: loading && meetings.length === 0,
-    error: meetings.length ? '' : error,
-    meetings
+    loading: loading && visible.length === 0,
+    error: visible.length ? '' : error,
+    meetings: visible
   }
 }

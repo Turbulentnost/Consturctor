@@ -397,7 +397,7 @@ export function MailIncomingCreateDialog({
   return createPortal(
     <div className="modal-overlay registry-create-overlay" onClick={() => !busy && onClose()} role="presentation">
       <div
-        className="modal-card registry-create-dialog"
+        className="modal-card is-resizable registry-create-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

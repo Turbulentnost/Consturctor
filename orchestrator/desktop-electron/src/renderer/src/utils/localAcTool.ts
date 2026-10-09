@@ -84,7 +84,7 @@ export function invokeLocalAcTool(
     })
     const payload = toolName.startsWith('onec.')
       ? onecComInvokeArgs(input, user)
-      : toolName.startsWith('outlook.')
+      : toolName.startsWith('outlook.') && !toolName.endsWith('_event')
         ? withMailStore(input)
         : input
     void window.agent

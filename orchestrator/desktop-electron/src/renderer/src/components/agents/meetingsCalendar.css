@@ -5,6 +5,11 @@
   min-width: 0;
 }
 
+.mcal-root > .cal-legend {
+  align-items: center;
+  width: 100%;
+}
+
 .mcal-scroll {
   scrollbar-gutter: stable;
   overflow: auto;
@@ -88,7 +93,7 @@
 
 /* Сегодняшнее число — залитый кружок, как в Google Calendar. */
 .mcal-head-day.is-today .mcal-head-date,
-.mcal-day-corner.is-today .mcal-head-date {
+.mcal-day-v-corner.is-today .mcal-head-date {
   background: #2f6bd8;
   color: #fff;
 }
@@ -191,22 +196,6 @@
   border-style: dashed;
   border-left-style: solid;
   filter: saturate(0.55);
-}
-
-/* Короткая встреча растянута до минимальной ширины, и на неё наехала соседняя:
-   размываем нижнюю, чтобы два заголовка не читались вперемешку. Наведение возвращает
-   её наверх и в резкость. */
-.mcal-event.is-covered {
-  filter: blur(1.4px) saturate(0.7);
-  opacity: 0.75;
-  transition: filter 0.12s ease, opacity 0.12s ease;
-}
-
-.mcal-event.is-covered:hover,
-.mcal-event.is-covered:focus-within {
-  z-index: 60 !important;
-  filter: none;
-  opacity: 1;
 }
 
 /* Совещание прошло — цвет человека остаётся, блок просто уходит на второй план. */
@@ -361,68 +350,43 @@
   opacity: 0.7;
 }
 
-/* ---- День: время по горизонтали, строка на каждый календарь ---- */
-.mcal-day {
+/* ---- День: время сверху вниз, колонка на каждый календарь ---- */
+.mcal-day-v {
+  display: flex;
+  flex-direction: column;
+  min-width: max-content;
+}
+
+.mcal-day-v-head,
+.mcal-day-v-body {
   display: grid;
-  /* minmax даёт дорожке минимальную ширину: в узком окне появляется прокрутка. */
-  grid-template-columns: 124px minmax(620px, 1fr);
-  align-content: start;
-  padding-bottom: 8px;
+  grid-template-columns: 42px repeat(var(--mcal-cols, 1), minmax(160px, 1fr));
 }
 
-.mcal-day-corner,
-.mcal-day-name {
-  position: sticky;
-  left: 0;
-  z-index: 2;
-  box-sizing: border-box;
-  background: #fff;
-}
-
-.mcal-day-corner,
-.mcal-day-hours {
+.mcal-day-v-head {
   position: sticky;
   top: 0;
-  background: #fff;
-}
-
-.mcal-day-corner {
   z-index: 4;
+  background: #fff;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+}
+
+.mcal-day-v-corner {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px 8px 2px;
-  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+  justify-content: center;
+  gap: 1px;
+  padding: 6px 2px 8px;
 }
 
-.mcal-day-hours {
-  position: sticky;
-  z-index: 3;
-  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
-}
-
-/* Метки часов прижаты к низу полосы: сверху её высоту задаёт крупная дата слева. */
-.mcal-day-hour {
-  position: absolute;
-  bottom: 5px;
-  transform: translateX(-50%);
-  font-size: 11px;
-  color: #6b7380;
-  white-space: nowrap;
-}
-
-.mcal-day-hour.is-first {
-  transform: none;
-  margin-left: 2px;
-}
-
-.mcal-day-name {
+.mcal-day-v-name {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 8px 8px 8px 2px;
-  border-bottom: 1px solid rgba(16, 20, 26, 0.07);
+  min-width: 0;
+  padding: 8px 8px 8px 10px;
+  border-left: 1px solid rgba(16, 20, 26, 0.08);
   font-size: 12px;
   font-weight: 600;
   color: #10141a;
@@ -442,39 +406,349 @@
   text-overflow: ellipsis;
 }
 
-.mcal-day-track {
+.mcal-day-v-body {
   position: relative;
-  border-bottom: 1px solid rgba(16, 20, 26, 0.07);
-  border-left: 1px solid rgba(16, 20, 26, 0.1);
   background: #fff;
 }
 
-.mcal-day-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(16, 20, 26, 0.07);
-  pointer-events: none;
+.mcal-day-v-col {
+  position: relative;
+  z-index: 1;
+  border-left: 1px solid rgba(16, 20, 26, 0.08);
 }
 
-.mcal-day-now {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: #e5484d;
-  z-index: 30;
-  pointer-events: none;
+.mcal-day-v-col.is-today {
+  background: rgba(21, 101, 192, 0.05);
 }
 
 .mcal-day-free {
   position: absolute;
-  top: 50%;
+  top: 12px;
   left: 10px;
-  transform: translateY(-50%);
   font-size: 11px;
   color: #b5c2d3;
+}
+
+.mcal-print-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(13, 59, 115, 0.22);
+  border-radius: 8px;
+  background: #fff;
+  color: #0d3b73;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mcal-print-btn:hover {
+  background: #e8f1fb;
+}
+
+.mcal-print-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 16px;
+  padding: 24px;
+  background: rgba(16, 20, 26, 0.45);
+}
+
+.mcal-print-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #fff;
+  color: #10141a;
+}
+
+.mcal-print-settings h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.mcal-print-period {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: #0d3b73;
+}
+
+.mcal-print-settings label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.mcal-print-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.mcal-print-actions button {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.22);
+  background: #fff;
+  color: #0d3b73;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mcal-print-actions button.is-primary {
+  border-color: #0d3b73;
+  background: #0d3b73;
+  color: #fff;
+}
+
+.mcal-print-preview {
+  display: grid;
+  place-items: start center;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  border-radius: 12px;
+  background: #d7dde6;
+}
+
+.mcal-print-scale {
+  transform-origin: top center;
+}
+
+.mcal-print-page {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 297mm;
+  height: 210mm;
+  margin: 0 auto;
+  padding: 8mm 10mm;
+  overflow: hidden;
+  background: #fff;
+  color: #10141a;
+  box-shadow: 0 8px 28px rgba(16, 20, 26, 0.18);
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.mcal-print-fit {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+}
+
+.mcal-print-date {
+  margin: 0 0 3mm;
+  font-size: 16px;
+  font-weight: 650;
+  color: #0d3b73;
+}
+
+.mcp-sheet {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.mcp-axis {
+  position: relative;
+  flex: 0 0 auto;
+  height: 6mm;
+  margin-left: 0;
+  border-bottom: 1px solid #c9d3de;
+}
+
+.mcp-hour {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 9px;
+  font-weight: 600;
+  color: #5c6b7a;
+  white-space: nowrap;
+}
+
+.mcp-body {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.mcp-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mcp-grid i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dotted #c9d3de;
+}
+
+.mcp-group {
+  flex: 0 0 auto;
+  height: 6mm;
+  display: flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #0d3b73;
+  background: #f5f9fe;
+  border-bottom: 1px solid #d5dde6;
+  padding-left: 2mm;
+}
+
+.mcp-row {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  border-bottom: 1px solid #eef2f6;
+}
+
+.mcp-bar {
+  position: absolute;
+  top: 50%;
+  height: 3.2mm;
+  transform: translateY(-50%);
+  border-radius: 1.5mm;
+  min-width: 1.2mm;
+}
+
+.mcp-callout {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.4mm;
+  min-width: 0;
+  padding: 0.6mm 2mm;
+  border-left: 2px solid;
+  border-radius: 0 1.5mm 1.5mm 0;
+  font-size: 9pt;
+  line-height: 1.25;
+  color: #10141a;
+  overflow: visible;
+}
+
+.mcp-callout strong {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.mcp-time {
+  font-weight: 600;
+  color: #2c3a4a;
+}
+
+.mcp-meta {
+  color: #3f4b5a;
+  overflow-wrap: anywhere;
+}
+
+.mcp-sheet.is-dense .mcp-callout {
+  font-size: 7.5pt;
+  line-height: 1.15;
+  gap: 0;
+}
+
+.mcp-sheet.is-compact .mcp-callout {
+  flex-direction: row;
+  align-items: center;
+  gap: 1.5mm;
+  font-size: 6.5pt;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.mcp-sheet.is-compact .mcp-bar {
+  height: 1.8mm;
+}
+
+.mcal-print-empty {
+  margin: 0;
+  color: #6b7380;
+  font-size: 13px;
+}
+
+@page {
+  size: A4 landscape;
+  margin: 0;
+}
+
+@media print {
+  html,
+  body {
+    width: 297mm;
+    height: 210mm;
+    margin: 0 !important;
+    overflow: hidden !important;
+  }
+
+  body > *:not(.mcal-print-backdrop) {
+    display: none !important;
+  }
+
+  .mcal-print-backdrop {
+    display: block !important;
+    position: static;
+    width: 297mm;
+    height: 210mm;
+    padding: 0;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .mcal-print-scale {
+    width: auto !important;
+    height: auto !important;
+  }
+
+  .mcal-print-page {
+    transform: none !important;
+    width: 297mm;
+    height: 210mm;
+    margin: 0;
+    overflow: hidden;
+    box-shadow: none;
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  .mcal-print-settings {
+    display: none !important;
+  }
+
+  .mcal-print-preview {
+    display: block;
+    width: 297mm;
+    height: 210mm;
+    padding: 0;
+    overflow: hidden;
+    background: #fff;
+    border-radius: 0;
+  }
 }
 
 .mcal-empty {

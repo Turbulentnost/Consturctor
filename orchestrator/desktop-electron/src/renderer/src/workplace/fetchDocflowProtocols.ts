@@ -1,6 +1,7 @@
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
 import { onecGatewayInvokeArgs } from './userContext'
+import { clearDocflowPages, readDocflowPage, writeDocflowPage } from './docflowPageCache'
 
 /** Строка журнала протоколов (onec.docflow_protocols). Конфиденциальные приходят только свои. */
 export type ProtocolRow = {
@@ -242,6 +243,9 @@ export async function loadProtocolPage(
   user: UserProfile | null,
   opts: { from: string; to: string; skip: number; status: string; kind: string }
 ): Promise<ProtocolPage> {
+  const cacheKey = `protocols:${user?.id || user?.fio || ''}:${opts.from}:${opts.to}:${opts.skip}:${opts.status}:${opts.kind}`
+  const cached = readDocflowPage<ProtocolPage>(cacheKey)
+  if (cached) return cached
   const res = await api.invokeServerTool(
     'onec.docflow_protocols',
     onecGatewayInvokeArgs(user, {
@@ -257,7 +261,7 @@ export async function loadProtocolPage(
   if (!res.ok) throw new Error(res.error || 'Не удалось прочитать протоколы из 1С')
   const payload = rec(res.result)
   const rows = list(payload.rows).map(mapRow)
-  return {
+  const page: ProtocolPage = {
     rows,
     nextSkip: Number(payload.next_skip) || opts.skip + rows.length,
     hasMore: Boolean(payload.has_more),
@@ -266,6 +270,8 @@ export async function loadProtocolPage(
     statuses: options(payload.statuses),
     kinds: options(payload.kinds)
   }
+  writeDocflowPage(cacheKey, page)
+  return page
 }
 
 const cardCache = new Map<string, ProtocolCard>()
@@ -395,6 +401,7 @@ export async function saveProtocolEdit(
     180_000
   )
   forgetProtocolCard(id)
+  clearDocflowPages()
   if (!res.ok) throw new Error(res.error || 'Не удалось сохранить протокол в 1С')
   return str(rec(res.result).summary) || 'Протокол сохранён в 1С'
 }
