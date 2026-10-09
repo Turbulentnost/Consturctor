@@ -1,0 +1,68 @@
+@import './base.css';
+@import './owners.css';
+@import './platform.css';
+@import './agent-detail.css';
+@import './agent-session.css';
+@import './session-tools.css';
+.tt-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tt-root > .agent-stage,
+.tt-root > .tt-agent-page {
+  flex: 1;
+  min-height: 0;
+}
+
+.tt-root .sess-split.solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Одноимённые классы карточек агентов Оркестратора (styles.css) не должны менять ленту сессии. */
+.tt-root .agent-card-desc {
+  font-size: inherit;
+  color: inherit;
+}
+
+.tt-root .agent-card-body {
+  flex: initial;
+  min-width: auto;
+}
+
+.tt-root .tt-agent-page {
+  overflow-y: auto;
+  padding: 18px 22px;
+}
+
+.tt-root .tt-agent-run {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  width: auto;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.tt-root .tt-agent-launch {
+  margin: 4px 0 14px;
+}
+
+.tt-root .tt-agent-brief-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  line-height: 1.55;
+}
+
+.tt-root .tt-agent-runs {
+  margin-top: 18px;
+}
+
+.tt-root .tt-agent-run-list .owner-agent {
+  width: 100%;
+}

@@ -5,7 +5,7 @@ import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecPillTone } from './specV04DemoData'
 import { SpecIconOnec, SpecIconPlay, SpecTileIcon } from './specV04Icons'
 import type { SpecQuickActionIcon } from './specGridQuickActions'
-import { openWorkplaceTab } from './workplaceNav'
+import { MEETING_PLANNER_AGENT, launchPlatformAgent, openWorkplaceTab } from './workplaceNav'
 
 function SpecQuickActionGlyph({ kind }: { kind: SpecQuickActionIcon }): React.JSX.Element {
   if (kind === 'plus') return <Plus strokeWidth={2.4} />
@@ -179,7 +179,12 @@ export function SpecProcessMapButton(): React.JSX.Element {
 
 export function SpecQuickLaunchButton(): React.JSX.Element {
   return (
-    <button type="button" className="spec-btn-launch" onClick={() => openWorkplaceTab('decisions')}>
+    <button
+      type="button"
+      className="spec-btn-launch"
+      title={MEETING_PLANNER_AGENT.title}
+      onClick={() => launchPlatformAgent(MEETING_PLANNER_AGENT.id, MEETING_PLANNER_AGENT.title)}
+    >
       <SpecIconPlay />
       <span>Запустить процесс</span>
       <span className="spec-btn-launch-caret" aria-hidden>

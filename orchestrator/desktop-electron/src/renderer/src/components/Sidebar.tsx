@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronDown, ChevronRight, Folder, FolderPlus, GripVertical, Pencil, Trash2, X } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  FolderPlus,
+  GripVertical,
+  Minus,
+  Pencil,
+  Plus,
+  Trash2,
+  X
+} from 'lucide-react'
 import { AppUpdatePanel } from './AppUpdatePanel'
 import { GlobalSearchSuggest } from './GlobalSearchSuggest'
 import { api, parseChatMessage } from '../api/client'
@@ -27,6 +39,14 @@ import {
   type SidebarLayout,
   type SidebarScope
 } from './sidebarFolders'
+import {
+  loadQuickAccess,
+  loadSidebarCollapsed,
+  normalizeQuickAccess,
+  saveQuickAccess,
+  saveSidebarCollapsed,
+  toggleQuickAccess
+} from './sidebarQuickAccess'
 
 type DropHint = { target: SidebarDropTarget; into: string | null }
 
@@ -185,7 +205,18 @@ export function Sidebar({
   pinnedExtensionNav = [],
   navScope
 }: SidebarProps): React.JSX.Element {
-  const [collapsed, setCollapsed] = useState(false)
+  const quickMode = !showAdminNav
+  const [collapsed, setCollapsedState] = useState(() =>
+    quickMode ? loadSidebarCollapsed(currentUserId, true) : false
+  )
+  const setCollapsed = (value: boolean): void => {
+    setCollapsedState(value)
+    if (quickMode) saveSidebarCollapsed(currentUserId, value)
+  }
+  const [quickStored, setQuickStored] = useState<string[]>(() => loadQuickAccess(currentUserId))
+  const [quickPickerOpen, setQuickPickerOpen] = useState(false)
+  const quickPickerRef = useRef<HTMLDivElement | null>(null)
+  const quickToggleRef = useRef<HTMLButtonElement | null>(null)
   const [peers, setPeers] = useState<ChatThread[]>([])
   const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
   const { newOneCTaskKeys } = useSpecV04SourcesContext()
@@ -225,6 +256,58 @@ export function Sidebar({
     moved: boolean
   } | null>(null)
   const itemByKey = useMemo(() => new Map(items.map((item) => [item.key, item])), [items])
+  const quickKeys = useMemo(() => {
+    const picked = new Set(normalizeQuickAccess(quickStored, availableNavKeys))
+    for (const item of pinnedExtensionNav) picked.add(item.key)
+    return availableNavKeys.filter((key) => picked.has(key))
+  }, [quickStored, availableNavKeys, pinnedExtensionNav])
+  const quickItems = quickKeys.map((key) => itemByKey.get(key)).filter((item): item is SidebarNavItem => Boolean(item))
+  const otherItems = items.filter((item) => !quickKeys.includes(item.key))
+  const activeHidden = active !== null && otherItems.some((item) => item.key === active)
+  const hiddenBadges = otherItems.reduce((sum, item) => sum + (navBadges[item.key] ?? 0), 0)
+  const pinnedByExtensions = new Set(pinnedExtensionNav.map((item) => item.key))
+
+  useEffect(() => {
+    setQuickStored(loadQuickAccess(currentUserId))
+    if (quickMode) setCollapsedState(loadSidebarCollapsed(currentUserId, true))
+    setQuickPickerOpen(false)
+  }, [currentUserId, quickMode])
+
+  useEffect(() => {
+    if (!quickMode || quickPickerOpen) return
+    setEditMode(false)
+    setFolderEditor(null)
+  }, [quickMode, quickPickerOpen])
+
+  useEffect(() => {
+    if (!quickPickerOpen) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !editMode && !folderEditor && !pointerDragRef.current) setQuickPickerOpen(false)
+    }
+    const onPointer = (event: PointerEvent): void => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (quickPickerRef.current?.contains(target) || quickToggleRef.current?.contains(target)) return
+      setQuickPickerOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onPointer)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('pointerdown', onPointer)
+    }
+  }, [quickPickerOpen, editMode, folderEditor])
+
+  const toggleQuickKey = (key: PageKey): void => {
+    const next = toggleQuickAccess(quickStored, key)
+    setQuickStored(next)
+    saveQuickAccess(currentUserId, next)
+  }
+
+  const openFromPicker = (key: PageKey): void => {
+    setQuickPickerOpen(false)
+    onNavigate(key)
+  }
 
   useEffect(() => {
     const next = loadSidebarLayout(currentUserId, effectiveNavScope, availableNavKeys)
@@ -252,13 +335,13 @@ export function Sidebar({
   }
 
   const beginFolderCreate = (): void => {
-    if (collapsed) setCollapsed(false)
+    if (collapsed && !quickMode) setCollapsed(false)
     setFolderDraft('')
     setFolderEditor('new')
   }
 
   const beginFolderRename = (folderId: string, currentName: string): void => {
-    if (collapsed) setCollapsed(false)
+    if (collapsed && !quickMode) setCollapsed(false)
     setFolderDraft(currentName)
     setFolderEditor(folderId)
   }
@@ -287,7 +370,7 @@ export function Sidebar({
       setFolderEditor(null)
       return
     }
-    if (collapsed) setCollapsed(false)
+    if (collapsed && !quickMode) setCollapsed(false)
     setEditMode(true)
   }
 
@@ -444,6 +527,194 @@ export function Sidebar({
     )
   }
 
+  const renderPickerRow = (
+    item: SidebarNavItem,
+    pinned: boolean,
+    tree?: { parentFolderId: string | null }
+  ): React.JSX.Element => {
+    const badge = navBadges[item.key] ?? 0
+    const locked = pinned && pinnedByExtensions.has(item.key)
+    const label = item.key === 'extensions' ? PAGE_LABELS.extensions : item.label
+    const node = tabNodeId(item.key)
+    const treeProps = tree
+      ? { 'data-nav-node': node, 'data-nav-parent': tree.parentFolderId ?? '' }
+      : {}
+    return (
+      <div
+        key={item.key}
+        {...treeProps}
+        className={[
+          'nav-quick-row',
+          tree ? 'nav-tab-row' : '',
+          item.key === active ? 'active' : '',
+          tree && draggedNode === node ? 'dragging' : '',
+          tree ? dropMarkClass(node) : ''
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        <button type="button" className="nav-quick-open" onClick={() => openFromPicker(item.key)} title={`Открыть «${label}»`}>
+          <span className="nav-icon" aria-hidden>
+            <NavIcon page={item.key} />
+          </span>
+          <span className="nav-quick-label">{label}</span>
+          {badge > 0 ? <em className="nav-badge">{badge > 99 ? '99+' : badge}</em> : null}
+        </button>
+        {locked ? (
+          <span className="nav-quick-lock" title="Закреплено в «Расширениях» — открепите там">
+            <Check size={14} aria-hidden />
+          </span>
+        ) : (
+          <button
+            type="button"
+            className={pinned ? 'nav-quick-pin remove' : 'nav-quick-pin'}
+            onClick={() => toggleQuickKey(item.key)}
+            title={pinned ? 'Убрать с панели быстрого доступа' : 'Добавить на панель быстрого доступа'}
+            aria-label={pinned ? `Убрать «${label}» с панели` : `Добавить «${label}» на панель`}
+          >
+            {pinned ? <Minus size={14} strokeWidth={2.4} aria-hidden /> : <Plus size={14} strokeWidth={2.4} aria-hidden />}
+          </button>
+        )}
+        {tree && editMode ? (
+          <span className="nav-quick-grip" {...dragHandleProps(node, label)}>
+            <GripVertical size={15} strokeWidth={2} aria-hidden />
+          </span>
+        ) : null}
+      </div>
+    )
+  }
+
+  const renderFolderEditor = (ariaLabel: string, placeholder?: string): React.JSX.Element => (
+    <div className="nav-folder-editor">
+      <Folder size={17} aria-hidden />
+      <input
+        autoFocus
+        value={folderDraft}
+        maxLength={64}
+        placeholder={placeholder}
+        aria-label={ariaLabel}
+        onChange={(event) => setFolderDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') submitFolderEditor()
+          if (event.key === 'Escape') {
+            event.stopPropagation()
+            setFolderEditor(null)
+          }
+        }}
+      />
+      <button type="button" onClick={submitFolderEditor} disabled={!folderDraft.trim()} aria-label="Сохранить папку">
+        <Check size={15} aria-hidden />
+      </button>
+      <button type="button" onClick={() => setFolderEditor(null)} aria-label="Отменить">
+        <X size={15} aria-hidden />
+      </button>
+    </div>
+  )
+
+  const renderPickerTree = (): React.JSX.Element => (
+    <div
+      className={['nav-quick-tree', editMode ? 'nav-editing' : '', draggedNode ? 'nav-dragging' : ''].filter(Boolean).join(' ')}
+      data-nav-root
+    >
+      {folderEditor === 'new' ? renderFolderEditor('Название новой папки', 'Название папки') : null}
+      {draggedNode && tabKeyFromNode(draggedNode) !== null && !navLayout.root.includes(draggedNode) ? (
+        <div
+          data-nav-root-zone
+          className={`nav-root-drop-zone${
+            dropHint && dropHint.target.folderId === null && dropHint.target.anchor === null ? ' is-over' : ''
+          }`}
+        >
+          Вынуть из папки
+        </div>
+      ) : null}
+      {navLayout.root.map((nodeId) => {
+        const tabKey = tabKeyFromNode(nodeId)
+        if (tabKey !== null) {
+          if (quickKeys.includes(tabKey as PageKey)) return null
+          const item = itemByKey.get(tabKey as PageKey)
+          return item ? renderPickerRow(item, false, { parentFolderId: null }) : null
+        }
+        const folderId = folderIdFromNode(nodeId)
+        const folder = navLayout.folders.find((entry) => entry.id === folderId)
+        if (!folder) return null
+        const tabs = folder.tabKeys
+          .map((key) => itemByKey.get(key as PageKey))
+          .filter((item): item is SidebarNavItem => Boolean(item))
+        return (
+          <div
+            key={nodeId}
+            data-nav-folder-id={folder.id}
+            className={[
+              'nav-folder',
+              'nav-quick-folder',
+              dropHint?.into === folder.id ? 'is-drop-target' : '',
+              draggedNode === nodeId ? 'dragging' : '',
+              dropMarkClass(nodeId)
+            ]
+              .filter(Boolean)
+              .join(' ')}
+          >
+            {folderEditor === folder.id ? (
+              renderFolderEditor(`Новое название папки «${folder.name}»`)
+            ) : (
+              <div className="nav-quick-row nav-quick-folder-row" data-nav-node={nodeId}>
+                <button
+                  type="button"
+                  className="nav-quick-open"
+                  aria-expanded={folder.expanded}
+                  title={folder.expanded ? 'Свернуть папку' : 'Раскрыть папку'}
+                  onClick={() => persistNavLayout(toggleSidebarFolder(navLayout, folder.id))}
+                >
+                  <span className="nav-quick-chevron" aria-hidden>
+                    {folder.expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </span>
+                  <span className="nav-icon" aria-hidden>
+                    <Folder size={17} />
+                  </span>
+                  <span className="nav-quick-label">{folder.name}</span>
+                  <span className="nav-quick-count">{tabs.length}</span>
+                </button>
+                {editMode ? (
+                  <span className="nav-quick-folder-actions">
+                    <button
+                      type="button"
+                      onClick={() => beginFolderRename(folder.id, folder.name)}
+                      title="Переименовать папку"
+                      aria-label={`Переименовать папку «${folder.name}»`}
+                    >
+                      <Pencil size={13} aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeFolder(folder.id, folder.name)}
+                      title="Удалить папку"
+                      aria-label={`Удалить папку «${folder.name}»`}
+                    >
+                      <Trash2 size={13} aria-hidden />
+                    </button>
+                    <span className="nav-quick-grip" {...dragHandleProps(nodeId, folder.name)}>
+                      <GripVertical size={15} strokeWidth={2} aria-hidden />
+                    </span>
+                  </span>
+                ) : null}
+              </div>
+            )}
+            {folder.expanded ? (
+              <div className="nav-quick-folder-children">
+                {tabs.map((item) => renderPickerRow(item, quickKeys.includes(item.key), { parentFolderId: folder.id }))}
+                {!tabs.length ? (
+                  <span className="nav-quick-folder-empty">
+                    {editMode ? 'Перетащите вкладку сюда' : 'Пустая папка — нажмите карандаш и перетащите вкладки'}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        )
+      })}
+    </div>
+  )
+
   useEffect(() => {
     let alive = true
     const load = async (): Promise<void> => {
@@ -551,6 +822,76 @@ export function Sidebar({
         )}
       </div>
 
+      {quickMode ? (
+        <nav className="nav nav-quick" aria-label="Быстрый доступ">
+          {quickItems.map((item) => renderNavTab(item))}
+          <button
+            ref={quickToggleRef}
+            type="button"
+            className={[
+              'nav-item',
+              'nav-quick-toggle',
+              quickPickerOpen ? 'open' : '',
+              activeHidden ? 'has-active' : ''
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            aria-expanded={quickPickerOpen}
+            aria-haspopup="dialog"
+            title="Быстрый доступ: добавить или убрать вкладки"
+            onClick={() => setQuickPickerOpen(!quickPickerOpen)}
+          >
+            <span className="nav-icon" aria-hidden>
+              <Plus size={20} strokeWidth={2.2} />
+            </span>
+            {!collapsed && <span className="nav-label">Все вкладки</span>}
+            {hiddenBadges > 0 ? <i className="nav-quick-dot" aria-label={`Новых: ${hiddenBadges}`} /> : null}
+          </button>
+        </nav>
+      ) : null}
+
+      {quickMode && quickPickerOpen ? (
+        <div ref={quickPickerRef} className="nav-quick-picker" role="dialog" aria-label="Настройка быстрого доступа">
+          <div className="nav-quick-picker-head">
+            <strong>Быстрый доступ</strong>
+            <span className="nav-quick-picker-tools">
+              <button
+                type="button"
+                onClick={beginFolderCreate}
+                title="Новая папка"
+                aria-label="Создать папку"
+              >
+                <FolderPlus size={16} aria-hidden />
+              </button>
+              <button
+                type="button"
+                className={editMode ? 'active' : ''}
+                onClick={toggleEditMode}
+                aria-pressed={editMode}
+                title={editMode ? 'Готово (Esc)' : 'Настроить: порядок вкладок и папки'}
+                aria-label={editMode ? 'Завершить настройку' : 'Настроить порядок и папки'}
+              >
+                {editMode ? <Check size={16} aria-hidden /> : <Pencil size={15} aria-hidden />}
+              </button>
+              <button type="button" onClick={() => setQuickPickerOpen(false)} aria-label="Закрыть">
+                <X size={15} aria-hidden />
+              </button>
+            </span>
+          </div>
+          <p className="nav-quick-picker-hint">
+            {editMode
+              ? 'Перетаскивайте вкладки за ручку справа — в папку или между папками.'
+              : 'Нажмите на вкладку, чтобы открыть. «+» добавляет её на панель, «−» убирает. Папки живут только здесь.'}
+          </p>
+          <div className="nav-quick-picker-section">На панели</div>
+          {quickItems.map((item) => renderPickerRow(item, true))}
+          <div className="nav-quick-picker-section">Остальные вкладки</div>
+          {renderPickerTree()}
+        </div>
+      ) : null}
+
+      {!quickMode ? (
+      <>
       <div className={editMode ? 'nav-toolbar is-editing' : 'nav-toolbar'}>
         {editMode && !collapsed ? (
           <button
@@ -722,6 +1063,8 @@ export function Sidebar({
           )
         })}
       </nav>
+      </>
+      ) : null}
 
       <AppUpdatePanel collapsed={collapsed} />
 

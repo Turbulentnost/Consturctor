@@ -1,0 +1,391 @@
+"""1C read-only tools, делегирующие выполнение worker-слою."""
+
+from __future__ import annotations
+
+from uuid import uuid4
+
+from app.vendors.constructor.tools.ac.tooling import (
+    ToolCallResult,
+    ToolDefinition,
+    ToolExecutionMode,
+    ToolSideEffectLevel,
+)
+from app.vendors.constructor.tools.ac.base import BaseTool
+from app.vendors.constructor.tools.ac.registry import ToolRegistry
+from app.vendors.constructor.tools.ac.workers.base import BaseWorker
+from app.vendors.constructor.tools.ac.workers.models import WorkerTask
+from app.vendors.constructor.tools.ac.workers.onec_com32_helper import com32_worker_timeout_seconds
+
+ONEC_COM32_RUNTIME = "com32"
+ONEC_COM32_TIMEOUT_SECONDS = com32_worker_timeout_seconds()
+ONEC_COM32_TOOLS = frozenset(
+    {
+        "onec.search_tasks",
+        "onec.get_task_card",
+        "onec.list_attachments",
+        "onec.read_attachment",
+    }
+)
+
+
+class OneCReadOnlyTool(BaseTool):
+    """Базовый read-only инструмент 1С через worker."""
+
+    def __init__(self, definition: ToolDefinition, worker: BaseWorker) -> None:
+        """Сохранить definition и worker."""
+        super().__init__(definition)
+        self._worker = worker
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Вызвать 1C worker и вернуть ToolCallResult."""
+        task = WorkerTask(
+            task_id=str(uuid4()),
+            tool_name=self.definition.name,
+            input_data=input_data,
+            timeout_seconds=self.definition.timeout_seconds,
+        )
+        try:
+            worker_result = self._worker.execute(task)
+        except Exception as exc:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="WORKER_EXECUTION_ERROR",
+                error_message=str(exc),
+            )
+
+        if worker_result.ok:
+            return ToolCallResult(
+                ok=True,
+                tool_name=self.definition.name,
+                output_data=worker_result.output_data or {},
+            )
+        return ToolCallResult(
+            ok=False,
+            tool_name=self.definition.name,
+            error_type=worker_result.error_type,
+            error_message=worker_result.error_message,
+        )
+
+
+class OneCSearchDocumentsTool(OneCReadOnlyTool):
+    """Поиск документов в 1С."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент."""
+        super().__init__(
+            _definition(
+                "onec.search_documents",
+                "Поиск документов 1С через OData (без COM)",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "document_type": {"type": "string", "description": "Вид документа 1С, если известен"},
+                        "number": {"type": "string", "description": "Номер документа"},
+                        "query": {"type": "string", "description": "Подстрока в номере или названии, не фраза-ТЗ"},
+                        "max_results": {"type": "integer", "description": "Максимум документов"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
+class OneCGetDocumentCardTool(OneCReadOnlyTool):
+    """Чтение карточки документа 1С."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент."""
+        super().__init__(
+            _definition(
+                "onec.get_document_card",
+                "Чтение карточки документа 1С через OData (без COM)",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "document_ref": {"type": "string", "description": "Ссылка или номер из onec.search_documents"},
+                        "number": {"type": "string", "description": "Номер документа, например 000013243"},
+                        "query": {"type": "string", "description": "Номер или подстрока, если ссылки нет"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
+class OneCSearchTasksTool(OneCReadOnlyTool):
+    """Поиск задач и поручений в 1С."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент."""
+        super().__init__(
+            _definition(
+                "onec.search_tasks",
+                "Поиск задач 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Подстрока в номере или названии задачи"},
+                        "status": {"type": "string", "description": "Статус, если нужен фильтр"},
+                        "mine_only": {
+                            "type": "boolean",
+                            "description": "Только задачи текущего пользователя COM-сессии",
+                        },
+                        "max_results": {"type": "integer", "description": "Максимум задач"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
+class OneCGetTaskCardTool(OneCReadOnlyTool):
+    """Чтение карточки задачи 1С."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент."""
+        super().__init__(
+            _definition(
+                "onec.get_task_card",
+                "Чтение карточки задачи 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "task_ref": {"type": "string", "description": "Номер или ссылка из onec.search_tasks"},
+                        "number": {"type": "string", "description": "Номер задачи 1С"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
+class OneCListAttachmentsTool(OneCReadOnlyTool):
+    """Список вложений документа/карточки 1С."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.list_attachments",
+                "Список вложений 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "metadata_name": {"type": "string", "description": "Имя метаданных документа из карточки 1С"},
+                        "number": {"type": "string", "description": "Номер документа 1С"},
+                        "owner_ref": {"type": "string", "description": "Ссылка владельца из карточки"},
+                        "document_ref": {"type": "string", "description": "Альтернатива owner_ref"},
+                        "kind": {"type": "string", "description": "document или catalog"},
+                        "max_results": {"type": "integer", "description": "Максимум вложений"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
+class OneCReadAttachmentTool(OneCReadOnlyTool):
+    """Прочитать вложение 1С (текст PDF/DOCX/XLSX)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.read_attachment",
+                "Чтение вложения 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "metadata_name": {"type": "string", "description": "Имя метаданных документа"},
+                        "attachment_ref": {"type": "string", "description": "Ссылка вложения из list_attachments"},
+                        "filename": {"type": "string", "description": "Имя файла, если ref неизвестен"},
+                        "owner_ref": {"type": "string", "description": "Ссылка документа-владельца"},
+                        "number": {"type": "string", "description": "Номер документа-владельца"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
+class OneCSaveIncomingMailMsgTool(OneCReadOnlyTool):
+    """Outlook .msg → staging для OData POST входящей (без формы 1С)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.save_incoming_mail_msg",
+                "Сохранить письмо .msg для входящей",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string", "description": "Outlook EntryID"},
+                        "mail_subject": {"type": "string"},
+                        "save_dir": {"type": "string"},
+                    },
+                    "required": ["entry_id"],
+                },
+            ),
+            worker,
+        )
+
+
+class OneCRegisterIncomingFromMailTool(OneCReadOnlyTool):
+    """Outlook .msg → staging → форма входящей корреспонденции (как agent-pochta)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.register_incoming_from_mail",
+                "Входящая из письма Outlook",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string", "description": "Outlook EntryID"},
+                        "mail_subject": {"type": "string"},
+                        "mail_sender": {"type": "string"},
+                        "mail_received_at": {"type": "string", "description": "ISO или dd.mm.yy hh:mm"},
+                        "save_dir": {"type": "string"},
+                        "form": {"type": "string"},
+                    },
+                    "required": ["entry_id"],
+                },
+            ),
+            worker,
+        )
+
+
+class OneCOpenFormTool(OneCReadOnlyTool):
+    """Открыть форму метаданных в толстом клиенте 1С (журнал поручений и др.)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.open_form",
+                "Открыть форму 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "form": {
+                            "type": "string",
+                            "description": "Путь формы, напр. Документ.ТД_Поручения.Форма.ФормаСписка",
+                        },
+                        "metadata": {"type": "string", "description": "Имя объекта метаданных (опционально)"},
+                        "form_name": {"type": "string", "description": "Имя формы (опционально)"},
+                        "attach_mail_file": {
+                            "type": "boolean",
+                            "description": "Передать .msg в параметрах формы (ФайлСообщения)",
+                        },
+                        "mail_file_path": {"type": "string", "description": "Путь к сохранённому .msg"},
+                        "mail_subject": {"type": "string"},
+                        "mail_sender": {"type": "string"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
+class OneCMeetingServiceNotesTool(OneCReadOnlyTool):
+    """Чтение служебных записок на организацию совещаний. Только SELECT."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="onec.meeting_service_notes",
+                title="Служебные записки на совещания",
+                description=(
+                    "Очередь служебных записок 1С с темой «Организация совещаний (регл.)», только чтение, "
+                    "OData напрямую. По умолчанию — несогласованные за последние 30 дней с желаемой датой "
+                    "совещания от сегодня. По каждой: номер, дата, статус, тема совещания, цель, текст, "
+                    "желаемые дата и время, длительность, место, вид, признак ПСД, ФИО руководителя, "
+                    "инициатора и участников. Отсортированы по желаемой дате, ближайшие первыми. "
+                    "skipped показывает, сколько записок отсеяно по теме и желаемой дате."
+                ),
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=300,
+                runtime="odata",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "date_from": {
+                            "type": "string",
+                            "description": "Дата документа не раньше, YYYY-MM-DD. По умолчанию сегодня минус 30 дней",
+                        },
+                        "date_to": {
+                            "type": "string",
+                            "description": "Дата документа не позже, YYYY-MM-DD. По умолчанию сегодня",
+                        },
+                        "date": {"type": "string", "description": "Документы одного дня, YYYY-MM-DD"},
+                        "desired_from": {
+                            "type": "string",
+                            "description": (
+                                "Желаемая дата совещания не раньше: YYYY-MM-DD, today (по умолчанию) "
+                                "или any — без отбора, вместе с записками без желаемой даты"
+                            ),
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "НеСогласована (по умолчанию), Согласована, Отклонена или any",
+                        },
+                        "fio": {
+                            "type": "string",
+                            "description": "Оставить записки, где этот человек руководитель, инициатор или участник",
+                        },
+                        "include_participants": {
+                            "type": "boolean",
+                            "description": "Подтянуть участников (по умолчанию да)",
+                        },
+                        "max_results": {"type": "integer", "description": "Максимум записок, не больше 500"},
+                    },
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+def register_onec_readonly_tools(
+    registry: ToolRegistry,
+    worker: BaseWorker,
+    *,
+    skip_existing: bool = False,
+) -> None:
+    """Зарегистрировать read-only инструменты 1С."""
+    for tool in [
+        OneCSearchDocumentsTool(worker),
+        OneCGetDocumentCardTool(worker),
+        OneCSearchTasksTool(worker),
+        OneCGetTaskCardTool(worker),
+        OneCListAttachmentsTool(worker),
+        OneCReadAttachmentTool(worker),
+        OneCOpenFormTool(worker),
+        OneCSaveIncomingMailMsgTool(worker),
+        OneCRegisterIncomingFromMailTool(worker),
+        OneCMeetingServiceNotesTool(worker),
+    ]:
+        if skip_existing and registry.has_tool(tool.definition.name):
+            continue
+        registry.register(tool)
+
+
+def _definition(
+    name: str,
+    title: str,
+    input_schema: dict | None = None,
+) -> ToolDefinition:
+    """Создать единый ToolDefinition для read-only 1С tool."""
+    return ToolDefinition(
+        name=name,
+        title=title,
+        description=f"{title} в read-only режиме (COM 32-bit через cscript).",
+        side_effect_level=ToolSideEffectLevel.READ,
+        execution_mode=ToolExecutionMode.COM_WORKER,
+        requires_human_approval=False,
+        timeout_seconds=ONEC_COM32_TIMEOUT_SECONDS,
+        input_schema=input_schema or {"type": "object"},
+        output_schema={"type": "object"},
+        runtime=ONEC_COM32_RUNTIME,
+    )
+

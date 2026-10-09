@@ -12,6 +12,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, copyFileS
 import { tmpdir } from 'node:os'
 import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
+import { AgentPlatform } from './agentPlatform'
 import {
   LOCAL_BACKEND_DEFAULT,
   ensureDesktopBackend,
@@ -89,7 +90,11 @@ function preferLocalBackend(env: Record<string, string>): boolean {
   return !app.isPackaged
 }
 
-/** Explicit BACKEND_URL wins — erp_pm login/search stay on gateway when configured. */
+function isLoopbackUrl(url: string): boolean {
+  return /127\.0\.0\.1|localhost|\[::1\]|^::1/i.test(url)
+}
+
+/** Explicit BACKEND_URL wins. Packaged profile often keeps stale 127.0.0.1 from an old installer. */
 function resolveBackendUrl(env: Record<string, string>): string {
   const cwdEnvPath = join(process.cwd(), '.env')
   const cwdEnv =
@@ -100,8 +105,10 @@ function resolveBackendUrl(env: Record<string, string>): string {
     env.BACKEND_URL ||
     cwdEnv.BACKEND_URL ||
     ''
-  ).trim()
-  if (explicit) return explicit.replace(/\/+$/, '')
+  )
+    .trim()
+    .replace(/\/+$/, '')
+  if (explicit && !(app.isPackaged && isLoopbackUrl(explicit))) return explicit
 
   if (!app.isPackaged && preferLocalBackend({ ...env, ...cwdEnv })) {
     return LOCAL_BACKEND
@@ -228,6 +235,7 @@ function broadcastAgentEvent(message: AgentSidecarMessage): void {
 }
 
 const agentSidecar = new AgentSidecar(CONFIG.backendUrl, broadcastAgentEvent)
+const agentPlatform = new AgentPlatform(CONFIG.backendUrl, () => agentSidecar.status().desktopRoot)
 
 const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
   const kind = String(command.type || '')
@@ -1303,10 +1311,13 @@ function registerMainIpcHandlers(): void {
       credentials?: { login?: string; password?: string; onecComUsr?: string }
     ) => {
       agentSidecar.ready(token ?? null, credentials)
+      agentPlatform.setUser({ token, erpLogin: credentials?.login, erpPassword: credentials?.password })
       return { ok: true }
     }
   )
   ipcHandle('agent:status', () => agentSidecar.status())
+  ipcHandle('platform:ensure', () => agentPlatform.ensure())
+  ipcHandle('platform:status', () => agentPlatform.status())
   ipcHandle('agent:start', (_evt, command: AgentSidecarMessage) => agentSidecar.send(command))
   ipcHandle('agent:answer', (_evt, command: AgentSidecarMessage) =>
     agentSidecar.send({ ...command, type: 'answer' })
@@ -1523,6 +1534,7 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   notifyGuard.stop()
   agentSidecar.stop()
+  agentPlatform.stop()
   stopUpdater()
 })
 

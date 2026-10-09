@@ -52,6 +52,13 @@ function skipTools(rel) {
   return !rel.split('/').includes('node_modules')
 }
 
+// node_modules конфигураций нужны раннеру Cursor SDK; сессии и рабочие папки живут в %LOCALAPPDATA%.
+function skipAgentPlatform(rel) {
+  if (!skipCommon(rel)) return false
+  if (rel === 'platform/data' || rel.startsWith('platform/data/')) return false
+  return rel !== 'backend/.env'
+}
+
 function skipBackend(rel) {
   if (!rel) return true
   if (!skipCommon(rel)) return false
@@ -73,6 +80,7 @@ exports.default = async function afterSign(context) {
   copyTree(path.join(electronRoot, 'pybridge'), path.join(resources, 'pybridge'), skipCommon)
   copyTree(resolveRepoResource('desktop'), path.join(resources, 'desktop'), skipCommon)
   copyTree(resolveRepoResource('tools'), path.join(resources, 'tools'), skipTools)
+  copyTree(path.join(electronRoot, '..', 'agent-platform'), path.join(resources, 'agent-platform'), skipAgentPlatform)
   copyTree(path.join(runtimeRoot, 'python'), path.join(resources, 'python'))
   copyTree(path.join(runtimeRoot, 'node'), path.join(resources, 'node'))
 

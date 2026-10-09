@@ -85,7 +85,8 @@ TTL кэша: **10 мин** (`GRID_DATA_TTL_MS = 600_000`). Смена вкла�
 
 | Кнопка | Действие |
 |--------|----------|
-| Быстрый запуск / Запустить процесс / Карта процессов | вкладка «Решения» (`openWorkplaceTab('decisions')`) |
+| Запустить процесс | новый запуск агента платформы «Планировщик совещаний из 1С» (`launchPlatformAgent`, `MEETING_PLANNER_AGENT`) |
+| Быстрый запуск / Карта процессов | вкладка «Решения» (`openWorkplaceTab('decisions')`) |
 | Создать задачу в 1С (быстрые действия процессов) | `invokeLocalAcTool('onec.search_tasks', { mine_only: true, limit: 1 })` — COM-сессия |
 | + Создать задачу (шапка Задач) | канал 1С / Turbo / черновик → панель «write-API не готов», без фейкового успеха |
 | Открыть календарь Outlook | `workspace.powershell_run`: Outlook COM `ShowFolder` (календарь) или `Start-Process outlook` |

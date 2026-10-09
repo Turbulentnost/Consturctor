@@ -24,7 +24,7 @@ import {
 import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSessionHints'
 import { fetchMyErpTasksOData } from './workplace/fetchMyErpTasksOData'
 import { erpActorFio } from './workplace/userContext'
-import { AgentRunPage } from './pages/AgentRunPage'
+import { AgentRunRouter } from './pages/AgentRunRouter'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
@@ -56,7 +56,8 @@ import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/Workplace
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
 import { WorkplacePeriodProvider } from './workplace/workplacePeriod'
 import { clearGridCacheForUser } from './workplace/gridDataCache'
-import { ORCH_OPEN_TAB, type WorkplaceTabIntent } from './workplace/workplaceNav'
+import { ORCH_LAUNCH_AGENT, ORCH_OPEN_TAB, type LaunchAgentDetail, type WorkplaceTabIntent } from './workplace/workplaceNav'
+import { forgetOpenedSession, platformWorkflowId } from './agentPlatform/PlatformAgentPage'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
 import {
   ComCredentialsRevisionProvider,
@@ -115,7 +116,7 @@ type View =
   | { kind: 'diagnostics' }
   | { kind: 'files'; workflowId?: string; title?: string }
   | { kind: 'passport'; workflowId: string; title: string; tab?: PassportTab }
-  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string }
+  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string; launch?: number }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'schedule'; workflowId: string; title: string; published?: boolean }
 
@@ -460,6 +461,19 @@ function AppShell(): React.JSX.Element {
   }, [user])
 
   useEffect(() => {
+    const onLaunchAgent = (event: Event): void => {
+      const { agentId = '', title = '' } = (event as CustomEvent<Partial<LaunchAgentDetail>>).detail || {}
+      const workflowId = platformWorkflowId(agentId)
+      if (!workflowId) return
+      // Кнопка просит новый запуск: прошлая открытая сессия не должна его заслонять, идущий запуск откроется сам.
+      forgetOpenedSession(workflowId)
+      setView({ kind: 'agentrun', workflowId, title: title || 'ИИ-агент', autoStart: true, launch: Date.now() })
+    }
+    window.addEventListener(ORCH_LAUNCH_AGENT, onLaunchAgent)
+    return () => window.removeEventListener(ORCH_LAUNCH_AGENT, onLaunchAgent)
+  }, [])
+
+  useEffect(() => {
     const stopUnsub = window.api.onNotificationStop?.((payload) => {
       const workflowId = payload?.workflowId || ''
       if (workflowId) runs.cancel(workflowId)
@@ -790,7 +804,7 @@ function AppShell(): React.JSX.Element {
       return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
     }
     if (view.kind === 'agentrun') {
-      return <AgentRunPage workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
+      return <AgentRunRouter key={`${view.workflowId}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
     }
     if (view.kind === 'passport') {
       return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'overview' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
@@ -933,7 +947,7 @@ function AppShell(): React.JSX.Element {
       return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
     }
     if (view.kind === 'agentrun') {
-      return <AgentRunPage workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
+      return <AgentRunRouter key={`${view.workflowId}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
     }
     if (view.kind === 'passport') {
       return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />

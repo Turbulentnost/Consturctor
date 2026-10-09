@@ -96,6 +96,9 @@ def existing_backend_url(env_path: Path) -> str:
     return ""
 
 
+LAN_BACKEND = "http://192.168.1.157:7812"
+
+
 def detect_backend_url() -> str:
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -144,7 +147,7 @@ def prepare_env(backend_url: str) -> str:
         if current and "127.0.0.1" not in current and "localhost" not in current.lower():
             chosen = current
         else:
-            chosen = detect_backend_url()
+            chosen = LAN_BACKEND
     set_env_key(env_path, "BACKEND_URL", chosen)
     print(f"backend url: {chosen}", flush=True)
     return chosen
@@ -405,6 +408,7 @@ def publish_github_release(*, constructor_only: bool = False) -> None:
         notes = (
             f"Constructor {version} and Orchestrator {version}. "
             "Constructor-Setup.exe installs both programs. "
+            "Clients use backend http://192.168.1.157:7812. "
             "An update from either app installs both Constructor and Orchestrator. "
             "Orchestrator workplace: Today grid, KPI, assignments registry, 1C tasks, admin UI."
         )
@@ -456,13 +460,14 @@ def publish_github_release(*, constructor_only: bool = False) -> None:
     print(f"created GitHub release {tag}", flush=True)
 
 
-def build_orchestrator(args: argparse.Namespace) -> Path:
+def build_orchestrator(args: argparse.Namespace, backend_url: str) -> Path:
     script = REPO_ROOT / "orchestrator" / "desktop-electron" / "scripts" / "build_installer.py"
     if not script.is_file():
         raise RuntimeError(f"orchestrator installer script not found: {script}")
     cmd = [sys.executable, str(script)]
-    if args.backend_url:
-        cmd.extend(["--backend-url", args.backend_url])
+    chosen = (backend_url or args.backend_url or LAN_BACKEND).strip()
+    if chosen:
+        cmd.extend(["--backend-url", chosen])
     if args.skip_python:
         cmd.append("--skip-python")
     if args.skip_node:
@@ -561,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
 
     backend_url = prepare_env(args.backend_url)
     if args.with_orchestrator:
-        build_orchestrator(args)
+        build_orchestrator(args, backend_url)
     prepare_sdk_agent(args.skip_sdk_install)
     prepare_node(args.skip_node, download_node=args.download_node)
     prepare_python(args.skip_python)
