@@ -9,6 +9,7 @@ import './admin/admin-overview.css'
 import './admin/admin-themes.css'
 import './layout/orchGrid.css'
 import './tabs/grid/todayGrid.css'
+import './home-theme.css'
 import { initAdminTheme } from './admin/theme/adminThemes'
 
 const RUNS_RELOAD_KEY = 'orch-runs-provider-reload'

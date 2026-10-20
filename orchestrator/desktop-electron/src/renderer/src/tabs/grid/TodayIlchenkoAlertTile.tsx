@@ -54,22 +54,43 @@ export function TodayIlchenkoAlertTile({ user }: { user: UserProfile }): React.J
     openWorkplaceTab('assignments_registry', { registryTile: tile })
   }
 
+  const problem = error && !rows.length ? assignmentErrorText(error) : ''
+
   return (
-    <article className="spec-v04-tile today-assignments-tile" aria-label="Поручения: просроченные и подходящие ко сроку">
-      <button type="button" className="today-assignments-open" onClick={() => openRegistry('all')}>
-        <span className="today-assignments-title">Поручения</span>
-      </button>
-      <div className="today-assignments-split">
-        <button type="button" className="today-assignments-half is-overdue" onClick={() => openRegistry('overdue')}>
-          <span>Просроченные</span>
-          <strong>{overdueText}</strong>
-        </button>
-        <button type="button" className="today-assignments-half is-soon" onClick={() => openRegistry('due_soon')}>
-          <span>Подходит срок</span>
-          <strong>{dueSoonText}</strong>
+    <section className="ht-card ht-assignments" aria-label="Поручения: просроченные и подходящие ко сроку">
+      <div className="ht-card-h">
+        <h2>Поручения</h2>
+        <button className="ht-text" type="button" onClick={() => openRegistry('all')}>
+          Журнал
         </button>
       </div>
-      {error && !rows.length ? <p className="today-assignments-error">{error}</p> : null}
-    </article>
+      {problem ? <p className="ht-note">{problem}</p> : null}
+      <div className="ht-rows">
+        <button type="button" className="ht-task" onClick={() => openRegistry('overdue')}>
+          <span className="ht-main">
+            <span className="ht-title">Просрочено</span>
+            <span className="ht-preview">срок уже прошёл, поручение открыто</span>
+          </span>
+          <span className="ht-count">{overdueText}</span>
+        </button>
+        <button type="button" className="ht-task" onClick={() => openRegistry('due_soon')}>
+          <span className="ht-main">
+            <span className="ht-title">Срок близко</span>
+            <span className="ht-preview">осталось не больше трёх дней</span>
+          </span>
+          <span className="ht-count">{dueSoonText}</span>
+        </button>
+      </div>
+    </section>
   )
+}
+
+function assignmentErrorText(error: string): string {
+  if (/503/.test(error)) {
+    return 'Журнал поручений сейчас недоступен: сервер 1С ответил 503. Это не пароль — публикация OData не принимает запросы.'
+  }
+  if (/401|402|парол|учёт/i.test(error)) {
+    return 'Журнал поручений не открылся: 1С не приняла учётную запись.'
+  }
+  return 'Журнал поручений не открылся. Повторите позже.'
 }

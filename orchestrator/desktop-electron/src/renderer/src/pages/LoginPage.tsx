@@ -5,6 +5,7 @@ import { rememberPreference, savedFio, setRememberPreference } from '../store/se
 import { AppUpdatePanel } from '../components/AppUpdatePanel'
 import { FioSuggest } from '../components/FioSuggest'
 import logoUrl from '../assets/logo.png'
+import cloudsUrl from '../assets/login-clouds.jpg'
 
 const TEST_USER_FIO = 'Анна Де Армас'
 
@@ -47,6 +48,8 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
   const [showPassword, setShowPassword] = useState(false)
   const [remember, setRemember] = useState(rememberPreference())
   const [error, setError] = useState('')
+  const [toastLeaving, setToastLeaving] = useState(false)
+  const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
   const [waitSec, setWaitSec] = useState(0)
 
@@ -62,6 +65,36 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
   useEffect(() => {
     void api.searchUsers('', undefined, true).catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    if (!error) {
+      setToastLeaving(false)
+      return
+    }
+    setToastLeaving(false)
+    const hide = window.setTimeout(() => setToastLeaving(true), 5200)
+    const gone = window.setTimeout(() => setError(''), 5600)
+    return () => {
+      window.clearTimeout(hide)
+      window.clearTimeout(gone)
+    }
+  }, [error])
+
+  async function copyError(): Promise<void> {
+    if (!error) return
+    try {
+      await navigator.clipboard.writeText(error)
+    } catch {
+      const area = document.createElement('textarea')
+      area.value = error
+      document.body.appendChild(area)
+      area.select()
+      document.execCommand('copy')
+      area.remove()
+    }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1400)
+  }
 
   async function submit(): Promise<void> {
     setError('')
@@ -87,83 +120,84 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
   }
 
   return (
-    <div className="login-wrap">
-      <div className="login-bg" />
-      <div className="login-card">
-        <img className="login-logo" src={logoUrl} alt="Оркестратор" />
-        <div className="brand">Оркестратор</div>
-        <div className="subtitle">Оркестратор должности</div>
-        <div className="hint">Вход через учётную запись 1С</div>
-        {banner ? <div className="login-banner">{banner}</div> : null}
-
-        <label>ФИО</label>
-        <FioSuggest
-          value={fio}
-          onChange={setFio}
-          onSelect={setFio}
-          placeholder="Фамилия Имя Отчество"
-          inputClassName="login-input"
-          variant="dark"
-          onEnter={submit}
-          publicOnly
-        />
-
-        <label>Пароль</label>
-        <div className="password-field">
-          <input
-            className="login-input"
-            type={showPassword ? 'text' : 'password'}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit()}
-          />
-          <button
-            type="button"
-            className="password-toggle"
-            title={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
-            onClick={() => setShowPassword((v) => !v)}
-          >
-            {showPassword ? (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M3 3l18 18M10.6 10.7a2 2 0 002.8 2.8M9.4 5.2A9.8 9.8 0 0112 5c5 0 9 4.5 9 7 0 1-.7 2.3-1.9 3.5M6.1 6.2C3.9 7.6 3 9.8 3 12c0 2.5 4 7 9 7 1.3 0 2.5-.3 3.6-.8"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  strokeLinecap="round"
-                />
+    <div className="login-screen">
+      {error ? (
+        <div className={toastLeaving ? 'login-toast is-leaving' : 'login-toast'} role="alert">
+          <p>{error}</p>
+          <button type="button" className="login-toast-copy" onClick={() => void copyError()} title="Скопировать">
+            {copied ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M5 12.5l4.2 4.2L19 7.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                />
-                <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.7" />
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.7" />
+                <path d="M6 16V6.5A1.5 1.5 0 017.5 5H16" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
               </svg>
             )}
           </button>
         </div>
-
-        <label className="remember">
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(e) => setRemember(e.target.checked)}
+      ) : null}
+      <div className="login-shell">
+        <aside className="login-hero" style={{ backgroundImage: `url(${cloudsUrl})` }}>
+          <div className="login-hero-copy">
+            <p>Добро пожаловать</p>
+            <span className="login-brand-ring">
+              <img src={logoUrl} alt="" />
+            </span>
+            <h1>Оркестратор</h1>
+            <span>Рабочее место должности. Вход по учётной записи 1С.</span>
+          </div>
+        </aside>
+        <form
+          className="login-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void submit()
+          }}
+        >
+          <h2>Вход</h2>
+          {banner ? <div className="login-banner">{banner}</div> : null}
+          <label>ФИО</label>
+          <FioSuggest
+            value={fio}
+            onChange={setFio}
+            onSelect={setFio}
+            placeholder="Фамилия Имя Отчество"
+            inputClassName="login-input"
+            onEnter={submit}
+            publicOnly
           />
-          Запомнить пользователя
-        </label>
-
-        <div className="error">{error}</div>
-
-        <button className="btn-light" onClick={submit} disabled={busy}>
-          {busy
-            ? waitSec >= 3
-              ? `Входим... ${waitSec}с, ждём erp_pm`
-              : 'Входим...'
-            : 'Войти'}
-        </button>
-        <AppUpdatePanel />
+          <label htmlFor="login-password">Пароль</label>
+          <div className="password-field">
+            <input
+              id="login-password"
+              className="login-input"
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              placeholder="Пароль 1С"
+              autoComplete="current-password"
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && submit()}
+            />
+            <button
+              type="button"
+              className="password-toggle"
+              title={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+              onClick={() => setShowPassword((v) => !v)}
+            >
+              {showPassword ? 'Скрыть' : 'Показать'}
+            </button>
+          </div>
+          <label className="login-remember">
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            Запомнить на этом компьютере
+          </label>
+          <button className="login-submit" type="submit" disabled={busy}>
+            {busy ? (waitSec >= 3 ? `Входим… ${waitSec} с` : 'Входим…') : 'Войти'}
+          </button>
+          <AppUpdatePanel />
+        </form>
       </div>
     </div>
   )

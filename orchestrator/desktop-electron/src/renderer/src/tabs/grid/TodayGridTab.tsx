@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
-import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
+import { OrchSlotTodayCanvas } from '../../layout/GridSlots'
+import { HomeToday } from './HomeToday'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
 import { TODAY_WIDGET_IDS, type TodayWidgetId } from './useTodayWidgetLayout'
 import {
@@ -552,17 +553,6 @@ export function TodayGridTab({
     onAskOrchestrator(message, 'Вкладка «Сегодня»')
   }
 
-  const kpiFocusWidgetIds = useMemo(() => {
-    const allowed = new Set<string>(TODAY_WIDGET_IDS)
-    return kpiTiles.activeIds.filter((id): id is TodayWidgetId => allowed.has(id))
-  }, [kpiTiles.activeIds])
-
-  useEffect(() => {
-    const targetId = kpiFocusWidgetIds[0]
-    if (!targetId || !canvasRef.current) return
-    const node = canvasRef.current.querySelector(`[data-widget-id="${targetId}"]`)
-    node?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-  }, [kpiFocusWidgetIds])
 
   const onKpiTileSelect = (id: string): void => {
     if (id === 'sd-board') {
@@ -597,408 +587,45 @@ export function TodayGridTab({
     setOnecDialogOpen(true)
   }, [data.erpLoading, showOneCReconnect, data.comPasswordInSession])
 
-  const {
-    layout,
-    layoutWithStatic,
-    locked,
-    editMode,
-    setEditMode,
-    onLayoutChange,
-    toggleWidgetLock,
-    resetLayout
-  } = useTodayWidgetLayout(user.id || '')
 
-  const visibleWidgetIds = useMemo(
-    () => layoutWithStatic.map((item) => item.i as TodayWidgetId),
-    [layoutWithStatic]
-  )
-
-  const todayWidgets = useMemo(
-    () => ({
-      plan: (
-        <TodayWindow searchId="plan">
-          <TodayPlanPanel
-            periodDay={periodDay}
-            userId={user.id || ''}
-            fio={erpFio}
-            onOpenFullPlan={() => {
-              requestMeetingsDay(periodDay)
-              onOpenMeetings?.(periodDay)
-            }}
-          />
-        </TodayWindow>
-      ),
-      results: (
-        <TodayWindow searchId="results">
-          <TodayResultsPanel periodDay={periodDay} userId={user.id} />
-        </TodayWindow>
-      ),
-      outlook: (
-        <TodayWindow searchId="outlook">
-          <TodayOutlookMailPanel
-            rows={outlookMail.rows}
-            user={user}
-            fromMe={outlookFromMe}
-            loading={outlookMail.loading}
-            error={outlookMail.error}
-            onFromMeChange={(value) =>
-              setKpiTiles((current) => ({
-                ...current,
-                outlookFromMe: value,
-                activeIds: ['outlook']
-              }))
-            }
-          />
-        </TodayWindow>
-      ),
-      onec: (
-        <TodayWindow searchId="onec">
-        <MiniTableCard
-          title="Задачи на сегодня"
-          tableClassName={
-            onecFromMe ? 'today-mini-table-tasks today-mini-table-from-me' : 'today-mini-table-to-me'
-          }
-          headerAction={
-            <>
-              <TodayWidgetChoice
-                options={[
-                  {
-                    id: 'to-me',
-                    label: 'Мне',
-                    active: !onecFromMe,
-                    onClick: () =>
-                      setKpiTiles((current) => ({
-                        ...current,
-                        onecFromMe: false,
-                        activeIds: ['onec']
-                      }))
-                  },
-                  {
-                    id: 'from-me',
-                    label: 'От меня',
-                    active: onecFromMe,
-                    onClick: () =>
-                      setKpiTiles((current) => ({
-                        ...current,
-                        onecFromMe: true,
-                        activeIds: ['onec']
-                      }))
-                  }
-                ]}
-              />
-              <button
-                type="button"
-                className="today-refresh-btn"
-                title="Обновить задачи 1С:Документооборот: сегодня и просроченные"
-                disabled={data.erpLoading}
-                onClick={() => forceRefresh()}
-              >
-                <RefreshCw size={14} aria-hidden />
-              </button>
-            </>
-          }
-          loading={data.erpLoading}
-          error={
-            taskRows.length
-              ? data.erpError || data.error || undefined
-              : data.erpError || data.error
-                ? isOneCAuthFailure(data.erpError || data.error)
-                  ? [data.erpError || data.error, comPasswordSessionHint()].filter(Boolean).join(' · ')
-                  : data.erpError || data.error
-                : undefined
-          }
-          emptyText={
-            data.erpError || data.error
-              ? 'Не удалось загрузить задачи документооборота'
-              : onecFromMe
-                ? 'Нет задач от вас на выбранный день'
-                : 'Нет задач на сегодня и просроченных'
-          }
-          emptyExtra={onecReconnectBlock}
-          columns={onecFromMe ? ['Задача', 'Исполнитель', 'Статус'] : ['Задача', 'Статус']}
-          rowGroups={taskGroupLabels}
-          closedGroups={['Ознакомление']}
-          rowTones={taskRows.map((row) => todayRowTone(row.status, row.deadline, row.urgent))}
-          rowClassNames={taskRows.map((row) =>
-            row.platform
-              ? `today-tr-ptask prio-${row.platform.priority}${row.platform.awaitingReview ? ' ptask-review' : ''}`
-              : isNewOneCTask(data.newOneCTaskKeys, row)
-                ? 'today-tr-new-onec'
-                : undefined
-          )}
-          onRowClick={(index) => setTaskDetail(taskRows[index] || null)}
-          rows={taskRows.map((row) =>
-            onecFromMe
-              ? [
-                  <TodayTaskTitle
-                    key={`${row.id}-t`}
-                    text={row.title}
-                    isNew={!row.platform && isNewOneCTask(data.newOneCTaskKeys, row)}
-                    platform={Boolean(row.platform)}
-                  />,
-                  <TodayCellText
-                    key={`${row.id}-p`}
-                    text={formatSurnameInitials(row.performer || row.executor)}
-                  />,
-                  <SpecPill key={`${row.id}-st`} tone={row.statusTone}>
-                    {row.status}
-                  </SpecPill>
-                ]
-              : [
-                  <TodayTaskTitle
-                    key={`${row.id}-t`}
-                    text={row.title}
-                    isNew={!row.platform && isNewOneCTask(data.newOneCTaskKeys, row)}
-                    platform={Boolean(row.platform)}
-                  />,
-                  <SpecPill key={`${row.id}-st`} tone={row.statusTone}>
-                    {row.status}
-                  </SpecPill>
-                ]
-          )}
-        />
-        </TodayWindow>
-      ),
-      projects: (
-        <TodayWindow>
-        <MiniTableCard
-          title="Проектные задачи"
-          tableClassName="today-mini-table-tasks"
-          headerAction={
-            <TodayWidgetChoice
-              options={[
-                {
-                  id: 'to-me',
-                  label: 'Мне',
-                  active: !projectAsManager,
-                  onClick: () =>
-                    setKpiTiles((current) => ({
-                      ...current,
-                      projectAsManager: false,
-                      activeIds: ['projects']
-                    }))
-                },
-                {
-                  id: 'manager',
-                  label: 'Руководитель',
-                  active: projectAsManager,
-                  onClick: () =>
-                    setKpiTiles((current) => ({
-                      ...current,
-                      projectAsManager: true,
-                      activeIds: ['projects']
-                    }))
-                }
-              ]}
-            />
-          }
-          loading={projectTasks.loading}
-          error={projectTasks.error || undefined}
-          emptyText={
-            projectTasks.noSession
-              ? 'Нет активного сеанса'
-              : projectAsManager
-                ? 'Нет задач на сегодня и просроченных в ваших проектах'
-                : 'Нет задач на сегодня и просроченных'
-          }
-          columns={['Задача', 'Срок', 'Статус']}
-          rowTones={projectRows.map((row) => todayRowTone(row.status, row.deadline))}
-          onRowClick={(index) => setTaskDetail(projectRows[index] || null)}
-          rows={projectRows.map((row) => [
-            <TodayCellText key={`${row.id}-t`} text={row.title} />,
-            <TodayCellText key={`${row.id}-d`} text={row.deadline} />,
-            <SpecPill key={`${row.id}-st`} tone={row.statusTone}>
-              {row.status}
-            </SpecPill>
-          ])}
-        />
-        </TodayWindow>
-      ),
-      events: (
-        <TodayWindow searchId="events">
-        <MiniTableCard
-          title="Предстоящие события"
-          headerAction={
-            isIlchenkoAccount(user) ? (
-              <label className="own-meetings-toggle is-compact">
-                <input type="checkbox" checked={showOwnToday} onChange={(event) => setShowOwnToday(event.target.checked)} />
-                <span>Мои совещания</span>
-              </label>
-            ) : undefined
-          }
-          loading={data.sourcesLoading}
-          emptyText="Нет событий Outlook на выбранный день"
-          columns={['Время', 'Событие', 'Формат', 'Участники']}
-          rows={meetingRows.map((row) => [
-            <TodayCellText key={`${row.time}-t`} text={row.time} />,
-            <TodayCellText key={`${row.time}-ti`} text={row.title} />,
-            <TodayCellText key={`${row.time}-f`} text={row.format} />,
-            <TodayCellText key={`${row.time}-p`} text={row.participants} />
-          ])}
-        />
-        </TodayWindow>
-      ),
-      decisions: (
-        <TodayWindow searchId="decisions">
-        <SpecPanel
-          title="Подготовленные решения"
-          extra={
-            <button type="button" className="today-link-btn" onClick={onOpenDecisions}>
-              Все
-            </button>
-          }
-        >
-          {preparedDecisions.loading ? (
-            <p className="today-table-status">Загружаем…</p>
-          ) : preparedDecisions.error ? (
-            <p className="today-table-status today-table-error">{preparedDecisions.error}</p>
-          ) : !preparedDecisions.items.length ? (
-            <p className="today-table-status">Нет подготовленных решений за выбранный день</p>
-          ) : (
-            <ul className="today-decision-list">
-              {preparedDecisions.items.map((item) => {
-                const openRow = (): void => {
-                  if (item.workflowId && item.runId) {
-                    onOpenRun(item.workflowId, item.agentName, item.runId)
-                    return
-                  }
-                  if (item.workflowId) {
-                    onOpenRun(item.workflowId, item.agentName)
-                  }
-                }
-                const clickable = Boolean(item.workflowId)
-                return (
-                  <li
-                    key={item.id}
-                    className={`today-decision-item${clickable ? ' today-decision-item-clickable' : ''}`}
-                    role={clickable ? 'button' : undefined}
-                    tabIndex={clickable ? 0 : undefined}
-                    onClick={clickable ? openRow : undefined}
-                    onKeyDown={
-                      clickable
-                        ? (event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault()
-                              openRow()
-                            }
-                          }
-                        : undefined
-                    }
-                  >
-                    <span className={`today-decision-status tone-${item.statusTone}`}>
-                      {item.statusIcon}
-                    </span>
-                    <div className="today-decision-body">
-                      <strong>{item.title}</strong>
-                      {item.subtitle ? (
-                        <p className="today-decision-agent-action spec-v04-muted">{item.subtitle}</p>
-                      ) : null}
-                      <SpecPill tone={item.tagTone}>{item.tag}</SpecPill>
-                    </div>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-        </SpecPanel>
-        </TodayWindow>
-      ),
-      ask: (
-        <TodayWindow>
-          <SpecAskOrchestratorBlock
-            placeholder="Например: какие регламентные процессы просрочены?"
-            chips={ASK_CHIPS.today}
-            onSubmit={ask}
-          />
-        </TodayWindow>
-      )
-    }),
-    [
-      data.erpError,
-      data.erpTasks,
-      data.error,
-      data.newOneCTaskKeys,
-      data.oneCAuthFailure,
-      onecReconnectBlock,
-      data.meetings,
-      data.outlookMailbox,
-      data.sources.erp,
-      data.sources.turbo,
-      data.sourcesLoading,
-      data.erpLoading,
-      erpFio,
-      preparedDecisions.error,
-      preparedDecisions.items,
-      preparedDecisions.loading,
-      projectRows,
-      meetingRows,
-      onOpenDecisions,
-      onOpenRun,
-      outlookMail.error,
-      outlookMail.loading,
-      outlookMail.source,
-      periodDay,
-      projectTasks.error,
-      projectTasks.loading,
-      projectTasks.noSession,
-      projectTasks.rows,
-      taskRows,
-      onecFromMe,
-      outlookFromMe,
-      projectAsManager,
-      user.id,
-      onAskOrchestrator
-    ]
-  )
+  const homeTiles = tileStrip.filter((item): item is Exclude<typeof item, 'assignments'> => item !== 'assignments')
 
   return (
     <>
-      <OrchSlotMetrics>
-        <div className={`orch-today-tiles${tileStrip.length > 7 ? ' orch-today-tiles-wide' : ''}`}>
-          <div className="spec-v04-tiles spec-v04-tiles-rich">
-            {tileStrip.map((item) =>
-              item === 'assignments' ? (
-                <TodayIlchenkoAlertTile key="assignments" user={user} />
-              ) : (
-                <SpecSummaryTileCard
-                  key={item.id}
-                  tile={item}
-                  active={kpiTiles.activeIds.includes(item.id)}
-                  onSelect={onKpiTileSelect}
-                />
-              )
-            )}
-          </div>
-        </div>
-      </OrchSlotMetrics>
-
-      <OrchSlotFilters>
-        <TodayFiltersBar
+      <OrchSlotTodayCanvas>
+        <HomeToday
+          user={user}
           periodDay={periodDay}
           onPeriodDayChange={setPeriodDay}
-          widgetEditMode={editMode}
-          onWidgetEditModeChange={setEditMode}
-          onResetWidgetLayout={resetLayout}
-          extra={<TrackedCalendarsControl fio={erpFio} />}
+          tiles={homeTiles}
+          activeTileIds={kpiTiles.activeIds}
+          onTile={onKpiTileSelect}
+          mailRows={outlookMail.rows}
+          mailLoading={outlookMail.loading}
+          mailError={outlookMail.error}
+          tasks={taskRows}
+          tasksLoading={data.erpLoading}
+          tasksError={data.erpError || data.error || ''}
+          projects={projectRows}
+          decisions={preparedDecisions.items}
+          decisionsLoading={preparedDecisions.loading}
+          onOpenMeetings={() => {
+            requestMeetingsDay(periodDay)
+            onOpenMeetings?.(periodDay)
+          }}
+          onOpenDecisions={onOpenDecisions}
+          onOpenMail={() => window.dispatchEvent(new CustomEvent('orchestrator:open-tab', { detail: { key: 'mail' } }))}
+          onOpenTask={(row) => {
+            const full = taskRows.find((item) => item.id === row.id) || projectRows.find((item) => item.id === row.id)
+            if (full) setTaskDetail(full)
+          }}
+          onOpenDecision={(row) => {
+            if (row.workflowId && row.runId) onOpenRun(row.workflowId, row.agentName, row.runId)
+            else if (row.workflowId) onOpenRun(row.workflowId, row.agentName)
+            else onOpenDecisions()
+          }}
+          assignments={tileStrip.includes('assignments') ? <TodayIlchenkoAlertTile user={user} /> : null}
         />
-      </OrchSlotFilters>
-
-      <OrchSlotTodayCanvas>
-        <div ref={canvasRef} className="today-widget-grid-host-wrap">
-          <TodayWidgetGrid
-            userId={user.id || ''}
-            editMode={editMode}
-            layoutWithStatic={layoutWithStatic}
-            fullLayout={layout}
-            visibleWidgetIds={visibleWidgetIds}
-            locked={locked}
-            onLayoutChange={onLayoutChange}
-            onToggleLock={toggleWidgetLock}
-            onRequestEditMode={() => setEditMode(true)}
-            widgets={todayWidgets}
-            kpiFocusWidgetIds={kpiFocusWidgetIds}
-          />
-        </div>
       </OrchSlotTodayCanvas>
       <OneCReconnectDialog
         open={onecDialogOpen}
