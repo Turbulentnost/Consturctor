@@ -195,6 +195,18 @@ export function useAssignmentRegistry(
           }
         }
 
+        try {
+          const reviews = await api.listAssignmentReviews(dateFrom, dateTo)
+          if (reviews.length) {
+            const extra = reviews
+              .map((item) => mapAssignmentFromApi(item))
+              .filter((row) => row.number && row.number !== '—' && !pool.some((item) => item.number === row.number))
+            if (extra.length) pool = mergeRegistryPool(userId, extra)
+          }
+        } catch {
+          /* снимок из БД — дополнение к 1С, без него реестр всё равно из ERP */
+        }
+
         loadedSpanRef.current = { dateFrom, dateTo, complete: spanFinishedComplete }
         publishVisible(pool, { complete: spanFinishedComplete })
       } catch (exc) {

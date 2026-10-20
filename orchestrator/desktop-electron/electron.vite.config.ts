@@ -29,7 +29,8 @@ export default defineConfig({
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src/renderer/src'),
-        '@shared': resolve(__dirname, 'src/shared')
+        '@shared': resolve(__dirname, 'src/shared'),
+        'lucide-react': resolve(__dirname, 'node_modules/lucide-react/dist/esm/lucide-react.js')
       }
     },
     server: {

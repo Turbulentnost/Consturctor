@@ -35,8 +35,23 @@ _MISSING_WORK_RESULT_RE = re.compile(
     re.I,
 )
 _TESTS_FAIL_RE = re.compile(r"TESTS:\s*FAIL", re.I)
+ANSWER_MAX_CHARS = 32000
+_CLOSURE_CHECK_RE = re.compile(r"```closure-check\s*\n[\s\S]*?```", re.I)
 
 logger = logging.getLogger(__name__)
+
+
+def clip_answer(answer: str) -> str:
+    """The registry reads the trailing closure-check block: shorten the text before it, not the block."""
+    value = (answer or "").strip()
+    if len(value) <= ANSWER_MAX_CHARS:
+        return value
+    blocks = list(_CLOSURE_CHECK_RE.finditer(value))
+    block = blocks[-1].group(0) if blocks else ""
+    if not block or len(block) >= ANSWER_MAX_CHARS - 2:
+        return value[:ANSWER_MAX_CHARS]
+    head = _CLOSURE_CHECK_RE.sub("", value).strip()[: ANSWER_MAX_CHARS - len(block) - 2].rstrip()
+    return f"{head}\n\n{block}" if head else block
 
 from app.models.agent_run import AgentRun
 from app.models.trigger import AgentTrigger
@@ -396,7 +411,7 @@ def finish_agent_run(
     if row is None:
         return
     was_open = _row_in_flight(row)
-    row.answer = (answer or "").strip()[:32000]
+    row.answer = clip_answer(answer)
     row.status = effective_run_status(_normalize_run_status(status), row.answer, in_flight=False)
     row.finished_at = datetime.now(timezone.utc)
     incoming = slim_run_events(events or [])

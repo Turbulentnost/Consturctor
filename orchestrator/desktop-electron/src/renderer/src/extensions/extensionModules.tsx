@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import type { UserProfile } from '../api/types'
 import type { PageKey } from '../components/Sidebar'
 import type { PassportTab } from '../pages/AgentPassportPage'
+import { InDevelopmentTab } from './inDevelopment/InDevelopmentTab'
 import { AssignmentsRegistryGridTab } from '../tabs/grid/AssignmentsRegistryGridTab'
 import { AgentLibraryGridTab } from '../tabs/grid/AgentLibraryGridTab'
 import { ProjectsGridTab } from '../tabs/grid/ProjectsGridTab'
@@ -105,6 +106,17 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
     renderTab: ({ user, onOpenPassport }) => (
       <AgentLibraryGridTab user={user} onOpenPassport={onOpenPassport} />
     )
+  },
+  {
+    id: 'in_development',
+    pageKey: 'in_development',
+    navLabel: 'Закупки',
+    title: 'Закупки',
+    subtitle: 'Закупки',
+    description: 'Закупки',
+    positionGroups: ['all'],
+    canAccess: () => true,
+    renderTab: () => <InDevelopmentTab />
   }
 ]
 

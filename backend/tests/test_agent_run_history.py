@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 from app.services.agent_runtime import _playbook_plan_text
 from app.services.agent_runs import (
+    ANSWER_MAX_CHARS,
     MISSING_WORK_RESULT_ANSWER,
     SDK_DEAD_ANSWER,
+    clip_answer,
     effective_run_status,
     is_successful_work_answer,
     slim_run_events,
@@ -416,3 +418,15 @@ def test_compute_run_timing_keeps_agent_slice_before_human_wait() -> None:
     )
     assert timing["agent_work_ms"] == 5 * 60_000 + 26_000
     assert timing["human_wait_ms"] == 30 * 60_000 + 34_000
+
+
+def test_clip_answer_keeps_trailing_closure_check_block() -> None:
+    block = '```closure-check\n{"assignments":[{"number":"АСТ00-00113"}]}\n```'
+    clipped = clip_answer("x" * (ANSWER_MAX_CHARS + 500) + "\n\n" + block)
+
+    assert len(clipped) <= ANSWER_MAX_CHARS
+    assert clipped.endswith(block)
+
+
+def test_clip_answer_leaves_short_answer() -> None:
+    assert clip_answer("  ответ  ") == "ответ"

@@ -529,7 +529,8 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "action=list: по умолчанию открытые + за сегодня, фильтр customer=ФИО. "
                 "include_all=true — все статусы, без отсечения «только открытые/сегодня». "
                 "action=get: карточка по number (АСТ00-00093) со строками и файлами. "
-                "action=files / download / tasks / protocols. "
+                "action=files / download / tasks / protocols / reviewed. "
+                "action=reviewed — номера уже проверенных поручений из БД, их не перепроверяй. "
                 "action=protocols + psd_mark=true — только протоколы с номером ПСД*. "
                 "Содержимое файла: onec.download_artifact с file_id из action=files. "
                 "Не выдумывай ACT латиницей — номер кириллический АСТ. "
@@ -541,7 +542,7 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "properties": {
                     "action": _prop(
                         "string",
-                        "list | get | files | download | tasks | protocols",
+                        "list | get | files | download | tasks | protocols | reviewed",
                         default="list",
                     ),
                     "customer": _prop("string", "ФИО заказчика (Руководитель), например Амураль Игорь Борисович"),
@@ -567,9 +568,9 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "include_files": _prop("boolean", "Для list сразу вернуть файлы", default=False),
                     "include_tasks": _prop(
                         "boolean",
-                        "Для list/get: к каждому мероприятию (строке lines) задачи исполнителей "
-                        "из 1С:Документооборот — «Исполнить задачу №N», проверка/утверждение, "
-                        "статус, срок, отчёт исполнителя и task_id",
+                        "Для list/get: задачи поручения из 1С:Документооборот (docflow_tasks) — "
+                        "каждая отправка исполнителю: статус, возвраты, срок, комментарий исполнителя, "
+                        "его файлы, task_id открытой проверки; с мероприятиями задачи не связаны",
                         default=False,
                     ),
                     "file_id": _prop("string", "GUID вложения для action=download"),
@@ -1199,6 +1200,20 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             },
             ["filename"],
         ),
+        (
+            "report.closure_check",
+            "Сохранить выводы проверки поручений к закрытию для реестра поручений, по 2–3 поручения за вызов. "
+            "Повтор того же number заменяет поручение. Блок closure-check в ответ не пиши: Оркестратор добавит его сам.",
+            {
+                "assignments": _prop(
+                    "array",
+                    "[{number, target_id, conclusion, done, total, reason, tasks:[{n, performer, task, "
+                    "conclusion (Можно закрывать|Вернуть на доработку|Не выполнено), evidence, task_state, advice, "
+                    "comment (заключение к первым двум), action, task_id, step, title, reason, open_task_id}]}]",
+                ),
+            },
+            ["assignments"],
+        ),
         ("users.current", "Текущий пользователь сессии Constructor: id, ФИО, должность, подразделение. Если регламент говорит «текущий пользователь», «данный пользователь» или «мои данные» — вызови этот tool, не спрашивай человека.", {}),
         ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
             "query": _prop("string", "ФИО, email или id — не роль и не «все» / «получатели»"),
@@ -1522,6 +1537,7 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "report.build_meeting_summary": ("desktop", "report", "generate", [], ["text"], "none"),
     "report.build_schedule_recommendations": ("desktop", "report", "generate", [], ["text"], "none"),
     "report.export_document": ("desktop", "report", "export", ["filename"], ["file"], "none"),
+    "report.closure_check": ("desktop", "report", "export", ["assignments"], ["numbers"], "none"),
     "users.current": ("constructor", "user", "read", [], ["user"], "none"),
     "users.list": ("constructor", "user", "list", [], ["users"], "count"),
     "users.subordinates": ("constructor", "subordinate", "list", [], ["users"], "count"),

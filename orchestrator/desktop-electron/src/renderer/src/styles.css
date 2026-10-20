@@ -93,12 +93,7 @@ input {
 .sidebar {
   width: 184px;
   flex-shrink: 0;
-  background: linear-gradient(
-    180deg,
-    var(--sidebar-top) 0%,
-    var(--sidebar-mid) 45%,
-    var(--sidebar-bottom) 100%
-  );
+  background: #071426;
   border-right: none;
   display: flex;
   flex-direction: column;

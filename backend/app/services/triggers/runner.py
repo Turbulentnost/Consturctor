@@ -39,6 +39,7 @@ from app.services.triggers.service import (
     mark_fired,
     mark_skipped,
     command_payload,
+    runs_on_server,
     workflow_has_started_run,
 )
 from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
@@ -241,12 +242,6 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
 
 
 _STALE_STARTED_RUN = timedelta(hours=4)
-
-
-def runs_on_server(workflow: Workflow) -> bool:
-    """Agents run on the owner's computer. A stored run_on_server flag is ignored."""
-    del workflow
-    return False
 
 
 def _fresh_started_run(db: Session, workflow_id: str) -> bool:

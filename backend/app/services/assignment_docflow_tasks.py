@@ -1,9 +1,14 @@
-"""Задачи 1С:Документооборот по мероприятиям поручений АСТ00.
+"""Задачи 1С:Документооборот по поручениям АСТ00.
 
-Поручение ERP отражено в ДО внутренним документом с тем же GUID. Мероприятие N
-поручения — задачи «Исполнить задачу №N» исполнителя и следующая за ними
-проверка (утверждение) автора. Их task_id нужен, чтобы закрыть задачу или
-вернуть её на доработку (onec.docflow_task_action / onec.docflow_rework).
+Поручение ERP отражено в ДО внутренним документом с тем же GUID. Задачи ДО ссылаются
+только на поручение целиком: ни номера, ни ссылки на строку-мероприятие в них нет,
+поэтому задачи показываются по поручению, без раскладки по пунктам.
+
+Задача поручения — цепочка одного бизнес-процесса «Исполнение»: задачи исполнителя,
+проверки автора, возвраты на доработку и переносы срока. Номер задачи ДО — номер
+процесса плюс пять цифр шага, по нему задачи собираются в цепочку. task_id нужен,
+чтобы закрыть задачу или вернуть её на доработку (onec.docflow_task_action /
+onec.docflow_rework).
 """
 
 from __future__ import annotations
@@ -17,9 +22,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_TASK_NO_RE = re.compile(r"задач[уаи]?\s*№\s*(\d+)", re.IGNORECASE)
+_TASK_DATE_RE = re.compile(r"от (\d{2})\.(\d{2})\.(\d{4}) (\d{1,2}):(\d{2}):(\d{2})")
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _REPORT_CHARS = 600
+_TEXT_CHARS = 300
+_STEP_DIGITS = 5
+ACCEPTED = "принято проверяющим"
 _MAX_WORKERS = 6
 
 
@@ -38,10 +46,20 @@ def task_kind(row: dict[str, Any]) -> str:
     return "other"
 
 
+def _clip(value: Any, size: int = _REPORT_CHARS) -> str:
+    text = str(value or "").strip()
+    return text[:size].rstrip() + "…" if len(text) > size else text
+
+
+def chain_key(row: dict[str, Any]) -> str:
+    """Номер процесса ДО: номер задачи без пяти цифр шага. Без номера задача — сама себе цепочка."""
+    number = str(row.get("number") or "").strip()
+    if len(number) > _STEP_DIGITS and number[-_STEP_DIGITS:].isdigit():
+        return number[:-_STEP_DIGITS]
+    return f"task:{row.get('id') or id(row)}"
+
+
 def _task_view(row: dict[str, Any]) -> dict[str, Any]:
-    report = str(row.get("description") or "").strip()
-    if len(report) > _REPORT_CHARS:
-        report = report[:_REPORT_CHARS].rstrip() + "…"
     return {
         "task_id": str(row.get("id") or ""),
         "kind": task_kind(row),
@@ -49,83 +67,72 @@ def _task_view(row: dict[str, Any]) -> dict[str, Any]:
         "name": str(row.get("name") or "")[:160],
         "performer": str(row.get("performer") or ""),
         "author": str(row.get("author") or ""),
-        "begin": str(row.get("begin") or "")[:10],
+        "begin": str(row.get("begin") or "")[:19],
+        "end": str(row.get("end") or "")[:19],
         "due": str(row.get("due") or "")[:10],
         "executed": bool(row.get("executed")),
-        "report": report,
+        "mark": str(row.get("execution_mark") or ""),
+        "text": _clip(row.get("description"), _TEXT_CHARS),
+        "report": _clip(row.get("comment")),
     }
 
 
-def _line_for_row(row: dict[str, Any], lines: list[dict[str, Any]]) -> dict[str, Any] | None:
-    match = _TASK_NO_RE.search(str(row.get("name") or ""))
-    if match:
-        number = int(match.group(1))
-        return next((line for line in lines if int(line.get("line") or 0) == number), None)
-    performer = _fold(row.get("performer"))
-    if performer:
-        same = [line for line in lines if _fold(line.get("executor")) == performer]
-        if len(same) == 1:
-            return same[0]
-    described = _fold(row.get("description"))[:120]
-    if len(described) < 30:
-        return None
-    for line in lines:
-        text = _fold(re.sub(r"^\s*\d+[.)]\s*", "", str(line.get("text") or "")))[:120]
-        if text and (described.startswith(text[:80]) or text.startswith(described[:80])):
-            return line
-    return None
+def _named_task_at(name: str) -> str:
+    """Начало задачи, о которой задача переноса срока: последняя дата «от ДД.ММ.ГГГГ Ч:ММ:СС» в имени."""
+    found = _TASK_DATE_RE.findall(name)
+    if not found:
+        return ""
+    day, month, year, hour, minute, second = found[-1]
+    return f"{year}-{month}-{day}T{int(hour):02d}:{minute}:{second}"
 
 
-def _shared_lines(view: dict[str, Any], lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Одна задача без «№N» на все мероприятия исполнителя: ДО выпускает её по документу целиком.
-
-    Исполнение — всем строкам этого исполнителя. Проверка автора — строкам,
-    где последнее исполнение уже отмечено и проверки после него ещё нет.
-    """
-    if view["kind"] == "execute":
-        performer = _fold(view["performer"])
-        return [line for line in lines if performer and _fold(line.get("executor")) == performer]
-    if view["kind"] != "check":
-        return []
-    waiting: list[dict[str, Any]] = []
-    for line in lines:
-        tasks = line["docflow_tasks"]
-        executes = [task for task in tasks if task["kind"] == "execute"]
-        if not executes or not executes[-1]["executed"]:
-            continue
-        if tasks[-1]["kind"] == "check":
-            continue
-        waiting.append(line)
-    return waiting
+def _unique_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Одна задача из двух выборок ДО (все и открытые): поля дополняют друг друга."""
+    unique: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        merged = unique.setdefault(str(row.get("id") or id(row)), {})
+        for field, value in row.items():
+            if value not in (None, "") and merged.get(field) in (None, ""):
+                merged[field] = value
+    return sorted(unique.values(), key=lambda r: (str(r.get("begin") or ""), str(r.get("number") or "")))
 
 
 def task_state(tasks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Где сейчас мероприятие по маршруту ДО и какая задача открыта для действия."""
+    """Где сейчас задача по маршруту ДО. Отметка проверки ExecutedNegative — возврат, не приёмка."""
     executes = [task for task in tasks if task["kind"] == "execute"]
     checks = [task for task in tasks if task["kind"] == "check"]
     last_exec = executes[-1] if executes else None
+    last_check = checks[-1] if checks else None
     open_check = next((task for task in reversed(checks) if not task["executed"]), None)
     open_exec = next((task for task in reversed(executes) if not task["executed"]), None)
+    checked_last = bool(
+        last_check and last_check["executed"] and (not last_exec or last_check["begin"] >= last_exec["begin"])
+    )
     if not tasks:
         label = "задачи в Документообороте нет"
-    elif checks and checks[-1]["executed"] and not open_check and not open_exec:
-        label = "принято проверяющим"
     elif open_check:
         label = "исполнитель отчитался, ждёт проверки"
     elif open_exec:
         label = "у исполнителя, не выполнено"
+    elif checked_last and last_check["mark"] == "ExecutedNegative":
+        label = "возвращено на доработку"
+    elif checked_last:
+        label = ACCEPTED
+    elif last_exec and last_exec["executed"] and last_exec["mark"] == "ExecutedNegative":
+        label = "исполнитель отметил: не выполнено"
     elif last_exec and last_exec["executed"]:
         label = "исполнитель отметил выполнение"
     else:
         label = "статус не определён"
-    report = next(
-        (task["report"] for task in reversed(executes) if task["executed"] and task["report"]),
-        "",
-    )
+    accepted = label == ACCEPTED
     return {
         "label": label,
-        "returns": max(0, len(executes) - 1),
-        "executor_report": report,
+        "returns": max(0, len(executes) - 1, sum(1 for task in checks if task["mark"] == "ExecutedNegative")),
+        "executor_report": next(
+            (task["report"] for task in reversed(executes) if task["executed"] and task["report"]), ""
+        ),
+        "accepted_at": last_check["begin"][:10] if accepted else "",
+        "accepted_by": last_check["performer"] if accepted else "",
         "open_check_task_id": open_check["task_id"] if open_check else "",
         "open_check_step": open_check["step"] if open_check else "",
         "open_check_name": open_check["name"] if open_check else "",
@@ -134,28 +141,115 @@ def task_state(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def link_tasks(item: dict[str, Any], rows: list[dict[str, Any]]) -> None:
-    lines = item.get("lines") if isinstance(item.get("lines"), list) else []
-    for line in lines:
-        line["docflow_tasks"] = []
-    whole: list[dict[str, Any]] = []
-    unique = {str(row.get("id") or id(row)): row for row in rows}
-    for row in sorted(unique.values(), key=lambda r: str(r.get("begin") or "")):
+def _history_view(task: dict[str, Any]) -> dict[str, Any]:
+    keep = ("task_id", "kind", "step", "performer", "begin", "end", "due", "executed", "mark", "report")
+    return {field: task[field] for field in keep}
+
+
+def build_tasks(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Задачи поручения (цепочки исполнения по порядку отправки) и прочие задачи вне цепочек."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in _unique_rows(rows):
         view = _task_view(row)
-        line = _line_for_row(row, lines)
-        if line is None and len(lines) == 1 and view["kind"] != "other":
-            line = lines[0]
-        if line is not None:
-            line["docflow_tasks"].append(view)
+        groups.setdefault(chain_key(row), []).append(view)
+    chains = {key: tasks for key, tasks in groups.items() if any(task["kind"] == "execute" for task in tasks)}
+    by_start = {task["begin"]: key for key, tasks in chains.items() for task in tasks if task["kind"] == "execute"}
+    other: list[dict[str, Any]] = []
+    for key, tasks in groups.items():
+        if key in chains:
             continue
-        shared = _shared_lines(view, lines)
-        if not shared:
-            whole.append(view)
-        for target in shared:
-            target["docflow_tasks"].append(view)
+        for task in tasks:
+            owner = by_start.get(_named_task_at(task["name"])) if task["kind"] == "other" else None
+            if owner:
+                chains[owner].append(task)
+            else:
+                other.append(task)
+    result: list[dict[str, Any]] = []
+    for key, tasks in chains.items():
+        tasks.sort(key=lambda task: task["begin"])
+        executes = [task for task in tasks if task["kind"] == "execute"]
+        result.append(
+            {
+                "chain": key,
+                "performer": executes[0]["performer"],
+                "author": executes[0]["author"],
+                "text": next((task["text"] for task in executes if task["text"]), ""),
+                "begin": tasks[0]["begin"][:10],
+                "due": executes[-1]["due"],
+                **task_state(tasks),
+                "history": [_history_view(task) for task in tasks],
+                "files": [],
+            }
+        )
+    result.sort(key=lambda chain: chain["begin"])
+    return result, [_history_view(task) | {"name": task["name"]} for task in other]
+
+
+def _executors_without_tasks(lines: list[dict[str, Any]], tasks: list[dict[str, Any]]) -> list[str]:
+    from app.tools.onec.dok_soap import person_names_match
+
+    missing: list[str] = []
     for line in lines:
-        line["docflow_state"] = task_state(line["docflow_tasks"])
-    item["docflow_tasks_assignment"] = whole[:10]
+        executor = str(line.get("executor") or "").strip()
+        if not executor or executor in missing:
+            continue
+        if not any(person_names_match(executor, task["performer"]) for task in tasks):
+            missing.append(executor)
+    return missing
+
+
+def _sending_for(task: dict[str, Any], created: str) -> tuple[int, str, dict[str, Any]] | None:
+    """Отправка исполнителю для файла: 2 — загружен во время неё, 1 — после неё, 0 — до первой."""
+    executes = [step for step in task["history"] if step["kind"] == "execute"]
+    started = [step for step in executes if step["begin"] and step["begin"] <= created]
+    within = [step for step in started if not step["end"] or created <= step["end"]]
+    for rank, steps in ((2, within), (1, started), (0, executes)):
+        if steps:
+            return rank, steps[-1]["begin"], steps[-1]
+    return None
+
+
+def attach_files(tasks: list[dict[str, Any]], files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Раскладывает файлы вкладки «Файлы» поручения ERP по задачам ДО.
+
+    Ссылки файла на задачу в 1С нет. Загрузивший файл (Изменил) — исполнитель задачи,
+    дата загрузки выбирает отправку. Остальные файлы — файлы самого поручения.
+    """
+    from app.tools.onec.dok_soap import person_names_match
+
+    unmatched: list[dict[str, Any]] = []
+    for file in files:
+        who = str(file.get("uploaded_by") or "").strip()
+        created = str(file.get("created") or "")[:19]
+        mine = [task for task in tasks if who and person_names_match(who, task["performer"])]
+        picks = [(task, _sending_for(task, created)) for task in mine]
+        picks = [(task, pick) for task, pick in picks if pick]
+        if not picks:
+            unmatched.append(file)
+            continue
+        task, (_, _, step) = max(picks, key=lambda pick: pick[1][:2])
+        task["files"].append(file | {"task_id": step["task_id"]})
+    return unmatched
+
+
+def link_tasks(item: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Задачи ДО поручения без привязки к пунктам: в ДО у задачи нет ссылки на строку поручения."""
+    lines = item.get("lines") if isinstance(item.get("lines"), list) else []
+    tasks, other = build_tasks(rows)
+    files = item.get("files") if isinstance(item.get("files"), list) else []
+    item["docflow_assignment_files"] = attach_files(tasks, files)
+    open_tasks = sum(1 for task in tasks for step in task["history"] if not step["executed"])
+    open_tasks += sum(1 for task in other if not task["executed"])
+    accepted = sum(1 for task in tasks if task["label"] == ACCEPTED)
+    item["docflow_tasks"] = tasks
+    item["docflow_other_tasks"] = other
+    item["docflow_summary"] = {
+        "total": len(tasks),
+        "accepted": accepted,
+        "open_tasks": open_tasks,
+        "all_accepted": bool(tasks) and accepted == len(tasks) and not open_tasks,
+        "executors_without_tasks": _executors_without_tasks(lines, tasks),
+    }
 
 
 def _target_rows(config: Any, ref: str) -> list[dict[str, Any]]:

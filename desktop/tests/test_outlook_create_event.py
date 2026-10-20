@@ -8,6 +8,7 @@ from app.tools.ac.com_backed_tools import (
 from app.tools.ac.workers.outlook_com_actions import (
     _attach_attendees,
     _calendar_access_hint,
+    _calendar_read_targets,
     _compute_free_slots,
     _folder_matches_person,
     _is_public_meetings_label,
@@ -26,6 +27,17 @@ from app.tools.ac.workers.outlook_com_actions import (
 class _DummyWorker:
     def execute(self, task):
         return None
+
+
+def test_calendar_read_targets_do_not_prepend_profile_owner() -> None:
+    amural = "Амураль Игорь Борисович"
+    ilchenko = "Ильченко Екатерина Александровна"
+    assert _calendar_read_targets([amural], [], ilchenko, include_own=False) == [amural]
+    assert _calendar_read_targets([amural], [], ilchenko, include_own=True) == [amural, ilchenko]
+    # На компьютере Мангасаряна его календарь уже в списке — второй раз не добавляем.
+    assert _calendar_read_targets([amural], [], amural, include_own=True) == [amural]
+    # Без явного списка по-прежнему читается календарь профиля.
+    assert _calendar_read_targets([], [], ilchenko, include_own=False) == [ilchenko]
 
 
 def test_wall_clock_shift_adds_moscow_offset_back() -> None:

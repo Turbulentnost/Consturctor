@@ -34,7 +34,7 @@ export function DocflowActionRow({
   bare = false
 }: {
   item: AgentDocflowAction
-  /** Без шапки «поручение, пункт»: строка уже стоит под мероприятием. */
+  /** Без шапки «поручение, задача»: строка уже стоит под задачей. */
   bare?: boolean
 }): React.JSX.Element {
   const [state, setState] = useState<RowState>({})
@@ -63,7 +63,7 @@ export function DocflowActionRow({
         {bare ? null : (
           <strong>
             {item.assignment}
-            {item.line ? `, п.${item.line}` : ''}
+            {item.line ? `, ${item.line}` : ''}
           </strong>
         )}
         {item.performer && !bare ? <span className="docflow-action-performer">{item.performer}</span> : null}
@@ -135,16 +135,13 @@ export function DocflowActionRow({
   )
 }
 
-/** Задача ещё у исполнителя: автор может закрыть мероприятие без его отчёта. */
+/** Задача ещё у исполнителя: автор может закрыть её без его отчёта. */
 export function DocflowWaitingRow({
   taskId,
-  performer = '',
-  sharedLines = []
+  performer = ''
 }: {
   taskId: string
   performer?: string
-  /** Пункты поручения с той же задачей ДО: закрытие одного закроет все. */
-  sharedLines?: Array<string | number>
 }): React.JSX.Element {
   const [state, setState] = useState<RowState>({})
   const [confirming, setConfirming] = useState(false)
@@ -171,9 +168,6 @@ export function DocflowWaitingRow({
         <div className="docflow-action-form">
           <div className="docflow-action-reason">
             Задача исполнителя{performer ? ` (${performer})` : ''} будет выполнена от вашего имени, исполнение — принято.
-            {sharedLines.length > 1
-              ? `В Документообороте это одна задача на пункты ${sharedLines.map((n) => `п.${n}`).join(', ')} — закроются все они.`
-              : 'Мероприятие станет закрытым.'}
           </div>
           <textarea
             rows={2}
@@ -189,7 +183,7 @@ export function DocflowWaitingRow({
               disabled={busy}
               onClick={() => void run('close', 'close_without_report', comment)}
             >
-              {state.busy === 'close' ? 'Закрываем…' : 'Закрыть мероприятие'}
+              {state.busy === 'close' ? 'Закрываем…' : 'Закрыть задачу'}
             </button>
             <button type="button" className="closure-btn" disabled={busy} onClick={() => setConfirming(false)}>
               Отмена
@@ -219,6 +213,116 @@ export function DocflowWaitingRow({
         <div className={`docflow-action-message${state.error ? ' error' : ''}`}>{state.message}</div>
       ) : null}
     </li>
+  )
+}
+
+/** Закрыть / вернуть на доработку в карточке поручения, пока задача в ДО не принята. */
+export function DocflowReviewButtons({
+  taskId,
+  closeAction,
+  title = '',
+  step = '',
+  comment = '',
+  onDone
+}: {
+  taskId: string
+  closeAction: 'close' | 'close_without_report'
+  title?: string
+  step?: string
+  comment?: string
+  onDone?: () => void
+}): React.JSX.Element {
+  const [state, setState] = useState<RowState>({})
+  const [rework, setRework] = useState(false)
+  const [note, setNote] = useState(comment)
+  const [due, setDue] = useState(defaultReworkDue())
+  const busy = Boolean(state.busy)
+  const ctx: TaskActionContext = { kind: 'docflow', rowId: taskId, title, refKey: taskId, step, taskName: title }
+
+  const run = async (label: string, action: DocflowUiAction, text = '', nextDue = ''): Promise<void> => {
+    setState({ busy: label })
+    try {
+      const user = await currentUser()
+      const result = await runDocflowAction(user, ctx, action, text, nextDue)
+      const done = result.ok
+      setState({ message: result.message, error: !done, done })
+      if (done) {
+        setRework(false)
+        onDone?.()
+      }
+    } catch (err) {
+      setState({ message: err instanceof Error ? err.message : 'Действие не выполнено', error: true })
+    }
+  }
+
+  if (state.done) {
+    return (
+      <div className="docflow-action-row bare done">
+        {state.message ? <div className="docflow-action-message">{state.message}</div> : null}
+      </div>
+    )
+  }
+
+  if (rework) {
+    return (
+      <div className="docflow-action-row bare">
+        <div className="docflow-action-form">
+          <textarea
+            rows={2}
+            value={note}
+            disabled={busy}
+            placeholder="Что доработать исполнителю"
+            onChange={(event) => setNote(event.target.value)}
+          />
+          <label>
+            Новый срок
+            <input type="date" value={due} disabled={busy} onChange={(event) => setDue(event.target.value)} />
+          </label>
+          <div className="docflow-action-buttons">
+            <button
+              type="button"
+              className="closure-btn danger"
+              disabled={busy || !note.trim() || !due}
+              onClick={() => void run('return', 'return', note, due)}
+            >
+              {state.busy === 'return' ? 'Отправляем…' : 'Вернуть на доработку'}
+            </button>
+            <button type="button" className="closure-btn" disabled={busy} onClick={() => setRework(false)}>
+              Отмена
+            </button>
+          </div>
+        </div>
+        {state.message ? (
+          <div className={`docflow-action-message${state.error ? ' error' : ''}`}>{state.message}</div>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="docflow-action-row bare">
+      <div className="docflow-action-buttons">
+        <button
+          type="button"
+          className="closure-btn primary"
+          disabled={busy || !taskId}
+          title={
+            closeAction === 'close_without_report'
+              ? 'Закрыть задачу исполнителя и принять исполнение'
+              : 'Принять исполнение'
+          }
+          onClick={() => void run('close', closeAction)}
+        >
+          {state.busy === 'close' ? 'Отправляем…' : 'Закрыть'}
+        </button>
+        <button type="button" className="closure-btn danger" disabled={busy || !taskId} onClick={() => setRework(true)}>
+          Вернуть на доработку
+        </button>
+      </div>
+      {state.message ? (
+        <div className={`docflow-action-message${state.error ? ' error' : ''}`}>{state.message}</div>
+      ) : null}
+    </div>
   )
 }
 

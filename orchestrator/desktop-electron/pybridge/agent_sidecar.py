@@ -158,6 +158,10 @@ from app.sdk_agent.files import (  # noqa: E402
     seed_workflow_files,
 )
 from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E402
+from app.tools.ac.closure_check_tool import (  # noqa: E402
+    clear_closure_check,
+    closure_check_block,
+)
 from app.sdk_agent.prompt import (  # noqa: E402
     build_continue_run_prompt,
     build_demo_sdk_prompt,
@@ -196,6 +200,7 @@ _NEVER_CONFIRM = frozenset(
         "code.write_python",
         "code.run_python",
         "report.export_document",
+        "report.closure_check",
         "office.format_document",
     }
 )
@@ -948,6 +953,22 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
         for item in sdk_tool_specs()
         if str(item.get("name") or "") in allowed
     ]
+
+
+def _workflow_model_params(record: Any) -> list[dict[str, str]] | None:
+    """playbook.model_params overrides the default reasoning level for one agent; None keeps the default."""
+    local = getattr(record, "local_run", None)
+    playbook = local.get("playbook") if isinstance(local, dict) else None
+    raw = playbook.get("model_params") if isinstance(playbook, dict) else None
+    if not isinstance(raw, list):
+        return None
+    params = [
+        {"id": str(item.get("id") or "").strip(), "value": str(item.get("value") or "").strip()}
+        for item in raw
+        if isinstance(item, dict)
+    ]
+    params = [item for item in params if item["id"] and item["value"]]
+    return params or None
 
 
 def _is_outlook_series_prompt(prompt: str) -> bool:
@@ -1724,6 +1745,7 @@ class ElectronBridge(CursorSdkBridge):
         prompt: str,
         workflow_id: str,
         model: str = "",
+        model_params: list[dict[str, str]] | None = None,
         cwd: str = "",
         mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
@@ -1756,6 +1778,7 @@ class ElectronBridge(CursorSdkBridge):
             prompt=_with_sidecar_prompt(prompt, mode=mode),
             workflow_id=workflow_id,
             model=model,
+            model_params=model_params,
             cwd=cwd,
             mode=mode,
             tools=specs,
@@ -2515,6 +2538,18 @@ def _sd_package_table_from_events(events: list[dict[str, Any]], run_cwd: str = "
             if table:
                 return table
     return ""
+
+
+_CLOSURE_CHECK_BLOCK_RE = re.compile(r"\n*```closure-check\s*\n[\s\S]*?```", re.IGNORECASE)
+
+
+def _with_closure_check(answer: str, run_cwd: str) -> str:
+    """Saved report.closure_check verdicts replace a block the model may have written itself."""
+    block = closure_check_block(run_cwd) if run_cwd else ""
+    if not block:
+        return answer
+    text = _CLOSURE_CHECK_BLOCK_RE.sub("", answer or "").rstrip()
+    return f"{text}\n\n{block}" if text else block
 
 
 def _with_sd_package_table(answer: str, events: list[dict[str, Any]], run_cwd: str = "") -> str:
@@ -4375,6 +4410,7 @@ class Sidecar:
             clear_attachments=autonomous or not resume_agent_id or _has_new_files,
             clear_tool_results=not bool(resume_agent_id),
         )
+        clear_closure_check(run_cwd)
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=workflow)
         if _is_meeting_workflow(workflow):
             _ensure_outlook_rule_in_brief(run_cwd)
@@ -4424,6 +4460,7 @@ class Sidecar:
                     cwd=run_cwd,
                     resume_agent_id=resume_agent_id,
                     tools=_tool_specs_for_workflow(workflow),
+                    model_params=_workflow_model_params(workflow),
                     on_event=self._forward_events(active, events),
                     on_question=active.gate.ask_question,
                     should_stop=active.stop.is_set,
@@ -4441,6 +4478,7 @@ class Sidecar:
                         cwd=run_cwd,
                         resume_agent_id="",
                         tools=_tool_specs_for_workflow(workflow),
+                        model_params=_workflow_model_params(workflow),
                         on_event=self._forward_events(active, events),
                         on_question=active.gate.ask_question,
                         should_stop=active.stop.is_set,
@@ -4476,6 +4514,7 @@ class Sidecar:
                     cwd=run_cwd,
                     resume_agent_id=agent_id,
                     tools=_tool_specs_for_workflow(workflow),
+                    model_params=_workflow_model_params(workflow),
                     on_event=on_event,
                     on_question=active.gate.ask_question,
                     should_stop=active.stop.is_set,
@@ -4497,9 +4536,10 @@ class Sidecar:
                     answer = f"{answer}\n\n{tail}"
             if status == "ok" and _is_sd_meeting_workflow(workflow):
                 answer = _with_sd_package_table(answer, events, run_cwd)
+            answer = _with_closure_check(answer, run_cwd)
         except Exception as exc:  # noqa: BLE001
             status = "error"
-            answer = _user_facing_run_error(exc)
+            answer = _with_closure_check(_user_facing_run_error(exc), run_cwd)
             try:
                 self._api.finish_local_agent_run(
                     workflow_id, run_ref, status="error", answer=answer,
@@ -5261,6 +5301,8 @@ class Sidecar:
         calendar_owner = isinstance(calendar_owners, list) and bool(calendar_owners)
         if calendar_owner:
             input_data["calendar_owners"] = [str(item or "").strip() for item in calendar_owners]
+        if command.get("includeOwn"):
+            input_data["include_own"] = True
         days_forward = command.get("daysForward")
         if isinstance(days_forward, int) and days_forward > 0:
             input_data["days_forward"] = days_forward
@@ -5964,7 +6006,21 @@ def _run_kpi_workspace_tests(
     return True, output or "passed"
 
 
+def _preload_native_modules() -> None:
+    """Import numpy (via openpyxl) while the process still has one thread.
+
+    The first import on a tool thread loads OpenBLAS under the Windows loader
+    lock; a tool thread started at that moment never starts, and the run hangs.
+    """
+    for name in ("numpy", "openpyxl"):
+        try:
+            __import__(name)
+        except Exception as exc:  # noqa: BLE001
+            log(f"preload {name} failed: {exc!r}")
+
+
 def main() -> None:
+    _preload_native_modules()
     try:
         reap_foreign_sdk_runners()
     except Exception:

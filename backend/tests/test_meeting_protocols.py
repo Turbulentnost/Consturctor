@@ -91,6 +91,7 @@ def test_build_protocol_list_path_selects_header_and_access_keys_only() -> None:
     select = path.split("$select=", 1)[1].split("&", 1)[0].split(",")
     assert {"Ref_Key", "Number", "Комментарий", "ТемаСовещания/Description"} <= set(select)
     assert "ПрисутствующиеНаСовещании/Участник_Key" in select
+    assert "ТемаСовещания_Key" in select
     assert not any("Файл" in field for field in select)
 
 
@@ -107,6 +108,7 @@ def test_list_meeting_protocols_odata(monkeypatch) -> None:
     def fake_fetch(args: dict) -> dict:
         assert args["entity"] == PROTOCOL_ENTITY
         path = str(args.get("path") or "")
+        assert args.get("resolve_navigation") is False
         assert "startswith" in path and "Number" in path
         return {"value": [sample], "path": path or PROTOCOL_ENTITY, "summary": "ok"}
 
@@ -118,7 +120,61 @@ def test_list_meeting_protocols_odata(monkeypatch) -> None:
     assert result["protocols"][0]["meeting_kind"] == "rk"
 
 
-def test_list_meeting_protocols_odata_error(monkeypatch) -> None:
+def test_list_meeting_protocols_second_call_skips_odata(monkeypatch) -> None:
+    from app.services import meeting_protocols
+
+    calls = {"n": 0}
+    sample = {
+        "Ref_Key": "e72f4680-aa87-11f1-987a-6cb31113810e",
+        "Number": "РК__001_О_099",
+        "Date": "2026-01-15T09:00:00",
+        "Posted": True,
+        "Статус": "НаИсполнении",
+    }
+
+    def fake_fetch(_args: dict) -> dict:
+        calls["n"] += 1
+        return {"value": [sample], "path": PROTOCOL_ENTITY, "summary": "ok"}
+
+    meeting_protocols._protocol_list_cache.clear()
+    monkeypatch.setattr("app.services.onec_tools._fetch_odata_list", fake_fetch)
+    args = {"meeting_kind": "rk", "date": "2026-01-15", "review_only": False, "include_closed": True}
+    first = list_meeting_protocols(args)
+    second = list_meeting_protocols(args)
+    assert calls["n"] == 1
+    assert first["count"] == 1
+    assert second["count"] == 1
+    assert second.get("cache") == "protocol_list"
+
+
+def test_fill_missing_protocol_topics_uses_one_catalog_query(monkeypatch) -> None:
+    from app.services.meeting_protocols import _fill_missing_protocol_topics
+
+    calls: list[str] = []
+
+    def fake_get(args: dict) -> dict:
+        calls.append(str(args.get("path") or ""))
+        return {
+            "data": {
+                "value": [
+                    {"Ref_Key": "11111111-1111-1111-1111-111111111111", "Description": "Планёрка"},
+                    {"Ref_Key": "22222222-2222-2222-2222-222222222222", "Description": "Совет"},
+                ]
+            }
+        }
+
+    monkeypatch.setattr("app.services.onec_tools._odata_get", fake_get)
+    rows = [
+        {"Ref_Key": "a", "ТемаСовещания": {"Description": "Уже есть"}},
+        {"Ref_Key": "b", "ТемаСовещания_Key": "11111111-1111-1111-1111-111111111111"},
+        {"Ref_Key": "c", "ТемаСовещания_Key": "22222222-2222-2222-2222-222222222222"},
+    ]
+    _fill_missing_protocol_topics(rows)
+    assert len(calls) == 1
+    assert "Catalog_ТД_ТемыСовещаний" in calls[0]
+    assert rows[0]["ТемаСовещания"]["Description"] == "Уже есть"
+    assert rows[1]["ТемаСовещания"]["Description"] == "Планёрка"
+    assert rows[2]["ТемаСовещания"]["Description"] == "Совет"
     from app.services.onec_tools import OnecToolError
 
     def boom(_args: dict) -> dict:

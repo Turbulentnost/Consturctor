@@ -29,6 +29,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import agent_run as _agent_run  # noqa: F401
+    from app.models import assignment_review as _assignment_review  # noqa: F401
     from app.models import calendar_overlay as _calendar_overlay  # noqa: F401
     from app.models import finance as _finance  # noqa: F401
     from app.models import notification as _notification  # noqa: F401

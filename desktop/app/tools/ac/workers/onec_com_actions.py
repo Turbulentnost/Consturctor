@@ -195,6 +195,9 @@ def ensure_no_write_like_method(method_name: str) -> None:
 
 def _load_pywin32_modules() -> tuple[Any, Any]:
     """Импортировать pythoncom / win32com.client только внутри worker-а."""
+    from app.tools.ac.workers.com_availability import ensure_pywin32_dll_path
+
+    ensure_pywin32_dll_path()
     import pythoncom  # type: ignore
     import win32com.client  # type: ignore
 

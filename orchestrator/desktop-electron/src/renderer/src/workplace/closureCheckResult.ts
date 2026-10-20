@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
 import { extractClosureCheck, type ClosureCheckAssignment } from '../components/agentfeed/docflowActions'
+import { mapReviewToCheck } from './fetchDocflowAssignments'
 import type { RunEntry } from '../store/runs'
 import { clearDocflowPages } from './docflowPageCache'
 import { onecGatewayInvokeArgs } from './userContext'
@@ -32,9 +33,23 @@ export function useClosureCheckResult(workflowId: string, entry: RunEntry | unde
     if (!workflowId || running) return
     let cancelled = false
     void api
-      .listAgentRuns(workflowId)
-      .then((runs) => {
+      .listAssignmentReviews()
+      .then((reviews) => {
         if (cancelled) return
+        const assignments = reviews.map(mapReviewToCheck).filter((item) => item.number)
+        if (assignments.length) {
+          const latest = reviews
+            .map((item) => String(item.checked_at || ''))
+            .filter(Boolean)
+            .sort()
+            .at(-1) || new Date().toISOString()
+          setStored({ assignments, at: latest, runId: '' })
+          return
+        }
+        return api.listAgentRuns(workflowId)
+      })
+      .then((runs) => {
+        if (cancelled || !runs || !Array.isArray(runs)) return
         const sorted = [...runs].sort((a, b) => (b.finishedAt || b.startedAt).localeCompare(a.finishedAt || a.startedAt))
         for (const run of sorted) {
           const { assignments } = extractClosureCheck(run.answer || run.summary || '')
@@ -56,7 +71,15 @@ export function useClosureCheckResult(workflowId: string, entry: RunEntry | unde
     return assignments.length ? { assignments, at: new Date().toISOString(), runId: '' } : null
   }, [liveText])
 
-  if (live && stored && !running) return { ...live, at: stored.at, runId: stored.runId }
+  if (live && stored) {
+    const byNumber = new Map(stored.assignments.map((item) => [item.number, item]))
+    for (const item of live.assignments) byNumber.set(item.number, item)
+    return {
+      assignments: [...byNumber.values()],
+      at: stored.at,
+      runId: stored.runId || live.runId
+    }
+  }
   return live ?? stored
 }
 
@@ -75,19 +98,18 @@ function readyToClose(item: ClosureCheckAssignment): boolean {
 
 /**
  * Поручения с выводом «Можно закрыть» закрываются в 1С сами («Принято»).
- * Сервер перечитывает задачи ДО и закрывает, только если каждое мероприятие принято проверяющим.
+ * Сервер перечитывает задачи ДО и закрывает, только если все задачи поручения закрыты автором.
  */
 export function useClosureAutoClose(
   result: ClosureCheckResult | null,
   running: boolean,
   user: UserProfile,
-  isOpen: (number: string) => boolean | undefined,
+  /** Открыто ли поручение в загруженном реестре; нет строки — не трогаем. */
+  isOpen: (number: string) => boolean,
   onClosed: () => void
 ): Record<string, AutoCloseState> {
   const [states, setStates] = useState<Record<string, AutoCloseState>>({})
   const tried = useRef(new Set<string>())
-  const isOpenRef = useRef(isOpen)
-  isOpenRef.current = isOpen
   const onClosedRef = useRef(onClosed)
   onClosedRef.current = onClosed
 
@@ -98,7 +120,7 @@ export function useClosureAutoClose(
   useEffect(() => {
     if (running || !result) return
     const queue = result.assignments.filter(
-      (item) => readyToClose(item) && !tried.current.has(item.number) && isOpenRef.current(item.number) !== false
+      (item) => readyToClose(item) && !tried.current.has(item.number) && isOpen(item.number)
     )
     if (!queue.length) return
     for (const item of queue) tried.current.add(item.number)
@@ -119,7 +141,7 @@ export function useClosureAutoClose(
           closedAny = closedAny || payload.already !== true
           put(item.number, { state: 'closed', message: message || 'Поручение закрыто в 1С' })
         } else if (res.ok) {
-          put(item.number, { state: 'kept', message: message || 'Не все мероприятия приняты в ДО' })
+          put(item.number, { state: 'kept', message: message || 'Не все задачи поручения закрыты автором' })
         } else {
           put(item.number, { state: 'error', message: message || 'Не удалось закрыть поручение в 1С' })
         }
@@ -129,7 +151,7 @@ export function useClosureAutoClose(
         onClosedRef.current()
       }
     })()
-  }, [result, running, user])
+  }, [result, running, user, isOpen])
 
   return states
 }

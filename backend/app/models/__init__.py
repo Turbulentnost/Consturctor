@@ -1,6 +1,7 @@
 from app.models.user import AppUser
 from app.models.user_ui_prefs import UserUiPrefs
 from app.models.agent_run import AgentRun
+from app.models.assignment_review import AssignmentReview, AssignmentReviewTask, AssignmentReviewVerdict
 from app.models.calendar_overlay import CalendarOverlay
 from app.models.notification import Notification
 from app.models.finance import FinanceImport, FinanceSalaryEntry, FinanceSalarySource
@@ -34,6 +35,9 @@ __all__ = [
     "AppUser",
     "UserUiPrefs",
     "AgentRun",
+    "AssignmentReview",
+    "AssignmentReviewTask",
+    "AssignmentReviewVerdict",
     "CalendarOverlay",
     "Notification",
     "FinanceImport",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FileDown, Plus, Printer, Sparkles } from 'lucide-react'
 import { buildRegistryReportHtml } from '../../workplace/registryPrint'
 import type { UserProfile } from '../../api/types'
@@ -38,7 +38,7 @@ import {
   resolveClosureAgentWorkflowId
 } from '../../workplace/assignmentClosureAgent'
 import { useClosureAutoClose, useClosureCheckResult } from '../../workplace/closureCheckResult'
-import { ClosureCheckDialog, ClosureCheckRowPanel } from '../../workplace/ClosureCheckPanels'
+import { ClosureCheckDialog } from '../../workplace/ClosureCheckPanels'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 import './extensionsGrid.css'
@@ -348,11 +348,15 @@ export function AssignmentsRegistryGridTab({
     }
     aiWasRunning.current = running
   }, [aiRun?.state?.running, closureResult])
+  const isRegistryRowOpen = useCallback(
+    (number: string) => rowsHydrated.find((row) => row.number === number)?.open ?? false,
+    [rowsHydrated]
+  )
   const autoClose = useClosureAutoClose(
     closureResult,
     Boolean(aiRun?.state?.running),
     user,
-    (number) => rowsHydrated.find((row) => row.number === number)?.open,
+    isRegistryRowOpen,
     () => refresh()
   )
   const closureByNumber = useMemo(
@@ -861,14 +865,12 @@ export function AssignmentsRegistryGridTab({
         side: (
           <div className="wp-card registry-side-card registry-widget-fill">
             <AssignmentsRegistryDetailPanel
+              user={user}
               row={selectedRow}
               linesLoading={detailLinesLoading}
               onClose={() => pickRow(null)}
               onOpenForm={selectedRow ? () => openAssignmentForm(selectedRow) : undefined}
-            />
-            <ClosureCheckRowPanel
-              item={selectedRow ? closureByNumber.get(selectedRow.number) : undefined}
-              autoClose={selectedRow ? autoClose[selectedRow.number] : undefined}
+              check={selectedRow ? closureByNumber.get(selectedRow.number) : undefined}
             />
           </div>
         )

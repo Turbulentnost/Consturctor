@@ -371,7 +371,10 @@ def _do_request(config: Any, ref: str) -> list[dict[str, Any]]:
     """Все задачи ДО (и исполненные) с предметом-протоколом: GUID протокола в ДО тот же, что в ERP."""
     from app.tools.onec.dok_soap import bool_value, condition, execute_dm, object_id_value, parse_tasks
 
-    columns = ("name", "performer", "author", "beginDate", "dueDate", "executed", "description", "businessProcessStep", "target")
+    columns = (
+        "name", "performer", "author", "beginDate", "dueDate", "endDate", "executed", "executionMark",
+        "executionComment", "number", "description", "businessProcessStep", "target",
+    )
     root = execute_dm(
         config,
         '<dm:request xsi:type="dm:DMGetObjectListRequest">'

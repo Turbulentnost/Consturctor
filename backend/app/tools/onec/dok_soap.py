@@ -559,6 +559,12 @@ def drop_task_from_inbox_cache(*task_ids: str) -> None:
         except OSError as exc:
             logger.warning("dok_soap cache task drop failed: %s", exc)
     _drop_task_on_disk(wanted)
+    try:
+        from app.services.docflow_redis_cache import forget_cached_tasks
+
+        forget_cached_tasks(*task_ids)
+    except Exception as exc:  # noqa: BLE001 — список в Redis не должен срывать отметку
+        logger.warning("docflow redis task drop failed: %s", exc)
 
 
 def _with_cache_meta(payload: dict[str, Any], *, cached: bool, fetched_at: float) -> dict[str, Any]:
@@ -876,6 +882,7 @@ def importance_level(raw: str) -> str:
 
 def task_row(obj: ET.Element) -> dict[str, Any]:
     due = xml_text(obj, "m:dueDate")
+    end = xml_text(obj, "m:endDate")
     importance_raw = xml_text(obj, "m:importance/m:name") or xml_text(obj, "m:importance/m:objectID/m:id")
     return {
         "name": xml_text(obj, "m:name"),
@@ -885,11 +892,13 @@ def task_row(obj: ET.Element) -> dict[str, Any]:
         "author": xml_text(obj, "m:author/m:name"),
         "begin": xml_text(obj, "m:beginDate"),
         "due": "" if due.startswith(EMPTY_DATE_PREFIX) else due,
+        "end": "" if end.startswith(EMPTY_DATE_PREFIX) else end,
         "executed": xml_text(obj, "m:executed") == "true",
         "execution_mark": xml_text(obj, "m:executionMark"),
         "step": xml_text(obj, "m:businessProcessStep"),
         "number": xml_text(obj, "m:number"),
         "description": xml_text(obj, "m:description"),
+        "comment": xml_text(obj, "m:executionComment"),
         "target": xml_text(obj, "m:target/m:name"),
         "target_id": xml_text(obj, "m:target/m:objectID/m:id"),
         "target_type": xml_text(obj, "m:target/m:objectID/m:type"),

@@ -46,7 +46,7 @@ backend/scripts/exports/*.txt
 # Local runtime
 *.log
 *.log.*
-backend/logs/
+logs/
 celerybeat-schedule*
 backend/storage/
 

@@ -49,7 +49,7 @@ CLOSED_STATUSES = {
 _GUID_EMPTY = "00000000-0000-0000-0000-000000000000"
 _FILE_LIST_SELECT = (
     "Ref_Key,Description,Расширение,Размер,ПутьКФайлу,"
-    "ДатаСоздания,ВладелецФайла_Key"
+    "ДатаСоздания,ВладелецФайла_Key,Изменил_Key"
 )
 
 
@@ -262,7 +262,27 @@ def _normalize_file(row: dict[str, Any]) -> dict[str, Any]:
         "created": str(row.get("ДатаСоздания") or ""),
         "ref_key": str(row.get("Ref_Key") or ""),
         "owner_key": str(row.get("ВладелецФайла_Key") or ""),
+        "uploaded_by_key": str(row.get("Изменил_Key") or ""),
+        "uploaded_by": "",
     }
+
+
+def _name_uploaders(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Автор_Key у файлов поручений пуст: загрузившего хранит Изменил."""
+    keys = [
+        file["uploaded_by_key"]
+        for file in files
+        if _looks_like_guid(file["uploaded_by_key"]) and not _empty_guid(file["uploaded_by_key"])
+    ]
+    if not keys:
+        return files
+    try:
+        names = _user_names_by_keys(list(dict.fromkeys(keys)))
+    except Exception:  # noqa: BLE001
+        return files
+    for file in files:
+        file["uploaded_by"] = names.get(file["uploaded_by_key"], "")
+    return files
 
 
 def _normalize_assignment(row: dict[str, Any], *, files: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -550,7 +570,7 @@ def _fetch_files(ref_key: str) -> list[dict[str, Any]]:
             "filter": f"ВладелецФайла_Key eq guid'{ref_key}' and DeletionMark eq false",
         }
     )
-    return [_normalize_file(row) for row in (result.get("value") or []) if isinstance(row, dict)]
+    return _name_uploaders([_normalize_file(row) for row in (result.get("value") or []) if isinstance(row, dict)])
 
 
 def _batch_assignment_lines(args: dict[str, Any]) -> dict[str, Any]:
@@ -608,6 +628,7 @@ def _fetch_files_map(ref_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
             owner = str(row.get("ВладелецФайла_Key") or "")
             if owner:
                 out.setdefault(owner, []).append(_normalize_file(row))
+    _name_uploaders([file for files in out.values() for file in files])
     return out
 
 
@@ -783,6 +804,26 @@ def _get_assignment(args: dict[str, Any]) -> dict[str, Any]:
     ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
     if not number and not ref_key:
         raise AssignmentError("Nuzhen number (АСТ00-...) ili ref_key")
+    try:
+        from app.db.session import SessionLocal
+        from app.services.assignment_reviews import get_review
+
+        db = SessionLocal()
+        try:
+            stored = get_review(db, ref_key=ref_key, number=number)
+        finally:
+            db.close()
+        if stored and not stored.get("open"):
+            return {
+                "summary": f"Kartochka {stored['number']}: снимок проверки {stored.get('checked_at') or ''}",
+                "entity": ASSIGNMENT_ENTITY,
+                "assignment": stored,
+                "count": 1,
+                "source": "review",
+                "docflow_tasks": stored.get("tasks") or [],
+            }
+    except Exception:  # noqa: BLE001
+        pass
     call: dict[str, Any] = {"entity": ASSIGNMENT_ENTITY, "top": 5}
     if ref_key:
         call["ref_key"] = ref_key
@@ -1010,6 +1051,18 @@ def _list_protocols(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _list_reviewed(args: dict[str, Any]) -> dict[str, Any]:
+    from app.db.session import SessionLocal
+    from app.services.assignment_reviews import list_reviewed_keys
+
+    _ = args
+    db = SessionLocal()
+    try:
+        return list_reviewed_keys(db)
+    finally:
+        db.close()
+
+
 def handle_assignments(
     args: dict[str, Any],
     *,
@@ -1030,13 +1083,14 @@ def handle_assignments(
         "files": _list_files,
         "download": _download_assignment_files,
         "tasks": _list_tasks,
+        "reviewed": _list_reviewed,
         "protocols": _list_protocols,
         "protocol": _list_protocols,
     }
     handler = handlers.get(action)
     if handler is None:
         raise AssignmentError(
-            "action: list | get | lines_batch | files | download | tasks | protocols. "
+            "action: list | get | lines_batch | files | download | tasks | protocols | reviewed. "
             "Zapis - onec.erp_assignments_write."
         )
     return handler(payload)
@@ -1237,11 +1291,36 @@ def handle_assignments_write(
 
 
 ACCEPTED_STATUS = "Принято"
-_LINE_ACCEPTED = "принято проверяющим"
+_TASK_ACCEPTED = "принято проверяющим"
+
+
+def _not_closed_by_author(tasks: list[dict[str, Any]], other: list[dict[str, Any]]) -> list[str]:
+    """Что мешает закрыть: открытые задачи ДО и задачи, которые не принял сам автор поручения."""
+    from app.tools.onec.dok_soap import person_names_match
+
+    pending: list[str] = []
+    for task in tasks:
+        who = task.get("performer") or "исполнителя"
+        label = str(task.get("label") or "")
+        if label != _TASK_ACCEPTED:
+            pending.append(f"задача у {who}: {label or 'нет данных'}")
+            continue
+        author = str(task.get("author") or "")
+        checker = str(task.get("accepted_by") or "")
+        if not person_names_match(author, checker):
+            pending.append(f"задача у {who}: принял {checker or 'не автор'}, а не автор {author or '(неизвестен)'}")
+            continue
+        for step in task.get("history") or []:
+            if not step.get("executed"):
+                pending.append(f"задача у {who}: открыт шаг «{step.get('step')}» у {step.get('performer')}")
+    for step in other:
+        if not step.get("executed"):
+            pending.append(f"открыта задача «{step.get('name') or step.get('step')}» у {step.get('performer')}")
+    return pending
 
 
 def close_if_accepted(args: dict[str, Any]) -> dict[str, Any]:
-    """Ставит поручению «Принято», только если каждое мероприятие принято проверяющим в ДО.
+    """Ставит поручению «Принято», только если все его задачи в ДО закрыты и каждое мероприятие принял автор.
 
     Решение агента не используется: карточка и задачи ДО перечитываются из 1С.
     """
@@ -1265,17 +1344,18 @@ def close_if_accepted(args: dict[str, Any]) -> dict[str, Any]:
     if not item.get("open"):
         return {**base, "closed": True, "already": True, "summary": f"{number} уже закрыто: {status}"}
     if card.get("docflow_note"):
-        return {**base, "closed": False, "summary": "Документооборот недоступен: приёмку мероприятий не проверить"}
-    lines = [line for line in item.get("lines") or [] if isinstance(line, dict)]
-    if not lines:
-        return {**base, "closed": False, "summary": "В поручении нет мероприятий"}
-    pending = [
-        f"п.{line.get('line')}: {(line.get('docflow_state') or {}).get('label') or 'нет данных'}"
-        for line in lines
-        if (line.get("docflow_state") or {}).get("label") != _LINE_ACCEPTED
-    ]
+        return {**base, "closed": False, "summary": "Документооборот недоступен: приёмку задач не проверить"}
+    tasks = [task for task in item.get("docflow_tasks") or [] if isinstance(task, dict)]
+    if not tasks:
+        return {**base, "closed": False, "summary": "По поручению нет задач в Документообороте"}
+    pending = _not_closed_by_author(tasks, item.get("docflow_other_tasks") or [])
     if pending:
-        return {**base, "closed": False, "pending": pending, "summary": "Не все мероприятия приняты: " + "; ".join(pending)}
+        return {
+            **base,
+            "closed": False,
+            "pending": pending,
+            "summary": "Не все задачи закрыты автором: " + "; ".join(pending),
+        }
     _odata_patch({"entity": ASSIGNMENT_ENTITY, "ref_key": base["ref_key"], "body": {"Статус": ACCEPTED_STATUS}})
     after = str((_get_assignment({"ref_key": base["ref_key"]}).get("assignment") or {}).get("status") or "")
     if after != ACCEPTED_STATUS:
@@ -1284,7 +1364,7 @@ def close_if_accepted(args: dict[str, Any]) -> dict[str, Any]:
         **base,
         "status": after,
         "closed": True,
-        "summary": f"{number}: все мероприятия ({len(lines)}) приняты в ДО, статус «{ACCEPTED_STATUS}»",
+        "summary": f"{number}: автор принял все задачи ({len(tasks)}), статус «{ACCEPTED_STATUS}»",
     }
 
 

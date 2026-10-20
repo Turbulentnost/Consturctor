@@ -1,8 +1,9 @@
 """Действие по задаче 1С:Документооборот.
 
-Завершение идёт в HTTP TaskAction базы ДО — ту же процедуру вызывают кнопки
-формы 1С. Отметка SOAP (DMUpdateRequest) для кнопок не используется: она
-обходит проверки документа. Чтение карточки и ссылка web_url остаются SOAP.
+Сначала HTTP TaskAction. Если метод закрыл задачу или вернул отказ текстом,
+этот ответ и есть результат. Пустая таблица и неопубликованный метод задачу
+не меняют — тогда ту же кнопку закрывает отметка SOAP (DMUpdateRequest),
+как до перевода кнопок на TaskAction. Чтение карточки и ссылка web_url остаются SOAP.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from app.tools.onec.docflow_task_kinds import (
 from app.tools.onec.dok_http import TaskActionNotPublished, post_task_action
 from app.tools.onec.dok_soap import (
     drop_task_from_inbox_cache,
+    is_object_locked_error,
     load_config,
     mark_task_executed,
     open_tasks_for_target,
@@ -38,11 +40,6 @@ def _session_credentials(args: dict[str, Any]) -> tuple[str, str]:
     user = str(args.get("fio") or args.get("erp_login") or args.get("username") or "").strip()
     password = str(args.get("password") or args.get("erp_password") or "").strip()
     return user, password
-
-
-_UNPUBLISHED_SUMMARY = (
-    "Действие доступно только в карточке 1С: метод TaskAction ещё не опубликован."
-)
 
 
 def _task_web_url(task_id: str) -> str:
@@ -202,6 +199,60 @@ def _close_without_report(args: dict[str, Any], *, user: str, password: str) -> 
     }
 
 
+def _task_action_answered(outcome: dict[str, Any]) -> bool:
+    """TaskAction реально закрыл задачу или вернул текст отказа, а не пустую таблицу."""
+    if outcome.get("closed") or outcome.get("needs_form"):
+        return True
+    summary = str(outcome.get("summary") or "").strip()
+    return bool(summary) and not summary.startswith('{"#')
+
+
+def _close_by_mark(
+    task_id: str,
+    *,
+    user: str,
+    password: str,
+    comment: str,
+    mark: str,
+    summary: str,
+    resolved: str,
+    kind: str,
+    button: int,
+) -> dict[str, Any]:
+    """Отметка исполнения SOAP: executed и executionMark. Так кнопки закрывали задачу раньше."""
+    config = load_config(username=user, password=password, require_user=True)
+    try:
+        row = mark_task_executed(
+            config,
+            task_id,
+            timeout=float(config.timeout),
+            comment=comment,
+            mark=mark,
+        )
+    except RuntimeError as exc:
+        text = str(exc)
+        if is_object_locked_error(text):
+            raise DocflowError(
+                "Задача сейчас заблокирована в 1С. Подождите минуту и нажмите кнопку снова."
+            ) from exc
+        raise DocflowError(f"Документооборот не принял действие «{summary}». {text}") from exc
+    if not row.get("executed"):
+        raise DocflowError("Документооборот не отметил задачу выполненной.")
+    drop_task_from_inbox_cache(task_id)
+    return {
+        "ok": True,
+        "closed": True,
+        "needs_form": False,
+        "summary": summary,
+        "action": resolved,
+        "kind": kind,
+        "button": button,
+        "task_id": task_id,
+        "execution_mark": mark,
+        "web_url": "",
+    }
+
+
 def _complete_docflow_task(args: dict[str, Any], *, actor_fio: str, action: str) -> dict[str, Any]:
     task_id = str(args.get("task_id") or args.get("uid") or args.get("ref_key") or args.get("id") or "").strip()
     if not task_id:
@@ -227,6 +278,7 @@ def _complete_docflow_task(args: dict[str, Any], *, actor_fio: str, action: str)
     button = action_button(kind, resolved)
     actual = str(args.get("actual_performer") or args.get("factual_performer") or "").strip()
 
+    outcome: dict[str, Any] | None = None
     try:
         outcome = post_task_action(
             task_id,
@@ -236,40 +288,45 @@ def _complete_docflow_task(args: dict[str, Any], *, actor_fio: str, action: str)
             auth=(user, password),
         )
     except TaskActionNotPublished:
-        # Пока 1С не опубликовала ту же процедуру, что и кнопки формы,
-        # SOAP-отметка обошла бы проверки документа. Карточку только открываем.
-        logger.info("TaskAction не опубликован, задача %s не закрывается через SOAP", task_id)
+        logger.info("TaskAction не опубликован, задача %s закрывается отметкой SOAP", task_id)
+    except RuntimeError as exc:
+        raise DocflowError(str(exc)) from exc
+
+    if outcome is not None and _task_action_answered(outcome):
+        summary = str(outcome.get("summary") or "").strip()
+        closed = bool(outcome.get("closed"))
+        if not summary:
+            summary = spec.summary if closed else "Документооборот не закрыл задачу."
+        if closed:
+            drop_task_from_inbox_cache(task_id)
         return {
-            "ok": False,
-            "closed": False,
-            "needs_form": True,
-            "summary": _UNPUBLISHED_SUMMARY,
+            "ok": bool(outcome.get("ok")),
+            "closed": closed,
+            "needs_form": bool(outcome.get("needs_form")),
+            "summary": summary,
             "action": resolved,
             "kind": kind,
             "button": button,
             "task_id": task_id,
-            "web_url": _task_web_url(task_id),
+            "web_url": _task_web_url(task_id) if outcome.get("needs_form") else "",
         }
-    except RuntimeError as exc:
-        raise DocflowError(str(exc)) from exc
 
-    summary = str(outcome.get("summary") or "").strip()
-    closed = bool(outcome.get("closed"))
-    if not summary:
-        summary = spec.summary if closed else "Документооборот не закрыл задачу."
-    if closed:
-        drop_task_from_inbox_cache(task_id)
-    return {
-        "ok": bool(outcome.get("ok")),
-        "closed": closed,
-        "needs_form": bool(outcome.get("needs_form")),
-        "summary": summary,
-        "action": resolved,
-        "kind": kind,
-        "button": button,
-        "task_id": task_id,
-        "web_url": _task_web_url(task_id) if outcome.get("needs_form") else "",
-    }
+    logger.info(
+        "TaskAction не закрыл задачу %s, ставлю отметку SOAP %s",
+        task_id,
+        spec.mark,
+    )
+    return _close_by_mark(
+        task_id,
+        user=user,
+        password=password,
+        comment=comment,
+        mark=spec.mark,
+        summary=spec.summary,
+        resolved=resolved,
+        kind=kind,
+        button=button,
+    )
 
 
 def handle_docflow_task_action(

@@ -587,6 +587,32 @@ def _default_folder(namespace: Any, folder_id: int) -> Any:
     ) from last_exc
 
 
+def _calendar_read_targets(
+    calendar_owners: list[str],
+    people: list[str],
+    own_name: str,
+    *,
+    include_own: bool,
+) -> list[str]:
+    """Какие календари читать.
+
+    Явный список (у Ильченко это Амураль) не дополняем ящиком текущего профиля:
+    иначе на её компьютере открывается её календарь, хотя в панели стоит Амураль.
+    Свой ящик добавляется только по include_own. Если запрошенный человек и есть
+    текущий профиль (Ильченко на компьютере Мангасаряна открывает его календарь),
+    его папка читается в цикле ниже как локальная, без подмены имени.
+    """
+    targets = list(calendar_owners or people or [own_name or ""])
+    if (
+        include_own
+        and calendar_owners
+        and own_name
+        and not any(not person or _same_calendar_person(person, own_name) for person in targets)
+    ):
+        targets.append(own_name)
+    return targets
+
+
 def _same_calendar_person(left: str, right: str) -> bool:
     """ФИО из 1С и Display Name Outlook часто не совпадают буква в букву."""
     a = (left or "").strip().casefold()
@@ -722,6 +748,18 @@ def _iter_outlook_explorers(outlook: Any):
 
 def _folder_entry_id(folder: Any) -> str:
     return _safe_str(getattr(folder, "EntryID", "")).strip()
+
+
+def _folder_is_profile_calendar(namespace: Any, folder: Any) -> bool:
+    """Чужая папка совпала с календарём текущего профиля — это не тот ящик."""
+    wanted = _folder_entry_id(folder)
+    if not wanted:
+        return False
+    try:
+        own = _own_calendar_folder(namespace)
+    except Exception:
+        return False
+    return bool(own is not None and _folder_entry_id(own) == wanted)
 
 
 def _folder_label(folder: Any, fallback: str = "") -> str:
@@ -1983,11 +2021,13 @@ def read_calendar(input_data: dict) -> dict:
                 "range_start": start_at.isoformat(),
                 "range_end": end_at.isoformat(),
             }
-        targets = list(calendar_owners or people or [own_name or ""])
-        if calendar_owner and not any(
-            not person or _same_calendar_person(person, own_name) for person in targets
-        ):
-            targets.insert(0, own_name or "")
+        include_own = _truthy(input_data.get("include_own"))
+        targets = _calendar_read_targets(
+            calendar_owners,
+            people,
+            own_name,
+            include_own=include_own,
+        )
         for person in targets:
             remaining_results = max_results - len(events)
             remaining_scan = max_scan_items - checked_count
@@ -2004,6 +2044,13 @@ def read_calendar(input_data: dict) -> dict:
                 folder, status = _resolve_person_calendar_folder(
                     outlook, namespace, person, own_name
                 )
+                if folder is not None and _folder_is_profile_calendar(namespace, folder):
+                    _log_progress(
+                        f"step=resolve_calendar_is_profile person={person} "
+                        "shared open returned the current profile"
+                    )
+                    folder = None
+                    status = "denied"
                 _log_progress(
                     f"step=resolve_calendar_done person={person} status={status} "
                     f"found={int(folder is not None)}"

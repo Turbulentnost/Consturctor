@@ -15,13 +15,14 @@ import {
 import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import {
+  forgetAssignmentCard,
   loadAssignmentCard,
   loadAssignmentPage,
   type AssignmentCard,
   type AssignmentRow,
   type AssignmentStatus
 } from '../../workplace/fetchDocflowAssignments'
-import { DocflowFileOpenButton } from './DocflowAttachments'
+import { AssignmentDocflowTasks, AssignmentFileList } from './AssignmentDocflowTasks'
 import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { SortTh, useDocflowTable } from './docflowTableTools'
@@ -160,8 +161,14 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
   )
 }
 
-function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Element {
-  const { assignment: row, tasks, files, progress } = card
+function AssignmentCardView({
+  card,
+  onTaskChanged
+}: {
+  card: AssignmentCard
+  onTaskChanged?: () => void
+}): React.JSX.Element {
+  const { assignment: row, files, progress } = card
   return (
     <>
       <header className="docflow-detail-head">
@@ -221,47 +228,18 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
         </section>
         <section className="docflow-card-block">
           <h4>
-            <Users size={14} aria-hidden /> Задачи исполнителей
-            <span>{progress.tasks ? `выполнено ${progress.tasksDone} из ${progress.tasks}` : 'задач нет'}</span>
+            <Users size={14} aria-hidden /> Задачи в Документообороте
+            <span>{progress.tasks ? `принято автором ${progress.tasksDone} из ${progress.tasks}` : 'задач нет'}</span>
           </h4>
-          {tasks.length ? (
-            <ul className="docflow-route">
-              {tasks.map((task) => (
-                <li key={task.id} className={task.executed ? 'is-done' : ''}>
-                  {task.executed ? <CheckCircle2 size={14} aria-hidden /> : <Circle size={14} aria-hidden />}
-                  <div>
-                    <strong>{cell(task.performer)}</strong>
-                    <span>
-                      {[task.due ? `срок ${day(task.due)}` : '', task.doneAt ? `выполнено ${day(task.doneAt)}` : '']
-                        .filter(Boolean)
-                        .join(' · ') || task.title}
-                    </span>
-                    {task.result ? <em>{task.result}</em> : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="docflow-muted">По поручению в 1С не созданы задачи исполнителям.</p>
-          )}
+          <AssignmentDocflowTasks card={card} onTaskChanged={onTaskChanged} />
         </section>
         {files.length ? (
           <section className="docflow-card-block">
             <h4>
-              <Paperclip size={14} aria-hidden /> Файлы
+              <Paperclip size={14} aria-hidden /> Файлы поручения
               <span>{files.length}</span>
             </h4>
-            <ul className="docflow-files">
-              {files.map((file) => (
-                <li key={file.id}>
-                  <DocflowFileOpenButton file={file}>
-                    {file.name}
-                    {file.extension ? `.${file.extension}` : ''}
-                  </DocflowFileOpenButton>
-                  <span>{file.created ? day(file.created) : ''}</span>
-                </li>
-              ))}
-            </ul>
+            <AssignmentFileList files={files} />
           </section>
         ) : null}
       </div>
@@ -575,7 +553,13 @@ export function DocflowAssignmentsPanel({
             </button>
           </p>
         ) : card ? (
-          <AssignmentCardView card={card} />
+          <AssignmentCardView
+            card={card}
+            onTaskChanged={() => {
+              forgetAssignmentCard(selected.id)
+              openCard(selected)
+            }}
+          />
         ) : null}
       </aside>
     </div>

@@ -35,6 +35,7 @@ _NEVER_CONFIRM = frozenset(
         "code.write_python",
         "code.run_python",
         "report.export_document",
+        "report.closure_check",
         "office.format_document",
     }
 )

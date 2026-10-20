@@ -189,3 +189,23 @@ def test_onec_unknown_tool() -> None:
         raise AssertionError("expected OnecToolError")
     except OnecToolError:
         pass
+
+
+def test_odata_auth_uses_publication_user_not_session_fio(monkeypatch) -> None:
+    from app.services import onec_tools
+
+    monkeypatch.setattr(onec_tools.settings, "odata_username", "odata.user")
+    monkeypatch.setattr(onec_tools.settings, "odata_password", "publication")
+    monkeypatch.setattr(onec_tools.settings, "erp_login", "")
+    monkeypatch.setattr(onec_tools.settings, "erp_password", "")
+    user, password = onec_tools._odata_auth(
+        {
+            "username": "Ильченко Екатерина Александровна",
+            "erp_login": "Ильченко Екатерина Александровна",
+            "fio": "Ильченко Екатерина Александровна",
+            "password": "session",
+            "erp_password": "session",
+        }
+    )
+    assert user == "odata.user"
+    assert password == "publication"

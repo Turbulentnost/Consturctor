@@ -224,44 +224,63 @@ def list_assignments(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _tasks(ref: str) -> list[dict[str, Any]]:
-    subject = _q(f"Предмет eq cast(guid'{ref}', '{ENTITY}')")
-    path = (
-        f"Task_ЗадачаИсполнителя?$format=json&$top=50&$filter={subject}"
-        "&$select=Ref_Key,Date,Description,Executed,СрокИсполнения,ДатаИсполнения,РезультатВыполнения,Исполнитель"
-    )
-    try:
-        rows = [row for row in (_odata(path).get("value") or []) if isinstance(row, dict)]
-    except DocflowAssignmentError as exc:
-        logger.warning("assignment %s tasks failed: %s", ref, exc)
-        return []
-    _resolve_users({_text(row.get("Исполнитель")) for row in rows})
-    out = [
+def _docflow_tasks(
+    ref: str, view: dict[str, Any], files: list[dict[str, str]], args: dict[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any], str, list[dict[str, str]]]:
+    """Задачи поручения из 1С:Документооборот: в Task_ЗадачаИсполнителя ERP их нет."""
+    from app.services.assignment_docflow_tasks import attach_docflow_tasks
+
+    item: dict[str, Any] = {
+        "ref_key": ref,
+        "lines": [{"executor": line["executor"]} for line in view["lines"]],
+        "files": files,
+    }
+    note = attach_docflow_tasks(
+        [item],
         {
-            "id": _text(row.get("Ref_Key")),
-            "performer": _user_names.get(_text(row.get("Исполнитель")), ""),
-            "title": _text(row.get("Description")),
-            "result": _text(row.get("РезультатВыполнения")),
-            "begin": _text(row.get("Date")),
-            "due": _text(row.get("СрокИсполнения")),
-            "done_at": _text(row.get("ДатаИсполнения")),
-            "executed": row.get("Executed") is True or str(row.get("Executed")).lower() == "true",
+            "docflow_login": str(args.get("session_login") or args.get("fio") or ""),
+            "docflow_password": str(args.get("password") or ""),
+        },
+    )
+    tasks = [
+        {
+            "id": task["open_execute_task_id"] or task["open_check_task_id"] or task["history"][0]["task_id"],
+            "performer": task["performer"],
+            "title": task["text"],
+            "result": task["executor_report"],
+            "begin": task["begin"],
+            "due": task["due"],
+            "done_at": task["accepted_at"],
+            "executed": task["label"] == "принято проверяющим",
+            "state": task["label"],
+            "returns": task["returns"],
+            "open_check_task_id": task["open_check_task_id"],
+            "open_execute_task_id": task["open_execute_task_id"],
+            "history": [
+                {"step": step["step"], "performer": step["performer"], "begin": step["begin"], "comment": step["report"]}
+                for step in task["history"]
+                if step["report"] and step["kind"] == "execute"
+            ],
+            "files": task["files"],
         }
-        for row in rows
+        for task in item.get("docflow_tasks") or []
     ]
-    out.sort(key=lambda task: task["begin"])
-    return out
+    files_left = item.get("docflow_assignment_files")
+    return tasks, item.get("docflow_summary") or {}, note, files if files_left is None else files_left
 
 
 def _files(ref: str) -> list[dict[str, str]]:
     filt = _q(f"ВладелецФайла_Key eq guid'{ref}'")
     try:
         data = _odata(
-            f"{FILES_ENTITY}?$format=json&$top=50&$filter={filt}&$select=Ref_Key,Description,Расширение,Размер,ДатаСоздания"
+            f"{FILES_ENTITY}?$format=json&$top=50&$filter={filt}"
+            "&$select=Ref_Key,Description,Расширение,Размер,ДатаСоздания,Изменил_Key"
         )
     except DocflowAssignmentError as exc:
         logger.warning("assignment %s files failed: %s", ref, exc)
         return []
+    rows = [row for row in data.get("value") or [] if isinstance(row, dict)]
+    names = _uploader_names([_text(row.get("Изменил_Key")) for row in rows])
     return [
         {
             "id": _text(row.get("Ref_Key")),
@@ -269,10 +288,24 @@ def _files(ref: str) -> list[dict[str, str]]:
             "extension": _text(row.get("Расширение")),
             "size": _text(row.get("Размер")),
             "created": _text(row.get("ДатаСоздания")),
+            "uploaded_by": names.get(_text(row.get("Изменил_Key")), ""),
         }
-        for row in data.get("value") or []
-        if isinstance(row, dict)
+        for row in rows
     ]
+
+
+def _uploader_names(keys: list[str]) -> dict[str, str]:
+    """Автор_Key у файлов поручений пуст: загрузившего хранит Изменил."""
+    from app.services.erp_assignments import _user_names_by_keys
+
+    keys = [key for key in dict.fromkeys(keys) if _GUID_RE.match(key) and key.strip("0-")]
+    if not keys:
+        return {}
+    try:
+        return _user_names_by_keys(keys)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("file uploader names failed: %s", exc)
+        return {}
 
 
 def assignment_card(args: dict[str, Any]) -> dict[str, Any]:
@@ -284,13 +317,15 @@ def assignment_card(args: dict[str, Any]) -> dict[str, Any]:
     if not raw:
         raise DocflowAssignmentError("1С не вернула поручение")
     view = _row_view(raw[0])
-    tasks = _tasks(ref)
+    tasks, summary, note, files = _docflow_tasks(ref, view, _files(ref), args)
     lines_total = len(view["lines"])
     return {
         "summary": f"Поручение {view['number']}",
         "assignment": view,
         "tasks": tasks,
-        "files": _files(ref),
+        "docflow_summary": summary,
+        **({"docflow_note": note} if note else {}),
+        "files": files,
         "progress": {
             "lines": lines_total,
             "overdue_lines": sum(1 for line in view["lines"] if line["overdue"]),

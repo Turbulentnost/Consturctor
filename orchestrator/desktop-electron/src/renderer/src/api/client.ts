@@ -2362,6 +2362,32 @@ export class ApiClient {
     }
   }
 
+  async listAssignmentReviews(dateFrom = '', dateTo = ''): Promise<Record<string, unknown>[]> {
+    const params = new URLSearchParams()
+    if (dateFrom) params.set('date_from', dateFrom)
+    if (dateTo) params.set('date_to', dateTo)
+    const query = params.toString()
+    const data = await this.request<{ reviews?: Record<string, unknown>[] }>(
+      'GET',
+      `/api/v1/assignment-reviews${query ? `?${query}` : ''}`,
+      { timeoutMs: 30_000 }
+    )
+    return Array.isArray(data.reviews) ? data.reviews : []
+  }
+
+  async getAssignmentReview(refKey: string): Promise<Record<string, unknown> | null> {
+    try {
+      return await this.request<Record<string, unknown>>(
+        'GET',
+        `/api/v1/assignment-reviews/${encodeURIComponent(refKey)}`,
+        { timeoutMs: 20_000 }
+      )
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null
+      return null
+    }
+  }
+
   async invokeServerTool(
     tool: string,
     args: Record<string, unknown> = {},

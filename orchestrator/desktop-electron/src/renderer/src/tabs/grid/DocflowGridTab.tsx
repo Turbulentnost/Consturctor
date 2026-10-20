@@ -1,19 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import {
-  Award,
-  ClipboardList,
-  FileText,
-  Inbox,
-  Mail,
-  MailOpen,
-  NotebookPen,
-  Plus,
-  ScrollText,
-  Send,
-  Truck,
-  Wallet,
-  type LucideIcon
-} from 'lucide-react'
+import { Inbox, MailOpen, Plus, Send, type LucideIcon } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { DOCFLOW_REFRESH_EVENT, publishDocflowBusy } from '../../layout/DocflowRefreshButton'
 import { OrchSlotMain } from '../../layout/GridSlots'
@@ -55,6 +41,8 @@ import type { MeetingEvent } from '../../utils/outlookMeetings'
 import { DocflowCreateDialog } from './DocflowCreateDialog'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
+import { useDocflowDock } from './DocflowDock'
+import { DOCFLOW_JOURNALS, type JournalId } from './docflowJournals'
 
 type CreateTarget = DocflowKindId | 'protocol'
 
@@ -78,45 +66,6 @@ function blankMeeting(): MeetingEvent {
   const start = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:00`
   return { id: `manual-${now.getTime()}`, subject: '', start, end: '', location: '', organizer: '', attendees: '', owner: '' }
 }
-
-const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; tone: string }[] = [
-  { id: 'correspondence', title: 'Корреспонденция', hint: 'Входящие и исходящие письма', icon: Mail, tone: 'blue' },
-  { id: 'memos', title: 'Служебные записки', hint: 'Кому, от кого, срок и маршрут', icon: FileText, tone: 'green' },
-  { id: 'orders', title: 'Приказы и распоряжения', hint: 'Статус, гриф и согласующие', icon: ScrollText, tone: 'purple' },
-  {
-    id: 'incentives',
-    title: 'Приказы о мерах материального стимулирования',
-    hint: 'Сотрудник, процент и основание',
-    icon: Award,
-    tone: 'purple'
-  },
-  { id: 'assignments', title: 'Поручения', hint: 'Мероприятия, исполнители и сроки', icon: ClipboardList, tone: 'orange' },
-  { id: 'protocols', title: 'Протоколы', hint: 'Совещания, решения и участники', icon: NotebookPen, tone: 'teal' },
-  {
-    id: 'payments',
-    title: 'Заявка на расходование ДС',
-    hint: 'Суммы, статусы оплаты и получатели',
-    icon: Wallet,
-    tone: 'green'
-  },
-  {
-    id: 'forwarding',
-    title: 'Поручение экспедитору',
-    hint: 'Доставка, груз и ответственные',
-    icon: Truck,
-    tone: 'blue'
-  }
-]
-
-type JournalId =
-  | 'correspondence'
-  | 'memos'
-  | 'orders'
-  | 'incentives'
-  | 'assignments'
-  | 'protocols'
-  | 'payments'
-  | 'forwarding'
 
 const PERIOD_JOURNALS = new Set<JournalId>([
   'correspondence',
@@ -266,7 +215,12 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
   const protocolDay = (openedProtocol?.date || '').slice(0, 10)
   const periodFrom = protocolDay && protocolDay < initial.from ? protocolDay : initial.from
   const periodTo = protocolDay && protocolDay > initial.to ? protocolDay : initial.to
-  const [journal, setJournal] = useState<JournalId>(openedProtocol ? 'protocols' : 'correspondence')
+  const { journal, setJournal } = useDocflowDock()
+  useEffect(() => {
+    if (openedProtocol) setJournal('protocols')
+    // Только вход на вкладку: очистка фокуса протокола не должна сбрасывать журнал.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [kind, setKind] = useState<CorrespondenceKind>('incoming')
   const [from, setFrom] = useState(periodFrom)
   const [to, setTo] = useState(periodTo)
@@ -348,7 +302,7 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
     setSavedWhileOpen(false)
   }
 
-  const activeJournal = JOURNALS.find((item) => item.id === journal) || JOURNALS[0]
+  const activeJournal = DOCFLOW_JOURNALS.find((item) => item.id === journal) || DOCFLOW_JOURNALS[0]
   const activeMail = MAIL_VIEWS.find((item) => item.id === kind) || MAIL_VIEWS[0]
   const ActiveIcon = activeJournal.icon
 
@@ -444,30 +398,6 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
   return (
     <OrchSlotMain spanAll heavyEmbed>
       <section className="docflow-page">
-        <aside className="docflow-nav" aria-label="Журналы документооборота 1С">
-          <p className="docflow-nav-kicker">Журналы 1С</p>
-          {JOURNALS.map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                key={item.id}
-                data-search-id={item.id}
-                type="button"
-                className={`docflow-nav-item${journal === item.id ? ' is-active' : ''}`}
-                onClick={() => setJournal(item.id as JournalId)}
-              >
-                <span className={`docflow-nav-icon tone-${item.tone}`} aria-hidden>
-                  <Icon size={18} strokeWidth={2} />
-                </span>
-                <span className="docflow-nav-text">
-                  <strong>{item.title}</strong>
-                  <span>{item.hint}</span>
-                </span>
-              </button>
-            )
-          })}
-        </aside>
-
         <div className="docflow-main">
           <header className="docflow-head">
             <div className="docflow-head-title">

@@ -109,17 +109,22 @@ def test_close_sends_clicked_task_only(monkeypatch) -> None:
     assert result["closed"] is True
 
 
-def test_unpublished_task_action_does_not_close(monkeypatch) -> None:
+def test_unpublished_task_action_closes_by_soap(monkeypatch) -> None:
     from app.tools.onec.dok_http import TaskActionNotPublished
+
+    marked: list[dict[str, object]] = []
 
     def missing(*_args, **_kwargs) -> dict[str, object]:
         raise TaskActionNotPublished("нет метода")
 
+    def mark(_config, task_id, *, timeout, comment="", mark="ExecutedPositive"):
+        marked.append({"task_id": task_id, "mark": mark, "comment": comment, "timeout": timeout})
+        return {"id": task_id, "executed": True}
+
     monkeypatch.setattr("app.services.docflow_task_action.post_task_action", missing)
-    monkeypatch.setattr(
-        "app.tools.onec.dok_soap.mark_task_executed",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("SOAP-отметка запрещена")),
-    )
+    monkeypatch.setattr("app.services.docflow_task_action.mark_task_executed", mark)
+    monkeypatch.setattr("app.services.docflow_task_action.load_config", lambda **_kwargs: type("C", (), {"timeout": 30})())
+    monkeypatch.setattr("app.services.docflow_task_action.drop_task_from_inbox_cache", lambda *_ids: None)
     result = handle_docflow_task_action(
         {
             "action": "execute",
@@ -129,10 +134,45 @@ def test_unpublished_task_action_does_not_close(monkeypatch) -> None:
             "erp_password": "secret",
         }
     )
-    assert result["ok"] is False
-    assert result["closed"] is False
-    assert result["needs_form"] is True
-    assert "карточке 1С" in result["summary"]
+    assert result["ok"] is True
+    assert result["closed"] is True
+    assert result["summary"] == "Задача исполнена"
+    assert marked[0]["task_id"] == "1d3729cc-b5b3-11f1-9889-6cb31113810c"
+    assert marked[0]["mark"] == "ExecutedPositive"
+
+
+def test_empty_task_action_table_closes_by_soap(monkeypatch) -> None:
+    """Пустая таблица TaskAction задачу не закрывает — отметка SOAP, как до 6 октября."""
+    marked: list[str] = []
+
+    def empty(*_args, **_kwargs) -> dict[str, object]:
+        return {
+            "ok": False,
+            "closed": False,
+            "needs_form": False,
+            "summary": '{"#",acf6192e-81ca-46ef-93a6-5a6968b78663,{9,{0},{2,0,{1,0},-1,-1},{0,0}}}',
+        }
+
+    def mark(_config, task_id, *, timeout, comment="", mark="ExecutedPositive"):
+        marked.append(mark)
+        return {"id": task_id, "executed": True}
+
+    monkeypatch.setattr("app.services.docflow_task_action.post_task_action", empty)
+    monkeypatch.setattr("app.services.docflow_task_action.mark_task_executed", mark)
+    monkeypatch.setattr("app.services.docflow_task_action.load_config", lambda **_kwargs: type("C", (), {"timeout": 30})())
+    monkeypatch.setattr("app.services.docflow_task_action.drop_task_from_inbox_cache", lambda *_ids: None)
+    result = handle_docflow_task_action(
+        {
+            "action": "acquaint",
+            "task_id": "t",
+            "step": "Ознакомиться",
+            "fio": "Мангасарян Давид Карленович",
+            "erp_password": "x",
+        }
+    )
+    assert result["closed"] is True
+    assert result["summary"] == "Отмечено: ознакомлен"
+    assert marked == ["ExecutedPositive"]
 
 
 def test_onec_refusal_is_shown_as_is(monkeypatch) -> None:

@@ -1448,12 +1448,12 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   /** Что вообще показываем: только календари с включённой галочкой. Плитки считаем от этого же. */
   const ownerScoped = useMemo(
     () =>
-      meetings.filter(
-        (item) =>
-          !isCanceledMeeting(item) &&
-          !(hideOwn && isSelfCalendarMeeting(item, fio)) &&
-          visibleOwners.some((person) => samePersonName(meetingOwnerName(item, selfLabel), person))
-      ),
+      meetings.filter((item) => {
+        if (isCanceledMeeting(item)) return false
+        const hers = isSelfCalendarMeeting(item, fio)
+        if (hers) return !hideOwn
+        return visibleOwners.some((person) => samePersonName(meetingOwnerName(item, selfLabel), person))
+      }),
     [meetings, visibleOwners, selfLabel, hideOwn]
   )
 

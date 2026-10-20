@@ -36,6 +36,9 @@ ENTRY = Path(__file__).with_name("headless_agent_sidecar.py")
 LOG_DIR = _REPO_ROOT / "backend" / "logs"
 
 RUN_TIMEOUT_S = 3 * 3600
+# Tools give up after 10 minutes at most, so this long a silence means the run hung.
+SILENCE_TIMEOUT_S = 20 * 60
+STALL_RETRIES = 1
 _READY_TIMEOUT_S = 120
 _SHUTDOWN_WAIT_S = 30
 HEADLESS_ANSWER = (
@@ -48,6 +51,10 @@ _running_lock = threading.Lock()
 
 
 class HeadlessRunError(RuntimeError):
+    pass
+
+
+class HeadlessRunStalled(HeadlessRunError):
     pass
 
 
@@ -115,6 +122,8 @@ def _env() -> dict[str, str]:
             "CONSTRUCTOR_SIDECAR_SOURCE": str(SIDECAR),
             "CONSTRUCTOR_INSTANCE": "server",
             "CONSTRUCTOR_NODE": _node(),
+            # OpenBLAS starts its thread pool while numpy loads; see _preload_native_modules in the sidecar.
+            "OPENBLAS_NUM_THREADS": "1",
         }
     )
     if not env.get("CURSOR_API_KEY") and settings.cursor_api_key:
@@ -154,14 +163,22 @@ def run_headless(
             raise HeadlessRunError("Этот агент уже выполняется на сервере")
         _running.add(workflow_id)
     try:
-        return _run(
-            user_id=user_id,
-            workflow_id=workflow_id,
-            message=message,
-            trigger_id=trigger_id,
-            evidence=evidence,
-            timeout_s=timeout_s,
-        )
+        attempt = 0
+        while True:
+            try:
+                return _run(
+                    user_id=user_id,
+                    workflow_id=workflow_id,
+                    message=message,
+                    trigger_id=trigger_id,
+                    evidence=evidence,
+                    timeout_s=timeout_s,
+                )
+            except HeadlessRunStalled as exc:
+                if attempt >= STALL_RETRIES:
+                    raise
+                attempt += 1
+                logger.warning("Headless run of %s hung (%s), starting again", workflow_id, exc)
     finally:
         with _running_lock:
             _running.discard(workflow_id)
@@ -239,6 +256,12 @@ def _run(
             if outcome is None:
                 send({"type": "cancel", "id": run_id, "workflowId": workflow_id})
                 raise HeadlessRunError(f"Запуск не уложился в {int(timeout_s // 60)} мин и остановлен")
+            if outcome.get("type") == "stalled":
+                send({"type": "cancel", "id": run_id, "workflowId": workflow_id})
+                _kill_tree(proc)
+                raise HeadlessRunStalled(
+                    f"агент молчал {int(SILENCE_TIMEOUT_S // 60)} мин и был остановлен (лог {log_path.name})"
+                )
             if outcome.get("type") == "error":
                 raise HeadlessRunError(str(outcome.get("message") or "Агент завершился с ошибкой"))
             status = str(outcome.get("status") or "ok")
@@ -278,16 +301,22 @@ def _serve(
     *,
     run_id: str,
     deadline: float,
+    silence_s: float = SILENCE_TIMEOUT_S,
 ) -> dict[str, Any] | None:
     """Answer the sidecar like the app would, until this run's result or error."""
+    last_line = time.monotonic()
     while True:
-        left = deadline - time.monotonic()
+        now = time.monotonic()
+        left = deadline - now
         if left <= 0:
             return None
+        if now - last_line >= silence_s:
+            return {"type": "stalled"}
         try:
-            data = lines.get(timeout=min(left, 60.0))
+            data = lines.get(timeout=max(0.05, min(left, silence_s - (now - last_line), 60.0)))
         except queue.Empty:
             continue
+        last_line = time.monotonic()
         if data is None:
             return {"type": "error", "message": "Процесс агента завершился, не вернув результат"}
         kind = str(data.get("type") or "")

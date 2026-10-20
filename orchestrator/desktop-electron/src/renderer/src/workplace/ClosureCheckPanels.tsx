@@ -6,8 +6,9 @@ import { closureConclusionTone, type AutoCloseState, type ClosureCheckResult } f
 
 function lineTone(conclusion: string): 'close' | 'partial' | 'none' {
   const value = conclusion.toLowerCase()
-  if (value.startsWith('выполнено')) return 'close'
-  return value.includes('частично') ? 'partial' : 'none'
+  if (value.startsWith('можно закрыв') || value.startsWith('выполнено')) return 'close'
+  if (value.includes('доработ') || value.includes('частично')) return 'partial'
+  return 'none'
 }
 
 function waitsForExecutor(line: ClosureCheckLine): boolean {
@@ -51,13 +52,27 @@ function AutoCloseNote({ state }: { state: AutoCloseState | undefined }): React.
   return <div className={`closure-auto-note auto-${state.state}`}>{state.message}</div>
 }
 
+/** Проверка до перехода на задачи ДО оценивала мероприятия: такие строки подписаны «п.N». */
+function checkedByMeasures(item: ClosureCheckAssignment): boolean {
+  return item.lines.some((line) => String(line.line).startsWith('п.'))
+}
+
+function StaleCheckNote({ item }: { item: ClosureCheckAssignment }): React.JSX.Element | null {
+  if (!checkedByMeasures(item)) return null
+  return (
+    <div className="closure-auto-note auto-kept">
+      Проверка по старой схеме: оценены мероприятия, а не задачи в Документообороте. Запустите проверку заново.
+    </div>
+  )
+}
+
 function ClosureLines({ item }: { item: ClosureCheckAssignment }): React.JSX.Element {
   return (
     <ol className="closure-lines">
       {item.lines.map((line) => (
         <li key={line.line || line.event} className="closure-line">
           <div className="closure-line-title">
-            <span className="closure-line-no">п.{line.line}</span>
+            <span className="closure-line-no">{line.line}</span>
             <span>{line.event}</span>
           </div>
           <div className="closure-line-meta">
@@ -65,10 +80,10 @@ function ClosureLines({ item }: { item: ClosureCheckAssignment }): React.JSX.Ele
             {line.executor ? <span>{line.executor}</span> : null}
           </div>
           {line.evidence ? <div className="closure-line-text">{line.evidence}</div> : null}
-          {line.taskState ? <div className="closure-line-text muted">Задача в ДО: {line.taskState}</div> : null}
-          {line.comment && lineTone(line.conclusion) !== 'close' ? (
+          {line.taskState ? <div className="closure-line-text muted">В Документообороте: {line.taskState}</div> : null}
+          {line.comment ? (
             <div className="closure-line-remark">
-              <span>Замечание исполнителю</span>
+              <span>{lineTone(line.conclusion) === 'close' ? 'Заключение' : 'Почему нельзя закрыть'}</span>
               {line.comment}
             </div>
           ) : null}
@@ -78,13 +93,7 @@ function ClosureLines({ item }: { item: ClosureCheckAssignment }): React.JSX.Ele
             </ul>
           ) : waitsForExecutor(line) ? (
             <ul className="closure-line-action">
-              <DocflowWaitingRow
-                taskId={line.openTaskId}
-                performer={line.executor}
-                sharedLines={item.lines
-                  .filter((other) => line.openTaskId && other.openTaskId === line.openTaskId)
-                  .map((other) => other.line)}
-              />
+              <DocflowWaitingRow taskId={line.openTaskId} performer={line.executor} />
             </ul>
           ) : null}
         </li>
@@ -218,6 +227,7 @@ export function ClosureCheckDialog({
                     {expanded ? (
                       <div className="closure-dialog-body">
                         <AutoCloseNote state={autoClose[item.number]} />
+                        <StaleCheckNote item={item} />
                         <ClosureLines item={item} />
                         <button type="button" className="closure-link" onClick={() => onPick(item.number)}>
                           Показать в реестре
@@ -257,6 +267,7 @@ export function ClosureCheckRowPanel({
       <ConclusionPill item={item} /> <AutoClosePill state={autoClose} />
       {item.reason ? <p className="closure-card-reason">{item.reason}</p> : null}
       <AutoCloseNote state={autoClose} />
+      <StaleCheckNote item={item} />
       <ClosureLines item={item} />
     </section>
   )

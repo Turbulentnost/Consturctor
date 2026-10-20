@@ -22,6 +22,12 @@ function text(value: unknown): string {
   return value === null || value === undefined ? '' : String(value).trim()
 }
 
+/** «задача 2» — задача ДО поручения; «п.2» — пункт в результатах до перехода на задачи. */
+function unitLabel(row: Record<string, unknown>): string {
+  if (text(row.n)) return `задача ${text(row.n)}`
+  return text(row.line) ? `п.${text(row.line)}` : ''
+}
+
 function toAction(raw: unknown): AgentDocflowAction | null {
   if (!raw || typeof raw !== 'object') return null
   const row = raw as Record<string, unknown>
@@ -30,8 +36,8 @@ function toAction(raw: unknown): AgentDocflowAction | null {
   if (!GUID_RE.test(taskId) || (action !== 'close' && action !== 'return')) return null
   return {
     assignment: text(row.assignment ?? row.number),
-    line: text(row.line),
-    event: text(row.event ?? row.text),
+    line: unitLabel(row),
+    event: text(row.task ?? row.event ?? row.text),
     performer: text(row.performer),
     taskId,
     step: text(row.step),
@@ -59,8 +65,11 @@ export function extractDocflowActions(body: string): { text: string; actions: Ag
   return { text: body.replace(match[0], '').trim(), actions }
 }
 
+/** Задача ДО поручения в итоге проверки; в старых результатах — пункт поручения. */
 export type ClosureCheckLine = {
+  /** «задача 2» или «п.2». */
   line: string
+  /** Что поручено в задаче (в старых результатах — мероприятие). */
   event: string
   executor: string
   conclusion: string
@@ -97,8 +106,8 @@ function closureLine(assignment: Record<string, unknown>, raw: unknown): Closure
     performer: row.performer ?? row.executor
   })
   return {
-    line: text(row.line),
-    event: text(row.event ?? row.text),
+    line: unitLabel(row),
+    event: text(row.task ?? row.event ?? row.text),
     executor: text(row.executor ?? row.performer),
     conclusion: text(row.conclusion),
     evidence: text(row.evidence),
@@ -134,7 +143,7 @@ export function extractClosureCheck(body: string): { text: string; assignments: 
       done: Number(item.done) || 0,
       total: Number(item.total) || 0,
       reason: text(item.reason),
-      lines: (Array.isArray(item.lines) ? item.lines : [])
+      lines: (Array.isArray(item.tasks) ? item.tasks : Array.isArray(item.lines) ? item.lines : [])
         .map((line) => closureLine(item, line))
         .filter((line): line is ClosureCheckLine => line !== null)
     }))

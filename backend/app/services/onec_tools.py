@@ -610,13 +610,21 @@ def _payload_credentials(payload: dict[str, Any]) -> tuple[str, str] | None:
 
 def _odata_auth(args: dict[str, Any] | None = None) -> tuple[str, str] | None:
     payload = args or {}
+    odata_user = str(
+        payload.get("odata_username") or payload.get("ODATA_USERNAME") or ""
+    ).strip()
+    odata_password = str(
+        payload.get("odata_password") or payload.get("ODATA_PASSWORD") or ""
+    ).strip()
+    if odata_user and odata_password:
+        return odata_user, odata_password
+    if settings.odata_username and settings.odata_password:
+        return settings.odata_username, settings.odata_password
     explicit = _payload_credentials(payload)
     if explicit:
         return explicit
     if settings.erp_login and settings.erp_password:
         return settings.erp_login, settings.erp_password
-    if settings.odata_username and settings.odata_password:
-        return settings.odata_username, settings.odata_password
     return None
 
 
@@ -857,6 +865,12 @@ def _resolve_navigation_names(row: dict[str, Any], args: dict[str, Any], *, budg
             if remaining <= 0:
                 return
             if not str(key).endswith("@navigationLinkUrl"):
+                continue
+            field = key[: -len("@navigationLinkUrl")]
+            existing = obj.get(field)
+            if isinstance(existing, dict) and _navigation_display_name(existing):
+                continue
+            if _nonempty_odata_value(existing) and not _GUID_RE.match(str(existing).strip()):
                 continue
             path = str(value or "").strip().lstrip("/")
             if not path:

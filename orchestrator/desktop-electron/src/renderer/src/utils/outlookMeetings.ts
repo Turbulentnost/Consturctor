@@ -69,7 +69,7 @@ interface OutlookMeetingRaw {
   importance?: number
 }
 
-const CACHE_KEY = 'orchOutlookMeetings:v8'
+const CACHE_KEY = 'orchOutlookMeetings:v9'
 const REQUEST_TIMEOUT_MS = 180_000
 
 function pad2(n: number): string {
@@ -308,6 +308,7 @@ function requestOutlookMeetings(range: {
   forUser?: string
   allVisible?: boolean
   calendarOwners?: string[]
+  includeOwn?: boolean
 }): Promise<CalendarRequestResult> {
   return new Promise((resolve) => {
     const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -357,7 +358,8 @@ function requestOutlookMeetings(range: {
       people: range.people,
       forUser: range.forUser,
       allVisible: range.allVisible,
-      calendarOwners: range.calendarOwners
+      calendarOwners: range.calendarOwners,
+      includeOwn: range.includeOwn
     })
   })
 }
@@ -432,7 +434,10 @@ export async function ensureOutlookMeetings(
   const today = dayKey(new Date())
   const owner = (options.owner || '').trim()
   const { baseCalendar, calendarOwners, askOwners } = calendarScope(owner)
-  const cacheOwner = askOwners ? `${owner}@${calendarOwners.join('|')}` : owner
+  const includeOwn = Boolean(options.includeOwn)
+  const cacheOwner = askOwners
+    ? `${owner}@${calendarOwners.join('|')}${includeOwn ? '|own' : ''}`
+    : owner
 
   if (!options.force) {
     const cache = readCache()
@@ -460,7 +465,7 @@ export async function ensureOutlookMeetings(
 
   const result = await requestOutlookMeetings(
     askOwners
-      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners }
+      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners, includeOwn }
       : {
           dateFrom: fromKey,
           dateTo: toKey,

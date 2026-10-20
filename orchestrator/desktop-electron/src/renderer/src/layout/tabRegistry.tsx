@@ -25,6 +25,7 @@ export type WorkplaceTabKey =
   | 'assignments_registry'
   | 'subordinate_tasks'
   | 'agent_library'
+  | 'in_development'
   | 'task_create'
   | 'platform_task_create'
 
@@ -120,5 +121,9 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   agent_library: {
     title: 'Библиотека агентов',
     subtitle: 'Опубликованные ИИ-агенты всех сотрудников: добавьте к себе и откройте паспорт'
+  },
+  in_development: {
+    title: 'Закупки',
+    subtitle: 'Закупки'
   }
 }

@@ -69,6 +69,38 @@ def get_cached_tasks(key: str) -> list[dict[str, Any]] | None:
     return None
 
 
+_TASK_ID_KEYS = ("id", "task_id", "ref_key", "uid", "number")
+
+
+def _row_is_task(row: dict[str, Any], wanted: set[str]) -> bool:
+    return any(str(row.get(key) or "").strip().casefold() in wanted for key in _TASK_ID_KEYS)
+
+
+def forget_cached_tasks(*task_ids: str) -> None:
+    """Убрать закрытые задачи из списков в Redis, иначе перезагрузка вернёт их до конца TTL."""
+    wanted = {str(item or "").strip().casefold() for item in task_ids if str(item or "").strip()}
+    client = _redis_client()
+    if not wanted or client is None:
+        return
+    try:
+        keys = list(client.scan_iter(match="docflow:tasks:v4:*", count=100))
+    except Exception as exc:
+        logger.debug("docflow redis scan failed: %s", exc)
+        return
+    for key in keys:
+        cached = get_cached_tasks(key if isinstance(key, str) else key.decode("utf-8"))
+        if not cached:
+            continue
+        kept = [row for row in cached if not _row_is_task(row, wanted)]
+        if len(kept) == len(cached):
+            continue
+        try:
+            ttl = int(client.ttl(key) or 0)
+        except Exception:
+            ttl = 0
+        set_cached_tasks(key if isinstance(key, str) else key.decode("utf-8"), kept, ttl_sec=ttl if ttl > 0 else None)
+
+
 def set_cached_tasks(key: str, tasks: list[dict[str, Any]], *, ttl_sec: float | None = None) -> None:
     client = _redis_client()
     if client is None:

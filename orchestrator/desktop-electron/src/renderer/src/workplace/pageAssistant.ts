@@ -90,6 +90,11 @@ const GUIDES: PageGuide[] = [
     aliases: ['библиотека агентов', 'библиотека']
   },
   {
+    key: 'in_development',
+    about: 'Закупки',
+    aliases: ['закупки']
+  },
+  {
     key: 'ai_agents',
     about: 'ИИ-агенты: запуск и настройка.',
     aliases: ['ии-агент', 'ии агент']

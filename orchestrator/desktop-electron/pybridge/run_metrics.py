@@ -154,7 +154,8 @@ class RunMetrics:
             try:
                 root = psutil.Process(pid)
                 tree = [root, *root.children(recursive=True)]
-            except psutil.Error:
+            except (psutil.Error, OSError):
+                # WinError 1455: the snapshot needs memory the machine does not have right now.
                 continue
             alive: set[tuple[int, float]] = set()
             cpu = 0.0

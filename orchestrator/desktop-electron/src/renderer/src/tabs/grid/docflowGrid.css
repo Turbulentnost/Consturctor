@@ -13,7 +13,7 @@
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   padding: 2px 0 8px;
 }
@@ -616,6 +616,199 @@
   font-size: 12px;
   font-style: normal;
   color: var(--content-muted);
+  overflow-wrap: anywhere;
+}
+
+.assignment-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.assignment-task {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(16, 20, 26, 0.08);
+  border-left: 3px solid #b35c00;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.assignment-task.stage-done {
+  border-left-color: #1565c0;
+}
+
+.assignment-task.stage-closed {
+  border-left-color: #1b7a4e;
+}
+
+.assignment-task-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  margin-bottom: 6px;
+}
+
+.assignment-task-stage {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #b35c00;
+  background: rgba(179, 92, 0, 0.1);
+}
+
+.assignment-task-stage.stage-done {
+  color: #1565c0;
+  background: rgba(21, 101, 192, 0.1);
+}
+
+.assignment-task-stage.stage-closed {
+  color: #1b7a4e;
+  background: rgba(27, 122, 78, 0.1);
+}
+
+.assignment-task-stage.stage-return {
+  color: #b35c00;
+  background: rgba(179, 92, 0, 0.12);
+}
+
+.assignment-task-due {
+  font-size: 12px;
+  color: var(--content-muted);
+}
+
+.assignment-task-text {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #102033;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assignment-task-due.is-overdue {
+  color: #c62828;
+  font-weight: 600;
+}
+
+.assignment-task-text.is-empty {
+  color: var(--content-muted);
+}
+
+.assignment-task-performer {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.assignment-task-answer {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(16, 32, 51, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.assignment-task-answer.is-empty {
+  font-size: 12px;
+  color: var(--content-muted);
+}
+
+.assignment-task-answer-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--content-muted);
+}
+
+.assignment-task-comment {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--content-muted);
+}
+
+.assignment-task-comment > svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.assignment-task-comment p {
+  margin: 0;
+  font-size: 13px;
+  color: #102033;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assignment-task-comment small {
+  font-size: 11px;
+}
+
+.assignment-task-answer .docflow-files {
+  margin: 0;
+}
+
+.assignment-task-verdict {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(16, 32, 51, 0.04);
+}
+
+.assignment-task-verdict.tone-close {
+  background: rgba(27, 122, 78, 0.08);
+}
+
+.assignment-task-verdict.tone-partial {
+  background: rgba(179, 92, 0, 0.08);
+}
+
+.assignment-task-verdict-text {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #102033;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assignment-task-verdict-actions {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.assignment-files li {
+  min-width: 0;
+}
+
+.assignment-files .docflow-file-open {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.assignment-files .docflow-file-open > svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.assignment-files .assignment-file-name {
+  font-size: 13px;
+  color: #1565c0;
   overflow-wrap: anywhere;
 }
 
