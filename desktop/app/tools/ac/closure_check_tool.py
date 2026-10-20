@@ -30,7 +30,7 @@ _TASK_SCHEMA = {
     "properties": {
         "n": {"type": "integer", "description": "Порядковый номер задачи ДО в поручении, с 1"},
         "performer": {"type": "string", "description": "Исполнитель задачи, фамилия И.О."},
-        "task": {"type": "string", "description": "Что поручено в задаче, до 80 символов"},
+        "task": {"type": "string", "description": "Постановка задачи: text из docflow_tasks дословно, без комментария исполнителя и переноса срока"},
         "conclusion": {
             "type": "string",
             "enum": ["Можно закрывать", "Вернуть на доработку", "Не выполнено"],
@@ -41,7 +41,7 @@ _TASK_SCHEMA = {
         "advice": {"type": "string", "description": "Предлагаемое действие текстом"},
         "comment": {
             "type": "string",
-            "description": "Для «Можно закрывать» и «Вернуть на доработку»: короткое заключение, 1–2 предложения, до 250 символов",
+            "description": "Развёрнутое заключение, 4–6 предложений: постановка, ответ исполнителя и файлы, решение проверяющего с датой, чего не хватает",
         },
         "action": {"type": "string", "enum": ["close", "return"]},
         "task_id": {"type": "string", "description": "open_check_task_id задачи дословно"},

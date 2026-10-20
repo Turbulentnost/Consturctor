@@ -306,22 +306,29 @@ def list_reviews(db: Session, *, date_from: str = "", date_to: str = "") -> list
 
 
 def list_reviewed_keys(db: Session) -> dict[str, Any]:
+    """Закрытые не перепроверяем. Незакрытые с прошлым отчётом агент читает из 1С заново."""
     keys: list[str] = []
-    numbers: list[str] = []
     closed: list[str] = []
+    open_numbers: list[str] = []
     for row in db.scalars(select(AssignmentReview)).all():
+        if row.open:
+            if row.number:
+                open_numbers.append(row.number)
+            continue
         if row.ref_key:
             keys.append(row.ref_key)
         if row.number:
-            numbers.append(row.number)
-        if not row.open and row.number:
             closed.append(row.number)
     return {
-        "summary": f"Проверено поручений: {len(numbers)}",
-        "count": len(numbers),
+        "summary": (
+            f"Не перепроверять закрытые: {len(closed)}. "
+            f"Незакрытые с отчётом проверить заново: {len(open_numbers)}."
+        ),
+        "count": len(closed),
         "ref_keys": keys,
-        "numbers": numbers,
+        "numbers": closed,
         "closed_numbers": closed,
+        "open_numbers": open_numbers,
         "source": "db",
     }
 

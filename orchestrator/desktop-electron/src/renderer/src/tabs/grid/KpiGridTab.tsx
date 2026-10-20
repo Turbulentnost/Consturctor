@@ -7,8 +7,7 @@ import { StandardTabChrome } from './TabChromeGrid'
 import { DEFAULT_KPI_LAYOUT } from './useTabChromeLayout'
 import type { UserProfile } from '../../api/types'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
-import { SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
-import type { SpecSummaryTile } from '../../workplace/specV04Shell'
+import { SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import { SpecIconSearch } from '../../workplace/specV04Icons'
 import { setKpiExportSnapshot } from '../../workplace/kpiExportSnapshot'
 import {
@@ -19,8 +18,6 @@ import {
 import { useKpiPeriodSources } from '../../workplace/useKpiPeriodSources'
 import { useKpiWorkflowBoard } from '../../workplace/useKpiWorkflowBoard'
 import { useWorkplaceKpiDashboard } from '../../workplace/useWorkplaceKpiDashboard'
-import { agentMatchesKpiTile, toggleSimpleTile } from '../../workplace/tileFilters'
-import type { WorkplaceKpiCard } from '../../workplace/workplaceKpiTypes'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
 import { useKpiProtection, writeKpiUnlock } from '../../workplace/kpiProtection'
@@ -33,15 +30,6 @@ import { KpiMetricCodeModal } from './KpiMetricCodeModal'
 import './kpiGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
-const LOADING_TILES: SpecSummaryTile[] = [
-  { id: 'tasks', label: 'Выполнение задач', value: '—', tone: 'orange' },
-  { id: 'sla', label: 'SLA', value: '—', tone: 'blue' },
-  { id: 'load', label: 'Загрузка', value: '—', tone: 'purple' },
-  { id: 'ai', label: 'Эффективность ИИ', value: '—', tone: 'green' },
-  { id: 'auto', label: 'Доля автоматизации', value: '—', tone: 'yellow' },
-  { id: 'quality', label: 'Качество', value: '—', tone: 'lilac' }
-]
-
 /** Форма премирования — помесячная: период внутри одного месяца расширяем до всего месяца. */
 function bonusMonth(from: string, to: string): { from: string; to: string } {
   if (!from || !to || from.slice(0, 7) !== to.slice(0, 7)) return { from, to }
@@ -51,18 +39,6 @@ function bonusMonth(from: string, to: string): { from: string; to: string } {
   const last = new Date(year, month, 0).getDate()
   const mm = String(month).padStart(2, '0')
   return { from: `${year}-${mm}-01`, to: `${year}-${mm}-${String(last).padStart(2, '0')}` }
-}
-
-function cardsToTiles(cards: WorkplaceKpiCard[]): SpecSummaryTile[] {
-  return cards.map((card) => ({
-    id: card.id,
-    label: card.label,
-    value: card.displayValue,
-    hint: card.trend ?? undefined,
-    tone: (card.tone as SpecSummaryTile['tone']) || 'blue',
-    progress: card.progress ?? undefined,
-    ring: card.ring !== false && card.progress != null
-  }))
 }
 
 const KPI_GENERATOR_PLATFORM_ID = 'f856136c-d75a-493b-8814-99bf6b06d721'
@@ -96,7 +72,6 @@ export function KpiGridTab(_props: {
   const [formBusy, setFormBusy] = useState(false)
   const [formNote, setFormNote] = useState('')
   const [agentQuery, setAgentQuery] = useState('')
-  const [tileFilter, setTileFilter] = useState('all')
   const protection = useKpiProtection(_props.user?.id || '')
   const [gateDismissed, setGateDismissed] = useState(false)
   const [gateOpen, setGateOpen] = useState(false)
@@ -185,22 +160,14 @@ export function KpiGridTab(_props: {
     [data, periodSources, from, to, workflowBoard]
   )
 
-  const tiles = useMemo(() => {
-    if (dashboard?.cards.length) return cardsToTiles(dashboard.cards)
-    if (loading) return LOADING_TILES
-    return []
-  }, [dashboard, loading])
-
   const agents = useMemo(() => {
     const rows = dashboard?.agents ?? []
-    const byTile =
-      tileFilter === 'all' ? rows : rows.filter((row) => agentMatchesKpiTile(row, tileFilter))
     const q = agentQuery.trim().toLowerCase()
-    if (!q) return byTile
-    return byTile.filter((row) =>
+    if (!q) return rows
+    return rows.filter((row) =>
       [row.name, row.code, row.process, row.status].some((value) => value.toLowerCase().includes(q))
     )
-  }, [dashboard, agentQuery, tileFilter])
+  }, [dashboard, agentQuery])
   const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
     () =>
       agents.map((row) => ({
@@ -390,12 +357,6 @@ export function KpiGridTab(_props: {
               onCalculate={() => void launchGenerator()}
               onInfo={(code) => setCodeFor(code)}
             />
-            <SpecSummaryTiles
-              tiles={tiles}
-              activeId={tileFilter === 'all' ? null : tileFilter}
-              onSelect={(id) => setTileFilter((current) => toggleSimpleTile(current, id))}
-              className="kpi-agent-top-tiles"
-            />
             </div>
           </div>
         ),
@@ -457,9 +418,6 @@ export function KpiGridTab(_props: {
               document.body
             )
           : null}
-        {!tiles.length && loading ? (
-          <p className="kpi-dash-status-banner">Загружаем показатели…</p>
-        ) : null}
         {notice ? <p className="kpi-dash-status-banner">{notice}</p> : null}
         {formNote && !formOpen ? (
           <p className={`kpi-dash-status-banner${formNote.includes('сохранена') ? '' : ' error'}`}>{formNote}</p>
@@ -555,11 +513,7 @@ export function KpiGridTab(_props: {
                 {!loading && !agents.length ? (
                   <tr>
                     <td colSpan={7} className="spec-v04-empty">
-                      {agentQuery.trim()
-                        ? 'Нет агентов по поиску'
-                        : tileFilter !== 'all'
-                          ? 'Нет агентов по выбранной плитке'
-                          : 'Нет данных за период'}
+                      {agentQuery.trim() ? 'Нет агентов по поиску' : 'Нет данных за период'}
                     </td>
                   </tr>
                 ) : null}

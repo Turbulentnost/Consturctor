@@ -120,3 +120,21 @@ def test_reviewed_keys_list():
 
     assert "АСТ00-00096" in keys["numbers"]
     assert "АСТ00-00096" in keys["closed_numbers"]
+    assert keys["open_numbers"] == []
+
+
+def test_open_review_is_checked_again():
+    db = _db()
+
+    def live_open(ref: str, number: str) -> dict:
+        item = _live(ref, number)
+        item["open"] = True
+        item["status"] = "В работе"
+        return item
+
+    save_reviews(db, [_item("АСТ00-00105")], live_loader=live_open)
+    keys = list_reviewed_keys(db)
+
+    assert "АСТ00-00105" not in keys["numbers"]
+    assert "АСТ00-00105" not in keys["closed_numbers"]
+    assert keys["open_numbers"] == ["АСТ00-00105"]

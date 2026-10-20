@@ -144,6 +144,75 @@ def test_without_session_password_falls_back_to_dump(monkeypatch):
     assert item["docflow_tasks"][0]["open_execute_task_id"] == "e1"
 
 
+def test_execution_comment_is_not_the_task_statement():
+    rows = [
+        _row(
+            "e1",
+            "Исполнить",
+            "Макеев Андрей Сергеевич",
+            "2026-07-06T21:03:47",
+            True,
+            step="Исполнить",
+            chain=14,
+            text=(
+                "10.06.2026 15:29, Тищенко Марина Николаевна. Задача выполнена:\n"
+                "По результатам сверки установлено: новое СТО-07-093."
+            ),
+            comment="Ответственный Сафронов И. Срок исполнения 15.08.26",
+        ),
+    ]
+    item = _item("Макеев Андрей Сергеевич")
+    item["lines"] = [
+        {
+            "line": 4,
+            "executor": "Макеев Андрей Сергеевич",
+            "text": "Ответственные лица представляют еженедельный отчет куратору Тищенко М.Н.",
+        }
+    ]
+
+    tasks.link_tasks(item, rows)
+
+    task = item["docflow_tasks"][0]
+    assert task["text"] == "Ответственные лица представляют еженедельный отчет куратору Тищенко М.Н."
+    assert task["executor_report"] == "Ответственный Сафронов И. Срок исполнения 15.08.26"
+
+
+def test_handoff_phrase_is_not_the_task_statement():
+    rows = [
+        _row(
+            "e1",
+            "Исполнить",
+            "Сафронов Игорь Александрович",
+            "2026-06-23T09:32:34",
+            step="Исполнить",
+            chain=13,
+            text="Отчет по новому СТО во вложении.",
+        ),
+    ]
+
+    found, _ = tasks.build_tasks(rows)
+
+    assert found[0]["text"] == ""
+
+
+def test_statement_keeps_the_text_before_execution_history():
+    rows = [
+        _row(
+            "e1",
+            "Исполнить",
+            "Тен Л.Л.",
+            "2026-09-01T09:00:00",
+            step="Исполнить",
+            chain=3,
+            text="Подать заявление в ИФНС\n\nИстория выполнения:\n06.10.2026 17:01, Тен Л.Л. Задача выполнена.",
+        ),
+    ]
+
+    found, _ = tasks.build_tasks(rows)
+
+    assert found[0]["text"] == "Подать заявление в ИФНС"
+
+
 def test_files_go_to_the_sending_of_the_uploader():
     item = _item("Тен Л.Л.")
     rows = [
