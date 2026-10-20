@@ -217,6 +217,57 @@ def _raw_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "onec.position_holders",
+            "description": (
+                "Кто сейчас занимает должность в подразделении по кадровой истории 1С erp_pm. "
+                "Передай названия как в справочниках 1С: position — должность, department — подразделение. "
+                "Вернёт ФИО, код сотрудника, дату назначения и число ставок. "
+                "Категория в названии не учитывается. "
+                "Не включает уволенных, архивных, переведённых и тех, кто в отпуске по уходу за ребёнком. "
+                "Если название совпало с несколькими подразделениями, вернёт варианты и не смешает людей. "
+                "Только чтение, исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "position": _prop("string", "Должность как в 1С, например «Ведущий инженер»"),
+                    "department": _prop(
+                        "string",
+                        "Подразделение как в 1С. Если таких несколько, уточни путь: «Цех / Участок»",
+                    ),
+                    "as_of": _prop("string", "Дата среза YYYY-MM-DD. Пусто — сегодня по Москве"),
+                },
+                "required": ["position", "department"],
+            },
+        },
+        {
+            "name": "kpi.publish_position_result",
+            "description": (
+                "Выгрузить на сервер Constructor итог расчёта KPI одной должности за сегодня: "
+                "по каждому сотруднику — вывод каждого модуля (это и есть кэш, не файлы на диске) "
+                "и отчёт ИЦПП. Вызывай один раз на должность, после модулей и отчёта. "
+                "status=failed с error, если должность посчитать не удалось. "
+                "Пишет только в кэш KPI Constructor, не в 1С. Подтверждение не нужно."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "profile_id": _prop("string", "id методики должности из задачи"),
+                    "month": _prop("string", "Месяц расчёта YYYY-MM"),
+                    "status": _prop("string", "done или failed"),
+                    "error": _prop("string", "Причина, если status=failed"),
+                    "people": _prop(
+                        "array",
+                        "Сотрудники: {fio, status ok|failed|ambiguous, error, report_path "
+                        "(путь к xlsx ИЦПП), metrics: [{metric_code, output (JSON вывода модуля)}]}",
+                    ),
+                },
+                "required": ["profile_id", "status"],
+            },
+        },
+        {
             "name": "onec.meeting_protocols",
             "description": (
                 "Протоколы Document_ТД_Протокол через OData (сервер, только чтение). "
@@ -1310,6 +1361,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "imap.fetch_attachments": ("imap", "mail_attachment", "list", ["uid"], ["files"], "none"),
     "onec.odata_catalog": ("onec", "metadata", "list", [], ["entities"], "count"),
     "onec.odata_get": ("onec", "odata_entity", "read", ["entity"], ["rows", "value"], "cursor"),
+    "onec.position_holders": (
+        "onec",
+        "employee",
+        "list",
+        ["position", "department"],
+        ["people", "fio"],
+        "none",
+    ),
     "onec.meeting_protocols": (
         "onec",
         "protocol",
@@ -1547,6 +1606,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         "notify",
         ["user_id", "title"],
         ["id", "delivered"],
+        "none",
+    ),
+    "kpi.publish_position_result": (
+        "constructor",
+        "kpi_result",
+        "create",
+        ["profile_id"],
+        ["ok", "subjects"],
         "none",
     ),
     "chat.send_direct": ("constructor", "chat_message", "notify", ["text"], ["sent"], "none"),

@@ -46,6 +46,8 @@ export const TOOL_LABELS: Record<string, string> = {
   'onec.odata_post': 'Создание записи 1С',
   'onec.odata_patch': 'Изменение записи 1С',
   'onec.odata_catalog': 'Каталог сущностей 1С',
+  'onec.position_holders': 'Кто на должности',
+  'kpi.publish_position_result': 'Выгрузка KPI',
   'onec.sql_query': 'Запрос 1С',
   'onec.erp_tasks_current': 'Текущие задачи 1С',
   'onec.erp_tasks_period': 'Задачи 1С за период',

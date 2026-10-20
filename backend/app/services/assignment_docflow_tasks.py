@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 _TASK_DATE_RE = re.compile(r"от (\d{2})\.(\d{2})\.(\d{4}) (\d{1,2}):(\d{2}):(\d{2})")
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_HISTORY_SPLIT = re.compile(r"история выполнения\s*:?", re.IGNORECASE)
+_COMMENT_STAMP = re.compile(r"^\d{2}\.\d{2}\.\d{4}\s+\d{1,2}:\d{2}\s*,")
+_HANDOFF = re.compile(r"во вложени|перенос срок", re.IGNORECASE)
 _REPORT_CHARS = 600
 _TEXT_CHARS = 300
 _STEP_DIGITS = 5
@@ -51,6 +54,16 @@ def _clip(value: Any, size: int = _REPORT_CHARS) -> str:
     return text[:size].rstrip() + "…" if len(text) > size else text
 
 
+def task_statement(description: Any) -> str:
+    """Постановка задачи. Комментарий исполнения и перенос срока в описание 1С кладёт следом, это не текст задачи."""
+    text = _HISTORY_SPLIT.split(str(description or "").strip(), maxsplit=1)[0].strip()
+    if not text or _COMMENT_STAMP.match(text):
+        return ""
+    if len(text) <= 120 and _HANDOFF.search(text):
+        return ""
+    return _clip(text, _TEXT_CHARS)
+
+
 def chain_key(row: dict[str, Any]) -> str:
     """Номер процесса ДО: номер задачи без пяти цифр шага. Без номера задача — сама себе цепочка."""
     number = str(row.get("number") or "").strip()
@@ -72,7 +85,7 @@ def _task_view(row: dict[str, Any]) -> dict[str, Any]:
         "due": str(row.get("due") or "")[:10],
         "executed": bool(row.get("executed")),
         "mark": str(row.get("execution_mark") or ""),
-        "text": _clip(row.get("description"), _TEXT_CHARS),
+        "text": task_statement(row.get("description")),
         "report": _clip(row.get("comment")),
     }
 
@@ -185,6 +198,22 @@ def build_tasks(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[
     return result, [_history_view(task) | {"name": task["name"]} for task in other]
 
 
+def _measure_statement(lines: list[dict[str, Any]], performer: str) -> str:
+    """Единственный текст мероприятий исполнителя, если в задаче ДО постановки нет."""
+    from app.tools.onec.dok_soap import person_names_match
+
+    texts: list[str] = []
+    for line in lines:
+        if not isinstance(line, dict) or not person_names_match(performer, str(line.get("executor") or "")):
+            continue
+        text = str(line.get("text") or "").strip()
+        if text and text not in texts:
+            texts.append(text)
+    if len(texts) != 1:
+        return ""
+    return _clip(texts[0], _TEXT_CHARS)
+
+
 def _executors_without_tasks(lines: list[dict[str, Any]], tasks: list[dict[str, Any]]) -> list[str]:
     from app.tools.onec.dok_soap import person_names_match
 
@@ -236,6 +265,9 @@ def link_tasks(item: dict[str, Any], rows: list[dict[str, Any]]) -> None:
     """Задачи ДО поручения без привязки к пунктам: в ДО у задачи нет ссылки на строку поручения."""
     lines = item.get("lines") if isinstance(item.get("lines"), list) else []
     tasks, other = build_tasks(rows)
+    for task in tasks:
+        if not task["text"]:
+            task["text"] = _measure_statement(lines, task["performer"])
     files = item.get("files") if isinstance(item.get("files"), list) else []
     item["docflow_assignment_files"] = attach_files(tasks, files)
     open_tasks = sum(1 for task in tasks for step in task["history"] if not step["executed"])

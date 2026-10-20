@@ -47,6 +47,10 @@ import {
   type PositionKpiTile,
   type PositionKpiBuildMessage,
   type PositionKpiMetricDetail,
+  type KpiRunClaim,
+  type KpiRunProfile,
+  type KpiTodayRun,
+  type KpiTodayRunStatus,
   type PositionOrchestrator,
   type KpiTile,
   type KpiSide,
@@ -358,6 +362,63 @@ function parsePositionKpiMethodology(
         moduleReady: Boolean(row.module_ready ?? row.moduleReady)
       }
     })
+  }
+}
+
+const KPI_TODAY_STATUSES: KpiTodayRunStatus[] = [
+  'ready',
+  'running_here',
+  'running_elsewhere',
+  'missing',
+  'failed',
+  'no_modules',
+  'no_profile'
+]
+
+function parseKpiRunProfile(raw: unknown): KpiRunProfile | null {
+  if (!raw || typeof raw !== 'object') return null
+  const item = raw as Record<string, unknown>
+  const profileId = String(item.profile_id || '').trim()
+  if (!profileId) return null
+  return {
+    profileId,
+    position: String(item.position || '').trim(),
+    department: String(item.department || '').trim()
+  }
+}
+
+function parseKpiTodayRun(raw: Record<string, unknown>): KpiTodayRun {
+  const status = String(raw.status || '') as KpiTodayRunStatus
+  const run = raw.run && typeof raw.run === 'object' ? (raw.run as Record<string, unknown>) : null
+  return {
+    status: KPI_TODAY_STATUSES.includes(status) ? status : 'missing',
+    day: String(raw.day || ''),
+    fio: String(raw.fio || ''),
+    profile: parseKpiRunProfile(raw.profile),
+    reportAvailable: Boolean(raw.report_available),
+    ownFacts: Boolean(raw.own_facts),
+    run: run
+      ? {
+          status: String(run.status || ''),
+          claimedByUserId: String(run.claimed_by_user_id || ''),
+          claimedAt: String(run.claimed_at || ''),
+          finishedAt: String(run.finished_at || ''),
+          error: String(run.error || '')
+        }
+      : null
+  }
+}
+
+function parseKpiRunClaim(raw: Record<string, unknown>): KpiRunClaim {
+  const profiles = Array.isArray(raw.profiles)
+    ? raw.profiles.map(parseKpiRunProfile).filter((item): item is KpiRunProfile => item !== null)
+    : []
+  return {
+    granted: Boolean(raw.granted),
+    scope: raw.scope === 'others' ? 'others' : 'own',
+    day: String(raw.day || ''),
+    profiles,
+    reason: String(raw.reason || '')
   }
 }
 
@@ -2551,6 +2612,31 @@ export class ApiClient {
     return window.api.download({
       url: `/api/v1/position-kpi/bonus-form?${params.toString()}`,
       defaultName: `ИЦПП_${surname}_${stamp}${unlockToken ? '_руб' : ''}.xlsx`,
+      token: this.resolveToken()
+    })
+  }
+
+  /** Есть ли сегодня расчёт и отчёт агента «Запуск модулей KPI» по должности пользователя. */
+  async getKpiTodayRun(): Promise<KpiTodayRun> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/today-run', {
+      timeoutMs: 30_000
+    })
+    return parseKpiTodayRun(data ?? {})
+  }
+
+  async claimKpiTodayRun(scope: 'own' | 'others', retryFailed = false): Promise<KpiRunClaim> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/position-kpi/today-run/claim', {
+      body: { scope, retry_failed: retryFailed },
+      timeoutMs: 60_000
+    })
+    return parseKpiRunClaim(data ?? {})
+  }
+
+  async downloadKpiTodayReport(fio: string, month: string): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
+    const surname = fio.trim().split(/\s+/)[0] || 'сотрудник'
+    return window.api.download({
+      url: '/api/v1/position-kpi/today-run/report',
+      defaultName: `ИЦПП_${surname}_${month || 'period'}.xlsx`,
       token: this.resolveToken()
     })
   }

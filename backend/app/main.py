@@ -6,6 +6,13 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
+# Happ publishes socks4://127.0.0.1:10808. httpx rejects that scheme while
+# building any client, so login dies before the request. The value also lives
+# in the Windows proxy registry, which urllib reads after the env vars are gone.
+from app.net_proxy import install as _install_net_proxy
+
+_install_net_proxy()
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware

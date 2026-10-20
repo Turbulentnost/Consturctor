@@ -75,12 +75,14 @@ _AUDIO_TOOLS = frozenset(
         "audio.transcript_docx",
     }
 )
+_KPI_TOOLS = frozenset({"kpi.publish_position_result"})
 _SERVER_TOOLS = (
     _IMAP_TOOLS
     | ONEC_TOOLS
     | _TURBOPROJECT_TOOLS
     | _USERS_TOOLS
     | _AUDIO_TOOLS
+    | _KPI_TOOLS
     | MEETING_PLANNER_TOOLS
 )
 
@@ -143,6 +145,8 @@ def _dispatch_server_tool(
             result = _invoke_users_tool(tool_name, arguments, auth)
         elif tool_name in _AUDIO_TOOLS:
             result = _invoke_audio_tool(tool_name, arguments, auth)
+        elif tool_name in _KPI_TOOLS:
+            result = _invoke_kpi_tool(arguments, auth)
         elif tool_name in MEETING_PLANNER_TOOLS:
             if tool_name in MEETING_PLANNER_WRITE_TOOLS:
                 _require_meeting_planner_writer(auth)
@@ -497,6 +501,20 @@ def _invoke_audio_tool(
         return _invoke_audio_transcribe(arguments)
     finally:
         clear_tool_context()
+
+
+def _invoke_kpi_tool(arguments: dict[str, Any], auth: AuthContext) -> dict[str, Any]:
+    """kpi.publish_position_result: итог агента «Запуск модулей KPI» в кэш Constructor."""
+    from app.db.session import SessionLocal
+    from app.services.position_kpi.daily_run import DailyRunError, publish
+
+    db = SessionLocal()
+    try:
+        return publish(db, auth, arguments)
+    except DailyRunError as exc:
+        raise RuntimeError(exc.message) from exc
+    finally:
+        db.close()
 
 
 def _invoke_users_tool(

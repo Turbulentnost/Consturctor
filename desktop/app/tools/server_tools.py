@@ -124,6 +124,49 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
+        "onec.position_holders",
+        (
+            "Кто сейчас занимает должность в подразделении по кадровой истории 1С erp_pm. "
+            "position — должность, department — подразделение. "
+            "Вернёт ФИО, код, дату назначения и число ставок. "
+            "Не включает уволенных, архивных, переведённых и отпуск по уходу за ребёнком. "
+            "Только чтение, сервер."
+        ),
+        _schema(
+            {
+                "position": _prop("string", "Должность как в 1С"),
+                "department": _prop("string", "Подразделение как в 1С"),
+                "as_of": _prop("string", "Дата среза YYYY-MM-DD. Пусто — сегодня по Москве"),
+            },
+            ["position", "department"],
+        ),
+    ),
+    (
+        "kpi.publish_position_result",
+        (
+            "Выгрузить на сервер Constructor итог расчёта KPI одной должности за сегодня: "
+            "по каждому сотруднику вывод каждого модуля (кэш KPI — это этот вызов, не Documents/kpi/cache) "
+            "и отчёт ИЦПП (report_path — локальный xlsx, desktop сам передаст файл). "
+            "Один вызов на должность, после модулей и отчёта. "
+            "status=failed с error, если должность посчитать не удалось. "
+            "Пишет только в кэш KPI Constructor, не в 1С. Подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "profile_id": _prop("string", "id методики должности из задачи"),
+                "month": _prop("string", "Месяц расчёта YYYY-MM"),
+                "status": _prop("string", "done или failed"),
+                "error": _prop("string", "Причина, если status=failed"),
+                "people": _prop(
+                    "array",
+                    "Сотрудники: {fio, status ok|failed|ambiguous, error, report_path, "
+                    "metrics: [{metric_code, output (JSON вывода модуля)}]}",
+                ),
+            },
+            ["profile_id", "status"],
+        ),
+    ),
+    (
         "onec.sql_query",
         "Только SELECT к ERP SQL (allowlist таблиц, сервер).",
         _schema(
@@ -676,6 +719,8 @@ SERVER_TOOL_NAMES: frozenset[str] = frozenset(
     name for name, _desc, _schema_ in _SERVER_TOOL_DEFS if name not in LOCAL_BACKEND_TOOL_NAMES
 )
 SERVER_TOOL_TIMEOUTS: dict[str, int] = {
+    "onec.position_holders": 180,
+    "kpi.publish_position_result": 120,
     "onec.download_artifact": 300,
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,

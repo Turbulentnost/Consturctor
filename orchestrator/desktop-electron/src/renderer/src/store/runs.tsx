@@ -37,6 +37,8 @@ export interface RunEntry {
   state: RunState
   /** Silent evaluation run: hidden from live banners / chat. */
   background?: boolean
+  /** Full tool run nobody watches (KPI for other positions): no banner, no feed. */
+  hidden?: boolean
 }
 
 interface StartRunOptions {
@@ -50,6 +52,8 @@ interface StartRunOptions {
   forceRestart?: boolean
   /** Run without chat UI / active-agent banner. */
   background?: boolean
+  /** Real agent run with tools, kept out of banners and the feed. */
+  hidden?: boolean
   /** Workplace snapshot for personal/orchestrator agent. */
   appContext?: string
   /** One-shot KPI/eval run: sidecar must not resume the live agent. */
@@ -71,6 +75,16 @@ function isEmptyTriggerCheckRun(item: AgentRunHistoryItem): boolean {
 
 export function explainBackgroundEntryKey(workflowId: string): string {
   return backgroundEntryKey(workflowId)
+}
+
+const HIDDEN_PREFIX = '__kpi_bg__'
+
+export function hiddenEntryKey(workflowId: string): string {
+  return `${HIDDEN_PREFIX}${workflowId}`
+}
+
+function isHiddenKey(key: string): boolean {
+  return key.startsWith(HIDDEN_PREFIX)
 }
 
 export interface RunStore {
@@ -113,7 +127,7 @@ if (import.meta.hot) {
 }
 
 function isActive(entry: RunEntry): boolean {
-  return !entry.background && isLiveRunState(entry.state)
+  return !entry.background && !entry.hidden && isLiveRunState(entry.state)
 }
 
 function emptyLiveEntry(
@@ -258,9 +272,10 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         if (state.running && !state.runningSinceMs) {
           state = { ...state, runningSinceMs: Date.now() }
         }
+        const isHidden = Boolean(entry.hidden) || isHiddenKey(workflowId)
         const isBackground = Boolean(entry.background) || workflowId.startsWith('__bg_explain__')
         if (
-          isBackground &&
+          (isBackground || isHidden) &&
           (event.type === 'question' || event.type === 'hitl')
         ) {
           cancelBackground = true
@@ -269,16 +284,20 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             running: false,
             pendingQuestion: null,
             pendingHitl: null,
-            error: 'Фоновая оценка остановилась: агент запросил действие пользователя.',
-            status: 'Оценка прервана',
+            error: isHidden
+              ? 'Фоновый расчёт остановился: агент запросил действие пользователя.'
+              : 'Фоновая оценка остановилась: агент запросил действие пользователя.',
+            status: isHidden ? 'Расчёт прерван' : 'Оценка прервана',
             activeRunId: null
           }
         }
         const next: RunEntry = {
           ...entry,
+          hidden: isHidden || entry.hidden,
           background: isBackground || entry.background,
           backendRunId: backendRunId || entry.backendRunId,
-          resumeAgentId: isBackground ? entry.resumeAgentId : outcome.result?.agentId || entry.resumeAgentId,
+          resumeAgentId:
+            isBackground || isHidden ? entry.resumeAgentId : outcome.result?.agentId || entry.resumeAgentId,
           state
         }
         return { ...prev, [workflowId]: next }
@@ -306,11 +325,16 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       resumeAgentId,
       forceRestart,
       background,
+      hidden,
       appContext,
       source,
       fresh
     } = opts
-    const entryKey = background ? backgroundEntryKey(workflowId) : workflowId
+    const entryKey = background
+      ? backgroundEntryKey(workflowId)
+      : hidden
+        ? hiddenEntryKey(workflowId)
+        : workflowId
     const existing = entriesRef.current[entryKey]
     if (existing && existing.state.running) {
       if (!forceRestart && !background) {
@@ -320,7 +344,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     }
     // Sidecar may still track a run after UI cancel — always clear by workflow id
     // (activeRunId in UI can point to a fresh request id, not the sidecar slot).
-    if (!background) {
+    if (!background && !hidden) {
       if (forceRestart) forceRestartRef.current[entryKey] = true
       agentClient.cancel('', workflowId)
     }
@@ -333,13 +357,14 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       })
       .catch(() => undefined)
     // Background evaluations always start a fresh thread (no resume / no chat).
-    const resume = background ? '' : resumeAgentId || existing?.resumeAgentId || ''
-    const evalRun = Boolean(background || fresh || source === 'eval' || source === 'explain')
+    const resume = background || hidden ? '' : resumeAgentId || existing?.resumeAgentId || ''
+    const evalRun = !hidden && Boolean(background || fresh || source === 'eval' || source === 'explain')
     const runId = agentClient.start({
       kind: 'run',
       workflowId,
       message,
-      source: evalRun ? 'eval' : source,
+      // Trigger source: the sidecar runs it autonomously, without the per-run file prompts.
+      source: evalRun ? 'eval' : hidden ? 'trigger' : source,
       fresh: evalRun || undefined,
       forceRestart: forceRestart || undefined,
       resumeAgentId: evalRun ? undefined : resume || undefined,
@@ -371,6 +396,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           resumeAgentId: resume,
           backendRunId: prevEntry?.backendRunId || '',
           background: Boolean(background),
+          hidden: Boolean(hidden),
           state
         }
       }
@@ -636,6 +662,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   const noteRunning = useCallback((workflowId: string, title: string, backendRunId = '') => {
     const wid = workflowId.trim()
     if (!wid) return
+    if (entriesRef.current[hiddenEntryKey(wid)]?.state.running) return
     setEntries((prev) => {
       const existing = prev[wid]
       if (existing) {
@@ -691,6 +718,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         let changed = false
         const next = { ...prev }
         for (const [wid, info] of running) {
+          if (next[hiddenEntryKey(wid)]?.state.running) continue
           const existing = next[wid]
           if (!existing) {
             next[wid] = emptyLiveEntry(wid, info.title, info.backendRunId)
@@ -738,7 +766,8 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         }
         return changed ? next : prev
       })
-      for (const [wid, info] of running) {
+      for (const [wid] of running) {
+        if (entriesRef.current[hiddenEntryKey(wid)]?.state.running) continue
         const entry = entriesRef.current[wid]
         if (!entry) continue
         if ((entry.state.items?.length ?? 0) > 0) continue

@@ -13,6 +13,10 @@ from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowFile
 from app.services.triggers.service import sync_recurring_triggers_from_draft, workflow_is_deleted
 from app.services.workflows.board import _agent_description
+from app.services.workflows.kpi_launch_playbook import (
+    KPI_LAUNCH_PLATFORM_ID,
+    is_kpi_launch_agent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -302,3 +306,86 @@ def adopt_library_agent(db: Session, *, user_id: str, source_workflow_id: str) -
     card = _card_from_row(row, owner_id=user_id, owner_fio="")
     logger.info("Agent library adopt user=%s source=%s -> %s", user_id, source_id, workflow_id)
     return {"ok": True, "workflow_id": workflow_id, "title": card["title"], "card": card}
+
+
+def _launch_blob(row: Workflow) -> str:
+    return f"{row.title or ''}\n{row.notes or ''}"
+
+
+def _canonical_kpi_launch(db: Session) -> Workflow | None:
+    """Опубликованный оригинал «Запуск модулей KPI», с которого снимаются копии."""
+    rows = (
+        db.query(Workflow)
+        .filter(
+            Workflow.phase == "done",
+            Workflow.notes.contains(KPI_LAUNCH_PLATFORM_ID),
+        )
+        .order_by(Workflow.created_at.asc())
+        .all()
+    )
+    alive = [row for row in rows if is_kpi_launch_agent(_launch_blob(row)) and not workflow_is_deleted(row)]
+    if not alive:
+        return None
+    original = next((row for row in alive if not _library_source_id(row)), None)
+    return original or alive[0]
+
+
+def _connected_kpi_launch(db: Session, user_id: str) -> Workflow | None:
+    rows = (
+        db.query(Workflow)
+        .filter(Workflow.user_id == user_id, Workflow.phase != "deleted")
+        .order_by(Workflow.created_at.asc())
+        .all()
+    )
+    matches = [
+        row for row in rows if is_kpi_launch_agent(_launch_blob(row)) and not workflow_is_deleted(row)
+    ]
+    if not matches:
+        return None
+    done = next((row for row in matches if row.phase == "done"), None)
+    return done or matches[0]
+
+
+def ensure_kpi_launch_agent(db: Session, *, user_id: str) -> Workflow | None:
+    """Личная карточка «Запуск модулей KPI» уже есть у пользователя, без библиотеки.
+
+    Агент один на всех: копия оригинала создаётся сама. Человек её не добавляет.
+    """
+    owner = (user_id or "").strip()
+    if not owner:
+        return None
+    existing = _connected_kpi_launch(db, owner)
+    if existing is not None:
+        return existing
+    src = _canonical_kpi_launch(db)
+    if src is None or src.user_id == owner:
+        return src if src is not None and src.user_id == owner else None
+
+    local = copy.deepcopy(src.local_run or {})
+    if not isinstance(local, dict):
+        local = {}
+    local["library_source_id"] = src.id
+    local["published"] = True
+    local["status"] = "published"
+    local["phase"] = "done"
+    row = Workflow(
+        id=str(uuid4()),
+        user_id=owner,
+        title=(src.title or "Запуск модулей KPI").strip(),
+        phase="done",
+        notes=src.notes or f"platform:{KPI_LAUNCH_PLATFORM_ID}",
+        document_name=src.document_name or "",
+        document_text=src.document_text or "",
+        plan_json=copy.deepcopy(src.plan_json or {}),
+        attachments_meta=copy.deepcopy(src.attachments_meta or []),
+        local_run=local,
+        last_result=src.last_result or "",
+    )
+    db.add(row)
+    db.flush()
+    _copy_files(db, src_id=src.id, dst_id=row.id)
+    flag_modified(row, "local_run")
+    db.commit()
+    db.refresh(row)
+    logger.info("KPI launch agent connected user=%s source=%s -> %s", owner, src.id, row.id)
+    return row

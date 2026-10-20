@@ -43,7 +43,7 @@ export function useTodayTileAlerts(agents: TodayAlertAgent[]): {
       Object.values(runs.entries).map((entry) => ({
         workflowId: entry.workflowId,
         title: entry.title,
-        background: entry.background,
+        background: entry.background || entry.hidden,
         running: Boolean(entry.state.running),
         pendingHitl: Boolean(entry.state.pendingHitl),
         pendingQuestion: Boolean(entry.state.pendingQuestion)

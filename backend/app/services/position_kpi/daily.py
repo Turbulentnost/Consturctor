@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import calendar
 import logging
+import re
 import threading
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,11 @@ from app.services.position_kpi.registry import scorer_for
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
+_MSK = ZoneInfo("Europe/Moscow")
+
+
+def msk_today() -> date:
+    return datetime.now(_MSK).date()
 
 
 class PositionKpiNotFound(Exception):
@@ -294,14 +301,89 @@ def _metric_module(sources: list[PositionKpiSource]) -> str | None:
     return None
 
 
+_EMPTY_PCT = frozenset({"нет базы", "нет данных", "n/a", "-", ""})
+_PCT_LINE = re.compile(r"(?im)^(Факт|Выполнение|Вклад):\s*(.+)$")
+
+
+def _read_pct(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).replace(",", ".").replace("%", "").strip()
+    if text.casefold() in _EMPTY_PCT:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def module_pcts(report: dict[str, Any] | None, text: str = "") -> dict[str, float | None]:
+    """fact/score из JSON модуля или из stdout «Факт: 83.33» / «Выполнение: 87.72%»."""
+    blob = dict(report or {})
+    fact = _read_pct(blob.get("fact_pct"))
+    if fact is None:
+        fact = _read_pct(blob.get("fact"))
+    score = _read_pct(blob.get("score_pct"))
+    if score is None:
+        score = _read_pct(blob.get("score"))
+    contrib = _read_pct(blob.get("contrib_pct"))
+    if contrib is None:
+        contrib = _read_pct(blob.get("contribution"))
+        if contrib is None:
+            contrib = _read_pct(blob.get("contrib"))
+    src = text or str(blob.get("text") or "")
+    if src:
+        found: dict[str, str] = {}
+        for match in _PCT_LINE.finditer(src):
+            found[match.group(1).casefold()] = match.group(2).strip()
+        if fact is None:
+            fact = _read_pct(found.get("факт"))
+        if score is None:
+            score = _read_pct(found.get("выполнение"))
+        if contrib is None:
+            contrib = _read_pct(found.get("вклад"))
+    return {"fact_pct": fact, "score_pct": score, "contrib_pct": contrib}
+
+
+def _hydrate_tiles(payload: dict[str, Any]) -> dict[str, Any]:
+    tiles = payload.get("tiles")
+    if not isinstance(tiles, list):
+        return payload
+    fixed: list[Any] = []
+    for tile in tiles:
+        if not isinstance(tile, dict) or tile.get("fact") is not None:
+            fixed.append(tile)
+            continue
+        detail = tile.get("detail") if isinstance(tile.get("detail"), dict) else {}
+        pcts = module_pcts(detail, str(detail.get("text") or tile.get("evidence") or ""))
+        fixed.append(
+            {
+                **tile,
+                "fact": pcts["fact_pct"],
+                "score": tile.get("score") if tile.get("score") is not None else pcts["score_pct"],
+                "contrib": tile.get("contrib") if tile.get("contrib") is not None else pcts["contrib_pct"],
+            }
+        )
+    return {**payload, "tiles": fixed}
+
+
 def _tile_from_report(
     metric: PositionKpiMetric,
     report: dict[str, Any],
     evidence: str,
 ) -> dict[str, Any]:
+    pcts = module_pcts(report, evidence)
     fact = report.get("fact_pct")
+    if fact is None:
+        fact = pcts["fact_pct"]
     score = report.get("score_pct")
+    if score is None:
+        score = pcts["score_pct"]
     contrib = report.get("contrib_pct")
+    if contrib is None:
+        contrib = pcts["contrib_pct"]
     return {
         "code": metric.code,
         "name": metric.name,
@@ -505,6 +587,10 @@ def _latest_subject_row(
     ).scalar_one_or_none()
 
 
+def _is_agent_payload(payload: Any) -> bool:
+    return isinstance(payload, dict) and payload.get("source") == "kpi_launch_agent"
+
+
 def _store_subject(
     db: Session,
     *,
@@ -525,6 +611,8 @@ def _store_subject(
         "period_to": date_to,
     }
     row = _subject_row(db, **lookup)
+    if row is not None and _is_agent_payload(row.payload) and not _is_agent_payload(payload):
+        return
     if row is None:
         db.add(
             PositionKpiSubjectFact(
@@ -571,7 +659,7 @@ def _latest_cache_row(
 
 def _from_cache(row: PositionKpiDailyFact | PositionKpiSubjectFact, *, stale: bool) -> dict[str, Any]:
     payload = dict(row.payload) if isinstance(row.payload, dict) else {}
-    return {**payload, "cached": True, "stale": stale}
+    return {**_hydrate_tiles(payload), "cached": True, "stale": stale}
 
 
 def _cached_snapshot(
@@ -636,7 +724,7 @@ def read_position_kpi_snapshot(
     department: str | None = None,
 ) -> dict[str, Any] | None:
     """Только кэш, без расчёта. None — снимка ещё нет."""
-    as_of = as_of or date.today()
+    as_of = as_of or msk_today()
     profile = resolve_profile(db, position, as_of=as_of, department=department)
     if profile is None:
         return None
@@ -670,7 +758,7 @@ def get_or_compute_position_kpi(
     department — подразделение сотрудника: у одной должности в разных подразделениях
     может быть своя методика.
     """
-    as_of = as_of or date.today()
+    as_of = as_of or msk_today()
     profile = resolve_profile(db, position, as_of=as_of, department=department)
     if profile is None:
         raise PositionKpiNotFound(str(position or "").strip())
@@ -684,6 +772,17 @@ def get_or_compute_position_kpi(
         if profile is None:
             raise PositionKpiNotFound(str(position or "").strip())
     key = subject_key(subject)
+    if refresh and key:
+        published = _subject_row(
+            db,
+            profile_id=profile.id,
+            subject=key,
+            day=as_of,
+            period_from=date_from,
+            period_to=date_to,
+        )
+        if published is not None and _is_agent_payload(published.payload):
+            return _from_cache(published, stale=False)
     if not refresh:
         cached = _cached_snapshot(
             db,
@@ -811,7 +910,7 @@ def refresh_all_profiles(
     date_to: date | None = None,
     force: bool = True,
 ) -> dict[str, Any]:
-    as_of = as_of or date.today()
+    as_of = as_of or msk_today()
     if date_from is None or date_to is None:
         date_from, date_to = month_bounds(as_of.year, as_of.month)
     computed: list[str] = []

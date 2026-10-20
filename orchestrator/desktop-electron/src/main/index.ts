@@ -72,7 +72,10 @@ function parseEnvFile(path: string): Record<string, string> {
   return out
 }
 
-const LOCAL_BACKEND = LOCAL_BACKEND_DEFAULT
+const LOCAL_BACKEND = (() => {
+  const fromEnv = (process.env.BACKEND_URL || '').trim().replace(/\/+$/, '')
+  return fromEnv && isLoopback(fromEnv) ? fromEnv : LOCAL_BACKEND_DEFAULT
+})()
 const LAN_BACKEND = 'http://192.168.1.157:7812'
 
 function preferLocalBackend(env: Record<string, string>): boolean {

@@ -7,8 +7,7 @@ import { StandardTabChrome } from './TabChromeGrid'
 import { DEFAULT_KPI_LAYOUT } from './useTabChromeLayout'
 import type { UserProfile } from '../../api/types'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
-import { SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
-import type { SpecSummaryTile } from '../../workplace/specV04Shell'
+import { SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import { SpecIconSearch } from '../../workplace/specV04Icons'
 import { setKpiExportSnapshot } from '../../workplace/kpiExportSnapshot'
 import {
@@ -19,8 +18,6 @@ import {
 import { useKpiPeriodSources } from '../../workplace/useKpiPeriodSources'
 import { useKpiWorkflowBoard } from '../../workplace/useKpiWorkflowBoard'
 import { useWorkplaceKpiDashboard } from '../../workplace/useWorkplaceKpiDashboard'
-import { agentMatchesKpiTile, toggleSimpleTile } from '../../workplace/tileFilters'
-import type { WorkplaceKpiCard } from '../../workplace/workplaceKpiTypes'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
 import { useKpiProtection, writeKpiUnlock } from '../../workplace/kpiProtection'
@@ -30,17 +27,10 @@ import { kpiPageTone, overallKpiPercent, useKpiPageTone } from '../../workplace/
 import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel, KpiMethodOffer } from './KpiEmployeePanel'
 import { KpiMetricCodeModal } from './KpiMetricCodeModal'
+import { KpiDailyRunPanel, KpiDailyWaitingTile } from './KpiDailyRunPanel'
+import { sameAgentTitle, useKpiDailyRun } from './useKpiDailyRun'
 import './kpiGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
-
-const LOADING_TILES: SpecSummaryTile[] = [
-  { id: 'tasks', label: 'Выполнение задач', value: '—', tone: 'orange' },
-  { id: 'sla', label: 'SLA', value: '—', tone: 'blue' },
-  { id: 'load', label: 'Загрузка', value: '—', tone: 'purple' },
-  { id: 'ai', label: 'Эффективность ИИ', value: '—', tone: 'green' },
-  { id: 'auto', label: 'Доля автоматизации', value: '—', tone: 'yellow' },
-  { id: 'quality', label: 'Качество', value: '—', tone: 'lilac' }
-]
 
 /** Форма премирования — помесячная: период внутри одного месяца расширяем до всего месяца. */
 function bonusMonth(from: string, to: string): { from: string; to: string } {
@@ -53,25 +43,8 @@ function bonusMonth(from: string, to: string): { from: string; to: string } {
   return { from: `${year}-${mm}-01`, to: `${year}-${mm}-${String(last).padStart(2, '0')}` }
 }
 
-function cardsToTiles(cards: WorkplaceKpiCard[]): SpecSummaryTile[] {
-  return cards.map((card) => ({
-    id: card.id,
-    label: card.label,
-    value: card.displayValue,
-    hint: card.trend ?? undefined,
-    tone: (card.tone as SpecSummaryTile['tone']) || 'blue',
-    progress: card.progress ?? undefined,
-    ring: card.ring !== false && card.progress != null
-  }))
-}
-
 const KPI_GENERATOR_PLATFORM_ID = 'f856136c-d75a-493b-8814-99bf6b06d721'
 const KPI_GENERATOR_TITLE = 'генератор модулей kpi'
-
-function sameAgentTitle(title: string): boolean {
-  return title.trim().toLowerCase().replace(/ё/g, 'е') === KPI_GENERATOR_TITLE
-}
-
 function kpiGeneratorTask(position: string, department: string): string {
   const place = department ? `, подразделение «${department}»` : ''
   return (
@@ -86,6 +59,7 @@ export function KpiGridTab(_props: {
   onOpenProcesses?: () => void
   onOpenDecisions?: () => void
   onRunAgent?: (workflowId: string, title: string, message: string) => void
+  onOpenRun?: (workflowId: string, title: string) => void
 }): React.JSX.Element {
   const { from, to } = useWorkplacePeriod()
   const selfFio = (_props.user?.fio || '').trim()
@@ -96,7 +70,6 @@ export function KpiGridTab(_props: {
   const [formBusy, setFormBusy] = useState(false)
   const [formNote, setFormNote] = useState('')
   const [agentQuery, setAgentQuery] = useState('')
-  const [tileFilter, setTileFilter] = useState('all')
   const protection = useKpiProtection(_props.user?.id || '')
   const [gateDismissed, setGateDismissed] = useState(false)
   const [gateOpen, setGateOpen] = useState(false)
@@ -111,6 +84,7 @@ export function KpiGridTab(_props: {
   const [buildingMethod, setBuildingMethod] = useState(false)
   const [launchingGenerator, setLaunchingGenerator] = useState(false)
   const [launchError, setLaunchError] = useState('')
+  const dailyRun = useKpiDailyRun(_props.user, positionKpi.reload)
   const [codeFor, setCodeFor] = useState('')
   const tilesRef = useRef<HTMLDivElement>(null)
   const overallPct = overallKpiPercent(positionKpi.snap)
@@ -137,13 +111,13 @@ export function KpiGridTab(_props: {
     setLaunchError('')
     setLaunchingGenerator(true)
     try {
-      const fromBoard = workflowBoard.agents.find((item) => sameAgentTitle(item.title))
+      const fromBoard = workflowBoard.agents.find((item) => sameAgentTitle(item.title, KPI_GENERATOR_TITLE))
       let workflowId = ''
       let title = 'Генератор модулей KPI'
       if (fromBoard?.id) {
         const record = await api.getWorkflow(fromBoard.id).catch(() => null)
         const notes = record?.notes || ''
-        if (!record || notes.includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title)) {
+        if (!record || notes.includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title, KPI_GENERATOR_TITLE)) {
           workflowId = fromBoard.id
           title = record?.title || fromBoard.title || title
         }
@@ -151,11 +125,11 @@ export function KpiGridTab(_props: {
       if (!workflowId) {
         const rows = await api.listWorkflows()
         const candidates = rows.filter(
-          (item) => item.phase === 'done' && (sameAgentTitle(item.title) || item.title.toLowerCase().includes('генератор модулей'))
+          (item) => item.phase === 'done' && (sameAgentTitle(item.title, KPI_GENERATOR_TITLE) || item.title.toLowerCase().includes('генератор модулей'))
         )
         for (const item of candidates) {
           const record = await api.getWorkflow(item.id)
-          if ((record.notes || '').includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title)) {
+          if ((record.notes || '').includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title, KPI_GENERATOR_TITLE)) {
             workflowId = record.id
             title = record.title || item.title
             break
@@ -180,27 +154,27 @@ export function KpiGridTab(_props: {
     }
   }
 
+  const downloadDailyReport = async (): Promise<void> => {
+    const month = (dailyRun.today?.day || '').slice(0, 7)
+    const result = await api.downloadKpiTodayReport(selfFio, month)
+    if (!result.ok && !result.canceled) {
+      setFormNote(result.error || 'Не удалось скачать отчёт ИЦПП')
+    }
+  }
+
   const dashboard = useMemo(
     () => mergeEmployeeKpiAndZones(data, periodSources, from, to, workflowBoard),
     [data, periodSources, from, to, workflowBoard]
   )
 
-  const tiles = useMemo(() => {
-    if (dashboard?.cards.length) return cardsToTiles(dashboard.cards)
-    if (loading) return LOADING_TILES
-    return []
-  }, [dashboard, loading])
-
   const agents = useMemo(() => {
     const rows = dashboard?.agents ?? []
-    const byTile =
-      tileFilter === 'all' ? rows : rows.filter((row) => agentMatchesKpiTile(row, tileFilter))
     const q = agentQuery.trim().toLowerCase()
-    if (!q) return byTile
-    return byTile.filter((row) =>
+    if (!q) return rows
+    return rows.filter((row) =>
       [row.name, row.code, row.process, row.status].some((value) => value.toLowerCase().includes(q))
     )
-  }, [dashboard, agentQuery, tileFilter])
+  }, [dashboard, agentQuery])
   const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
     () =>
       agents.map((row) => ({
@@ -373,9 +347,21 @@ export function KpiGridTab(_props: {
               error={launchError}
               onCalculate={() => void launchGenerator()}
             />
+            <KpiDailyRunPanel
+              daily={dailyRun}
+              onDownloadReport={() => void downloadDailyReport()}
+              onOpenChat={_props.onOpenRun ? () => _props.onOpenRun?.(dailyRun.workflowId, dailyRun.title) : undefined}
+            />
             <div className="kpi-two-tier-tiles" ref={tilesRef}>
             <KpiEmployeePanel
               variant="bar"
+              leadTile={
+                dailyRun.phase === 'waiting' ? (
+                  <KpiDailyWaitingTile
+                    day={dailyRun.today?.day ? dailyRun.today.day.split('-').reverse().join('.') : 'сегодня'}
+                  />
+                ) : null
+              }
               metrics={positionKpi.metrics}
               compensation={positionCompensation.compensation}
               compensationLoading={positionCompensation.loading}
@@ -389,12 +375,6 @@ export function KpiGridTab(_props: {
               methodology={positionKpi.methodology}
               onCalculate={() => void launchGenerator()}
               onInfo={(code) => setCodeFor(code)}
-            />
-            <SpecSummaryTiles
-              tiles={tiles}
-              activeId={tileFilter === 'all' ? null : tileFilter}
-              onSelect={(id) => setTileFilter((current) => toggleSimpleTile(current, id))}
-              className="kpi-agent-top-tiles"
             />
             </div>
           </div>
@@ -457,9 +437,6 @@ export function KpiGridTab(_props: {
               document.body
             )
           : null}
-        {!tiles.length && loading ? (
-          <p className="kpi-dash-status-banner">Загружаем показатели…</p>
-        ) : null}
         {notice ? <p className="kpi-dash-status-banner">{notice}</p> : null}
         {formNote && !formOpen ? (
           <p className={`kpi-dash-status-banner${formNote.includes('сохранена') ? '' : ' error'}`}>{formNote}</p>
@@ -555,11 +532,7 @@ export function KpiGridTab(_props: {
                 {!loading && !agents.length ? (
                   <tr>
                     <td colSpan={7} className="spec-v04-empty">
-                      {agentQuery.trim()
-                        ? 'Нет агентов по поиску'
-                        : tileFilter !== 'all'
-                          ? 'Нет агентов по выбранной плитке'
-                          : 'Нет данных за период'}
+                      {agentQuery.trim() ? 'Нет агентов по поиску' : 'Нет данных за период'}
                     </td>
                   </tr>
                 ) : null}

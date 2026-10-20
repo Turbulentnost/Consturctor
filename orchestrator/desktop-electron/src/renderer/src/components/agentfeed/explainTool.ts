@@ -499,6 +499,8 @@ function byKnownName(name: string, args: Record<string, unknown>): ToolExplanati
   const catalog: Record<string, [string, string, string, string?]> = {
     'onec.odata_get': ['Чтение 1С', 'прочитать данные из 1С', 'Читает данные 1С'],
     'onec.odata_catalog': ['Каталог 1С', 'посмотреть список сущностей 1С', 'Смотрит каталог 1С'],
+    'onec.position_holders': ['Кто на должности', 'узнать ФИО людей на должности', 'Читает, кто сейчас на должности'],
+    'kpi.publish_position_result': ['Выгрузка KPI', 'сохранить расчёт и отчёт на сервере', 'Выгружает расчёт KPI на сервер'],
     'onec.search_documents': ['Поиск документов', 'найти документы в 1С', 'Ищет документы в 1С'],
     'onec.get_document_card': ['Карточка документа', 'открыть карточку документа 1С', 'Открывает документ 1С'],
     'onec.search_tasks': ['Поиск задач', 'найти задачи в 1С', 'Ищет задачи в 1С'],

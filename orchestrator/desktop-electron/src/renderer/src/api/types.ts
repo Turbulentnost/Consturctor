@@ -753,6 +753,45 @@ export interface PositionKpiMethodology {
   }>
 }
 
+export type KpiTodayRunStatus =
+  | 'ready'
+  | 'running_here'
+  | 'running_elsewhere'
+  | 'missing'
+  | 'failed'
+  | 'no_modules'
+  | 'no_profile'
+
+export interface KpiRunProfile {
+  profileId: string
+  position: string
+  department: string
+}
+
+export interface KpiTodayRun {
+  status: KpiTodayRunStatus
+  day: string
+  fio: string
+  profile: KpiRunProfile | null
+  reportAvailable: boolean
+  ownFacts: boolean
+  run: {
+    status: string
+    claimedByUserId: string
+    claimedAt: string
+    finishedAt: string
+    error: string
+  } | null
+}
+
+export interface KpiRunClaim {
+  granted: boolean
+  scope: 'own' | 'others'
+  day: string
+  profiles: KpiRunProfile[]
+  reason: string
+}
+
 export interface PositionKpiSalaryPoint {
   effectiveFrom: string
   salary: number | null

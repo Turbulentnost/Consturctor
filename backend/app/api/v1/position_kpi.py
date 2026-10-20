@@ -30,6 +30,7 @@ from app.services.position_kpi.daily import (
     resolve_profile,
     schedule_today_fill,
 )
+from app.services.position_kpi.daily_run import DailyRunError, claim, own_report, today_status
 from app.services.position_kpi import pin as kpi_pin
 from app.services.position_kpi import protection as kpi_protection
 from app.services.position_kpi.explain import PositionKpiMetricNotFound, explain_metric
@@ -386,6 +387,63 @@ def probe_data_source(
         "rows": rows[:limit],
         "warnings": check["warnings"],
     }
+
+
+class _ClaimIn(BaseModel):
+    scope: str = "own"
+    retry_failed: bool = False
+
+
+@router.get("/today-run")
+def read_today_run(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Есть ли сегодня расчёт и отчёт агента по должности пользователя."""
+    return today_status(db, auth)
+
+
+@router.post("/today-run/claim")
+def claim_today_run(
+    body: _ClaimIn,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Взять должности на сегодняшний расчёт, чтобы другой компьютер их не считал."""
+    try:
+        return claim(db, auth, body.scope, retry_failed=body.retry_failed)
+    except DailyRunError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get("/today-run/report")
+def download_today_report(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Отчёт ИЦПП, собранный агентом. Если его нет — форма из плиток."""
+    row = own_report(db, auth)
+    if row is not None:
+        content, filename = row.content, row.filename or "icpp.xlsx"
+    else:
+        try:
+            content, filename = render_bonus_form(
+                db,
+                fio=(auth.fio or "").strip(),
+                position=(auth.position or "").strip(),
+                date_from=None,
+                date_to=None,
+            )
+        except ReportSubjectError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        except PositionKpiNotFound:
+            raise HTTPException(status_code=404, detail="Для должности нет каталога KPI") from None
+    encoded = quote(filename)
+    return Response(
+        content=content,
+        media_type=_XLSX,
+        headers={"Content-Disposition": f"attachment; filename=\"icpp.xlsx\"; filename*=UTF-8''{encoded}"},
+    )
 
 
 @router.get("/metrics/{code}")
