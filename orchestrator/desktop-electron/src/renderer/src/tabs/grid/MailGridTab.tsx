@@ -450,9 +450,8 @@ export function MailGridTab({
                           : 'Нет писем по выбранной плитке'
                         : mailListEmptyHint({
                             loading: data.mailLoading,
-                            imapPrimary: data.mailImapPrimary,
-                            mailbox: data.outlookMailbox,
-                            imapStatus: data.mailImapStatus,
+                            mailbox: data.mailMailbox,
+                            error: data.mailComError,
                             periodFrom,
                             periodTo
                           })}

@@ -32,11 +32,13 @@ export function TaskSourceActionsPanel({
   const [feedbackIsError, setFeedbackIsError] = useState(false)
   const [pending, setPending] = useState<DocflowActionSpec | null>(null)
   const [comment, setComment] = useState('')
+  const [due, setDue] = useState('')
   const rowId = ctx?.rowId || ''
 
   useEffect(() => {
     setPending(null)
     setComment('')
+    setDue('')
     setFeedback('')
     setFeedbackIsError(false)
   }, [rowId])
@@ -68,11 +70,12 @@ export function TaskSourceActionsPanel({
   if (ctx.kind === 'docflow') {
     const kind = docflowKindOfContext(ctx)
     const buttons = docflowActionButtons(ctx)
-    const submitAction = (btn: DocflowActionSpec, note = ''): void => {
-      void run(btn.label, () => runDocflowAction(user, ctx, btn.id, note), true).then((ok) => {
+    const submitAction = (btn: DocflowActionSpec, note = '', nextDue = ''): void => {
+      void run(btn.label, () => runDocflowAction(user, ctx, btn.id, note, nextDue), true).then((ok) => {
         if (!ok) return
         setPending(null)
         setComment('')
+        setDue('')
       })
     }
     return (
@@ -92,15 +95,30 @@ export function TaskSourceActionsPanel({
               rows={3}
               value={comment}
               disabled={Boolean(busy)}
-              placeholder="1С не примет этот результат без комментария"
+              placeholder={
+                pending.id === 'return'
+                  ? 'Почему задача возвращена на доработку'
+                  : '1С не примет этот результат без комментария'
+              }
               onChange={(event) => setComment(event.target.value)}
             />
+            {pending.needsDue ? (
+              <label>
+                Новый срок
+                <input
+                  type="date"
+                  value={due}
+                  disabled={Boolean(busy)}
+                  onChange={(event) => setDue(event.target.value)}
+                />
+              </label>
+            ) : null}
             <div className="task-source-actions-grid">
               <button
                 type="button"
                 className={pending.tone === 'danger' ? 'spec-btn-danger' : 'spec-btn-launch'}
-                disabled={Boolean(busy) || !comment.trim()}
-                onClick={() => submitAction(pending, comment)}
+                disabled={Boolean(busy) || !comment.trim() || (Boolean(pending.needsDue) && !due)}
+                onClick={() => submitAction(pending, comment, due)}
               >
                 {busy === pending.label ? 'Отправляем…' : pending.label}
               </button>
@@ -111,6 +129,7 @@ export function TaskSourceActionsPanel({
                 onClick={() => {
                   setPending(null)
                   setComment('')
+                  setDue('')
                 }}
               >
                 Отмена

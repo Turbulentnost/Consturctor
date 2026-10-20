@@ -19,6 +19,16 @@ def test_is_artifact_close_agent() -> None:
     assert not is_artifact_close_agent("Подготовка заседаний Ревизионной комиссии")
 
 
+def test_closure_check_agent_keeps_its_own_playbook() -> None:
+    title = "Проверка поручений к закрытию"
+    notes = "…выдать отчёт Word «Проверка артефактов по незакрытым поручениям АСТ00»."
+    assert not is_artifact_close_agent(title, notes)
+    own = {"playbook": {"instructions": "Вывод по каждому мероприятию"}, "tools": ["onec.erp_assignments"]}
+    local = apply_meeting_agent_config(own, title=title, notes=notes)
+    assert local["playbook"]["instructions"] == "Вывод по каждому мероприятию"
+    assert "playbook_draft" not in local
+
+
 def test_rk_path_in_notes_does_not_steal_artifact_agent() -> None:
     title = "Проверка артефактов и предложение поручений к закрытию"
     notes = r"\\192.168.1.198\Files\24.Ревизионная комиссия\Отдел\10. Секретарь РК"

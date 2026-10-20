@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -38,6 +39,7 @@ from app.services.triggers.service import (
     mark_fired,
     mark_skipped,
     command_payload,
+    runs_on_server,
     workflow_has_started_run,
 )
 from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
@@ -57,6 +59,10 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
     now = datetime.now(timezone.utc)
     if due is not None and due > now + timedelta(seconds=5):
         return {"ok": False, "reason": "not_due"}
+    if runs_on_server(workflow):
+        started = _start_on_server(db, row, workflow)
+        if started is not None:
+            return started
     presence = presence_status(row.owner_user_id, client="orchestrator")
     desktop_here = hub.is_online(row.owner_user_id, client="orchestrator")
     if presence != "online" and desktop_here:
@@ -233,6 +239,113 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
             )
         clear_tool_context()
         tool_bridge.unregister_run(run_id)
+
+
+_STALE_STARTED_RUN = timedelta(hours=4)
+
+
+def _fresh_started_run(db: Session, workflow_id: str) -> bool:
+    """A started run younger than the longest server run; older ones are crashed leftovers."""
+    from sqlalchemy import select
+
+    from app.models.agent_run import AgentRun
+
+    since = datetime.now(timezone.utc) - _STALE_STARTED_RUN
+    return (
+        db.execute(
+            select(AgentRun.id)
+            .where(
+                AgentRun.workflow_id == workflow_id,
+                AgentRun.status == "started",
+                AgentRun.started_at >= since,
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def _start_on_server(db: Session, row: AgentTrigger, workflow: Workflow) -> dict[str, Any] | None:
+    """Run the agent on this backend. None: this backend cannot, use the desktop path."""
+    from app.services.triggers import headless
+
+    reason = headless.unavailable_reason()
+    if reason:
+        logger.warning("Trigger %s: server run unavailable (%s), using desktop", row.id, reason)
+        return None
+    if headless.is_running(row.workflow_id) or _fresh_started_run(db, row.workflow_id):
+        cancel_overlapping_slot(
+            db,
+            user_id=row.owner_user_id,
+            trigger_id=row.id,
+            answer=OVERLAP_CANCEL_ANSWER,
+        )
+        logger.info("Scheduled trigger %s canceled: agent already running", row.id)
+        return {"ok": False, "reason": "already_running"}
+    if (row.condition_text or "").strip():
+        logger.warning("Trigger %s has a condition: server runs only plain schedules", row.id)
+        return None
+    title = (workflow.title or "").strip() or "агент"
+    message = (row.message or "").strip() or (
+        f"Выполни рабочую задачу агента «{title}» по правилам из его плана и покажи понятный результат."
+    )
+    job = {
+        "user_id": row.owner_user_id,
+        "workflow_id": row.workflow_id,
+        "message": message,
+        "trigger_id": row.id,
+        "evidence": row.last_evidence or "",
+        "title": title,
+    }
+    mark_fired(db, user_id=row.owner_user_id, trigger_id=row.id, evidence="запущен на сервере")
+    threading.Thread(
+        target=_server_job,
+        kwargs=job,
+        name=f"server-run-{row.workflow_id[:8]}",
+        daemon=True,
+    ).start()
+    logger.info("Scheduled trigger %s started on server user=%s", row.id, row.owner_user_id)
+    return {"ok": True, "trigger_id": row.id, "dispatched": "server"}
+
+
+def _server_job(
+    *,
+    user_id: str,
+    workflow_id: str,
+    message: str,
+    trigger_id: str,
+    evidence: str,
+    title: str,
+) -> None:
+    from app.db.session import SessionLocal
+    from app.services.triggers import headless
+
+    try:
+        headless.run_headless(
+            user_id=user_id,
+            workflow_id=workflow_id,
+            message=message,
+            trigger_id=trigger_id,
+            evidence=evidence,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Server run failed trigger=%s", trigger_id)
+        db = SessionLocal()
+        try:
+            create_notification(
+                db,
+                sender_user_id=user_id,
+                payload=NotificationCreate(
+                    recipient_user_id=user_id,
+                    title="Плановый запуск не удался",
+                    body=f"Агент «{title}» на сервере: {exc}",
+                    workflow_id=workflow_id,
+                ),
+            )
+        except NotificationError as note_exc:
+            logger.warning("Could not store server run failure user=%s: %s", user_id, note_exc)
+        finally:
+            db.close()
 
 
 def _notify_skipped_run(db: Session, *, user_id: str, workflow_id: str, agent_title: str) -> None:

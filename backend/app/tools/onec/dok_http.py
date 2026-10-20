@@ -17,6 +17,11 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.tools.onec.v8_internal_format import (
+    array_of_strings_to_internal,
+    from_internal_string,
+    structure_to_internal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,59 +182,198 @@ def patch_task_deadline(process_uid: str, due: datetime, *, method: str = "PATCH
     return text
 
 
-def _http_post_json(url: str, *, auth: tuple[str, str], body: dict[str, Any]) -> Any:
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    timeout = max(15.0, float(settings.odata_timeout_sec or 60))
-    with httpx.Client(timeout=timeout, auth=auth) as client:
-        response = client.post(url, json=body, headers=headers)
+class TaskActionNotPublished(RuntimeError):
+    """HTTP-метод TaskAction в базе ДО ещё не опубликован."""
+
+
+_TASK_ACTION_TIMEOUT_SEC = 25.0
+
+_SUMMARY_KEYS = (
+    "summary",
+    "message",
+    "text",
+    "Описание",
+    "ОписаниеРезультата",
+    "Description",
+)
+
+
+def _flag(payload: dict[str, Any], *keys: str) -> bool | None:
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "да"}
+        return bool(value)
+    return None
+
+
+def parse_task_action_response(payload: Any, *, raw_text: str = "") -> dict[str, Any]:
+    """Ответ TaskAction: ok, closed, needs_form и текст для человека как есть."""
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "closed": False,
+            "needs_form": False,
+            "summary": (raw_text or "").strip(),
+        }
+    ok = _flag(payload, "ok", "Ok", "Успех")
+    closed = _flag(payload, "closed", "Closed", "Закрыта")
+    needs_form = _flag(payload, "needs_form", "needsForm", "НужнаФорма")
+    summary = ""
+    for key in _SUMMARY_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            summary = value.strip()
+            break
+    if closed is None:
+        closed = bool(ok)
+    if ok is None:
+        ok = bool(closed)
+    return {
+        "ok": bool(ok),
+        "closed": bool(closed),
+        "needs_form": bool(needs_form),
+        "summary": summary,
+    }
+
+
+def post_task_action(
+    task_id: str,
+    button: int,
+    *,
+    comment: str = "",
+    actual_performer: str = "",
+    auth: tuple[str, str] | None = None,
+) -> dict[str, Any]:
+    """POST /hs/dterp/TaskAction — та же процедура, что кнопки формы 1С.
+
+    Тело — структура ЗначениеВСтрокуВнутр: task_id, button (1..3), comment, actual_performer.
+    404 означает, что метод ещё не опубликован: вызывающий не должен
+    закрывать задачу отметкой SOAP.
+    """
+    credentials = auth or _resolve_auth()
+    base = dok_http_base_url()
+    uid = (task_id or "").strip()
+    if not base:
+        raise RuntimeError("HTTP документооборота не настроен (DOK_HTTP_*)")
+    if not credentials:
+        raise RuntimeError("Нужны учётные данные сеанса 1С для базы документооборота")
+    if not uid:
+        raise RuntimeError("Не указан UID задачи")
+    point = int(button)
+    if point not in {1, 2, 3}:
+        raise RuntimeError(f"Номер кнопки точки маршрута должен быть 1, 2 или 3, получено: {button}")
+    fields: dict[str, Any] = {"task_id": uid, "button": point, "comment": comment or ""}
+    performer = (actual_performer or "").strip()
+    if performer:
+        fields["actual_performer"] = performer
+    # Модуль ТД_ПередачаДанныхВERP читает тело через ЗначениеИзСтрокиВнутр, не как JSON.
+    body = structure_to_internal(fields)
+    url = f"{base}/TaskAction"
+    headers = {"Accept": "*/*", "Content-Type": "text/plain;charset=UTF-8"}
+    with httpx.Client(timeout=_TASK_ACTION_TIMEOUT_SEC, auth=credentials) as client:
+        response = client.post(url, content=body.encode("utf-8"), headers=headers)
+    text = (response.text or "").strip()
+    logger.info(
+        "TaskAction UID=%s button=%s HTTP %s body=%s",
+        uid,
+        point,
+        response.status_code,
+        text[:500].replace("\n", " ") or "<empty>",
+    )
+    # Без шаблона TaskAction запрос попадает в общий обработчик dterp,
+    # который разбирает тело через ЗначениеИзСтрокиВнутр и падает с 500.
+    if response.status_code == 404 or (
+        response.status_code == 500 and "ЗначениеИзСтрокиВнутр" in text
+    ):
+        raise TaskActionNotPublished("Метод TaskAction не опубликован в базе документооборота")
+    if response.status_code in {401, 403}:
+        raise RuntimeError(f"HTTP {response.status_code}: документооборот отклонил учётку")
+    if response.status_code >= 400:
+        raise RuntimeError(f"HTTP {response.status_code}: {text[:200] or response.reason_phrase}")
+    if not text:
+        return parse_task_action_response({})
+    stripped = text.lstrip("\ufeff").strip()
+    if stripped.startswith('{"#'):
+        parsed = from_internal_string(stripped)
+        if isinstance(parsed, dict):
+            return parse_task_action_response(parsed, raw_text=text)
+    try:
+        payload = response.json()
+    except json.JSONDecodeError:
+        return parse_task_action_response(None, raw_text=text)
+    return parse_task_action_response(payload, raw_text=text)
+
+
+def _decode_tasksii_response(response: httpx.Response) -> Any:
+    """JSON или ЗначениеВСтрокуВнутр. Служба ДО отвечает таблицей, не JSON."""
     if response.status_code in {401, 403}:
         raise RuntimeError(f"HTTP {response.status_code}: документооборот отклонил учётку")
     if response.status_code >= 400:
         snippet = response.text[:200].strip()
         raise RuntimeError(f"HTTP {response.status_code}: {snippet or response.reason_phrase}")
-    try:
-        return response.json()
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("HTTP TasksII: ответ не JSON") from exc
+    text = (response.text or "").strip()
+    if not text:
+        return []
+    if text[0] in "[{":
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            pass
+    parsed = from_internal_string(text)
+    return parsed if isinstance(parsed, list) else []
+
+
+def _tasksii_rows(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    return _parse_tasksii_payload(payload)
 
 
 def fetch_user_document_executions(user_ref: str, *, user_fio: str = "") -> list[dict[str, Any]]:
-    """Строки TasksII/User для пользователя (GUID или ФИО в UserRef)."""
+    """Строки TasksII/User. Тело POST — структура {Пользователь}, как ждёт ЗначениеИзСтрокиВнутр."""
     auth = _resolve_auth()
     base = dok_http_base_url()
     ref = (user_ref or user_fio or "").strip()
     if not base or not auth or not ref:
         return []
 
-    attempts: list[tuple[str, str, dict[str, Any] | None, dict[str, Any] | None]] = [
-        ("GET", f"{base}/TasksII/User", {"UserRef": ref, "UserID": ref}, None),
-        ("GET", f"{base}/TasksII/User", {"UserRef": ref}, None),
-    ]
-    if user_fio.strip() and user_fio.strip() != ref:
-        attempts.append(
-            ("GET", f"{base}/TasksII/User", {"UserRef": user_fio.strip(), "UserID": ref}, None)
-        )
-    attempts.extend(
-        [
-            ("GET", f"{base}/TasksII/User/{ref}", None, None),
-            (
-                "POST",
-                f"{base}/TasksII/User",
-                None,
-                {"UserRef": ref, "UserID": ref, "Ref_Key": ref},
-            ),
-        ]
-    )
+    url = f"{base}/TasksII/User"
+    bodies = [structure_to_internal({"Пользователь": ref})]
+    fio = user_fio.strip()
+    if fio and fio != ref:
+        bodies.append(structure_to_internal({"Пользователь": fio}))
+    bodies.append(array_of_strings_to_internal([ref]))
 
-    for method, url, params, body in attempts:
-        try:
-            if method == "GET":
-                payload = _http_get_json(url, auth=auth, params=params)
-            else:
-                payload = _http_post_json(url, auth=auth, body=body or {})
-        except (httpx.HTTPError, RuntimeError, json.JSONDecodeError):
-            continue
-        rows = _parse_tasksii_payload(payload)
-        if rows:
-            return rows
+    gets: list[tuple[str, dict[str, Any] | None]] = [
+        (url, {"UserRef": ref, "UserID": ref}),
+        (url, {"UserRef": ref}),
+        (f"{url}/{ref}", None),
+    ]
+    if fio and fio != ref:
+        gets.append((url, {"UserRef": fio, "UserID": ref}))
+
+    timeout = max(15.0, float(settings.odata_timeout_sec or 60))
+    headers_post = {"Accept": "*/*", "Content-Type": "text/plain;charset=UTF-8"}
+    headers_get = {"Accept": "*/*"}
+    with httpx.Client(timeout=timeout, auth=auth) as client:
+        for body in bodies:
+            try:
+                response = client.post(url, content=body.encode("utf-8"), headers=headers_post)
+                rows = _tasksii_rows(_decode_tasksii_response(response))
+            except (httpx.HTTPError, RuntimeError, json.JSONDecodeError) as exc:
+                logger.info("TasksII POST skipped: %s", str(exc)[:200])
+                continue
+            if rows:
+                return rows
+        for get_url, params in gets:
+            try:
+                response = client.get(get_url, params=params, headers=headers_get)
+                rows = _tasksii_rows(_decode_tasksii_response(response))
+            except (httpx.HTTPError, RuntimeError, json.JSONDecodeError):
+                continue
+            if rows:
+                return rows
     return []

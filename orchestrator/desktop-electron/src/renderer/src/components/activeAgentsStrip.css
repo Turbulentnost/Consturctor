@@ -1,0 +1,218 @@
+.agents-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px 0;
+  min-width: 0;
+}
+
+.agents-strip-card {
+  flex: 0 1 920px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 8px 7px 14px;
+  border: 1px solid rgba(8, 105, 232, 0.22);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(9, 44, 87, 0.08);
+  color: var(--main-text);
+}
+
+.agents-strip-card.asking {
+  border-color: rgba(217, 119, 6, 0.55);
+  background: #fff8eb;
+  box-shadow: 0 4px 16px rgba(217, 119, 6, 0.18);
+}
+
+.agents-strip-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--nav-active-bg);
+  animation: agents-strip-pulse 1.6s ease-in-out infinite;
+}
+
+.agents-strip-card.asking .agents-strip-dot {
+  background: #d97706;
+}
+
+@keyframes agents-strip-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(8, 105, 232, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(8, 105, 232, 0);
+  }
+}
+
+.agents-strip-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.agents-strip-text strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.agents-strip-text span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--content-muted);
+}
+
+.agents-strip-card.asking .agents-strip-text span {
+  color: #92400e;
+}
+
+.agents-strip-text em {
+  font-style: normal;
+  opacity: 0.8;
+}
+
+.agents-strip-count {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--content-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.agents-strip-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agents-strip-actions button {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.agents-strip-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.agents-strip-go,
+.agents-strip-allow {
+  background: var(--nav-active-bg);
+  color: #fff;
+}
+
+.agents-strip-allow {
+  background: #0b2f63;
+}
+
+.agents-strip-deny {
+  background: #fff;
+  border-color: rgba(16, 20, 26, 0.18) !important;
+  color: var(--main-text);
+}
+
+.agents-strip-link {
+  background: transparent;
+  color: var(--nav-active-text);
+}
+
+.agents-strip-hide {
+  width: 28px;
+  padding: 0 !important;
+  background: transparent;
+  color: var(--content-muted);
+  font-size: 14px !important;
+}
+
+.agents-strip-hide:hover,
+.agents-strip-link:hover {
+  background: rgba(8, 105, 232, 0.08);
+}
+
+.agents-strip-arrow {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--card-border);
+  background: #fff;
+  color: var(--main-text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(9, 44, 87, 0.08);
+}
+
+.agents-strip-arrow:hover {
+  background: rgba(8, 105, 232, 0.08);
+}
+
+.agents-strip-collapsed {
+  padding-top: 0;
+}
+
+.agents-strip-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 12px;
+  border: 1px solid rgba(8, 105, 232, 0.22);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  background: #fff;
+  color: var(--main-text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 3px 10px rgba(9, 44, 87, 0.08);
+}
+
+.agents-strip-tab .agents-strip-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.agents-strip-chevron {
+  color: var(--content-muted);
+  font-size: 10px;
+}
+
+/* Полоса — отдельная строка над сеткой вкладки: сетка ужимается, а не уезжает под неё. */
+.orch-grid-column {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.orch-grid-column > .orch-grid {
+  flex: 1 1 auto;
+  height: auto;
+  max-height: none;
+  min-height: 0;
+}

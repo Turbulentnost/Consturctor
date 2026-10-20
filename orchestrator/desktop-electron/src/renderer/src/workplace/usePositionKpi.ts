@@ -27,9 +27,15 @@ export function positionTilesToEmployeeMetrics(snap: PositionKpiDaily): Workplac
       trendUp: good,
       trendPositive: good || tile.score == null,
       footerText: tile.evidence,
-      sparklinePoints: [tile.score ?? tile.fact ?? 0],
+      sparklinePoints: tile.history.length
+        ? tile.history.map((point) => point.value)
+        : tile.fact != null
+          ? [tile.fact]
+          : [],
       sparklineColor: sparkColor(tile.score, tile.plan),
-      source: 'computed'
+      source: 'computed',
+      planValue: tile.plan,
+      weight: tile.weight
     }
   })
 }

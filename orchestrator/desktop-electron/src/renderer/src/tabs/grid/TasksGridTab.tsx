@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Archive, ChevronDown, ChevronRight } from 'lucide-react'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
@@ -11,11 +11,7 @@ import { taskActionContextFromTaskRow } from '../../workplace/taskSourceKind'
 import { runDocflowAction } from '../../workplace/taskSourceActions'
 import { formatSurnameInitials, isDocflowToMe } from '../../workplace/tileFilters'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
-import {
-  comPasswordSessionHint,
-  sessionOneCEmptyText,
-  userFacingOneCError
-} from '../../workplace/onecSessionHints'
+import { sessionOneCEmptyText, userFacingOneCError } from '../../workplace/onecSessionHints'
 import { isTechnicalTurboMessage } from '../../workplace/turboSession'
 import { buildTaskTiles, useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import {
@@ -42,10 +38,14 @@ import { deadlineInWorkplacePeriod } from '../../workplace/workplacePeriodFilter
 import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { NewOneCTaskMark } from '../../workplace/specV04Components'
 import {
+  DOCFLOW_GROUP_ORDER,
   DOCFLOW_KIND_LABEL,
   DOCFLOW_KIND_TONE,
+  docflowGroupKey,
+  docflowGroupLabel,
   docflowPrimaryAction,
   docflowTaskKind,
+  type DocflowGroupKey,
   type DocflowTaskKind
 } from '../../workplace/docflowTaskKind'
 import { isPlatformTaskMine, needsPlatformReview } from '../../workplace/platformTasks'
@@ -201,7 +201,6 @@ export function TasksGridTab({
   const hideExecuted = (id: string): void => {
     setExecutedIds((current) => new Set(current).add(id))
     setSelectedId('')
-    softRefresh()
   }
   const runRowAction = (row: (typeof taskRows)[number]): void => {
     const action = rowAction(row)
@@ -218,14 +217,22 @@ export function TasksGridTab({
       })
       .finally(() => setClosingId(''))
   }
-  const isAcquaintRow = (row: (typeof taskRows)[number]): boolean => {
-    const kind = kindOf(row)
-    return kind === 'acquaint' || kind === 'acquaint_result'
-  }
-  const mainRows = taskRows.filter((row) => !isAcquaintRow(row))
-  const acquaintRows = taskRows.filter(isAcquaintRow)
+  const groups = DOCFLOW_GROUP_ORDER.map((key) => ({
+    key,
+    rows: taskRows.filter((row) => docflowGroupKey(kindOf(row)) === key)
+  })).filter((group) => group.rows.length)
+  const acquaintRows = groups.find((group) => group.key === 'acquaint')?.rows ?? []
   const acquaintTargets = acquaintRows.filter((row) => rowAction(row)?.id === 'acquaint')
-  const [acquaintOpen, setAcquaintOpen] = useState(false)
+  // Ознакомление свёрнуто: его много и оно не требует работы, остальные разделы открыты.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<DocflowGroupKey>>(() => new Set(['acquaint']))
+  const toggleGroup = (key: DocflowGroupKey): void => {
+    setCollapsedGroups((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
   const [bulkProgress, setBulkProgress] = useState('')
   const acquaintAll = async (): Promise<void> => {
     const targets = [...acquaintTargets]
@@ -254,19 +261,17 @@ export function TasksGridTab({
         ? `Ознакомление отмечено: ${done} из ${targets.length}. Не прошло — ${failed.join('; ')}`
         : `Ознакомление отмечено по всем задачам: ${done}.`
     )
-    if (done) {
-      setSelectedId('')
-      softRefresh()
-    }
+    if (done) setSelectedId('')
   }
   const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
-  const visibleRows = useMemo(
-    () => taskRows.filter((row) => acquaintOpen || !isAcquaintRow(row)),
-    [taskRows, acquaintOpen]
-  )
-  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
-    () =>
-      visibleRows.map((row) => ({
+  const visibleRows = groups.flatMap((group) => (collapsedGroups.has(group.key) ? [] : group.rows))
+  // groups пересобирается на каждом рендере; по ключу из id поиск не перерегистрируется зря.
+  const visibleKey = visibleRows.map((row) => row.id).join('\n')
+  const globalSearchEntries = useMemo<GlobalSearchEntry[]>(() => {
+    const ids = new Set(visibleKey.split('\n'))
+    return taskRows
+      .filter((row) => ids.has(row.id))
+      .map((row) => ({
         id: `tasks:${row.id}`,
         source: 'grid:tasks',
         pageKey: 'tasks',
@@ -275,9 +280,8 @@ export function TasksGridTab({
         title: row.title,
         subtitle: [row.source, row.status, row.project].filter(Boolean).join(' · '),
         keywords: [row.process, row.author, row.performer, row.executor, row.deadline]
-      })),
-    [visibleRows]
-  )
+      }))
+  }, [visibleKey, taskRows])
   useRegisterGlobalSearch('grid:tasks', globalSearchEntries)
   const effectiveId = selectedId || visibleRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
@@ -460,11 +464,6 @@ export function TasksGridTab({
           {!soapBanner && !turboBanner && data.erpSecondaryHint ? (
             <p className="today-table-status today-table-banner">{data.erpSecondaryHint}</p>
           ) : null}
-          {!soapBanner && !turboBanner && !data.erpSecondaryHint && !data.erpLoading && !data.turboLoading && !taskRows.length ? (
-            <p className="today-table-status today-table-banner spec-v04-muted">
-              {comPasswordSessionHint()}
-            </p>
-          ) : null}
           {closeNote ? <p className="spec-v04-muted orch-process-close-note">{closeNote}</p> : null}
           <div className="tasks-table-toolbar">
             <button
@@ -505,36 +504,42 @@ export function TasksGridTab({
                   </td>
                 </tr>
               ) : null}
-              {mainRows.map(renderRow)}
-              {acquaintRows.length ? (
-                <tr className="spec-group-row" onClick={() => setAcquaintOpen((open) => !open)}>
-                  <td colSpan={9}>
-                    <div className="spec-group-head">
-                      <button type="button" className="spec-group-toggle" aria-expanded={acquaintOpen}>
-                        {acquaintOpen ? <ChevronDown size={16} aria-hidden /> : <ChevronRight size={16} aria-hidden />}
-                        Ознакомление
-                        <em>{acquaintRows.length}</em>
-                      </button>
-                      {acquaintTargets.length ? (
-                        <button
-                          type="button"
-                          className="spec-row-action"
-                          disabled={Boolean(bulkProgress) || Boolean(closingId)}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            void acquaintAll()
-                          }}
-                        >
-                          {bulkProgress
-                            ? `Ознакомление ${bulkProgress}…`
-                            : `Ознакомиться со всеми (${acquaintTargets.length})`}
-                        </button>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ) : null}
-              {acquaintOpen ? acquaintRows.map(renderRow) : null}
+              {groups.map((group) => {
+                const open = !collapsedGroups.has(group.key)
+                // Скопом закрывается только ознакомление: остальное требует решения по каждой задаче.
+                const bulkReady = group.key === 'acquaint' ? acquaintTargets.length : 0
+                return (
+                  <Fragment key={group.key}>
+                    <tr className="spec-group-row" onClick={() => toggleGroup(group.key)}>
+                      <td colSpan={9}>
+                        <div className="spec-group-head">
+                          <button type="button" className="spec-group-toggle" aria-expanded={open}>
+                            {open ? <ChevronDown size={16} aria-hidden /> : <ChevronRight size={16} aria-hidden />}
+                            {docflowGroupLabel(group.key)}
+                            <em>{group.rows.length}</em>
+                          </button>
+                          {bulkReady ? (
+                            <button
+                              type="button"
+                              className="spec-row-action"
+                              disabled={Boolean(bulkProgress) || Boolean(closingId)}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void acquaintAll()
+                              }}
+                            >
+                              {bulkProgress
+                                ? `Ознакомление ${bulkProgress}…`
+                                : `Ознакомиться со всеми (${bulkReady})`}
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                    {open ? group.rows.map(renderRow) : null}
+                  </Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>

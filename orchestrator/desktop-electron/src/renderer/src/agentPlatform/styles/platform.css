@@ -1,0 +1,683 @@
+.tt-root .platform {
+  padding-top: 14px;
+}
+.tt-root .platform-configs {
+  display: flex;
+  flex-direction: column;
+}
+.tt-root .platform-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.tt-root .platform-head h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.tt-root .platform-head p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.tt-root .platform-list {
+  margin: 0 -10px;
+  padding: 0;
+}
+.tt-root .platform-list .owner-agent.selected {
+  border-color: transparent;
+  background: var(--owner-selected);
+}
+.tt-root .platform-list .owner-agent.selected .owner-agent-icon {
+  background: var(--surface);
+  color: var(--text);
+}
+.tt-root .platform-empty strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.tt-root .platform-empty code, .tt-root .platform-path {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+}
+.tt-root .platform-path {
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.tt-root .platform-session {
+  padding: 14px 14px 12px;
+}
+.tt-root .platform-panes {
+  transition:
+    grid-template-columns 460ms cubic-bezier(0.22, 1, 0.36, 1),
+    gap 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tt-root .platform-panes.agent-open {
+  grid-template-columns: minmax(0, 0fr) minmax(0, 1fr);
+  gap: 0;
+}
+.tt-root .platform-configs {
+  transition:
+    opacity 260ms ease,
+    transform 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tt-root .platform-panes.agent-open .platform-configs {
+  opacity: 0;
+  transform: translateX(-32px);
+  pointer-events: none;
+}
+.tt-root .platform-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  animation: tt-platform-view-in 360ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tt-root .platform-config-view {
+  animation-name: tt-platform-view-back;
+}
+@keyframes tt-platform-view-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes tt-platform-view-back {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+}
+.tt-root .platform-target {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 14px 4px;
+}
+.tt-root .platform-target strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .send.platform-new {
+  width: 34px;
+  height: 34px;
+  background: var(--text);
+  color: var(--bg);
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+.tt-root .send.platform-new:disabled {
+  background: var(--send-disabled);
+  color: var(--text-faint);
+}
+.tt-root .platform-new:not(:disabled):hover {
+  opacity: 0.85;
+}
+.tt-root .platform-new:not(:disabled):active {
+  transform: scale(0.94);
+}
+.tt-root .platform-info {
+  position: relative;
+}
+.tt-root .platform-info-btn {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.tt-root .platform-info-btn:hover, .tt-root .platform-info-btn.on {
+  background: var(--hover);
+  color: var(--text);
+}
+.tt-root .platform-info-pop {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 8px);
+  right: -40px;
+  width: min(340px, 70vw);
+  padding: 14px 16px;
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(20px);
+  animation: tt-platform-pop-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tt-root .platform-info-pop p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.tt-root .platform-info-pop .platform-tags {
+  margin-top: 10px;
+}
+@keyframes tt-platform-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+.tt-root .platform-sessions {
+  margin-right: -4px;
+}
+.tt-root .session-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-faint) 14%, transparent);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.tt-root .session-badge.running {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+.tt-root .session-badge.running::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: tt-session-pulse 1.1s ease-in-out infinite;
+}
+.tt-root .session-badge.finished {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--ok);
+}
+.tt-root .session-badge.error {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+@keyframes tt-session-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+.tt-root .platform-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.tt-root .platform-tags span {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.tt-root .platform-editor {
+  display: flex;
+  flex: 1 1 220px;
+  flex-direction: column;
+  min-height: 180px;
+  max-height: 420px;
+  border: 1px solid var(--composer-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  transition: border-color 0.15s ease;
+}
+.tt-root .platform-editor:focus-within {
+  border-color: var(--text-faint);
+}
+.tt-root .platform-editor textarea {
+  flex: 1;
+  min-height: 0;
+  padding: 14px 16px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  resize: none;
+}
+.tt-root .platform-editor textarea::placeholder {
+  color: var(--text-faint);
+}
+.tt-root .platform-editor textarea:disabled {
+  cursor: not-allowed;
+}
+.tt-root .platform-editor-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px 8px 16px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.tt-root .platform-notice {
+  flex: none;
+  margin: 10px 4px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.tt-root .platform-notice.error {
+  color: var(--danger);
+}
+.tt-root .platform-sessions-head {
+  margin-top: 14px;
+}
+.tt-root .platform-sessions-empty {
+  padding: 0 4px;
+}
+.tt-root .shared-source {
+  flex: none;
+  margin: -4px 4px 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.tt-root .shared-source.error {
+  color: var(--danger);
+}
+.tt-root .shared-agents {
+  flex: 0 1 auto;
+  min-height: 52px;
+  max-height: 55%;
+  margin-right: -4px;
+}
+.tt-root .shared-agent-row {
+  gap: 8px;
+  padding: 4px 6px 4px 0;
+  cursor: default;
+}
+.tt-root .shared-agent-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 4px 0 4px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tt-root .shared-agent-run {
+  display: grid;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.tt-root .shared-agent-run:not(:disabled):hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.tt-root .shared-agent-row.menu-open {
+  background: var(--hover);
+}
+.tt-root .agent-menu {
+  padding: 5px;
+  border-radius: 12px;
+  animation: tt-agent-menu-in 0.12s ease-out;
+}
+.tt-root .agent-menu .picker-option {
+  padding: 7px 10px;
+  border-radius: 8px;
+  outline: none;
+}
+.tt-root .agent-menu .picker-option:focus-visible {
+  background: var(--hover);
+}
+.tt-root .agent-menu .picker-option:disabled {
+  color: var(--text-faint);
+  background: transparent;
+  cursor: default;
+}
+.tt-root .agent-menu .agent-menu-danger:not(:disabled) {
+  color: var(--danger);
+}
+.tt-root .agent-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+@keyframes tt-agent-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+.tt-root .agent-delete {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin: 2px 6px 8px 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  animation: tt-agent-delete-in 0.18s ease-out;
+}
+.tt-root .pagent > .agent-delete {
+  flex: none;
+  margin: -4px 4px 16px;
+}
+.tt-root .agent-delete p {
+  display: flex;
+  flex: 1 1 220px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.tt-root .agent-delete strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.tt-root .agent-delete span {
+  color: var(--text-muted);
+}
+.tt-root .agent-delete-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.tt-root .agent-delete-cancel, .tt-root .agent-delete-ok {
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.tt-root .agent-delete-cancel {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+}
+.tt-root .agent-delete-cancel:hover:not(:disabled) {
+  color: var(--text);
+}
+.tt-root .agent-delete-ok {
+  border: 0;
+  background: var(--danger);
+  color: #ffffff;
+}
+.tt-root .agent-delete-ok:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 88%, #000000);
+}
+.tt-root .agent-delete-cancel:disabled, .tt-root .agent-delete-ok:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+@keyframes tt-agent-delete-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.tt-root .owner-agent-icon.profiling, .tt-root .pagent-avatar.profiling {
+  animation: tt-agent-profiling 1.4s ease-in-out infinite;
+}
+@keyframes tt-agent-profiling {
+  50% {
+    opacity: 0.45;
+  }
+}
+.tt-root .pagent-bar {
+  display: grid;
+  flex: none;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 0 2px 16px;
+}
+.tt-root .pagent-bar .agent-back {
+  justify-self: start;
+}
+.tt-root .pagent-tabs .segment {
+  padding: 6px 18px;
+}
+.tt-root .pagent-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px 16px;
+}
+.tt-root .pagent-avatar {
+  display: grid;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  color: var(--text);
+}
+.tt-root .pagent-avatar svg {
+  display: block;
+}
+.tt-root .pagent-title {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.tt-root .pagent-title strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-root .pagent-title span {
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+.tt-root .pagent-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 0 4px 4px;
+  overflow-y: auto;
+  animation: tt-agent-part-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.tt-root .agent-passport {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tt-root .agent-passport-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+.tt-root .agent-passport-field:first-child {
+  grid-column: 1 / -1;
+}
+.tt-root .agent-passport-field-icon {
+  display: grid;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+.tt-root .agent-passport-field-icon svg {
+  display: block;
+}
+.tt-root .agent-passport-field > div {
+  min-width: 0;
+}
+.tt-root .agent-passport-label {
+  display: block;
+  margin: 1px 0 3px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.tt-root .agent-passport-field p {
+  margin: 0;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.tt-root .shared-agent-profile {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+.tt-root .shared-agent-profile.error {
+  color: var(--danger);
+}
+.tt-root .shared-agent-profile.pending span::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  content: '';
+  vertical-align: 1px;
+  animation: tt-agent-profiling 1.4s ease-in-out infinite;
+}
+.tt-root .shared-agent-profile-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tt-root .shared-agent-profile-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.tt-root .pagent-section h4 {
+  margin: 0 0 8px;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.tt-root .pagent-request {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.tt-root .pagent-plan {
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.tt-root .pagent-plan .md > :first-child {
+  margin-top: 0;
+}
+.tt-root .pagent-plan .md > :last-child {
+  margin-bottom: 0;
+}
+.tt-root .pagent-plan :is(h1, h2, h3, h4) {
+  margin: 14px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.tt-root .pagent-plan h1 {
+  font-size: 16px;
+}
+.tt-root .pagent-plan :is(p, ul, ol, pre) {
+  margin: 0 0 10px;
+}
+.tt-root .pagent-plan :is(ul, ol) {
+  padding-left: 1.3em;
+}
+.tt-root .pagent-plan code {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+}
+.tt-root .pagent-plan pre {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tt-root .pagent-plan pre code {
+  padding: 0;
+  background: transparent;
+}
+.tt-root .pagent-plan a {
+  color: inherit;
+}
+@media (max-width: 860px) {
+  .tt-root .platform-panes.agent-open .platform-configs {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tt-root .platform-panes, .tt-root .platform-configs, .tt-root .platform-view, .tt-root .pagent-body, .tt-root .platform-info-pop {
+    transition: none;
+    animation: none;
+  }
+}

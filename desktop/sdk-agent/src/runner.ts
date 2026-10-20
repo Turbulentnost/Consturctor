@@ -1143,7 +1143,10 @@ async function runAgent(command: RunCommand): Promise<void> {
             : listed.length
               ? `Cursor SDK tools: ${listed.join(", ")}`
               : "Агент обновил состояние запуска.",
+          ...(listed.length ? { tools: listed } : {}),
         });
+      } else if ((event as { type: string }).type === "usage") {
+        emit({ type: "usage", usage: (event as { usage?: unknown }).usage });
       }
     }
     const result = await run.wait();

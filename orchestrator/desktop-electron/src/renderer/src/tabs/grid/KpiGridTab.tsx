@@ -7,8 +7,7 @@ import { StandardTabChrome } from './TabChromeGrid'
 import { DEFAULT_KPI_LAYOUT } from './useTabChromeLayout'
 import type { UserProfile } from '../../api/types'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
-import { SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
-import type { SpecSummaryTile } from '../../workplace/specV04Shell'
+import { SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import { SpecIconSearch } from '../../workplace/specV04Icons'
 import { setKpiExportSnapshot } from '../../workplace/kpiExportSnapshot'
 import {
@@ -19,11 +18,12 @@ import {
 import { useKpiPeriodSources } from '../../workplace/useKpiPeriodSources'
 import { useKpiWorkflowBoard } from '../../workplace/useKpiWorkflowBoard'
 import { useWorkplaceKpiDashboard } from '../../workplace/useWorkplaceKpiDashboard'
-import { agentMatchesKpiTile, toggleSimpleTile } from '../../workplace/tileFilters'
-import type { WorkplaceKpiCard } from '../../workplace/workplaceKpiTypes'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
+import { useKpiProtection, writeKpiUnlock } from '../../workplace/kpiProtection'
 import { usePositionCompensation } from '../../workplace/usePositionCompensation'
+import { useKpiPin } from '../../workplace/useKpiPin'
+import { kpiPageTone, overallKpiPercent, useKpiPageTone } from '../../workplace/kpiPageTone'
 import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel, KpiMethodOffer } from './KpiEmployeePanel'
 import { KpiMetricCodeModal } from './KpiMetricCodeModal'
@@ -31,15 +31,6 @@ import { KpiDailyRunPanel, KpiDailyWaitingTile } from './KpiDailyRunPanel'
 import { sameAgentTitle, useKpiDailyRun } from './useKpiDailyRun'
 import './kpiGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
-
-const LOADING_TILES: SpecSummaryTile[] = [
-  { id: 'tasks', label: 'Выполнение задач', value: '—', tone: 'orange' },
-  { id: 'sla', label: 'SLA', value: '—', tone: 'blue' },
-  { id: 'load', label: 'Загрузка', value: '—', tone: 'purple' },
-  { id: 'ai', label: 'Эффективность ИИ', value: '—', tone: 'green' },
-  { id: 'auto', label: 'Доля автоматизации', value: '—', tone: 'yellow' },
-  { id: 'quality', label: 'Качество', value: '—', tone: 'lilac' }
-]
 
 /** Форма премирования — помесячная: период внутри одного месяца расширяем до всего месяца. */
 function bonusMonth(from: string, to: string): { from: string; to: string } {
@@ -50,18 +41,6 @@ function bonusMonth(from: string, to: string): { from: string; to: string } {
   const last = new Date(year, month, 0).getDate()
   const mm = String(month).padStart(2, '0')
   return { from: `${year}-${mm}-01`, to: `${year}-${mm}-${String(last).padStart(2, '0')}` }
-}
-
-function cardsToTiles(cards: WorkplaceKpiCard[]): SpecSummaryTile[] {
-  return cards.map((card) => ({
-    id: card.id,
-    label: card.label,
-    value: card.displayValue,
-    hint: card.trend ?? undefined,
-    tone: (card.tone as SpecSummaryTile['tone']) || 'blue',
-    progress: card.progress ?? undefined,
-    ring: card.ring !== false && card.progress != null
-  }))
 }
 
 const KPI_GENERATOR_PLATFORM_ID = 'f856136c-d75a-493b-8814-99bf6b06d721'
@@ -91,15 +70,29 @@ export function KpiGridTab(_props: {
   const [formBusy, setFormBusy] = useState(false)
   const [formNote, setFormNote] = useState('')
   const [agentQuery, setAgentQuery] = useState('')
-  const [tileFilter, setTileFilter] = useState('all')
+  const protection = useKpiProtection(_props.user?.id || '')
+  const [gateDismissed, setGateDismissed] = useState(false)
+  const [gateOpen, setGateOpen] = useState(false)
+  const [gatePassword, setGatePassword] = useState('')
+  const [gateBusy, setGateBusy] = useState(false)
+  const [gateError, setGateError] = useState('')
+  const [inMoney, setInMoney] = useState(true)
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
   const positionKpi = usePositionKpi(_props.user?.position || '')
   const positionCompensation = usePositionCompensation()
+  const kpiPin = useKpiPin()
   const [buildingMethod, setBuildingMethod] = useState(false)
   const [launchingGenerator, setLaunchingGenerator] = useState(false)
   const [launchError, setLaunchError] = useState('')
   const dailyRun = useKpiDailyRun(_props.user, positionKpi.reload)
   const [codeFor, setCodeFor] = useState('')
+  const tilesRef = useRef<HTMLDivElement>(null)
+  const overallPct = overallKpiPercent(positionKpi.snap)
+  const pageTone = kpiPageTone(
+    overallPct,
+    Boolean(positionKpi.error) || positionKpi.methodologyStatus === 'none'
+  )
+  useKpiPageTone(tilesRef, pageTone, !buildingMethod)
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('kpi:module-chat-state', { detail: buildingMethod }))
@@ -174,22 +167,14 @@ export function KpiGridTab(_props: {
     [data, periodSources, from, to, workflowBoard]
   )
 
-  const tiles = useMemo(() => {
-    if (dashboard?.cards.length) return cardsToTiles(dashboard.cards)
-    if (loading) return LOADING_TILES
-    return []
-  }, [dashboard, loading])
-
   const agents = useMemo(() => {
     const rows = dashboard?.agents ?? []
-    const byTile =
-      tileFilter === 'all' ? rows : rows.filter((row) => agentMatchesKpiTile(row, tileFilter))
     const q = agentQuery.trim().toLowerCase()
-    if (!q) return byTile
-    return byTile.filter((row) =>
+    if (!q) return rows
+    return rows.filter((row) =>
       [row.name, row.code, row.process, row.status].some((value) => value.toLowerCase().includes(q))
     )
-  }, [dashboard, agentQuery, tileFilter])
+  }, [dashboard, agentQuery])
   const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
     () =>
       agents.map((row) => ({
@@ -256,6 +241,35 @@ export function KpiGridTab(_props: {
     }
   }, [formOpen, person])
 
+  const userId = _props.user?.id || ''
+  const unlocked = Boolean(protection.unlockToken)
+  const showGate =
+    gateOpen || (protection.loaded && protection.enabled && !unlocked && !gateDismissed)
+
+  const submitGate = async (): Promise<void> => {
+    if (gateBusy || !gatePassword) return
+    setGateBusy(true)
+    setGateError('')
+    try {
+      const unlock = await api.unlockKpiMoney(gatePassword)
+      writeKpiUnlock(userId, unlock)
+      setGatePassword('')
+      setGateOpen(false)
+      setGateDismissed(true)
+    } catch (err: unknown) {
+      setGateError(err instanceof ApiError ? err.message : 'Не удалось проверить пароль')
+    } finally {
+      setGateBusy(false)
+    }
+  }
+
+  const closeGate = (): void => {
+    setGatePassword('')
+    setGateError('')
+    setGateOpen(false)
+    setGateDismissed(true)
+  }
+
   useEffect(() => {
     const openBonusForm = (): void => {
       setPerson((current) => current.trim() || selfFio)
@@ -271,10 +285,12 @@ export function KpiGridTab(_props: {
     setFormBusy(true)
     setFormNote('')
     const period = bonusMonth(from, to)
+    const token = unlocked && inMoney ? protection.unlockToken : ''
     try {
-      const result = await api.downloadPositionKpiForm(person.trim() || selfFio, period.from, period.to)
+      const result = await api.downloadPositionKpiForm(person.trim() || selfFio, period.from, period.to, token)
       if (result.canceled) return
       if (!result.ok) {
+        if (token && /истёк|пароль KPI/i.test(result.error || '')) writeKpiUnlock(userId, null)
         setFormNote(result.error || 'Не удалось сохранить форму')
         return
       }
@@ -336,7 +352,7 @@ export function KpiGridTab(_props: {
               onDownloadReport={() => void downloadDailyReport()}
               onOpenChat={_props.onOpenRun ? () => _props.onOpenRun?.(dailyRun.workflowId, dailyRun.title) : undefined}
             />
-            <div className="kpi-two-tier-tiles">
+            <div className="kpi-two-tier-tiles" ref={tilesRef}>
             <KpiEmployeePanel
               variant="bar"
               leadTile={
@@ -349,10 +365,10 @@ export function KpiGridTab(_props: {
               metrics={positionKpi.metrics}
               compensation={positionCompensation.compensation}
               compensationLoading={positionCompensation.loading}
-              compensationUnlocking={positionCompensation.unlocking}
-              compensationError={positionCompensation.error}
               onUnlockCompensation={positionCompensation.unlock}
               onHideCompensation={positionCompensation.hide}
+              pin={kpiPin}
+              pinPromptAllowed={!showGate && !formOpen}
               loading={positionKpi.loading}
               needsMethodology={positionKpi.needsBuild}
               methodologyStatus={positionKpi.methodologyStatus}
@@ -360,20 +376,67 @@ export function KpiGridTab(_props: {
               onCalculate={() => void launchGenerator()}
               onInfo={(code) => setCodeFor(code)}
             />
-            <SpecSummaryTiles
-              tiles={tiles}
-              activeId={tileFilter === 'all' ? null : tileFilter}
-              onSelect={(id) => setTileFilter((current) => toggleSimpleTile(current, id))}
-              className="kpi-agent-top-tiles"
-            />
             </div>
           </div>
         ),
         filters: (
         <>
-        {!tiles.length && loading ? (
-          <p className="kpi-dash-status-banner">Загружаем показатели…</p>
+        {protection.enabled ? (
+          <div className="kpi-form-toolbar">
+            {unlocked ? (
+              <span className="kpi-protect-badge">
+                Суммы в рублях открыты
+                <button type="button" className="kpi-protect-lock" onClick={() => writeKpiUnlock(userId, null)}>
+                  Закрыть
+                </button>
+              </span>
+            ) : (
+              <button className="spec-btn-outline kpi-protect-open" type="button" onClick={() => setGateOpen(true)}>
+                Ввести пароль KPI
+              </button>
+            )}
+          </div>
         ) : null}
+        {showGate
+          ? createPortal(
+              <div className="kpi-form-modal" role="dialog" aria-modal="true" aria-labelledby="kpi-gate-title">
+                <button className="kpi-form-modal-backdrop" type="button" aria-label="Закрыть" onClick={closeGate} />
+                <form
+                  className="kpi-form-modal-card"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void submitGate()
+                  }}
+                >
+                  <h3 id="kpi-gate-title">Вход в модуль KPI</h3>
+                  <p className="kpi-form-modal-lead">
+                    Введите пароль KPI, чтобы выгружать форму премирования в рублях. Без пароля суммы скрыты.
+                  </p>
+                  <label className="spec-filter-input kpi-form-person">
+                    <input
+                      className="wp-search"
+                      type="password"
+                      autoComplete="current-password"
+                      autoFocus
+                      value={gatePassword}
+                      onChange={(event) => setGatePassword(event.target.value)}
+                      placeholder="Пароль KPI"
+                    />
+                  </label>
+                  {gateError ? <p className="kpi-form-modal-error">{gateError}</p> : null}
+                  <div className="kpi-form-modal-actions">
+                    <button className="btn-primary" type="submit" disabled={gateBusy || !gatePassword}>
+                      {gateBusy ? 'Проверяю…' : 'Войти'}
+                    </button>
+                    <button className="spec-btn-outline" type="button" onClick={closeGate}>
+                      Без сумм
+                    </button>
+                  </div>
+                </form>
+              </div>,
+              document.body
+            )
+          : null}
         {notice ? <p className="kpi-dash-status-banner">{notice}</p> : null}
         {formNote && !formOpen ? (
           <p className={`kpi-dash-status-banner${formNote.includes('сохранена') ? '' : ' error'}`}>{formNote}</p>
@@ -400,6 +463,14 @@ export function KpiGridTab(_props: {
                   </label>
                   {personPosition ? <p className="kpi-form-modal-position">{personPosition}</p> : null}
                   {subjectError ? <p className="kpi-form-modal-error">{subjectError}</p> : null}
+                  {unlocked ? (
+                    <label className="kpi-form-money">
+                      <input type="checkbox" checked={inMoney} onChange={(event) => setInMoney(event.target.checked)} />
+                      <span>В рублях: оклад и база премии из 1С:ЗУП</span>
+                    </label>
+                  ) : protection.enabled ? (
+                    <p className="kpi-form-modal-lead">Форма будет в процентах. Для сумм в рублях введите пароль KPI.</p>
+                  ) : null}
                   {formNote ? <p className="kpi-form-modal-error">{formNote}</p> : null}
                   <div className="kpi-form-modal-actions">
                     <button
@@ -461,11 +532,7 @@ export function KpiGridTab(_props: {
                 {!loading && !agents.length ? (
                   <tr>
                     <td colSpan={7} className="spec-v04-empty">
-                      {agentQuery.trim()
-                        ? 'Нет агентов по поиску'
-                        : tileFilter !== 'all'
-                          ? 'Нет агентов по выбранной плитке'
-                          : 'Нет данных за период'}
+                      {agentQuery.trim() ? 'Нет агентов по поиску' : 'Нет данных за период'}
                     </td>
                   </tr>
                 ) : null}

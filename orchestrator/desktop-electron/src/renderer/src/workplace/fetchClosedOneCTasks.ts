@@ -1,7 +1,7 @@
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
 import type { SpecTaskRow } from './specV04DemoData'
-import { parseErpToolTasks } from './orchestratorTaskSources'
+import { ONEC_DOCFLOW_TASK_LIMIT, parseErpToolTasks } from './orchestratorTaskSources'
 import { onecGatewayInvokeArgs } from './userContext'
 
 export type ClosedTasksLoad = {
@@ -24,7 +24,7 @@ export async function loadClosedOneCTasks(
   period: { from: string; to: string }
 ): Promise<ClosedTasksLoad> {
   const args = onecGatewayInvokeArgs(user, {
-    limit: 200,
+    limit: ONEC_DOCFLOW_TASK_LIMIT,
     only_open: false,
     include_done: true,
     closed_only: true,

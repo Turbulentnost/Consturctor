@@ -72,6 +72,32 @@ def add_message(
     return message
 
 
+def _own_message(db: Session, message_id: str, user_id: str) -> ChatMessage:
+    message = db.get(ChatMessage, message_id) if message_id else None
+    if message is None or message.deleted_at is not None:
+        raise ValueError("Сообщение не найдено")
+    if message.sender_id != user_id:
+        raise PermissionError("Изменять и удалять можно только свои сообщения")
+    return message
+
+
+def edit_message(db: Session, *, message_id: str, user_id: str, text: str) -> ChatMessage:
+    message = _own_message(db, message_id, user_id)
+    body = (text or "").strip()
+    if not body:
+        raise ValueError("Пустой текст: чтобы убрать сообщение, удалите его")
+    message.text = encrypt_text(body)
+    message.edited_at = _now()
+    return message
+
+
+def delete_message(db: Session, *, message_id: str, user_id: str) -> ChatMessage:
+    message = _own_message(db, message_id, user_id)
+    message.text = encrypt_text("")
+    message.deleted_at = _now()
+    return message
+
+
 def mark_read(db: Session, thread_id: str, user_id: str) -> ChatThreadMember:
     member = db.execute(
         select(ChatThreadMember).where(

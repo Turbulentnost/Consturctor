@@ -110,8 +110,7 @@ export function parseTaskDueDate(deadline: string): Date | null {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, hours, minutes, timeMatch ? 0 : 59)
     return day
   }
-  const iso = parseIso(raw) || parseIso(raw.replace(' ', 'T'))
-  if (iso) return iso
+  // «01.10» раньше Date: тот читает его как 10 января 2001 года.
   const dotted = /^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?/.exec(raw)
   if (dotted) {
     const day = Number(dotted[1])
@@ -120,7 +119,7 @@ export function parseTaskDueDate(deadline: string): Date | null {
     if (year < 100) year += 2000
     return new Date(year, month, day, hours, minutes, timeMatch ? 0 : 59)
   }
-  return null
+  return parseIso(raw) || parseIso(raw.replace(' ', 'T'))
 }
 
 export function isOverdueTask(row: SpecTaskRow, now = new Date()): boolean {

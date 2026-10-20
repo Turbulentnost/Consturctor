@@ -132,5 +132,9 @@ def fetch_document_executor_tasks_http(
     if not rows:
         return [], ""
     filtered = filter_document_executor_rows(rows, fio=fio, only_open=only_open)
+    # Запрос уже по этому человеку. Пустой отбор по колонке не должен
+    # ронять экран в полную SOAP-выгрузку на несколько минут.
+    if not filtered:
+        filtered = rows
     mapped = [map_document_executor_row(row, fio=fio) for row in filtered[:limit]]
     return mapped, ""

@@ -15,12 +15,16 @@ import {
 import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import {
+  forgetAssignmentCard,
   loadAssignmentCard,
   loadAssignmentPage,
   type AssignmentCard,
   type AssignmentRow,
   type AssignmentStatus
 } from '../../workplace/fetchDocflowAssignments'
+import { AssignmentDocflowTasks, AssignmentFileList } from './AssignmentDocflowTasks'
+import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -157,8 +161,14 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
   )
 }
 
-function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Element {
-  const { assignment: row, tasks, files, progress } = card
+function AssignmentCardView({
+  card,
+  onTaskChanged
+}: {
+  card: AssignmentCard
+  onTaskChanged?: () => void
+}): React.JSX.Element {
+  const { assignment: row, files, progress } = card
   return (
     <>
       <header className="docflow-detail-head">
@@ -203,8 +213,8 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
                 <li key={line.n} className={line.overdue ? 'is-overdue' : ''}>
                   <p>{line.text || '—'}</p>
                   <div>
-                    <span>
-                      <UserCheck size={12} aria-hidden /> {cell(line.executor)}
+                    <span className={line.executor ? '' : 'docflow-muted'} title="Ответственное лицо">
+                      <UserCheck size={12} aria-hidden /> {line.executor || 'ответственный не указан в 1С'}
                     </span>
                     <span className={line.overdue ? 'is-overdue' : ''}>срок {day(line.due)}</span>
                     <PriorityTag value={line.priority} />
@@ -218,44 +228,18 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
         </section>
         <section className="docflow-card-block">
           <h4>
-            <Users size={14} aria-hidden /> Задачи исполнителей
-            <span>{progress.tasks ? `выполнено ${progress.tasksDone} из ${progress.tasks}` : 'задач нет'}</span>
+            <Users size={14} aria-hidden /> Задачи в Документообороте
+            <span>{progress.tasks ? `принято автором ${progress.tasksDone} из ${progress.tasks}` : 'задач нет'}</span>
           </h4>
-          {tasks.length ? (
-            <ul className="docflow-route">
-              {tasks.map((task) => (
-                <li key={task.id} className={task.executed ? 'is-done' : ''}>
-                  {task.executed ? <CheckCircle2 size={14} aria-hidden /> : <Circle size={14} aria-hidden />}
-                  <div>
-                    <strong>{cell(task.performer)}</strong>
-                    <span>
-                      {[task.due ? `срок ${day(task.due)}` : '', task.doneAt ? `выполнено ${day(task.doneAt)}` : '']
-                        .filter(Boolean)
-                        .join(' · ') || task.title}
-                    </span>
-                    {task.result ? <em>{task.result}</em> : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="docflow-muted">По поручению в 1С не созданы задачи исполнителям.</p>
-          )}
+          <AssignmentDocflowTasks card={card} onTaskChanged={onTaskChanged} />
         </section>
         {files.length ? (
           <section className="docflow-card-block">
             <h4>
-              <Paperclip size={14} aria-hidden /> Файлы
+              <Paperclip size={14} aria-hidden /> Файлы поручения
               <span>{files.length}</span>
             </h4>
-            <ul className="docflow-files">
-              {files.map((file) => (
-                <li key={file.id}>
-                  <strong>{file.name}{file.extension ? `.${file.extension}` : ''}</strong>
-                  <span>{file.created ? day(file.created) : ''}</span>
-                </li>
-              ))}
-            </ul>
+            <AssignmentFileList files={files} />
           </section>
         ) : null}
       </div>
@@ -266,11 +250,13 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
 export function DocflowAssignmentsPanel({
   user,
   from,
-  to
+  to,
+  onOpenDocument
 }: {
   user: UserProfile
   from: string
   to: string
+  onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<AssignmentRow[]>([])
   const [statuses, setStatuses] = useState<AssignmentStatus[]>(FALLBACK_STATUSES)
@@ -521,6 +507,7 @@ export function DocflowAssignmentsPanel({
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}
+                    onDoubleClick={() => onOpenDocument?.('assignment', row.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -548,6 +535,12 @@ export function DocflowAssignmentsPanel({
         </div>
       </div>
       <aside className="docflow-side wp-card" aria-label="Карточка поручения">
+        {selected ? (
+          <DocflowOpenFormBar
+            refKey={selected.id}
+            onOpen={onOpenDocument && (() => onOpenDocument('assignment', selected.id))}
+          />
+        ) : null}
         {!selected ? (
           <p className="docflow-status">Выберите поручение, чтобы увидеть карточку</p>
         ) : cardLoading ? (
@@ -560,7 +553,13 @@ export function DocflowAssignmentsPanel({
             </button>
           </p>
         ) : card ? (
-          <AssignmentCardView card={card} />
+          <AssignmentCardView
+            card={card}
+            onTaskChanged={() => {
+              forgetAssignmentCard(selected.id)
+              openCard(selected)
+            }}
+          />
         ) : null}
       </aside>
     </div>

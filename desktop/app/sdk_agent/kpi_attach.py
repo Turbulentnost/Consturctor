@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.tools.ac.office_read import mark_vision_attached
 from app.tools.ac.office_vision import VISION_MAX_PAGES, VisionRenderError, render_document_pages
 from app.tools.ac.readable_files import IMAGE_SUFFIXES, PDF_SUFFIXES
 
@@ -217,10 +216,6 @@ def collect_kpi_prompt_images(
                 "filename": source.name,
             }
         )
-    last = int(out[-1]["page"] or 0) if out else 0
-    total = int(rendered.get("page_count") or 0)
-    if out and total and last >= total:
-        mark_vision_attached(root)
     return out
 
 

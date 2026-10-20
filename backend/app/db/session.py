@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.db.base import Base
+
+logger = logging.getLogger(__name__)
 
 engine = create_engine(
     settings.database_url,
@@ -25,6 +29,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import agent_run as _agent_run  # noqa: F401
+    from app.models import assignment_review as _assignment_review  # noqa: F401
     from app.models import calendar_overlay as _calendar_overlay  # noqa: F401
     from app.models import finance as _finance  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
@@ -34,8 +39,10 @@ def init_db() -> None:
     from app.models import regulation as _regulation  # noqa: F401
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401
+    from app.models import user_ui_prefs as _user_ui_prefs  # noqa: F401
     from app.models import kpi_daily_metric as _kpi_daily_metric  # noqa: F401
     from app.models import position_kpi as _position_kpi  # noqa: F401
+    from app.models import meeting_audio as _meeting_audio  # noqa: F401
     from app.models import workflow as _workflow  # noqa: F401
     from app.modules.chat import models as _chat  # noqa: F401
 
@@ -234,6 +241,30 @@ def _ensure_columns() -> None:
             conn.execute(
                 text("ALTER TABLE agent_runs ADD COLUMN trigger_reason TEXT NOT NULL DEFAULT ''")
             )
+        if run_cols and "metrics_json" not in run_cols:
+            # Не стоим в очереди за эксклюзивной блокировкой: иначе все чтения
+            # истории запусков ждут за этим ALTER.
+            try:
+                conn.execute(text("SAVEPOINT metrics_json_col"))
+                conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                conn.execute(
+                    text("ALTER TABLE agent_runs ADD COLUMN metrics_json JSON NOT NULL DEFAULT '[]'")
+                )
+                conn.execute(text("RELEASE SAVEPOINT metrics_json_col"))
+            except SQLAlchemyError:
+                conn.execute(text("ROLLBACK TO SAVEPOINT metrics_json_col"))
+                logger.warning("agent_runs.metrics_json was not added, will retry on next start", exc_info=True)
+        if run_cols and "context_json" not in run_cols:
+            try:
+                conn.execute(text("SAVEPOINT context_json_col"))
+                conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                conn.execute(
+                    text("ALTER TABLE agent_runs ADD COLUMN context_json JSON NOT NULL DEFAULT '{}'")
+                )
+                conn.execute(text("RELEASE SAVEPOINT context_json_col"))
+            except SQLAlchemyError:
+                conn.execute(text("ROLLBACK TO SAVEPOINT context_json_col"))
+                logger.warning("agent_runs.context_json was not added, will retry on next start", exc_info=True)
         creation_rows = conn.execute(
             text(
                 """
@@ -261,6 +292,20 @@ def _ensure_columns() -> None:
             conn.execute(
                 text("ALTER TABLE platform_tasks ADD COLUMN rework_count INTEGER NOT NULL DEFAULT 0")
             )
+        chat_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'chat_messages'
+                """
+            )
+        ).fetchall()
+        chat_cols = {str(r[0]) for r in chat_rows}
+        if chat_cols and "edited_at" not in chat_cols:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN edited_at TIMESTAMPTZ NULL"))
+        if chat_cols and "deleted_at" not in chat_cols:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN deleted_at TIMESTAMPTZ NULL"))
         kpi_profile_rows = conn.execute(
             text(
                 """

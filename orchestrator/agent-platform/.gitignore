@@ -1,0 +1,5 @@
+backend/.env
+platform/data/
+node_modules/
+__pycache__/
+*.pyc

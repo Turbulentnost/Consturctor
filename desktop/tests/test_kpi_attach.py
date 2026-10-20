@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.sdk_agent.bridge import (
+    RUNNER_CRASH_PREFIX,
     CursorSdkError,
     cursor_sdk_error_text,
     is_complete_kpi_list_answer,
     is_transient_cursor_error,
+    runner_stderr_reason,
 )
 from app.sdk_agent.kpi_attach import (
     KPI_SOURCE_OPTIONS,
@@ -529,3 +531,111 @@ def test_skip_trigger_while_kpi_module_runs() -> None:
     sidecar.start("check_trigger", {"id": "trg-1", "triggerId": "t-1", "workflowId": "wf-1"})
     assert started == []
     assert "trg-1" not in sidecar._active
+
+
+def test_user_facing_run_error_translates_network_failure() -> None:
+    sidecar_mod = _load_orch_sidecar()
+    text = sidecar_mod._user_facing_run_error(CursorSdkError("Network request failed"))
+    assert "сеть оборвалась" in text
+    assert sidecar_mod._user_facing_run_error("CURSOR_API_KEY не задан") == "CURSOR_API_KEY не задан"
+
+
+_NODE_OOM_STDERR = [
+    "<--- Last few GCs --->",
+    "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+    *[
+        f"{i}: 00007FF6CF7F93CA EC_KEY_METHOD_set_verify+{276154 + i}"
+        for i in range(1, 24)
+    ],
+]
+
+
+def test_native_node_crash_reports_cause_not_frames() -> None:
+    reason = runner_stderr_reason(_NODE_OOM_STDERR)
+    assert reason.startswith(RUNNER_CRASH_PREFIX)
+    assert "JavaScript heap out of memory" in reason
+    assert "EC_KEY_METHOD" not in reason
+    assert is_transient_cursor_error(reason)
+
+
+def test_plain_runner_stderr_is_kept() -> None:
+    assert runner_stderr_reason(["Error: boom", "    at main (runner.ts:1)"]) == (
+        "Error: boom\n    at main (runner.ts:1)"
+    )
+
+
+def test_node_crash_is_not_called_a_network_error() -> None:
+    sidecar_mod = _load_orch_sidecar()
+    reason = runner_stderr_reason(_NODE_OOM_STDERR)
+    assert sidecar_mod._user_facing_run_error(reason) == reason
+
+
+def test_forward_events_does_not_paint_runner_error(monkeypatch) -> None:
+    from threading import Event
+    from types import SimpleNamespace
+
+    sidecar_mod = _load_orch_sidecar()
+    emitted: list[dict] = []
+    monkeypatch.setattr(sidecar_mod, "emit", lambda payload: emitted.append(payload))
+    gate = SimpleNamespace(bind_events=lambda *_a, **_k: None, mark_work_result_done=lambda: None)
+    active = sidecar_mod.ActiveRun("run-1", gate, Event(), SimpleNamespace())
+    events: list[dict] = []
+    on_event = sidecar_mod.Sidecar()._forward_events(active, events)
+    on_event({"type": "error", "message": "Network request failed"})
+    on_event({"type": "status", "text": "Запускаю агента"})
+    assert events == [{"type": "status", "text": "Запускаю агента", "at": events[0]["at"]}]
+    assert len(emitted) == 1
+    assert emitted[0]["payload"]["type"] == "status"
+
+
+def test_bridge_run_retries_network_then_succeeds(monkeypatch) -> None:
+    from threading import Event
+    from types import SimpleNamespace
+
+    sidecar_mod = _load_orch_sidecar()
+    calls: list[dict] = []
+
+    def fake_run(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise CursorSdkError("Network request failed")
+        return {"answer": "готово", "agent_id": "a2"}
+
+    monkeypatch.setattr(sidecar_mod.time, "sleep", lambda *_a, **_k: None)
+    emitted: list[dict] = []
+    monkeypatch.setattr(sidecar_mod, "emit", lambda payload: emitted.append(payload))
+    gate = SimpleNamespace(bind_events=lambda *_a, **_k: None)
+    result = sidecar_mod.Sidecar()._bridge_run_with_retry(
+        sidecar_mod.ActiveRun("run-1", gate, Event(), SimpleNamespace()),
+        SimpleNamespace(run=fake_run),
+        prompt="проверь поручения",
+        workflow_id="wf-1",
+    )
+    assert result["answer"] == "готово"
+    assert len(calls) == 2
+    assert "повторяю запуск" in emitted[0]["payload"]["text"]
+
+
+def test_bridge_run_network_failure_is_one_russian_error(monkeypatch) -> None:
+    from threading import Event
+    from types import SimpleNamespace
+
+    sidecar_mod = _load_orch_sidecar()
+
+    def fake_run(**_kwargs):
+        raise CursorSdkError("Network request failed")
+
+    monkeypatch.setattr(sidecar_mod.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(sidecar_mod, "emit", lambda _payload: None)
+    gate = SimpleNamespace(bind_events=lambda *_a, **_k: None)
+    try:
+        sidecar_mod.Sidecar()._bridge_run_with_retry(
+            sidecar_mod.ActiveRun("run-1", gate, Event(), SimpleNamespace()),
+            SimpleNamespace(run=fake_run),
+            prompt="проверь поручения",
+        )
+    except CursorSdkError as exc:
+        assert "сеть оборвалась" in str(exc)
+        assert "Network request failed" not in str(exc)
+    else:
+        raise AssertionError("expected CursorSdkError")

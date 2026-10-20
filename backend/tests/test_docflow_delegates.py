@@ -77,30 +77,23 @@ def test_probe_timeout_counts_as_ignored(monkeypatch) -> None:
     assert dok_soap.probe_by_user_delegates(object(), ME)["status"] == "ignored"
 
 
-def test_action_allowed_on_delegate_task(monkeypatch) -> None:
+def test_action_posts_session_user_without_local_performer_check(monkeypatch) -> None:
+    """Кто имеет право закрыть задачу, решает 1С в TaskAction, не сверка ФИО в приложении."""
     from app.services.docflow_task_action import handle_docflow_task_action
 
-    sent: list[str] = []
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.load_config",
-        lambda **_kwargs: type("Cfg", (), {"timeout": 5})(),
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.retrieve_task_card",
-        lambda _config, task_id, *, timeout: {"id": task_id, "executed": False, "performer": BOSS, "step": "Ознакомиться"},
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.mark_task_executed",
-        lambda _config, task_id, **_kwargs: sent.append(task_id),
-    )
-    monkeypatch.setattr(
-        "app.services.docflow_task_action.retrieve_tasks",
-        lambda _config, ids, **_kwargs: [{"id": ids[0], "executed": True, "execution_mark": "ExecutedPositive"}],
-    )
-    args = {"action": "acquaint", "task_id": "t", "fio": ME, "erp_password": "x"}
-    from app.services.docflow_tasks import DocflowError
+    sent: list[tuple[str, str]] = []
 
-    with pytest.raises(DocflowError, match="не вам"):
-        handle_docflow_task_action(dict(args))
-    handle_docflow_task_action({**args, "delegate_fios": [BOSS]})
-    assert sent == ["t"]
+    def fake(task_id: str, button: int, **kwargs: object) -> dict[str, object]:
+        auth = kwargs.get("auth")
+        assert isinstance(auth, tuple)
+        sent.append((task_id, str(auth[0])))
+        return {"ok": True, "closed": True, "needs_form": False, "summary": "Ознакомлен"}
+
+    monkeypatch.setattr("app.services.docflow_task_action.post_task_action", fake)
+    monkeypatch.setattr("app.services.docflow_task_action.drop_task_from_inbox_cache", lambda *_ids: None)
+    result = handle_docflow_task_action(
+        {"action": "acquaint", "task_id": "t", "step": "Ознакомиться", "fio": ME, "erp_password": "x"}
+    )
+    assert sent == [("t", ME)]
+    assert result["button"] == 1
+    assert result["closed"] is True

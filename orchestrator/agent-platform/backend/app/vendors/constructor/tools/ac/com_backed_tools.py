@@ -1,0 +1,465 @@
+"""COM-backed инструменты, работающие только через worker-протокол."""
+
+from uuid import uuid4
+
+from app.vendors.constructor.tools.ac.tooling import (
+    ToolCallResult,
+    ToolDefinition,
+    ToolExecutionMode,
+    ToolSideEffectLevel,
+)
+from app.vendors.constructor.tools.ac.base import BaseTool
+from app.vendors.constructor.tools.ac.registry import ToolRegistry
+from app.vendors.constructor.tools.ac.workers.base import BaseWorker
+from app.vendors.constructor.tools.ac.workers.models import WorkerTask
+
+# Outlook COM (Iterate + recurrences) часто дольше дефолтных 30 секунд.
+OUTLOOK_COM_TIMEOUT_SECONDS = 180
+
+
+class ComBackedTool(BaseTool):
+    """Инструмент, делегирующий выполнение BaseWorker через WorkerTask."""
+
+    def __init__(self, definition: ToolDefinition, worker: BaseWorker) -> None:
+        """Сохранить описание инструмента и worker."""
+        super().__init__(definition)
+        self._worker = worker
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Создать WorkerTask, вызвать worker и вернуть ToolCallResult."""
+        task = WorkerTask(
+            task_id=str(uuid4()),
+            tool_name=self.definition.name,
+            input_data=input_data,
+            timeout_seconds=self.definition.timeout_seconds,
+        )
+
+        try:
+            worker_result = self._worker.execute(task)
+        except Exception as exc:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="WORKER_EXECUTION_ERROR",
+                error_message=str(exc),
+            )
+
+        if worker_result.ok:
+            return ToolCallResult(
+                ok=True,
+                tool_name=self.definition.name,
+                output_data=worker_result.output_data or {},
+            )
+
+        return ToolCallResult(
+            ok=False,
+            tool_name=self.definition.name,
+            error_type=worker_result.error_type,
+            error_message=worker_result.error_message,
+        )
+
+
+def _outlook_mail_entry_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "entry_id": {"type": "string", "description": "EntryID письма из outlook.search_mail"},
+        },
+        "required": ["entry_id"],
+    }
+
+
+class OutlookFetchMessageComTool(ComBackedTool):
+    """COM: прочитать письмо по entry_id."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.fetch_message",
+                title="Прочитать письмо Outlook",
+                description="Тело письма, флаг unread и список вложений по entry_id.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
+                input_schema=_outlook_mail_entry_schema(),
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookMarkReadComTool(ComBackedTool):
+    """COM: пометить письмо прочитанным или непрочитанным."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.mark_read",
+                title="Статус прочтения Outlook",
+                description="unread=true — непрочитанное, false — прочитано.",
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=60,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "unread": {"type": "boolean", "description": "true = непрочитанное"},
+                    },
+                    "required": ["entry_id"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookDisplayMessageComTool(ComBackedTool):
+    """COM: открыть письмо или черновик ответа в Outlook."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.display_message",
+                title="Открыть письмо в Outlook",
+                description=(
+                    "mode: open | reply | reply_all | forward. "
+                    "forward + to + send=true пересылает письмо без окна."
+                ),
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=60,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "mode": {
+                            "type": "string",
+                            "description": "open, reply, reply_all или forward",
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "Получатель черновика или пересылки",
+                        },
+                        "send": {
+                            "type": "boolean",
+                            "description": "true — отправить сразу, без окна Outlook",
+                        },
+                    },
+                    "required": ["entry_id"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookSaveMessageComTool(ComBackedTool):
+    """COM: сохранить письмо как .msg для регистрации в 1С."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.save_message",
+                title="Сохранить письмо Outlook",
+                description="Сохраняет письмо в .msg (OLSaveAsMsg) для прикрепления к входящей корреспонденции.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=120,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "save_dir": {"type": "string"},
+                        "stage_for_incoming": {
+                            "type": "boolean",
+                            "description": "Staging .msg для OData-входящей (как agent-pochta)",
+                        },
+                    },
+                    "required": ["entry_id"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookSaveAttachmentComTool(ComBackedTool):
+    """COM: сохранить вложение письма на диск."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.save_attachment",
+                title="Сохранить вложение Outlook",
+                description="attachment_index — номер вложения (1…N), save_dir опционален.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=120,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "attachment_index": {"type": "integer"},
+                        "index": {"type": "integer"},
+                        "save_dir": {"type": "string"},
+                    },
+                    "required": ["entry_id", "attachment_index"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookSearchMailComTool(ComBackedTool):
+    """COM-backed инструмент поиска писем Outlook через worker."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент поиска писем Outlook."""
+        super().__init__(
+            ToolDefinition(
+                name="outlook.search_mail",
+                title="Поиск писем Outlook",
+                description=(
+                    "Ищет письма Outlook через COM. Для отсутствий один вызов: "
+                    "query=отпуск, folder=Inbox, date=сегодня. "
+                    "count=0 значит писем нет — не повторять с другими словами. "
+                    "query — короткая подстрока темы/отправителя, не список ФИО."
+                ),
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "folder": {"type": "string", "description": "Папка Outlook, например Inbox"},
+                        "date": {"type": "string", "description": "Один день YYYY-MM-DD"},
+                        "date_from": {"type": "string", "description": "Начало периода YYYY-MM-DD"},
+                        "date_to": {"type": "string", "description": "Конец периода YYYY-MM-DD"},
+                        "query": {
+                            "type": "string",
+                            "description": "Подстрока в теме или отправителе, не список людей",
+                        },
+                        "max_results": {"type": "integer", "description": "Максимум писем"},
+                    },
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookReadCalendarComTool(ComBackedTool):
+    """COM-backed инструмент чтения календаря Outlook через worker."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент чтения календаря Outlook."""
+        super().__init__(
+            ToolDefinition(
+                name="outlook.read_calendar",
+                title="Чтение календаря Outlook",
+                description=(
+                    "Встречи Outlook за период. Без дат — год вперёд, так не делай на планёрке. "
+                    "Утро: date=сегодня. Вечер: date=завтра. "
+                    "people[] — ФИО участников: сначала общий ящик «Совещания», "
+                    "затем фильтр по этим ФИО. "
+                    "Контроль календаря ПСД: folder=Совещания, "
+                    "people=[Амураль Игорь Борисович]. Без people — свой. "
+                    "В ответе events, calendars и free_slots."
+                ),
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "date": {
+                            "type": "string",
+                            "description": "Один день YYYY-MM-DD",
+                        },
+                        "date_from": {
+                            "type": "string",
+                            "description": "Начало периода YYYY-MM-DD",
+                        },
+                        "date_to": {
+                            "type": "string",
+                            "description": "Конец периода YYYY-MM-DD",
+                        },
+                        "days_forward": {
+                            "type": "integer",
+                            "description": "Дней вперёд, если дат нет. По умолчанию 365",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Максимум событий, до 500",
+                        },
+                        "include_body": {
+                            "type": "boolean",
+                            "description": "Включить body_preview. По умолчанию false",
+                        },
+                        "people": {
+                            "type": "array",
+                            "description": (
+                                "ФИО участников. Сначала читается ящик «Совещания», "
+                                "потом фильтр по этим ФИО. Пусто — свой календарь"
+                            ),
+                            "items": {"type": "string"},
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Имя календаря, для ПСД — Совещания",
+                        },
+                    },
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookCreateEventComTool(ComBackedTool):
+    """COM-backed создание встречи в календаре Outlook."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент записи встречи Outlook."""
+        super().__init__(
+            ToolDefinition(
+                name="outlook.create_event",
+                title="Встреча в Outlook",
+                description=(
+                    "Создаёт встречи в Outlook. attendees[] — кто должен прийти, "
+                    "organizer — чей календарь (если есть право записи). "
+                    "Тема и текст помечаются как ИИ-агент."
+                ),
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=True,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "subject": {
+                            "type": "string",
+                            "description": "Тема встречи без префикса ИИ-агент - его добавит инструмент",
+                        },
+                        "start": {"type": "string", "description": "Начало ISO datetime, слот должен быть свободным"},
+                        "end": {"type": "string", "description": "Конец ISO datetime"},
+                        "duration_minutes": {"type": "integer", "description": "Длительность в минутах, если end нет"},
+                        "body": {"type": "string", "description": "Текст встречи; в конец добавится подпись ИИ-агента"},
+                        "location": {"type": "string", "description": "Место или ссылка"},
+                        "attendees": {
+                            "type": "array",
+                            "description": "Кто должен прийти: ФИО или почта, как в адресной книге Outlook",
+                            "items": {"type": "string"},
+                        },
+                        "organizer": {
+                            "type": "string",
+                            "description": "Чей календарь / от чьего имени. Пусто — текущий профиль Outlook",
+                        },
+                        "send_invites": {
+                            "type": "boolean",
+                            "description": "Отправить приглашения участникам. По умолчанию да, если есть attendees",
+                        },
+                        "events": {
+                            "type": "array",
+                            "description": (
+                                "Несколько встреч за вызов: subject, start, end или duration_minutes, "
+                                "attendees, organizer"
+                            ),
+                            "items": {"type": "object"},
+                        },
+                    },
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookReadTasksComTool(ComBackedTool):
+    """COM-backed инструмент чтения задач Outlook через worker."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент чтения задач Outlook."""
+        super().__init__(
+            ToolDefinition(
+                name="outlook.read_tasks",
+                title="Чтение задач Outlook",
+                description="Читает задачи Outlook через COM Worker.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class EmailCreateDraftComTool(ComBackedTool):
+    """COM-backed инструмент создания черновика письма через worker."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент создания черновика письма."""
+        super().__init__(
+            ToolDefinition(
+                name="email.create_draft",
+                title="Создание черновика письма",
+                description="Создаёт черновик письма Outlook через COM Worker.",
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class EmailSendComTool(ComBackedTool):
+    """COM-backed dangerous-инструмент отправки письма через worker."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент отправки письма."""
+        super().__init__(
+            ToolDefinition(
+                name="email.send",
+                title="Отправка письма",
+                description="Отправляет письмо через Outlook COM Worker. Опасное действие.",
+                side_effect_level=ToolSideEffectLevel.DANGEROUS,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=True,
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+def register_outlook_com_tools(
+    registry: ToolRegistry,
+    read_worker: BaseWorker,
+    write_worker: BaseWorker | None = None,
+) -> None:
+    """Зарегистрировать Outlook COM-backed инструменты в ToolRegistry."""
+    write_worker = write_worker or read_worker
+    registry.register(OutlookSearchMailComTool(read_worker))
+    registry.register(OutlookFetchMessageComTool(read_worker))
+    registry.register(OutlookSaveAttachmentComTool(read_worker))
+    registry.register(OutlookSaveMessageComTool(read_worker))
+    registry.register(OutlookReadCalendarComTool(read_worker))
+    registry.register(OutlookMarkReadComTool(write_worker))
+    registry.register(OutlookDisplayMessageComTool(write_worker))
+    registry.register(OutlookCreateEventComTool(write_worker))
+    registry.register(OutlookReadTasksComTool(read_worker))
+    registry.register(EmailCreateDraftComTool(write_worker))
+    registry.register(EmailSendComTool(write_worker))

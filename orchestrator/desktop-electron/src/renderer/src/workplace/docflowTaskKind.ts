@@ -35,6 +35,8 @@ export type DocflowActionSpec = {
   tone: 'primary' | 'outline' | 'danger'
   /** 1С не примет отрицательный результат без комментария. */
   needsComment?: boolean
+  /** Возврат на доработку создаёт копию задачи с новым сроком. */
+  needsDue?: boolean
 }
 
 const KINDS = new Set<string>([
@@ -80,7 +82,14 @@ const KIND_ACTIONS: Record<DocflowTaskKind, DocflowActionSpec[]> = {
   execute: [{ id: 'execute', label: 'Исполнено', shortLabel: 'Исполнено', tone: 'primary' }],
   check: [
     { id: 'accept', label: 'Принять исполнение', shortLabel: 'Принять', tone: 'primary' },
-    { id: 'return', label: 'Вернуть на доработку', shortLabel: 'Вернуть', tone: 'danger', needsComment: true }
+    {
+      id: 'return',
+      label: 'Вернуть на доработку',
+      shortLabel: 'Вернуть',
+      tone: 'danger',
+      needsComment: true,
+      needsDue: true
+    }
   ],
   acquaint: [{ id: 'acquaint', label: 'Ознакомлен', shortLabel: 'Ознакомлен', tone: 'primary' }],
   acquaint_result: [{ id: 'acquaint', label: 'Ознакомлен', shortLabel: 'Ознакомлен', tone: 'primary' }],
@@ -131,6 +140,31 @@ export function docflowTaskKind(step?: string, name?: string, serverKind?: strin
     if (text.includes('исполн')) return 'execute'
   }
   return 'other'
+}
+
+/** Разделы списка задач: сначала то, что делает сам, ознакомление — в конце. */
+export const DOCFLOW_GROUP_ORDER = [
+  'execute',
+  'approve',
+  'confirm',
+  'check',
+  'consider',
+  'resolution',
+  'question',
+  'other',
+  'acquaint'
+] as const
+
+export type DocflowGroupKey = (typeof DOCFLOW_GROUP_ORDER)[number]
+
+/** Задачи без вида (платформа, TurboProject) попадают в «Прочие». */
+export function docflowGroupKey(kind: DocflowTaskKind | null | undefined): DocflowGroupKey {
+  if (!kind) return 'other'
+  return kind === 'acquaint_result' ? 'acquaint' : kind
+}
+
+export function docflowGroupLabel(key: DocflowGroupKey): string {
+  return key === 'other' ? 'Прочие задачи' : DOCFLOW_KIND_LABEL[key]
 }
 
 export function docflowKindActions(kind: DocflowTaskKind): DocflowActionSpec[] {

@@ -60,6 +60,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from run_context import RunContext
+from run_metrics import RunMetrics, runner_pid
+
 os.environ["CONSTRUCTOR_SDK_OWNER"] = str(Path(__file__).resolve())
 
 
@@ -139,6 +142,7 @@ from app.sdk_agent.bridge import (  # noqa: E402
     CursorSdkBridge,
     CursorSdkError,
     CursorSdkUnavailable,
+    RUNNER_CRASH_PREFIX,
     is_transient_cursor_error,
     reap_foreign_sdk_runners,
 )
@@ -150,6 +154,10 @@ from app.sdk_agent.files import (  # noqa: E402
 )
 from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E402
 from app.tools.ac.powershell_tools import is_destructive_powershell_command  # noqa: E402
+from app.tools.ac.closure_check_tool import (  # noqa: E402
+    clear_closure_check,
+    closure_check_block,
+)
 from app.sdk_agent.prompt import (  # noqa: E402
     build_continue_run_prompt,
     build_demo_sdk_prompt,
@@ -185,14 +193,18 @@ _NEVER_CONFIRM = frozenset(
         "notify.send",
         "notify",
         "kpi.publish_position_result",
+        "chat.send_direct",
         "code.write_python",
         "code.run_python",
         "report.export_document",
+        "report.closure_check",
         "office.format_document",
     }
 )
 _READ_EXACT = frozenset(
     {
+        "get_current_date",
+        "kpi.read_methodology",
         "web_search",
         "site_browser",
         "browser.search_web",
@@ -220,11 +232,19 @@ _READ_EXACT = frozenset(
         "onec.docflow_tasks",
         "onec.meeting_service_notes",
         "onec.meeting_protocols",
+        "meetings.memo_requests",
+        "outlook.ews_availability",
         "agent.wait",
         "turboproject",
         "users.list",
         "users.current",
         "users.subordinates",
+        "audio.transcribe",
+        "audio.transcript",
+        "audio.speakers",
+        "audio.bind_speakers",
+        "audio.propose_speakers",
+        "audio.transcript_docx",
         "agent.schedule",
         "agent.schedule.cancel",
         "get_current_date",
@@ -373,6 +393,19 @@ def _exc_text(exc: Exception, fallback: str) -> str:
     return text or fallback
 
 
+def _user_facing_run_error(exc: BaseException | str) -> str:
+    """Cursor SDK network failures are English and useless in the feed."""
+    text = str(exc).strip() or "Внутренняя ошибка запуска агента"
+    if text.startswith(RUNNER_CRASH_PREFIX):
+        return text
+    if is_transient_cursor_error(text):
+        return (
+            "Не удалось связаться с Cursor: сеть оборвалась. "
+            "Проверьте подключение и запустите агента ещё раз."
+        )
+    return text
+
+
 from app.tools.ac.workers.onec_com_session import (  # noqa: E402
     apply_onec_session_credentials,
     com_session_auth_ready,
@@ -500,6 +533,8 @@ _ARTIFACT_CLOSE_TIPS = (
     "предложение поручений к закрытию",
     "предложение к закрытию поручений",
 )
+# Seeded with its own per-line playbook; ARTIFACT_CLOSE_HINT's four verdicts contradict it.
+_OWN_PLAYBOOK_ASSIGNMENT_AGENTS = ("проверка поручений к закрытию",)
 
 RK_RUN_HINT = (
     "This is RK meeting prep (ПЛ-01-001), not calendar control. "
@@ -625,8 +660,13 @@ SD_MEETING_HINT = (
     "a meeting-series job. 1C is read-only: never call onec.odata_post, onec.odata_patch, "
     "or onec.attach_file. Find the meeting with ONE outlook.read_calendar "
     "(or read the dumped calendar JSON once if COM already wrote it). "
-    "Then onec.meeting_service_notes (OData), onec.meeting_protocols (meeting_kind=sd, OData; "
-    "numbers ПСД_001_О_*, not manual odata_get with startswith СД/СПГ), "
+    "Then onec.meeting_service_notes (OData), ONE onec.meeting_protocols call with meeting_kind=sd "
+    "pair=true date=<meeting day> (current + previous «Совет директоров по ГК» protocols with a "
+    "per-item check of assignments «Решения», «Поставленные задачи» and agenda; put every "
+    "`reconciliation` row into the summary table with its errors, never a general phrase; copy every gap; "
+    "paste `package_table_markdown` (table «Пакет п. 6.4»: item, responsible person, documents in order, "
+    "status) into the summary document and into WORK_RESULT; "
+    "not manual odata_get with startswith СД/СПГ), "
     "and onec.search_documents (OData) for «совет директоров по гк». Do not use COM 1C. "
     "Do not call outlook.search_mail, imap.search, imap.list_unread, glob/grep loops, "
     "onec.odata_get on Document_ТД_Протокол, or onec.odata_catalog without entity+filter. "
@@ -732,6 +772,8 @@ def _is_calendar_control_text(*parts: Any) -> bool:
 
 def _is_artifact_close_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
+    if any(name in blob for name in _OWN_PLAYBOOK_ASSIGNMENT_AGENTS):
+        return False
     return any(tip in blob for tip in _ARTIFACT_CLOSE_TIPS)
 
 
@@ -961,6 +1003,22 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
     return specs
 
 
+def _workflow_model_params(record: Any) -> list[dict[str, str]] | None:
+    """playbook.model_params overrides the default reasoning level for one agent; None keeps the default."""
+    local = getattr(record, "local_run", None)
+    playbook = local.get("playbook") if isinstance(local, dict) else None
+    raw = playbook.get("model_params") if isinstance(playbook, dict) else None
+    if not isinstance(raw, list):
+        return None
+    params = [
+        {"id": str(item.get("id") or "").strip(), "value": str(item.get("value") or "").strip()}
+        for item in raw
+        if isinstance(item, dict)
+    ]
+    params = [item for item in params if item["id"] and item["value"]]
+    return params or None
+
+
 def _is_outlook_series_prompt(prompt: str) -> bool:
     blob = (prompt or "").casefold()
     if (
@@ -1036,6 +1094,7 @@ KPI_ATTACHED_PROMPT = (
 KPI_REPAIR_LIMIT = 3
 KPI_CODE_TOOL_BUDGET = 12
 KPI_SDK_RETRIES = 3
+SDK_RUN_RETRIES = 3
 KPI_NETWORK_FALLBACK = (
     "Страницы положения не дошли по сети. "
     "Читай PDF кусками: office.read_file start_page=2, max_pages=1. "
@@ -1701,6 +1760,20 @@ class ElectronBridge(CursorSdkBridge):
         self._knowledge_workflow_id = ""
         self._knowledge_cwd = ""
         self._knowledge_run_id = ""
+        self.context_sink: RunContext | None = None
+
+    def _send(self, process: Any, payload: dict[str, Any]) -> None:
+        sink = self.context_sink
+        if sink is not None and payload.get("type") == "run":
+            try:
+                sink.begin_turn(
+                    str(payload.get("prompt") or ""),
+                    list(payload.get("tools") or []),
+                    resumed=bool(payload.get("resumeAgentId")),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("run context turn failed: " + repr(exc))
+        super()._send(process, payload)
 
     def bind_knowledge(
         self,
@@ -1720,6 +1793,7 @@ class ElectronBridge(CursorSdkBridge):
         prompt: str,
         workflow_id: str,
         model: str = "",
+        model_params: list[dict[str, str]] | None = None,
         cwd: str = "",
         mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
@@ -1752,6 +1826,7 @@ class ElectronBridge(CursorSdkBridge):
             prompt=_with_sidecar_prompt(prompt, mode=mode),
             workflow_id=workflow_id,
             model=model,
+            model_params=model_params,
             cwd=cwd,
             mode=mode,
             tools=specs,
@@ -2480,6 +2555,70 @@ def _ensure_result_files_from_answer(
     return created
 
 
+SD_PACKAGE_TABLE_TITLE = "Пакет п. 6.4"
+
+
+def _find_markdown(value: Any, key: str, depth: int = 0) -> str:
+    if depth > 4:
+        return ""
+    if isinstance(value, dict):
+        found = value.get(key)
+        if isinstance(found, str) and found.strip():
+            return found.strip()
+        for item in value.values():
+            nested = _find_markdown(item, key, depth + 1)
+            if nested:
+                return nested
+    return ""
+
+
+def _sd_package_table_from_events(events: list[dict[str, Any]], run_cwd: str = "") -> str:
+    """Latest п. 6.4 table from onec.meeting_protocols results (inline or externalized file)."""
+    for event in reversed(events or []):
+        if str(event.get("type") or "") != "tool_result":
+            continue
+        result = event.get("result")
+        table = _find_markdown(result, "package_table_markdown")
+        if table:
+            return table
+        rel = str((result or {}).get("result_file") or "") if isinstance(result, dict) else ""
+        if rel and run_cwd and "meeting_protocols" in rel:
+            try:
+                data = json.loads((Path(run_cwd) / rel).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            table = _find_markdown(data, "package_table_markdown")
+            if table:
+                return table
+    return ""
+
+
+_CLOSURE_CHECK_BLOCK_RE = re.compile(r"\n*```closure-check\s*\n[\s\S]*?```", re.IGNORECASE)
+
+
+def _with_closure_check(answer: str, run_cwd: str) -> str:
+    """Saved report.closure_check verdicts replace a block the model may have written itself."""
+    block = closure_check_block(run_cwd) if run_cwd else ""
+    if not block:
+        return answer
+    text = _CLOSURE_CHECK_BLOCK_RE.sub("", answer or "").rstrip()
+    return f"{text}\n\n{block}" if text else block
+
+
+def _with_sd_package_table(answer: str, events: list[dict[str, Any]], run_cwd: str = "") -> str:
+    """Board summary must carry the п. 6.4 table; add it when the agent left it out."""
+    text = answer or ""
+    if SD_PACKAGE_TABLE_TITLE in text and "Ответственное лицо" in text:
+        return text
+    table = _sd_package_table_from_events(events, run_cwd)
+    if not table:
+        return text
+    match = re.search(r"^[ \t]*TESTS:\s*PASS\b.*$", text, re.M | re.I)
+    if match:
+        return f"{text[: match.start()].rstrip()}\n\n{table}\n\n{text[match.start():].lstrip()}"
+    return f"{text.rstrip()}\n\n{table}\n"
+
+
 def _work_result_body(answer: str) -> str:
     raw = (answer or "").strip()
     match = re.search(r"#{0,6}[ \t]*WORK[ _]?RESULT\b", raw, re.I)
@@ -2995,12 +3134,16 @@ class Sidecar:
         self._active: dict[str, ActiveRun] = {}
         self._personal_agent_ids: dict[str, str] = {}
         self._lock = threading.Lock()
+        self._metrics_api = True
+        self._context_api = True
 
     # -- configuration -------------------------------------------------
     def configure(self, command: dict[str, Any]) -> None:
         backend_url = str(command.get("backendUrl") or "").strip()
         if backend_url:
             self._api = ApiClient(base_url=backend_url)
+            self._metrics_api = True
+            self._context_api = True
         token = str(command.get("token") or "").strip() or None
         self._api.set_token(token)
         # Server-side tools (users.current, 1C tasks, ...) read this process-global
@@ -3236,7 +3379,7 @@ class Sidecar:
                 {
                     "type": "error",
                     "runId": active.run_id,
-                    "message": _exc_text(exc, "Внутренняя ошибка запуска агента"),
+                    "message": _user_facing_run_error(exc),
                 }
             )
         finally:
@@ -3256,6 +3399,56 @@ class Sidecar:
         except ApiError:
             pass
         self._notify_fresh_waits(active)
+
+    def _start_run_metrics(self, active: ActiveRun, bridge: ElectronBridge) -> None:
+        def publish(samples: list[dict[str, Any]]) -> None:
+            if not self._metrics_api or not samples:
+                return
+            run_ref = (active.history_run_id or "").strip()
+            if not run_ref or not active.workflow_id:
+                return
+            try:
+                self._api.update_local_agent_run_metrics(active.workflow_id, run_ref, samples)
+            except ApiError as exc:
+                if exc.status_code in {404, 405, 422}:
+                    self._metrics_api = False
+                log("run metrics flush failed: " + _ascii(exc.message))
+
+        active.metrics = RunMetrics(lambda: runner_pid(bridge), publish)
+        active.metrics.start()
+
+    def _stop_run_metrics(self, active: ActiveRun) -> list[dict[str, Any]]:
+        sampler = getattr(active, "metrics", None)
+        if sampler is None:
+            return []
+        return sampler.stop()
+
+    def _start_run_context(self, active: ActiveRun, bridge: ElectronBridge) -> None:
+        def publish(context: dict[str, Any]) -> None:
+            if not self._context_api:
+                return
+            run_ref = (active.history_run_id or "").strip()
+            if not run_ref or not active.workflow_id:
+                return
+            try:
+                self._api.update_local_agent_run_context(active.workflow_id, run_ref, context)
+            except ApiError as exc:
+                if exc.status_code in {404, 405, 422}:
+                    self._context_api = False
+                log("run context flush failed: " + _ascii(exc.message))
+
+        active.context = RunContext(publish)
+        bridge.context_sink = active.context
+        active.context.start()
+
+    def _stop_run_context(self, active: ActiveRun) -> dict[str, Any] | None:
+        collector = getattr(active, "context", None)
+        if collector is None:
+            return None
+        bridge = getattr(active, "bridge", None)
+        if bridge is not None and getattr(bridge, "context_sink", None) is collector:
+            bridge.context_sink = None
+        return collector.stop()
 
     def _notify_fresh_waits(self, active: ActiveRun) -> None:
         seen = getattr(active, "notified_waits", None)
@@ -3294,11 +3487,24 @@ class Sidecar:
             if not isinstance(payload, dict):
                 return
             event_type = str(payload.get("type") or "")
+            collector = getattr(active, "context", None)
+            if collector is not None:
+                collector.observe(payload)
+            if event_type == "usage":
+                return
+            # The runner prints this line and then the run loop raises the same
+            # text. Streaming it paints a second red banner ("Network request failed").
+            if event_type == "error":
+                return
             if event_type in {"assistant", "thinking", "final", "status"}:
                 blob = " ".join(
                     str(payload.get(key) or "")
                     for key in ("text", "answer", "message")
                 )
+                if event_type == "assistant":
+                    sampler = getattr(active, "metrics", None)
+                    if sampler is not None:
+                        sampler.note_chars(len(str(payload.get("text") or "")))
                 if blob.strip() and event_type != "thinking":
                     active.answer_buf = f"{active.answer_buf}{blob}"
                 if event_type in {"assistant", "final"} and (
@@ -3544,6 +3750,54 @@ class Sidecar:
                 time.sleep(2 * attempt)
         if last_exc is not None:
             raise last_exc
+        return {"answer": "", "agent_id": str(kwargs.get("resume_agent_id") or "")}
+
+    def _bridge_run_with_retry(
+        self,
+        active: ActiveRun,
+        bridge: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Retry a published-agent turn when Cursor's API drops the connection."""
+        last_exc: CursorSdkError | None = None
+        for attempt in range(1, SDK_RUN_RETRIES + 1):
+            if active.stop.is_set():
+                break
+            try:
+                return bridge.run(**kwargs)
+            except CursorSdkUnavailable:
+                raise
+            except CursorSdkError as exc:
+                last_exc = exc
+                if (
+                    active.stop.is_set()
+                    or not is_transient_cursor_error(exc)
+                    or attempt >= SDK_RUN_RETRIES
+                ):
+                    if is_transient_cursor_error(exc) and not active.stop.is_set():
+                        raise CursorSdkError(_user_facing_run_error(exc)) from exc
+                    raise
+                log(f"sdk network retry {attempt}: " + _ascii(str(exc)[:300]))
+                emit(
+                    {
+                        "type": "event",
+                        "runId": active.run_id,
+                        "payload": {
+                            "type": "status",
+                            "text": (
+                                (
+                                    "Процесс Cursor аварийно завершился"
+                                    if str(exc).startswith(RUNNER_CRASH_PREFIX)
+                                    else "Сеть Cursor оборвалась"
+                                )
+                                + f", повторяю запуск ({attempt} из {SDK_RUN_RETRIES - 1})…"
+                            ),
+                        },
+                    }
+                )
+                time.sleep(min(2 * attempt, 6))
+        if last_exc is not None:
+            raise CursorSdkError(_user_facing_run_error(last_exc)) from last_exc
         return {"answer": "", "agent_id": str(kwargs.get("resume_agent_id") or "")}
 
     def _run_kpi_code_turn(
@@ -4204,6 +4458,7 @@ class Sidecar:
             clear_attachments=autonomous or not resume_agent_id or _has_new_files,
             clear_tool_results=not bool(resume_agent_id),
         )
+        clear_closure_check(run_cwd)
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=workflow)
         if _is_meeting_workflow(workflow):
             _ensure_outlook_rule_in_brief(run_cwd)
@@ -4239,9 +4494,13 @@ class Sidecar:
         status = "ok"
         answer = ""
         agent_id = resume_agent_id
+        self._start_run_metrics(active, bridge)
+        self._start_run_context(active, bridge)
         try:
             try:
-                result = bridge.run(
+                result = self._bridge_run_with_retry(
+                    active,
+                    bridge,
                     prompt=prompt,
                     # Regular workflow runs must keep workflow context so tools,
                     # workspace isolation and run history stay scoped correctly.
@@ -4249,6 +4508,7 @@ class Sidecar:
                     cwd=run_cwd,
                     resume_agent_id=resume_agent_id,
                     tools=_tool_specs_for_workflow(workflow),
+                    model_params=_workflow_model_params(workflow),
                     on_event=self._forward_events(active, events),
                     on_question=active.gate.ask_question,
                     should_stop=active.stop.is_set,
@@ -4258,12 +4518,15 @@ class Sidecar:
                 if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
                     log(f"resume agent missing for {workflow_id}, retry fresh run")
                     self._clear_stored_agent_id(workflow_id)
-                    result = bridge.run(
+                    result = self._bridge_run_with_retry(
+                        active,
+                        bridge,
                         prompt=prompt,
                         workflow_id=workflow_id,
                         cwd=run_cwd,
                         resume_agent_id="",
                         tools=_tool_specs_for_workflow(workflow),
+                        model_params=_workflow_model_params(workflow),
                         on_event=self._forward_events(active, events),
                         on_question=active.gate.ask_question,
                         should_stop=active.stop.is_set,
@@ -4291,12 +4554,15 @@ class Sidecar:
                         "text": "Продолжаю запуск до WORK_RESULT — уже прочитанные файлы не открываю снова.",
                     }
                 )
-                result = bridge.run(
+                result = self._bridge_run_with_retry(
+                    active,
+                    bridge,
                     prompt=build_continue_run_prompt(),
                     workflow_id=workflow_id,
                     cwd=run_cwd,
                     resume_agent_id=agent_id,
                     tools=_tool_specs_for_workflow(workflow),
+                    model_params=_workflow_model_params(workflow),
                     on_event=on_event,
                     on_question=active.gate.ask_question,
                     should_stop=active.stop.is_set,
@@ -4316,17 +4582,23 @@ class Sidecar:
                 )
                 if tail:
                     answer = f"{answer}\n\n{tail}"
+            if status == "ok" and _is_sd_meeting_workflow(workflow):
+                answer = _with_sd_package_table(answer, events, run_cwd)
+            answer = _with_closure_check(answer, run_cwd)
         except Exception as exc:  # noqa: BLE001
             status = "error"
-            answer = str(exc)
+            answer = _with_closure_check(_user_facing_run_error(exc), run_cwd)
             try:
                 self._api.finish_local_agent_run(
                     workflow_id, run_ref, status="error", answer=answer,
                     events=events, message=message,
+                    metrics=self._stop_run_metrics(active),
+                    context=self._stop_run_context(active),
                 )
                 active.history_finished = True
             except ApiError:
-                pass
+                self._stop_run_metrics(active)
+                self._stop_run_context(active)
             try:
                 _append_run_journal(
                     run_cwd,
@@ -4344,6 +4616,8 @@ class Sidecar:
         self._api.finish_local_agent_run(
             workflow_id, run_ref, status=status, answer=answer,
             events=events, message=message,
+            metrics=self._stop_run_metrics(active),
+            context=self._stop_run_context(active),
         )
         active.history_finished = True
         try:
@@ -4451,14 +4725,14 @@ class Sidecar:
                         break
             else:
                 status = "error"
-                answer = str(exc)
+                answer = _user_facing_run_error(exc)
                 emit(
                     {
                         "type": "error",
                         "runId": active.run_id,
                         "kind": "eval",
                         "workflowId": active.event_workflow_id,
-                        "message": _exc_text(exc, "Фоновая оценка не завершилась"),
+                        "message": answer or "Фоновая оценка не завершилась",
                     }
                 )
                 return
@@ -4518,7 +4792,9 @@ class Sidecar:
         agent_id = resume_agent_id
         try:
             try:
-                result = bridge.run(
+                result = self._bridge_run_with_retry(
+                    active,
+                    bridge,
                     prompt=prompt,
                     workflow_id=workflow_id,
                     cwd=run_cwd,
@@ -4532,7 +4808,9 @@ class Sidecar:
                 if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
                     log(f"personal resume agent missing for {workflow_id}, retry fresh run")
                     self._personal_agent_ids.pop(workflow_id, None)
-                    result = bridge.run(
+                    result = self._bridge_run_with_retry(
+                        active,
+                        bridge,
                         prompt=prompt,
                         workflow_id=workflow_id,
                         cwd=run_cwd,
@@ -4550,7 +4828,7 @@ class Sidecar:
                 self._personal_agent_ids[workflow_id] = agent_id
         except Exception as exc:  # noqa: BLE001
             status = "error"
-            answer = str(exc)
+            answer = _user_facing_run_error(exc)
             try:
                 _append_run_journal(
                     run_cwd,
@@ -4766,6 +5044,8 @@ class Sidecar:
                 active.history_run_id,
                 status="error",
                 answer=answer,
+                metrics=self._stop_run_metrics(active) or None,
+                context=self._stop_run_context(active),
             )
             active.history_finished = True
         except ApiError:
@@ -5069,6 +5349,8 @@ class Sidecar:
         calendar_owner = isinstance(calendar_owners, list) and bool(calendar_owners)
         if calendar_owner:
             input_data["calendar_owners"] = [str(item or "").strip() for item in calendar_owners]
+        if "includeOwn" in command:
+            input_data["include_own"] = bool(command.get("includeOwn"))
         days_forward = command.get("daysForward")
         if isinstance(days_forward, int) and days_forward > 0:
             input_data["days_forward"] = days_forward
@@ -5145,6 +5427,12 @@ class Sidecar:
         query = command.get("query")
         if query is not None and str(query).strip():
             input_data["query"] = str(query).strip()
+        mailbox = str(command.get("mailbox") or "").strip()
+        if mailbox:
+            input_data["mailbox"] = mailbox
+        owner_fio = str(command.get("ownerFio") or "").strip()
+        if owner_fio:
+            input_data["owner_fio"] = owner_fio
 
         def _work() -> None:
             try:
@@ -5165,6 +5453,11 @@ class Sidecar:
                         "ok": True,
                         "messages": messages if isinstance(messages, list) else [],
                         "source": output.get("source") or "outlook_com",
+                        "mailbox": output.get("mailbox") or "",
+                        "mailboxAccess": output.get("mailbox_access") or "",
+                        "profileMailbox": output.get("profile_mailbox") or "",
+                        "warning": output.get("warning") or "",
+                        "offline": bool(output.get("offline")),
                         "rangeStart": output.get("range_start") or "",
                         "rangeEnd": output.get("range_end") or "",
                     }
@@ -5761,7 +6054,21 @@ def _run_kpi_workspace_tests(
     return True, output or "passed"
 
 
+def _preload_native_modules() -> None:
+    """Import numpy (via openpyxl) while the process still has one thread.
+
+    The first import on a tool thread loads OpenBLAS under the Windows loader
+    lock; a tool thread started at that moment never starts, and the run hangs.
+    """
+    for name in ("numpy", "openpyxl"):
+        try:
+            __import__(name)
+        except Exception as exc:  # noqa: BLE001
+            log(f"preload {name} failed: {exc!r}")
+
+
 def main() -> None:
+    _preload_native_modules()
     try:
         reap_foreign_sdk_runners()
     except Exception:

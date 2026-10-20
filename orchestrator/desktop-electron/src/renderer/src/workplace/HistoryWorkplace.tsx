@@ -273,8 +273,7 @@ export function HistoryWorkplace({
   function resetFilters(): void {
     setQuery('')
     const key = todayDayKey()
-    setRangeFrom(key)
-    setRangeTo(key)
+    setWorkplaceRange({ from: key, to: key })
     setAgentId('')
     setEventTypes([])
     setInitiator('')

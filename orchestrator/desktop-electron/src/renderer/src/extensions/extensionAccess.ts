@@ -26,6 +26,17 @@ export function canUseAssignmentsRegistry(user: UserProfile): boolean {
   return isPromptEngineer(user) || isChairmanBoardAssistant(user)
 }
 
+/** Начальник, руководитель, заведующий или директор подразделения. Помощники не входят. */
+export function isDepartmentHead(user: UserProfile): boolean {
+  const pos = normText(user.position)
+  if (!pos || /помощник/.test(pos)) return false
+  return /начальник|руководитель|заведующ|директор/.test(pos)
+}
+
+export function canUseSubordinateTasks(user: UserProfile): boolean {
+  return isPromptEngineer(user) || isDepartmentHead(user)
+}
+
 /** Библиотека агентов — каталог опубликованных агентов всех пользователей. */
 export function canUseAgentLibrary(_user: UserProfile): boolean {
   return true

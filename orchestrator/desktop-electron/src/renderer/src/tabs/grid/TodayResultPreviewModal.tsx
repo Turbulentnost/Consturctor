@@ -92,7 +92,7 @@ export function TodayResultPreviewModal({
   return createPortal(
     <div className="modal-overlay today-result-preview-overlay" onClick={onClose} role="presentation">
       <div
-        className="modal-card today-result-preview-dialog"
+        className="modal-card is-resizable today-result-preview-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

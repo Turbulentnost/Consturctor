@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   dedupeMeetingEvents,
   ensureOutlookMeetings,
+  useOutlookSyncTick,
   type MeetingEvent
 } from '../utils/outlookMeetings'
+import { useOwnMeetingsVersion } from './ownMeetings'
 import { readTrackedCalendars, useTrackedCalendarsVersion } from '../utils/trackedCalendars'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
-import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
+import { readGridCache, writeGridCache } from './gridDataCache'
 
 function dayKeyFrom(day: Date): string {
   return `${day.getFullYear()}-${day.getMonth()}-${day.getDate()}`
@@ -34,23 +36,25 @@ export function useTodayOutlookMeetings(
 
   const dayKey = dayKeyFrom(periodDay)
   const trackedVersion = useTrackedCalendarsVersion()
+  const ownMeetingsVersion = useOwnMeetingsVersion()
+  const outlookSync = useOutlookSyncTick()
+  const seenGeneration = useRef(generation)
 
   useEffect(() => {
     let alive = true
-    const cacheKey = `today-outlook-meetings:${userId}:${dayKey}:${readTrackedCalendars(fio).join('|')}`
-    if (!shouldRunGridFetch(cacheKey, generation)) {
-      const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
-      if (cached) {
-        setMeetings(cached.meetings)
-        setError(cached.error)
-        setLoading(false)
-        return
-      }
+    const force = outlookSync > 0 || seenGeneration.current !== generation
+    seenGeneration.current = generation
+    const cacheKey = `today-outlook-meetings:${userId}:${dayKey}:${readTrackedCalendars(fio).join('|')}:${ownMeetingsVersion}`
+    const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
+    if (cached && !outlookSync) {
+      setMeetings(dedupeMeetingEvents(cached.meetings))
+      setError(cached.error)
+      setLoading(false)
     }
-    const hadCache = Boolean(readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey))
+    const hadCache = Boolean(cached)
     if (!hadCache) setLoading(true)
     setError('')
-    void ensureOutlookMeetings('week', periodDay, { owner: fio })
+    void ensureOutlookMeetings('week', periodDay, { owner: fio, force })
       .then((res) => {
         if (!alive) return
         if (!res.ok) {
@@ -78,11 +82,12 @@ export function useTodayOutlookMeetings(
     return () => {
       alive = false
     }
-  }, [dayKey, fio, generation, periodDay, userId, trackedVersion])
+  }, [dayKey, fio, generation, periodDay, userId, trackedVersion, ownMeetingsVersion, outlookSync])
 
+  const visible = dedupeMeetingEvents(meetings)
   return {
-    loading: loading && meetings.length === 0,
-    error: meetings.length ? '' : error,
-    meetings
+    loading: loading && visible.length === 0,
+    error: visible.length ? '' : error,
+    meetings: visible
   }
 }

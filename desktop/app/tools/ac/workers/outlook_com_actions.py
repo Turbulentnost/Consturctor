@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+import queue
 import re
 import sys
 import tempfile
@@ -203,29 +204,135 @@ def _outlook_access_message(prefix: str, exc: Exception) -> str:
 # Outlook COM — один STA-сервер. Параллельный обход почты и клик «В Outlook»
 # дают MK_E_UNAVAILABLE, и кнопка молча не открывает письмо.
 _OUTLOOK_COM_LOCK = threading.Lock()
+# Одна живая сессия на всё время процесса: новый CoInitialize на каждый запрос
+# снова показывает «разрешить на 10 минут» и рвёт связь примерно через час.
+_SESSION_TIMEOUT_SEC = 200
+_session_queue: queue.Queue | None = None
+_session_thread: threading.Thread | None = None
+_session_ident = 0
+_cached_outlook: Any = None
+_com_initialized = False
+_programmatic_access_applied = False
+
+
+def _allow_programmatic_access() -> None:
+    """Убрать окно Outlook «разрешить доступ на 10 минут» для этого пользователя.
+
+    Диалог центра управления безопасностью не умеет «всегда»: максимум 10 минут,
+    после чего следующий вызов снова ждёт подтверждения и молча отваливается.
+    """
+    global _programmatic_access_applied
+    if _programmatic_access_applied or sys.platform != "win32":
+        return
+    _programmatic_access_applied = True
+    try:
+        import winreg
+    except ImportError:
+        return
+    prompts = (
+        "PromptOOMAddressInformationAccess",
+        "PromptOOMAddressBookAccess",
+        "PromptOOMMeetingTaskRequestResponse",
+        "PromptOOMSend",
+        "PromptOOMFormulaAccess",
+        "PromptSimpleMAPISend",
+        "PromptSimpleMAPINameResolve",
+        "PromptSimpleMAPIOpenMessage",
+    )
+    for version in ("16.0", "15.0", "14.0"):
+        try:
+            with winreg.CreateKey(
+                winreg.HKEY_CURRENT_USER,
+                rf"Software\Microsoft\Office\{version}\Outlook\Security",
+            ) as key:
+                winreg.SetValueEx(key, "ObjectModelGuard", 0, winreg.REG_DWORD, 2)
+        except OSError as exc:
+            _log_progress(f"step=outlook_guard_skip version={version}: {exc}")
+        try:
+            with winreg.CreateKey(
+                winreg.HKEY_CURRENT_USER,
+                rf"Software\Policies\Microsoft\Office\{version}\outlook\security",
+            ) as key:
+                winreg.SetValueEx(key, "AdminSecurityMode", 0, winreg.REG_DWORD, 3)
+                for name in prompts:
+                    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, 2)
+        except OSError as exc:
+            _log_progress(f"step=outlook_policy_skip version={version}: {exc}")
+    _log_progress("step=outlook_programmatic_access ok")
+
+
+def _drop_cached_outlook() -> None:
+    global _cached_outlook
+    _cached_outlook = None
 
 
 def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
-    """Выполнить read-only COM-операцию с CoInitialize и повтором транзиентных ошибок.
+    """Выполнить COM-операцию в постоянной STA-сессии Outlook.
 
     ``operation`` получает модуль ``win32com.client`` и возвращает готовый payload.
     ComUnavailableError из загрузки pywin32 пробрасывается как есть (нужно тестам).
     """
-    with _OUTLOOK_COM_LOCK:
+    if threading.get_ident() == _session_ident:
         return _run_com_read_locked(operation, access_error_prefix)
+    box: dict[str, Any] = {"event": threading.Event(), "result": None, "error": None}
+    with _OUTLOOK_COM_LOCK:
+        _outlook_session_queue().put((operation, access_error_prefix, box))
+        finished = box["event"].wait(_SESSION_TIMEOUT_SEC)
+    if not finished:
+        raise OutlookAccessError(
+            f"{access_error_prefix}: Outlook не ответил за {_SESSION_TIMEOUT_SEC} с. "
+            "Соединение удерживается, повторите обновление."
+        )
+    if box["error"] is not None:
+        raise box["error"]
+    return box["result"]
+
+
+def _outlook_session_queue() -> queue.Queue:
+    global _session_queue, _session_thread
+    if _session_thread is not None and _session_thread.is_alive() and _session_queue is not None:
+        return _session_queue
+    work: queue.Queue = queue.Queue()
+    _session_queue = work
+    thread = threading.Thread(
+        target=_outlook_session_main,
+        name="outlook-com-session",
+        daemon=True,
+    )
+    _session_thread = thread
+    thread.start()
+    return work
+
+
+def _outlook_session_main() -> None:
+    global _session_ident
+    _session_ident = threading.get_ident()
+    work = _session_queue
+    if work is None:
+        return
+    while True:
+        operation, prefix, box = work.get()
+        try:
+            box["result"] = _run_com_read_locked(operation, prefix)
+        except Exception as exc:  # noqa: BLE001 — отдать ошибку ждущему вызову
+            box["error"] = exc
+        finally:
+            box["event"].set()
 
 
 def _run_com_read_locked(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
+    global _com_initialized
     pythoncom, win32com_client = _load_pywin32_modules()
     _log_progress("step=load_pywin32 ok")
+    if not _com_initialized:
+        _log_progress("step=co_initialize start")
+        pythoncom.CoInitialize()
+        _com_initialized = True
+        _allow_programmatic_access()
+        _log_progress("step=co_initialize ok")
     last_exc: Exception | None = None
     for attempt in range(1, MAX_COM_ATTEMPTS + 1):
-        com_initialized = False
         try:
-            _log_progress(f"step=co_initialize start attempt={attempt}")
-            pythoncom.CoInitialize()
-            com_initialized = True
-            _log_progress("step=co_initialize ok")
             return operation(win32com_client)
         except OutlookComError:
             raise
@@ -241,21 +348,10 @@ def _run_com_read_locked(operation: Callable[[Any], dict], access_error_prefix: 
                 f"step=com_error attempt={attempt} transient={transient}: {exc}"
             )
             if transient and attempt < MAX_COM_ATTEMPTS:
-                if com_initialized:
-                    try:
-                        pythoncom.CoUninitialize()
-                    except Exception:
-                        pass
-                    com_initialized = False
+                _drop_cached_outlook()
                 time.sleep(COM_RETRY_DELAY_SECONDS * attempt)
                 continue
             raise OutlookAccessError(_outlook_access_message(access_error_prefix, exc)) from exc
-        finally:
-            if com_initialized:
-                try:
-                    pythoncom.CoUninitialize()
-                except Exception:
-                    pass
     raise OutlookAccessError(
         _outlook_access_message(access_error_prefix, last_exc or RuntimeError("Outlook COM failed"))
     )
@@ -286,6 +382,10 @@ def _decode_mime_header(value: str) -> str:
 
 OL_MEETING = 1
 OL_RECIPIENT_REQUIRED = 1
+OL_RECURS_WEEKLY = 1
+OL_RECURS_MONTHLY = 2
+# Сколько вперёд переносить выходные, не меняя правило серии.
+_WORKWEEK_HORIZON_DAYS = 366
 _PEOPLE_KEYS = (
     "people",
     "attendees",
@@ -556,6 +656,19 @@ def _resolve_person_calendar_folder(
     folder, status = _open_shared_calendar(namespace, person)
     if folder is not None:
         return folder, status
+    # Личный ящик в адресной книге часто не резолвится, а совещания руководителя
+    # уже лежат в открытом общем календаре «Совещания».
+    if str(status).startswith("unresolved"):
+        shared = _find_public_meeting_folders(outlook, namespace, own_name)
+        if shared:
+            _log_progress(
+                f"step=calendar_fallback_meetings person={person} folders={len(shared)}"
+            )
+            return shared[0][1], "meetings"
+        labels = [label for label, _folder, is_own in visible if not is_own]
+        _log_progress(
+            f"step=calendar_unresolved person={person} shared_labels={labels[:8]}"
+        )
     return None, status
 
 
@@ -599,6 +712,20 @@ def _folder_entry_id(folder: Any) -> str:
 
 def _folder_label(folder: Any, fallback: str = "") -> str:
     return _safe_str(getattr(folder, "Name", "")).strip() or fallback or "Календарь"
+
+
+def _display_calendar_label(folder: Any, fallback: str = "") -> str:
+    """Папка «Календарь» в чужом ящике подписывается именем ящика, не словом «Календарь»."""
+    name = _folder_label(folder, fallback)
+    store = ""
+    try:
+        store = _safe_str(getattr(folder.Store, "DisplayName", "")).strip()
+    except Exception:
+        store = ""
+    generic = name.casefold() in {"", "календарь", "calendar", "календари", "calendars"}
+    if generic and store:
+        return store
+    return name or store or fallback or "Календарь"
 
 
 def _is_appointment_folder(folder: Any) -> bool:
@@ -648,7 +775,7 @@ def _iter_visible_calendar_folders(
                         folder = nav.Folder
                     except Exception:
                         continue
-                    add(folder, _folder_label(folder, group_name))
+                    add(folder, _display_calendar_label(folder, group_name))
         if seen_explorers == 0:
             _log_progress("step=nav_calendars skipped: no explorer")
     except Exception as exc:
@@ -668,7 +795,7 @@ def _iter_visible_calendar_folders(
         try:
             for sub in folder.Folders:
                 if _is_appointment_folder(sub):
-                    extra.append((_folder_label(sub, label), sub))
+                    extra.append((_display_calendar_label(sub, label), sub))
         except Exception:
             continue
     for label, folder in extra:
@@ -756,22 +883,112 @@ def _own_calendar_folder(namespace: Any) -> Any:
     return _default_folder(namespace, CALENDAR_FOLDER_ID)
 
 
+def _person_lookup_queries(person: str) -> list[str]:
+    """Варианты ФИО для адресной книги. «Фамилия И.О.» Outlook часто не резолвит."""
+    raw = (person or "").strip()
+    if not raw:
+        return []
+    spaced = " ".join(raw.replace(".", " ").split())
+    parts = spaced.split()
+    queries: list[str] = []
+
+    def add(value: str) -> None:
+        text = " ".join((value or "").split())
+        if text and text.casefold() not in {item.casefold() for item in queries}:
+            queries.append(text)
+
+    add(raw)
+    add(spaced)
+    if len(parts) >= 2:
+        add(f"{parts[0]} {parts[1][:1]}")
+        add(f"{parts[0]} {parts[1]}")
+    if parts:
+        add(parts[0])
+    return queries
+
+
+def _recipient_display_name(recipient: Any) -> str:
+    try:
+        entry = recipient.AddressEntry
+    except Exception:
+        return ""
+    name = _safe_str(getattr(entry, "Name", "")).strip()
+    if name:
+        return name
+    try:
+        user = entry.GetExchangeUser()
+    except Exception:
+        return ""
+    return _safe_str(getattr(user, "Name", "")).strip()
+
+
+def _recipient_matches_person(recipient: Any, person: str) -> bool:
+    display = _recipient_display_name(recipient)
+    if not display:
+        return True
+    return _same_calendar_person(display, person) or _folder_matches_person(display, person)
+
+
+def _recipient_from_gal(namespace: Any, person: str) -> Any | None:
+    """Найти сотрудника в глобальной адресной книге, если Resolve по короткому ФИО молчит."""
+    try:
+        lists = namespace.AddressLists
+        count = int(lists.Count or 0)
+    except Exception:
+        return None
+    for index in range(1, count + 1):
+        try:
+            address_list = lists.Item(index)
+            if int(getattr(address_list, "AddressListType", -1) or -1) != 0:
+                continue
+            entries = address_list.AddressEntries
+        except Exception:
+            continue
+        for query in _person_lookup_queries(person):
+            try:
+                entry = entries.Item(query)
+            except Exception:
+                continue
+            found = _safe_str(getattr(entry, "Name", "")).strip() or query
+            if not (_same_calendar_person(found, person) or _folder_matches_person(found, person)):
+                continue
+            try:
+                recipient = namespace.CreateRecipient(found)
+                recipient.Resolve()
+                if bool(recipient.Resolved) and _recipient_matches_person(recipient, person):
+                    return recipient
+            except Exception:
+                continue
+    return None
+
+
 def _open_shared_calendar(namespace: Any, person: str) -> tuple[Any | None, str]:
     """Календарь сотрудника через адресную книгу Outlook. None если нет прав или не найден."""
     name = (person or "").strip()
     if not name:
         return None, "empty"
-    try:
-        recipient = namespace.CreateRecipient(name)
-        recipient.Resolve()
-    except Exception as exc:
-        return None, f"unresolved:{exc}"
-    try:
-        resolved = bool(recipient.Resolved)
-    except Exception:
-        resolved = False
-    if not resolved:
-        return None, "unresolved"
+    last_status = "unresolved"
+    recipient = None
+    for query in _person_lookup_queries(name):
+        try:
+            candidate = namespace.CreateRecipient(query)
+            candidate.Resolve()
+        except Exception as exc:
+            last_status = f"unresolved:{exc}"
+            continue
+        try:
+            resolved = bool(candidate.Resolved)
+        except Exception:
+            resolved = False
+        if not resolved or not _recipient_matches_person(candidate, name):
+            last_status = "unresolved"
+            continue
+        recipient = candidate
+        break
+    if recipient is None:
+        recipient = _recipient_from_gal(namespace, name)
+    if recipient is None:
+        return None, last_status
     try:
         folder = namespace.GetSharedDefaultFolder(recipient, CALENDAR_FOLDER_ID)
     except Exception as exc:
@@ -781,16 +998,95 @@ def _open_shared_calendar(namespace: Any, person: str) -> tuple[Any | None, str]
     return folder, "shared"
 
 
+FREE_BUSY_MINUTES = 30
+_FREE_BUSY_LABELS = {
+    "1": "Под вопросом",
+    "2": "Занят",
+    "3": "Нет на месте",
+    "4": "Работает в другом месте",
+}
+
+
+def _free_busy_events(
+    namespace: Any, person: str, start_at: datetime, end_at: datetime
+) -> list[dict] | None:
+    """Занятость из адресной книги, когда папку календаря открыть нельзя (право «Только сведения о доступности»).
+
+    None — Outlook не отдал сведения; [] — в периоде свободно.
+    """
+    try:
+        recipient = namespace.CreateRecipient(person)
+        recipient.Resolve()
+        if not bool(recipient.Resolved):
+            return None
+    except Exception as exc:
+        _log_progress(f"step=freebusy_unresolved person={person}: {exc}")
+        return None
+    step = timedelta(minutes=FREE_BUSY_MINUTES)
+    day = start_at.replace(hour=0, minute=0, second=0, microsecond=0)
+    slots: list[tuple[datetime, str]] = []
+    while day < end_at and len(slots) < 20000:
+        try:
+            raw = _safe_str(recipient.FreeBusy(day, FREE_BUSY_MINUTES, True))
+        except Exception as exc:
+            _log_progress(f"step=freebusy_failed person={person}: {exc}")
+            return None if not slots else _free_busy_blocks(slots, person, start_at, end_at)
+        if not raw:
+            break
+        slots.extend((day + step * index, char) for index, char in enumerate(raw))
+        day += step * len(raw)
+    return _free_busy_blocks(slots, person, start_at, end_at)
+
+
+def _free_busy_blocks(
+    slots: list[tuple[datetime, str]], person: str, start_at: datetime, end_at: datetime
+) -> list[dict]:
+    step = timedelta(minutes=FREE_BUSY_MINUTES)
+    blocks: list[list[Any]] = []
+    for slot_start, char in slots:
+        if char not in _FREE_BUSY_LABELS or slot_start + step <= start_at or slot_start >= end_at:
+            continue
+        if blocks and blocks[-1][2] == char and blocks[-1][1] == slot_start:
+            blocks[-1][1] = slot_start + step
+        else:
+            blocks.append([slot_start, slot_start + step, char])
+    return [
+        {
+            "entry_id": f"freebusy:{person}:{begin.isoformat()}",
+            "subject": _FREE_BUSY_LABELS[char],
+            "start": begin.isoformat(sep="T", timespec="seconds"),
+            "end": finish.isoformat(sep="T", timespec="seconds"),
+            "location": "",
+            "importance": 1,
+            "calendar_owner": person,
+            "own_calendar": False,
+            "organizer": "",
+            "required_attendees": "",
+            "optional_attendees": "",
+            "body_preview": "",
+            "free_busy_only": True,
+        }
+        for begin, finish, char in blocks
+    ]
+
+
 def _prepare_calendar_items(folder: Any, *, include_recurrences: bool = True) -> Any:
     items = folder.Items
+    # Outlook expands recurrences only if Sort([Start]) happens first.
+    # The reverse order returns an empty folder, especially on a week that
+    # crosses a month boundary.
     try:
-        items.IncludeRecurrences = bool(include_recurrences)
+        items.Sort("[Start]", False)
     except Exception:
-        pass
-    try:
-        items.Sort("[Start]")
-    except Exception:
-        pass
+        try:
+            items.Sort("[Start]")
+        except Exception:
+            pass
+    if include_recurrences:
+        try:
+            items.IncludeRecurrences = True
+        except Exception:
+            pass
     return items
 
 
@@ -822,6 +1118,243 @@ def _attach_attendees(appt: Any, names: list[str]) -> list[str]:
     except Exception:
         _log_progress("step=attendees_resolve skipped")
     return added
+
+
+def _replace_attendees(appt: Any, names: list[str]) -> list[str]:
+    """Заменить состав совещания, а не дописать тех же людей ещё раз."""
+    try:
+        recipients = appt.Recipients
+        for index in range(int(getattr(recipients, "Count", 0) or 0), 0, -1):
+            recipients.Remove(index)
+    except Exception:
+        _log_progress("step=attendees_clear skipped")
+    return _attach_attendees(appt, names)
+
+
+def _recipient_smtp(recipient: Any) -> str:
+    """SMTP участника после Resolve: адресная книга, затем свойство письма."""
+    entry = None
+    try:
+        entry = recipient.AddressEntry
+    except Exception:
+        entry = None
+    if entry is not None:
+        smtp = _exchange_smtp(entry)
+        if "@" in smtp:
+            return smtp
+        address = _safe_str(getattr(entry, "Address", "")).strip()
+        if "@" in address:
+            return address
+    try:
+        value = recipient.PropertyAccessor.GetProperty(
+            "http://schemas.microsoft.com/mapi/proptag/0x39FE001E"
+        )
+        text = _safe_str(value).strip()
+        if "@" in text:
+            return text
+    except Exception:
+        pass
+    return ""
+
+
+def _participant_lines(appt: Any, fallback: list[str]) -> list[str]:
+    lines: list[str] = []
+    try:
+        recipients = appt.Recipients
+        count = int(getattr(recipients, "Count", 0) or 0)
+    except Exception:
+        recipients, count = None, 0
+    for index in range(1, count + 1):
+        try:
+            recipient = recipients.Item(index)
+        except Exception:
+            continue
+        name = _recipient_display_name(recipient) or _safe_str(getattr(recipient, "Name", "")).strip()
+        email = _recipient_smtp(recipient)
+        if name and email:
+            lines.append(f"{name} <{email}>")
+        elif name:
+            lines.append(name)
+    if lines:
+        return lines
+    return [item.strip() for item in fallback if item and item.strip()]
+
+
+def short_person_name(fio: str) -> str:
+    """«Жалыбин Максим Дмитриевич» → «Жалыбин М.Д.»."""
+    parts = [part for part in (fio or "").replace(".", " ").split() if part]
+    if len(parts) >= 3 and parts[1][:1] and parts[2][:1]:
+        return f"{parts[0]} {parts[1][:1]}.{parts[2][:1]}."
+    if len(parts) == 2 and parts[1][:1]:
+        return f"{parts[0]} {parts[1][:1]}."
+    return (fio or "").strip()
+
+
+def meeting_planner_line(fio: str, position: str) -> str:
+    tail = " ".join(part for part in (short_person_name(fio), (position or "").strip()) if part)
+    if not tail:
+        return "запланировал(а)"
+    return f"запланировал(а) {tail}"
+
+
+def compose_participants_body(lines: list[str], planner: str, notes: str) -> str:
+    """Текст совещания: список участников с почтой и кто запланировал."""
+    cleaned = [line.strip() for line in lines if line and line.strip()]
+    if not cleaned:
+        return (notes or "").strip()
+    rows = ["Участники", ""]
+    for index, line in enumerate(cleaned):
+        rows.append(f"{line};" if index < len(cleaned) - 1 else line)
+    rows.extend(["", planner.strip() or "запланировал(а)"])
+    text = "\n".join(rows)
+    extra = _notes_after_participants(notes)
+    if extra:
+        text = f"{text}\n\n{extra}"
+    return text
+
+
+def _notes_after_participants(notes: str) -> str:
+    text = (notes or "").strip()
+    if not text.casefold().startswith("участники"):
+        return text
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().casefold().startswith("запланировал"):
+            return "\n".join(lines[index + 1 :]).strip()
+    return ""
+
+
+def outlook_weekday_mask(weekday: int) -> int:
+    """Python Monday=0 … Sunday=6 → битовая маска дня Outlook."""
+    return 1 << ((int(weekday) + 1) % 7)
+
+
+def nearest_workday(moment: datetime) -> datetime:
+    """Суббота → пятница, воскресенье → понедельник. Будний день не сдвигается."""
+    if moment.weekday() == 5:
+        return moment - timedelta(days=1)
+    if moment.weekday() == 6:
+        return moment + timedelta(days=1)
+    return moment
+
+
+def next_workday(moment: datetime) -> datetime:
+    cursor = moment
+    while cursor.weekday() >= 5:
+        cursor += timedelta(days=1)
+    return cursor
+
+
+def first_monthly_start(start: datetime, day_of_month: int) -> datetime:
+    """Первая дата серии: выбранное число месяца, не раньше дня встречи."""
+    day = min(31, max(1, int(day_of_month or start.day)))
+    year, month = start.year, start.month
+    for _ in range(18):
+        try:
+            candidate = start.replace(year=year, month=month, day=day)
+        except ValueError:
+            candidate = None
+        if candidate is not None and candidate.date() >= start.date():
+            return candidate
+        month += 1
+        if month == 13:
+            month = 1
+            year += 1
+    return start
+
+
+def _recurrence_dates(start: datetime, kind: str, day_of_month: int) -> list[datetime]:
+    limit = start + timedelta(days=_WORKWEEK_HORIZON_DAYS)
+    found: list[datetime] = []
+    if kind == "weekly":
+        cursor = start
+        while cursor <= limit and len(found) < 60:
+            found.append(cursor)
+            cursor += timedelta(days=7)
+        return found
+    year, month = start.year, start.month
+    day = min(31, max(1, int(day_of_month or start.day)))
+    while len(found) < 24:
+        try:
+            cursor = start.replace(year=year, month=month, day=day)
+        except ValueError:
+            cursor = None
+        if cursor is not None and cursor >= start:
+            if cursor > limit:
+                break
+            found.append(cursor)
+        month += 1
+        if month == 13:
+            month = 1
+            year += 1
+        if datetime(year, month, 1) > limit + timedelta(days=40):
+            break
+    return found
+
+
+def _meeting_span(spec: dict) -> tuple[datetime, datetime]:
+    """Подогнать первую дату под число месяца или сдвинуть разовую встречу с выходного."""
+    start: datetime = spec["start"]
+    end: datetime = spec["end"]
+    duration = end - start
+    kind = spec.get("recurrence_kind") or ""
+    if kind == "monthly":
+        start = first_monthly_start(start, int(spec.get("day_of_month") or start.day))
+        end = start + duration
+    elif not kind and spec.get("work_week") and start.weekday() >= 5:
+        start = nearest_workday(start)
+        end = start + duration
+    return start, end
+
+
+def _apply_recurrence(appt: Any, start: datetime, kind: str, day_of_month: int) -> Any:
+    pattern = appt.GetRecurrencePattern()
+    if kind == "monthly":
+        pattern.RecurrenceType = OL_RECURS_MONTHLY
+        pattern.Interval = 1
+        pattern.DayOfMonth = min(31, max(1, int(day_of_month or start.day)))
+    else:
+        pattern.RecurrenceType = OL_RECURS_WEEKLY
+        pattern.Interval = 1
+        pattern.DayOfWeekMask = outlook_weekday_mask(start.weekday())
+    pattern.PatternStartDate = datetime(start.year, start.month, start.day)
+    pattern.NoEndDate = True
+    return pattern
+
+
+def _shift_weekend_occurrences(pattern: Any, start: datetime, end: datetime, kind: str, day_of_month: int) -> int:
+    """Выходной экземпляр серии переносится на рабочий день. Правило повтора не меняется."""
+    duration = end - start
+    clock = (start.hour, start.minute, start.second)
+    moved = 0
+    for occurrence in _recurrence_dates(start, kind, day_of_month):
+        if occurrence.weekday() < 5:
+            continue
+        original = occurrence.replace(hour=clock[0], minute=clock[1], second=clock[2], microsecond=0)
+        target = nearest_workday(original)
+        if target < start:
+            target = next_workday(original)
+        if target == original:
+            continue
+        item = None
+        for probe in (original, original.strftime("%d.%m.%Y %H:%M:%S")):
+            try:
+                item = pattern.GetOccurrence(probe)
+                break
+            except Exception:
+                item = None
+        if item is None:
+            _log_progress(f"step=workweek_occurrence_missing date={original:%Y-%m-%d}")
+            continue
+        try:
+            _set_appointment_times(item, target, target + duration)
+            item.Save()
+            moved += 1
+        except Exception as exc:
+            _log_progress(f"step=workweek_shift_failed date={original:%Y-%m-%d}: {exc}")
+    if moved:
+        _log_progress(f"step=workweek_shifted count={moved}")
+    return moved
 
 
 def _matches_query(subject: str, body: str, query: str | None) -> bool:
@@ -866,8 +1399,205 @@ def _resolve_mail_folder_specs(folder_value: object) -> list[tuple[str, int, str
     )
 
 
+def _profile_mail_addresses(namespace: Any) -> set[str]:
+    """SMTP-адреса учётных записей текущего профиля Outlook (в нижнем регистре)."""
+    found: set[str] = set()
+    try:
+        for account in namespace.Accounts:
+            address = _safe_str(getattr(account, "SmtpAddress", "")).strip().casefold()
+            if address:
+                found.add(address)
+    except Exception as exc:
+        _log_progress(f"step=profile_accounts skipped: {exc}")
+    try:
+        user = namespace.CurrentUser.AddressEntry.GetExchangeUser()
+        address = _safe_str(getattr(user, "PrimarySmtpAddress", "")).strip().casefold()
+        if address:
+            found.add(address)
+    except Exception:
+        pass
+    return found
+
+
+def _mailbox_local_part(address: str) -> str:
+    text = (address or "").strip().casefold()
+    if "@" not in text:
+        return ""
+    return re.sub(r"[._\-]", "", text.split("@")[0])
+
+
+def _mailbox_matches(address: str, mailbox: str) -> bool:
+    left = (address or "").strip().casefold()
+    right = (mailbox or "").strip().casefold()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    # Адрес из логина почты не совпадает с SMTP буква в букву: testii@… и test_ii@…,
+    # а также другой домен того же ящика.
+    local = _mailbox_local_part(left)
+    return bool(local) and local == _mailbox_local_part(right)
+
+
+OL_PRIMARY_EXCHANGE_MAILBOX = 0
+
+# OlExchangeConnectionMode: olOffline, olCachedOffline, olDisconnected, olCachedDisconnected —
+# в этих режимах Outlook отдаёт только локальный кэш, новые письма не приходят.
+_OUTLOOK_OFFLINE_MODES = {100, 200, 300, 400}
+# Скрытый Outlook, поднятый через COM без открытого окна, кэш с сервера не догружает:
+# свежее письмо во «Входящих» старше этого — значит, Outlook здесь давно не открывали.
+_STALE_INBOX_DAYS = 7
+
+
+def _outlook_offline(namespace: Any) -> bool:
+    try:
+        return int(getattr(namespace, "ExchangeConnectionMode", 0) or 0) in _OUTLOOK_OFFLINE_MODES
+    except Exception:
+        return False
+
+
+def _newest_item_time(items: Any, date_attr: str) -> datetime | None:
+    """Дата первого элемента уже отсортированной по убыванию коллекции."""
+    try:
+        first = items.GetFirst()
+        value = getattr(first, date_attr, None) if first is not None else None
+        if value is None:
+            return None
+        return datetime(value.year, value.month, value.day, value.hour, value.minute)
+    except Exception:
+        return None
+
+
+def _stale_inbox_warning(newest: datetime | None) -> str:
+    if newest is None or datetime.now() - newest < timedelta(days=_STALE_INBOX_DAYS):
+        return ""
+    return (
+        f"Outlook на этом компьютере давно не синхронизировался: последнее письмо во «Входящих» — "
+        f"{newest.strftime('%d.%m.%Y')}. Откройте Outlook на этом компьютере и дождитесь, "
+        "пока загрузится почта, затем обновите страницу."
+    )
+
+
+def _profile_mailbox_label(namespace: Any) -> str:
+    """Ящик профиля Outlook этого компьютера — для подписи в UI."""
+    addresses = sorted(_profile_mail_addresses(namespace))
+    if addresses:
+        return addresses[0]
+    try:
+        return _safe_str(getattr(namespace.DefaultStore, "DisplayName", "")).strip()
+    except Exception:
+        return ""
+
+
+def _name_words(text: str) -> set[str]:
+    return set(re.findall(r"[^\W\d_]+", (text or "").casefold().replace("ё", "е")))
+
+
+def _same_person(display_name: str, fio: str) -> bool:
+    """Фамилия и имя из ФИО есть в имени Outlook (порядок слов любой)."""
+    parts = re.findall(r"[^\W\d_]+", (fio or "").casefold().replace("ё", "е"))
+    return len(parts) >= 2 and set(parts[:2]) <= _name_words(display_name)
+
+
+def _exchange_smtp(address_entry: Any) -> str:
+    try:
+        user = address_entry.GetExchangeUser()
+        return _safe_str(getattr(user, "PrimarySmtpAddress", "")).strip().casefold()
+    except Exception:
+        return ""
+
+
+def _mailbox_for_person(namespace: Any, fio: str) -> str:
+    """SMTP ящика сотрудника по ФИО: профиль Outlook этого человека или адресная книга.
+
+    "" — профиль Outlook открыт под ним, а SMTP не отдаётся; тогда читается ящик профиля.
+    """
+    _ensure_mapi_logon(namespace)
+    try:
+        current = namespace.CurrentUser
+        if _same_person(_safe_str(getattr(current, "Name", "")), fio):
+            return _exchange_smtp(current.AddressEntry)
+    except Exception as exc:
+        _log_progress(f"step=mailbox_owner_profile skipped: {exc}")
+    parts = (fio or "").split()
+    for query in dict.fromkeys([" ".join(parts), " ".join(parts[:2])]):
+        if not query:
+            continue
+        try:
+            recipient = namespace.CreateRecipient(query)
+            recipient.Resolve()
+            if not bool(recipient.Resolved):
+                continue
+            entry = recipient.AddressEntry
+        except Exception as exc:
+            _log_progress(f"step=mailbox_owner_resolve skipped query={query}: {exc}")
+            continue
+        address = _exchange_smtp(entry)
+        if address and _same_person(_safe_str(getattr(entry, "Name", "")), fio):
+            return address
+    raise OutlookAccessError(
+        f"Почтовый ящик «{fio}» не найден в адресной книге Outlook этого компьютера"
+    )
+
+
+def _mailbox_folder(namespace: Any, mailbox: str, folder_id: int) -> tuple[Any, str]:
+    """Папка ящика mailbox: ящик в списке Outlook → учётная запись профиля → общий доступ.
+
+    Ящик профиля вместо запрошенного не подставляется: иначе все видят почту того,
+    под чьим профилем запущен Outlook. Список ящиков читается и без связи с Exchange.
+    """
+    if not mailbox:
+        return _default_folder(namespace, folder_id), "own"
+    _ensure_mapi_logon(namespace)
+    try:
+        for store in namespace.Stores:
+            label = _safe_str(getattr(store, "DisplayName", "")).strip()
+            if not _mailbox_matches(label, mailbox):
+                continue
+            try:
+                folder = store.GetDefaultFolder(folder_id)
+            except Exception:
+                continue
+            if folder is not None:
+                try:
+                    primary = int(getattr(store, "ExchangeStoreType", -1)) == OL_PRIMARY_EXCHANGE_MAILBOX
+                except Exception:
+                    primary = False
+                return folder, "own" if primary else "store"
+    except Exception as exc:
+        _log_progress(f"step=mailbox_stores skipped: {exc}")
+    if any(_mailbox_matches(item, mailbox) for item in _profile_mail_addresses(namespace)):
+        return _default_folder(namespace, folder_id), "own"
+    try:
+        recipient = namespace.CreateRecipient(mailbox)
+        recipient.Resolve()
+        resolved = bool(recipient.Resolved)
+    except Exception as exc:
+        raise OutlookAccessError(
+            f"Ящик {mailbox} не найден в адресной книге Outlook этого компьютера ({exc})"
+        ) from exc
+    if not resolved:
+        raise OutlookAccessError(f"Ящик {mailbox} не найден в адресной книге Outlook этого компьютера")
+    try:
+        folder = namespace.GetSharedDefaultFolder(recipient, folder_id)
+    except Exception as exc:
+        raise OutlookAccessError(
+            f"Outlook на этом компьютере открыт под другим пользователем, "
+            f"а к ящику {mailbox} нет доступа ({exc})"
+        ) from exc
+    if folder is None:
+        raise OutlookAccessError(
+            f"Outlook на этом компьютере открыт под другим пользователем, а к ящику {mailbox} нет доступа"
+        )
+    return folder, "shared"
+
+
 def search_mail(input_data: dict) -> dict:
-    """Безопасно прочитать входящие/отправленные письма Outlook без изменений."""
+    """Безопасно прочитать входящие/отправленные письма Outlook без изменений.
+
+    mailbox — адрес ящика вошедшего пользователя; пусто — ящик профиля Outlook.
+    owner_fio — ФИО вошедшего, когда адрес неизвестен: ящик ищется по нему, не по профилю.
+    """
     _log_progress("step=load_pywin32 start")
     days = _clamp_int(input_data.get("days"), DEFAULT_DAYS, 1, MAX_DAYS)
     max_results = _clamp_int(
@@ -889,43 +1619,78 @@ def search_mail(input_data: dict) -> dict:
         forward=False,
     )
     folder_specs = _resolve_mail_folder_specs(input_data.get("folder"))
+    mailbox = _safe_str(input_data.get("mailbox") or "").strip().casefold()
+    owner_fio = _safe_str(input_data.get("owner_fio") or "").strip()
 
     def _read(win32com_client: Any) -> dict:
+        nonlocal mailbox
         _log_progress("step=dispatch_outlook start")
         outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
         _log_progress("step=get_namespace start")
         namespace = _mapi_namespace(outlook)
         _log_progress("step=get_namespace ok")
+        if not mailbox and owner_fio:
+            mailbox = _mailbox_for_person(namespace, owner_fio)
+            _log_progress(f"step=mailbox_owner ok mailbox={mailbox or 'profile'}")
 
         results = []
         scanned_count = 0
-        for folder_name, folder_id, sort_field, date_attr, direction in folder_specs:
-            _log_progress(f"step=get_mail_folder start folder={folder_name}")
-            folder_obj = _default_folder(namespace, folder_id)
-            _log_progress(f"step=get_mail_folder ok folder={folder_name}")
-            _log_progress(f"step=get_items start folder={folder_name}")
-            messages = folder_obj.Items
-            _log_progress(f"step=get_items ok folder={folder_name}")
-            _log_progress(f"step=sort_items start folder={folder_name}")
-            messages.Sort(sort_field, True)
-            _log_progress(f"step=sort_items ok folder={folder_name}")
+        access = ""
+        newest_inbox: datetime | None = None
 
-            folder_results, folder_scanned = _collect_mail_messages(
-                messages,
-                folder_name=folder_name,
-                date_attr=date_attr,
-                direction=direction,
-                query=_safe_str(query) if query else None,
-                start_at=start_at,
-                end_at=end_at,
-                max_results=max_results - len(results),
-                max_scan_items=max_scan_items,
-            )
-            scanned_count += folder_scanned
-            results.extend(folder_results)
-            if len(results) >= max_results:
-                break
+        def _collect(range_start: datetime, range_end: datetime) -> None:
+            nonlocal scanned_count, access, newest_inbox
+            for folder_name, folder_id, sort_field, date_attr, direction in folder_specs:
+                _log_progress(f"step=get_mail_folder start folder={folder_name} mailbox={mailbox}")
+                try:
+                    folder_obj, status = _mailbox_folder(namespace, mailbox, folder_id)
+                except OutlookAccessError:
+                    # «Отправленные» общего ящика часто закрыты при открытых «Входящих».
+                    if direction == "sent" and access:
+                        _log_progress(f"step=get_mail_folder skipped folder={folder_name}")
+                        continue
+                    raise
+                access = access or status
+                _log_progress(f"step=get_mail_folder ok folder={folder_name} access={status}")
+                store_id = _safe_str(getattr(folder_obj, "StoreID", "")).strip()
+                _log_progress(f"step=get_items start folder={folder_name}")
+                messages = folder_obj.Items
+                _log_progress(f"step=get_items ok folder={folder_name}")
+                _log_progress(f"step=sort_items start folder={folder_name}")
+                messages.Sort(sort_field, True)
+                _log_progress(f"step=sort_items ok folder={folder_name}")
+                if direction == "inbox" and access == "own" and newest_inbox is None:
+                    newest_inbox = _newest_item_time(messages, date_attr)
+
+                folder_results, folder_scanned = _collect_mail_messages(
+                    messages,
+                    folder_name=folder_name,
+                    date_attr=date_attr,
+                    direction=direction,
+                    query=_safe_str(query) if query else None,
+                    start_at=range_start,
+                    end_at=range_end,
+                    max_results=max_results - len(results),
+                    max_scan_items=max_scan_items,
+                )
+                if store_id and access != "own":
+                    for item in folder_results:
+                        item["store_id"] = store_id
+                scanned_count += folder_scanned
+                results.extend(folder_results)
+                if len(results) >= max_results:
+                    break
+
+        _collect(start_at, end_at)
+        # Скрытый Outlook без связи с Exchange не догружает новые письма, но локальный
+        # кэш уже содержит почту. Если за выбранный день пусто — показываем её.
+        cache_fallback = False
+        if not results and (
+            _outlook_offline(namespace) or _stale_inbox_warning(newest_inbox)
+        ):
+            cache_fallback = True
+            _collect(datetime(2000, 1, 1), datetime.now() + timedelta(days=1))
 
         results.sort(key=lambda item: item.get("datetime_sort") or "", reverse=True)
         for item in results:
@@ -937,11 +1702,17 @@ def search_mail(input_data: dict) -> dict:
             "count": len(results),
             "scanned_count": scanned_count,
             "source": "outlook_com",
+            "mailbox": mailbox,
+            "mailbox_access": access,
             "folder": _safe_str(input_data.get("folder") or DEFAULT_FOLDER),
             "folders": [item[0] for item in folder_specs],
             "range_start": start_at.isoformat(),
             "range_end": end_at.isoformat(),
+            "profile_mailbox": _profile_mailbox_label(namespace),
         }
+        if cache_fallback or _outlook_offline(namespace) or _stale_inbox_warning(newest_inbox):
+            # Кэш не сохраняем как «свежий день»: после открытия Outlook список надо перечитать.
+            payload["offline"] = True
         if not results:
             payload["hint"] = (
                 "Писем по этому query нет. Не повторяй поиск с другими словами "
@@ -984,8 +1755,16 @@ def read_calendar(input_data: dict) -> dict:
     if not isinstance(raw_owners, list):
         single = _safe_str(input_data.get("calendar_owner") or "").strip()
         raw_owners = [single] if single else []
-    calendar_owners = list(dict.fromkeys(_safe_str(item).strip() for item in raw_owners))
+    calendar_owners: list[str] = []
+    seen_owners: set[str] = set()
+    for item in raw_owners:
+        name = _safe_str(item).strip()
+        if not name or name.casefold() in seen_owners:
+            continue
+        seen_owners.add(name.casefold())
+        calendar_owners.append(name)
     calendar_owner = bool(calendar_owners)
+    include_own = _truthy(input_data.get("include_own", True))
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -1112,6 +1891,8 @@ def read_calendar(input_data: dict) -> dict:
             folders = _iter_visible_calendar_folders(outlook, namespace, own_name)
             if not folders:
                 folders = [(own_name or "Календарь", _own_calendar_folder(namespace), True)]
+            if not include_own:
+                folders = [row for row in folders if not row[2]]
             _log_progress(f"step=visible_calendars count={len(folders)}")
             for label, folder, is_own in folders:
                 remaining_results = max_results - len(events)
@@ -1172,7 +1953,15 @@ def read_calendar(input_data: dict) -> dict:
                 "range_start": start_at.isoformat(),
                 "range_end": end_at.isoformat(),
             }
-        targets = calendar_owners or people or [own_name or ""]
+        targets = list(calendar_owners or people or [own_name or ""])
+        if (
+            include_own
+            and calendar_owner
+            and not any(
+                not person or _same_calendar_person(person, own_name) for person in targets
+            )
+        ):
+            targets.insert(0, own_name or "")
         for person in targets:
             remaining_results = max_results - len(events)
             remaining_scan = max_scan_items - checked_count
@@ -1193,7 +1982,23 @@ def read_calendar(input_data: dict) -> dict:
                     f"step=resolve_calendar_done person={person} status={status} "
                     f"found={int(folder is not None)}"
                 )
+            def _try_free_busy(reason: str) -> bool:
+                if status == "own" or status.startswith("unresolved"):
+                    return False
+                blocks = _free_busy_events(namespace, owner, start_at, end_at)
+                if blocks is None:
+                    return False
+                blocks = blocks[: max(remaining_results, 0)]
+                events.extend(blocks)
+                calendars.append({"person": owner, "status": "freebusy", "count": len(blocks)})
+                _log_progress(
+                    f"step=calendar_freebusy person={owner} reason={reason} events={len(blocks)}"
+                )
+                return True
+
             if folder is None:
+                if _try_free_busy(status):
+                    continue
                 entry = {"person": owner, "status": status, "count": 0}
                 hint = _calendar_access_hint(status)
                 if hint:
@@ -1210,6 +2015,8 @@ def read_calendar(input_data: dict) -> dict:
                         "Нужен классический Outlook с загруженным почтовым профилем. "
                         f"({exc})"
                     ) from exc
+                if _try_free_busy("items"):
+                    continue
                 calendars.append(
                     {
                         "person": owner,
@@ -1250,6 +2057,8 @@ def read_calendar(input_data: dict) -> dict:
                     chunk, scanned = retry_chunk, retry_scanned
                 elif scanned == 0 and retry_scanned == 0:
                     status = "unreadable"
+                    if _try_free_busy(status):
+                        continue
             checked_count += scanned
             events.extend(chunk)
             entry = {"person": owner, "status": status, "count": len(chunk)}
@@ -1325,12 +2134,31 @@ def create_event(input_data: dict) -> dict:
                 folder = _own_calendar_folder(namespace)
             appt = _new_appointment(outlook, folder)
             appt.Subject = spec["subject"]
-            _set_appointment_times(appt, spec["start"], spec["end"])
+            start, end = _meeting_span(spec)
+            _set_appointment_times(appt, start, end)
             try:
                 appt.ReminderSet = False
             except Exception:
                 pass
+            kind = spec.get("recurrence_kind") or ""
+            if kind:
+                try:
+                    _apply_recurrence(appt, start, kind, int(spec.get("day_of_month") or start.day))
+                    appt.Save()
+                    pattern = appt.GetRecurrencePattern()
+                except Exception as exc:
+                    raise OutlookComError(f"Outlook не записал повтор совещания: {exc}") from exc
+                if spec.get("work_week"):
+                    _shift_weekend_occurrences(
+                        pattern, start, end, kind, int(spec.get("day_of_month") or start.day)
+                    )
             added = _attach_attendees(appt, attendees)
+            if attendees:
+                spec["body"] = compose_participants_body(
+                    _participant_lines(appt, attendees),
+                    meeting_planner_line(spec.get("planner_fio") or "", spec.get("planner_position") or ""),
+                    spec["body"],
+                )
             appt.Save()
             entry_id = _verify_saved_appointment(outlook, appt)
             if spec["body"]:
@@ -1345,11 +2173,12 @@ def create_event(input_data: dict) -> dict:
                     appt.Save()
                 except Exception:
                     _log_progress("step=location skipped")
-            try:
-                appt.Categories = AI_AGENT_CATEGORY
-                appt.Save()
-            except Exception:
-                _log_progress("step=category skipped")
+            if spec["stamp"]:
+                try:
+                    appt.Categories = AI_AGENT_CATEGORY
+                    appt.Save()
+                except Exception:
+                    _log_progress("step=category skipped")
             invites_sent = False
             if added and spec["send_invites"]:
                 try:
@@ -1362,8 +2191,8 @@ def create_event(input_data: dict) -> dict:
                 {
                     "entry_id": entry_id,
                     "subject": spec["subject"],
-                    "start": spec["start"].isoformat(timespec="minutes"),
-                    "end": spec["end"].isoformat(timespec="minutes"),
+                    "start": start.isoformat(timespec="minutes"),
+                    "end": end.isoformat(timespec="minutes"),
                     "location": spec["location"],
                     "organizer": organizer or own_name,
                     "organizer_status": organizer_status,
@@ -1384,8 +2213,122 @@ def create_event(input_data: dict) -> dict:
     return _run_com_read(_write, "Ошибка записи встречи в Outlook Calendar")
 
 
+def update_event(input_data: dict) -> dict:
+    """Изменить встречу Outlook по EntryID: тема, время, место, текст, участники и приглашения.
+
+    Поля, которых нет во входе, не трогаем. Приглашения уходят только если есть участники
+    и send_invites не выключен.
+    """
+    entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+    if not entry_id:
+        raise OutlookComError("Нужен entry_id встречи для изменения")
+    store_id = _safe_str(input_data.get("store_id") or "").strip()
+    start = _coerce_datetime(input_data.get("start"))
+    end = _coerce_datetime(input_data.get("end"))
+
+    def _write(win32com_client: Any) -> dict:
+        _log_progress("step=update_event dispatch_outlook start")
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = _mapi_namespace(outlook)
+        try:
+            appt = (
+                namespace.GetItemFromID(entry_id, store_id)
+                if store_id
+                else namespace.GetItemFromID(entry_id)
+            )
+        except Exception as exc:
+            raise OutlookComError(f"Встреча не найдена в Outlook: {exc}") from exc
+        if appt is None:
+            raise OutlookComError("Встреча не найдена в Outlook")
+        if "subject" in input_data:
+            appt.Subject = _safe_str(input_data.get("subject") or "").strip() or "Совещание"
+        kind, day_of_month, work_week = _recurrence_request(input_data, input_data)
+        span_start, span_end = start, end
+        if span_start is not None:
+            finish = span_end if span_end is not None and span_end > span_start else span_start + timedelta(minutes=DEFAULT_MEETING_MINUTES)
+            span_start, finish = _meeting_span(
+                {
+                    "start": span_start,
+                    "end": finish,
+                    "recurrence_kind": kind,
+                    "day_of_month": day_of_month,
+                    "work_week": work_week,
+                }
+            )
+            _set_appointment_times(appt, span_start, finish)
+            span_end = finish
+        if kind and span_start is not None:
+            try:
+                _apply_recurrence(appt, span_start, kind, int(day_of_month or span_start.day))
+                appt.Save()
+                pattern = appt.GetRecurrencePattern()
+            except Exception as exc:
+                raise OutlookComError(f"Outlook не записал повтор совещания: {exc}") from exc
+            if work_week:
+                _shift_weekend_occurrences(
+                    pattern, span_start, span_end or span_start, kind, int(day_of_month or span_start.day)
+                )
+        if "location" in input_data:
+            appt.Location = _safe_str(input_data.get("location") or "")
+        attendees = _people_from_input(input_data)
+        added: list[str] = []
+        if "attendees" in input_data:
+            added = _replace_attendees(appt, attendees)
+        notes = _safe_str(input_data.get("body") or "") if "body" in input_data else ""
+        if attendees:
+            notes = compose_participants_body(
+                _participant_lines(appt, attendees),
+                meeting_planner_line(
+                    _safe_str(input_data.get("planner_fio") or ""),
+                    _safe_str(input_data.get("planner_position") or ""),
+                ),
+                notes,
+            )
+        if notes or "body" in input_data:
+            appt.Body = notes
+        appt.Save()
+        entry = _verify_saved_appointment(outlook, appt)
+        send_invites = _truthy(input_data.get("send_invites", bool(attendees)))
+        invites_sent = False
+        if send_invites and (added or attendees):
+            try:
+                appt.Send()
+                invites_sent = True
+                _log_progress("step=update_event send_invites ok")
+            except Exception as exc:
+                _log_progress(f"step=update_event send_invites failed: {exc}")
+        _log_progress("step=update_event ok")
+        event = {
+            "entry_id": entry,
+            "subject": _safe_str(getattr(appt, "Subject", "") or ""),
+            "start": span_start.isoformat(timespec="minutes") if span_start else "",
+            "end": span_end.isoformat(timespec="minutes") if span_end else "",
+            "location": _safe_str(getattr(appt, "Location", "") or ""),
+            "attendees": added,
+            "invites_sent": invites_sent,
+        }
+        return {
+            "ok": True,
+            "event": event,
+            "events": [event],
+            "count": 1,
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка изменения встречи в Outlook Calendar")
+
+
 def _dispatch_outlook(win32com_client: Any) -> Any:
-    """Взять уже открытый Outlook, иначе создать COM-сессию и залогинить профиль."""
+    """Держать один Outlook.Application на сессию, не поднимать новый процесс на запрос."""
+    global _cached_outlook
+    if _cached_outlook is not None:
+        try:
+            _ensure_mapi_logon(_cached_outlook.GetNamespace("MAPI"))
+            _log_progress("step=dispatch_cached ok")
+            return _cached_outlook
+        except Exception as exc:
+            _log_progress(f"step=dispatch_cached dropped: {exc}")
+            _cached_outlook = None
     _log_progress("step=dispatch_outlook start")
     last_exc: Exception | None = None
     for attempt in range(1, 4):
@@ -1393,6 +2336,7 @@ def _dispatch_outlook(win32com_client: Any) -> Any:
             outlook = win32com_client.GetActiveObject("Outlook.Application")
             _ensure_mapi_logon(outlook.GetNamespace("MAPI"))
             _log_progress(f"step=dispatch_active ok attempt={attempt}")
+            _cached_outlook = outlook
             return outlook
         except Exception as exc:
             last_exc = exc
@@ -1405,6 +2349,7 @@ def _dispatch_outlook(win32com_client: Any) -> Any:
         _log_progress(f"step=dispatch_new_logon skipped: {exc}")
     if last_exc is not None:
         _log_progress(f"step=dispatch_new after_active_fail: {last_exc}")
+    _cached_outlook = outlook
     return outlook
 
 
@@ -1466,31 +2411,54 @@ def _new_appointment(outlook: Any, folder: Any = None) -> Any:
     return outlook.CreateItem(1)
 
 
+def _wall_clock_shift(wanted: datetime, observed: datetime) -> timedelta | None:
+    """На сколько сдвинуть запись, если Outlook сохранил настенное время как UTC.
+
+    Для Москвы это ровно 3 часа: поставили 13:00, в календаре оказалось 10:00.
+    """
+    wanted = wanted.replace(tzinfo=None, microsecond=0)
+    observed = observed.replace(tzinfo=None, microsecond=0)
+    seconds = int((wanted - observed).total_seconds())
+    if seconds == 0 or abs(seconds) > 14 * 3600 or seconds % 3600 != 0:
+        return None
+    return timedelta(seconds=seconds)
+
+
+def _com_wall_clock(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    return _coerce_datetime(value)
+
+
+def _assign_wall_times(appt: Any, start: datetime, end: datetime) -> None:
+    """Локальная строка, не pywintypes.Time: тот переводит 13:00 в 10:00 UTC."""
+    try:
+        appt.Start = start.strftime("%d.%m.%Y %H:%M:%S")
+        appt.End = end.strftime("%d.%m.%Y %H:%M:%S")
+        return
+    except Exception:
+        _log_progress("step=locale_time_failed")
+    try:
+        appt.Start = start.strftime("%Y-%m-%d %H:%M:%S")
+        appt.End = end.strftime("%Y-%m-%d %H:%M:%S")
+        return
+    except Exception:
+        _log_progress("step=iso_time_failed")
+    appt.Start = start
+    appt.End = end
+
+
 def _set_appointment_times(appt: Any, start: datetime, end: datetime) -> None:
-    """Start/End: pywintypes, затем datetime, затем строка — Outlook капризен к типу."""
-    try:
-        pywintypes = importlib.import_module("pywintypes")
-        appt.Start = pywintypes.Time(start)
-        appt.End = pywintypes.Time(end)
+    """Записать начало и конец как настенное время календаря Outlook."""
+    start = start.replace(tzinfo=None)
+    end = end.replace(tzinfo=None)
+    _assign_wall_times(appt, start, end)
+    observed = _com_wall_clock(getattr(appt, "Start", None))
+    shift = _wall_clock_shift(start, observed) if observed is not None else None
+    if shift is None:
         return
-    except Exception:
-        _log_progress("step=pywintypes_time_failed")
-    try:
-        appt.Start = start
-        appt.End = end
-        return
-    except Exception:
-        _log_progress("step=datetime_assign_failed")
-    start_text = start.strftime("%Y-%m-%d %H:%M:%S")
-    end_text = end.strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        appt.Start = start_text
-        appt.End = end_text
-        return
-    except Exception:
-        _log_progress("step=start_iso_failed try_locale")
-    appt.Start = start.strftime("%d.%m.%Y %H:%M:%S")
-    appt.End = end.strftime("%d.%m.%Y %H:%M:%S")
+    _log_progress(f"step=time_shift minutes={int(shift.total_seconds() // 60)}")
+    _assign_wall_times(appt, start + shift, end + shift)
 
 
 def _meeting_specs(input_data: dict) -> list[dict]:
@@ -1502,10 +2470,14 @@ def _meeting_specs(input_data: dict) -> list[dict]:
         rows = [input_data]
     specs: list[dict] = []
     for row in rows:
-        subject, body = stamp_ai_agent_meeting(
-            str(row.get("subject") or row.get("title") or ""),
-            str(row.get("body") or row.get("text") or ""),
-        )
+        # Встречи, которые человек создал в форме Orchestrator, не помечаем как ИИ-агентские.
+        stamp = _truthy(row.get("stamp_ai_agent", input_data.get("stamp_ai_agent", True)))
+        raw_subject = str(row.get("subject") or row.get("title") or "")
+        raw_body = str(row.get("body") or row.get("text") or "")
+        if stamp:
+            subject, body = stamp_ai_agent_meeting(raw_subject, raw_body)
+        else:
+            subject, body = raw_subject.strip() or "Совещание", raw_body.strip()
         start = _coerce_datetime(row.get("start") or row.get("start_at"))
         if start is None:
             continue
@@ -1527,6 +2499,7 @@ def _meeting_specs(input_data: dict) -> list[dict]:
             send_invites = bool(attendees)
         else:
             send_invites = _truthy(send_raw)
+        recurrence_kind, day_of_month, work_week = _recurrence_request(row, input_data)
         specs.append(
             {
                 "subject": subject,
@@ -1537,9 +2510,35 @@ def _meeting_specs(input_data: dict) -> list[dict]:
                 "attendees": attendees,
                 "organizer": organizer,
                 "send_invites": send_invites,
+                "stamp": stamp,
+                "recurrence_kind": recurrence_kind,
+                "day_of_month": day_of_month,
+                "work_week": work_week,
+                "planner_fio": _safe_str(row.get("planner_fio") or input_data.get("planner_fio") or "").strip(),
+                "planner_position": _safe_str(
+                    row.get("planner_position") or input_data.get("planner_position") or ""
+                ).strip(),
             }
         )
     return specs
+
+
+def _recurrence_request(row: dict, input_data: dict) -> tuple[str, int, bool]:
+    raw = row.get("recurrence", input_data.get("recurrence"))
+    kind = ""
+    day = 0
+    if isinstance(raw, dict):
+        label = _safe_str(raw.get("kind") or "").strip().casefold()
+        if label in {"week", "weekly", "неделя"}:
+            kind = "weekly"
+        elif label in {"month", "monthly", "число", "month_day"}:
+            kind = "monthly"
+        try:
+            day = int(raw.get("day_of_month") or 0)
+        except (TypeError, ValueError):
+            day = 0
+    work_week = _truthy(row.get("work_week", input_data.get("work_week")))
+    return kind, day, work_week
 
 
 def _coerce_datetime(value: Any) -> datetime | None:
@@ -1915,6 +2914,10 @@ def _collect_calendar_events(
         except Exception as exc:
             _log_progress(f"step=item_skip progress={checked_count}: {exc}")
             continue
+        try:
+            importance = int(getattr(event, "Importance", 1) or 0)
+        except Exception:
+            importance = 1
         events.append(
             {
                 "entry_id": entry_id,
@@ -1922,6 +2925,7 @@ def _collect_calendar_events(
                 "start": _iso_com_datetime(event_start),
                 "end": _iso_com_datetime(event_end),
                 "location": location,
+                "importance": importance,
                 "calendar_owner": calendar_owner,
                 "own_calendar": bool(own_calendar),
                 "organizer": _read_guarded_property(event, PR_SENT_REPRESENTING_NAME_W),
@@ -2014,12 +3018,19 @@ def _mail_attachment_names(message: Any) -> list[dict[str, str]]:
     return names
 
 
-def _resolve_mail_item(namespace: Any, entry_id: str) -> Any:
-    """Найти письмо Outlook по EntryID и дать понятную ошибку, если оно недоступно."""
+def _resolve_mail_item(namespace: Any, entry_id: str, store_id: str = "") -> Any:
+    """Найти письмо Outlook по EntryID и дать понятную ошибку, если оно недоступно.
+
+    store_id нужен письмам из общего ящика: без него Outlook ищет только в ящике профиля.
+    """
     if not entry_id:
         raise OutlookComError("ENTRY_ID_REQUIRED: нужен entry_id письма")
     try:
-        item = namespace.GetItemFromID(entry_id)
+        item = (
+            namespace.GetItemFromID(entry_id, store_id)
+            if store_id
+            else namespace.GetItemFromID(entry_id)
+        )
     except Exception as exc:
         raise OutlookAccessError(f"Не удалось открыть письмо по entry_id: {exc}") from exc
     if item is None:
@@ -2074,7 +3085,9 @@ def fetch_mail_message(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         payload = _mail_detail_payload(message, include_body=True)
         payload["source"] = "outlook_com"
         return payload
@@ -2090,7 +3103,9 @@ def mark_mail_read(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         try:
             message.UnRead = unread
             message.Save()
@@ -2212,7 +3227,9 @@ def display_mail_message(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         if mode == "reply":
             draft = message.Reply()
         elif mode == "reply_all":
@@ -2272,7 +3289,9 @@ def save_mail_message(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         subject = _decode_mime_header(getattr(message, "Subject", ""))
         base_dir = Path(save_dir) if save_dir else Path(tempfile.gettempdir()) / "Constructor" / "outlook" / "messages"
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -2326,7 +3345,9 @@ def save_mail_attachment(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
-        message = _resolve_mail_item(namespace, entry_id)
+        message = _resolve_mail_item(
+            namespace, entry_id, _safe_str(input_data.get("store_id") or "").strip()
+        )
         attachments = getattr(message, "Attachments", None)
         if attachments is None:
             raise OutlookAccessError("У письма нет вложений")

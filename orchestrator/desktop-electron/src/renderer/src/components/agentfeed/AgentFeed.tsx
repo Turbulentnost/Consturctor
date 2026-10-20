@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { ClarifyCard } from './ClarifyCard'
+import { DocflowActionsBlock } from './DocflowActionsBlock'
+import { splitAgentResult } from './docflowActions'
 import { HitlCard } from './HitlCard'
 import { MarkdownBody } from './MarkdownBody'
 import { MiniCalendar, meetingsFromFeed } from './MiniCalendar'
@@ -26,6 +28,9 @@ interface AgentFeedProps {
 function readableFeedText(text: string): string {
   const value = (text || '').trim()
   if (!value) return 'Ошибка запуска агента'
+  if (/^network request failed$/i.test(value)) {
+    return 'Не удалось связаться с Cursor: сеть оборвалась. Проверьте подключение и запустите агента ещё раз.'
+  }
   // Иногда backend присылает строку только из вопросительных знаков.
   // Показываем полезный fallback с действием для пользователя.
   if (!value.replace(/[?？\s.,;:!…()[\]{}'"`+-]/g, '')) {
@@ -41,7 +46,7 @@ function ResultBlock({
   text?: string
   meetings: ReturnType<typeof meetingsFromFeed>
 }): React.JSX.Element {
-  const body = (text || '').trim()
+  const { text: body, actions } = useMemo(() => splitAgentResult((text || '').trim()), [text])
   return (
     <div className="feed-result">
       {meetings.length > 0 && (
@@ -50,6 +55,7 @@ function ResultBlock({
         </div>
       )}
       {body ? <MarkdownBody text={presentAgentText(body)} /> : null}
+      <DocflowActionsBlock actions={actions} />
     </div>
   )
 }

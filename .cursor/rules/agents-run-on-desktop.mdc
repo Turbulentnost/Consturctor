@@ -1,0 +1,23 @@
+---
+description: Agents run on the owner's computer, never on the server.
+alwaysApply: true
+---
+
+# Agents run on the desktop
+
+Cursor agents run in Orchestrator or Constructor on the owner's computer. The backend only stores the playbook, the schedule, and the result.
+
+- Do not set `local_run.run_on_server`.
+- Do not start a headless sidecar, Cursor SDK, or agent run inside the backend process.
+- A schedule dispatches `push_desktop_command` to that user's Orchestrator. If the computer is off, skip the run and notify. Do not fall back to the server.
+- «Проверка поручений к закрытию» belongs to Ильченко Екатерина Александровна (`A2DCC949FEDEC70D40318ABA83C618F4`) and runs on her computer.
+
+```python
+# BAD
+local["run_on_server"] = True
+headless.run_headless(user_id=owner_id, workflow_id=workflow_id, message=message)
+
+# GOOD
+local.pop("run_on_server", None)
+push_desktop_command(owner_user_id, command)
+```

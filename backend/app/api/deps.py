@@ -34,9 +34,15 @@ def require_admin_user(auth: AuthContext = Depends(get_current_user)) -> AuthCon
 
 
 def require_admin_page(page: str):
+    return require_any_admin_page(page)
+
+
+def require_any_admin_page(*pages: str):
+    wanted = frozenset(pages)
+
     def dependency(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
         access = get_admin_access(auth.user_id)
-        if access is None or page not in access.pages:
+        if access is None or not wanted.intersection(access.pages):
             raise HTTPException(status_code=403, detail="Нет доступа к разделу админ-панели")
         return auth
 

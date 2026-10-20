@@ -1,0 +1,163 @@
+.pin-wizard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.pin-wizard-steps {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pin-wizard-steps li {
+  width: 18px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(16, 32, 51, 0.14);
+  transition: background 0.2s ease, width 0.2s ease;
+}
+
+.pin-wizard-steps li.is-done {
+  background: #21a038;
+}
+
+.pin-wizard-steps li.is-current {
+  width: 28px;
+  background: #107f3e;
+}
+
+.pin-wizard-label {
+  margin: 0;
+  color: #102033;
+  font-size: 16px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.pin-entry {
+  position: relative;
+  display: inline-flex;
+  padding: 12px 18px;
+  border-radius: 16px;
+  cursor: text;
+}
+
+.pin-entry-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: 0;
+  cursor: text;
+}
+
+.pin-entry:focus-within {
+  background: rgba(33, 160, 56, 0.07);
+}
+
+.pin-entry-dots {
+  display: flex;
+  gap: 18px;
+}
+
+.pin-entry-dots i {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(16, 32, 51, 0.28);
+  box-sizing: border-box;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.pin-entry-dots i.is-filled {
+  border-color: #107f3e;
+  background: #107f3e;
+  transform: scale(1.08);
+}
+
+.pin-entry.is-invalid .pin-entry-dots {
+  animation: pin-shake 0.42s ease;
+}
+
+.pin-entry.is-invalid .pin-entry-dots i {
+  border-color: #d93a2b;
+}
+
+.pin-entry.is-disabled .pin-entry-dots i.is-filled {
+  animation: pin-wait 0.9s ease-in-out infinite;
+}
+
+.pin-entry.is-disabled .pin-entry-dots i:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.pin-entry.is-disabled .pin-entry-dots i:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+.pin-entry.is-disabled .pin-entry-dots i:nth-child(4) {
+  animation-delay: 0.36s;
+}
+
+.pin-wizard-error {
+  min-height: 18px;
+  margin: 0;
+  color: #d93a2b;
+  font-size: 13px;
+  text-align: center;
+  visibility: hidden;
+}
+
+.pin-wizard-error.is-shown {
+  visibility: visible;
+}
+
+.pin-wizard-restart {
+  border: 0;
+  background: none;
+  color: #107f3e;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pin-wizard-restart:hover {
+  text-decoration: underline;
+}
+
+@keyframes pin-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-9px);
+  }
+  40% {
+    transform: translateX(8px);
+  }
+  60% {
+    transform: translateX(-5px);
+  }
+  80% {
+    transform: translateX(3px);
+  }
+}
+
+@keyframes pin-wait {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.7);
+    opacity: 0.55;
+  }
+}

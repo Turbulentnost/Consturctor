@@ -100,13 +100,19 @@ export function SettingsTab({
   onDiagnostics,
   onTickets,
   onFiles,
-  onSupport
+  onSupport,
+  onOpenAgent,
+  onOpenPassport,
+  onOpenHistory
 }: {
   user: UserProfile
   onDiagnostics: () => void
   onTickets: () => void
   onFiles: () => void
   onSupport: () => void
+  onOpenAgent: (workflowId: string, title: string) => void
+  onOpenPassport: (workflowId: string, title: string) => void
+  onOpenHistory: (workflowId: string, title: string) => void
 }): React.JSX.Element {
   return (
     <SettingsWorkplace
@@ -115,6 +121,9 @@ export function SettingsTab({
       onTickets={onTickets}
       onFiles={onFiles}
       onSupport={onSupport}
+      onOpenAgent={onOpenAgent}
+      onOpenPassport={onOpenPassport}
+      onOpenHistory={onOpenHistory}
     />
   )
 }

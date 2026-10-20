@@ -5,7 +5,7 @@ import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecPillTone } from './specV04DemoData'
 import { SpecIconOnec, SpecIconPlay, SpecTileIcon } from './specV04Icons'
 import type { SpecQuickActionIcon } from './specGridQuickActions'
-import { openWorkplaceTab } from './workplaceNav'
+import { MEETING_PLANNER_AGENT, launchPlatformAgent, openWorkplaceTab } from './workplaceNav'
 
 function SpecQuickActionGlyph({ kind }: { kind: SpecQuickActionIcon }): React.JSX.Element {
   if (kind === 'plus') return <Plus strokeWidth={2.4} />
@@ -75,6 +75,78 @@ export function SpecPageHead({
   )
 }
 
+/** Одна плитка показателя. `onSelect` делает её кнопкой фильтра. */
+export function SpecSummaryTileCard({
+  tile,
+  active = false,
+  onSelect
+}: {
+  tile: SpecSummaryTile
+  active?: boolean
+  onSelect?: (id: string) => void
+}): React.JSX.Element {
+  const clickable = Boolean(onSelect)
+  const classNames = [
+    'spec-v04-tile',
+    `tone-${tile.tone || 'neutral'}`,
+    clickable ? 'is-clickable' : '',
+    active ? 'is-active' : ''
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const tooltip =
+    tile.tooltip || [tile.label, tile.hint].filter((part) => part && part !== tile.value).join(' · ')
+  const body = (
+    <>
+      <div className="spec-v04-tile-top">
+        <div className="spec-v04-tile-label-row">
+          <SpecTileIcon id={tile.icon || tile.id} />
+          <span className="spec-v04-tile-label" title={tooltip}>
+            {tile.label}
+          </span>
+        </div>
+      </div>
+      <div className="spec-v04-tile-metrics">
+        <strong className="spec-v04-tile-value" title={tile.note ? `${tile.value} ${tile.note}` : tile.value}>
+          {tile.value}
+          {tile.note ? <span className="spec-v04-tile-note"> {tile.note}</span> : null}
+        </strong>
+        {tile.hint && tile.hint !== tile.value ? (
+          <small className="spec-v04-tile-hint" title={tile.hint}>
+            {tile.hint}
+          </small>
+        ) : null}
+      </div>
+      {tile.progress != null ? (
+        <div
+          className={`spec-v04-ring tone-${tile.tone || 'blue'}`}
+          style={{ '--p': `${tile.progress}%` } as React.CSSProperties}
+          title={`${tile.progress}%`}
+        >
+          <span>{tile.progress}%</span>
+        </div>
+      ) : null}
+      {tile.progress != null && !tile.ring ? (
+        <div className="spec-v04-tile-bar" title={`${tile.progress}%`}>
+          <i style={{ width: `${tile.progress}%` }} />
+        </div>
+      ) : null}
+    </>
+  )
+  if (clickable) {
+    return (
+      <button type="button" className={classNames} aria-pressed={active} title={tooltip} onClick={() => onSelect?.(tile.id)}>
+        {body}
+      </button>
+    )
+  }
+  return (
+    <article className={classNames} title={tooltip}>
+      {body}
+    </article>
+  )
+}
+
 /** Clickable KPI tiles. Parent owns filter state; re-click of an active id should reset to `all`. */
 export function SpecSummaryTiles({
   tiles,
@@ -88,78 +160,11 @@ export function SpecSummaryTiles({
   className?: string
 }): React.JSX.Element {
   const activeIds = new Set(Array.isArray(activeId) ? activeId : activeId ? [activeId] : [])
-  const clickable = Boolean(onSelect)
   return (
     <div className={`spec-v04-tiles spec-v04-tiles-rich${className ? ` ${className}` : ''}`}>
-      {tiles.map((tile) => {
-        const active = activeIds.has(tile.id)
-        const classNames = [
-          'spec-v04-tile',
-          `tone-${tile.tone || 'neutral'}`,
-          clickable ? 'is-clickable' : '',
-          active ? 'is-active' : ''
-        ]
-          .filter(Boolean)
-          .join(' ')
-        const tooltip =
-          tile.tooltip ||
-          [tile.label, tile.hint].filter((part) => part && part !== tile.value).join(' · ')
-        const body = (
-          <>
-            <div className="spec-v04-tile-top">
-              <div className="spec-v04-tile-label-row">
-                <SpecTileIcon id={tile.id} />
-                <span className="spec-v04-tile-label" title={tooltip}>
-                  {tile.label}
-                </span>
-              </div>
-            </div>
-            <div className="spec-v04-tile-metrics">
-              <strong className="spec-v04-tile-value" title={tile.value}>
-                {tile.value}
-              </strong>
-              {tile.hint && tile.hint !== tile.value ? (
-                <small className="spec-v04-tile-hint" title={tile.hint}>
-                  {tile.hint}
-                </small>
-              ) : null}
-            </div>
-            {tile.progress != null ? (
-              <div
-                className={`spec-v04-ring tone-${tile.tone || 'blue'}`}
-                style={{ '--p': `${tile.progress}%` } as React.CSSProperties}
-                title={`${tile.progress}%`}
-              >
-                <span>{tile.progress}%</span>
-              </div>
-            ) : null}
-            {tile.progress != null && !tile.ring ? (
-              <div className="spec-v04-tile-bar" title={`${tile.progress}%`}>
-                <i style={{ width: `${tile.progress}%` }} />
-              </div>
-            ) : null}
-          </>
-        )
-        if (clickable) {
-          return (
-            <button
-              key={tile.id}
-              type="button"
-              className={classNames}
-              aria-pressed={active}
-              title={tooltip}
-              onClick={() => onSelect?.(tile.id)}
-            >
-              {body}
-            </button>
-          )
-        }
-        return (
-          <article key={tile.id} className={classNames} title={tooltip}>
-            {body}
-          </article>
-        )
-      })}
+      {tiles.map((tile) => (
+        <SpecSummaryTileCard key={tile.id} tile={tile} active={activeIds.has(tile.id)} onSelect={onSelect} />
+      ))}
     </div>
   )
 }
@@ -178,7 +183,12 @@ export function SpecProcessMapButton(): React.JSX.Element {
 
 export function SpecQuickLaunchButton(): React.JSX.Element {
   return (
-    <button type="button" className="spec-btn-launch" onClick={() => openWorkplaceTab('decisions')}>
+    <button
+      type="button"
+      className="spec-btn-launch"
+      title={MEETING_PLANNER_AGENT.title}
+      onClick={() => launchPlatformAgent(MEETING_PLANNER_AGENT.id, MEETING_PLANNER_AGENT.title)}
+    >
       <SpecIconPlay />
       <span>Запустить процесс</span>
       <span className="spec-btn-launch-caret" aria-hidden>

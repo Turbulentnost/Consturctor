@@ -11,6 +11,8 @@ Mirrors the form Документ.ТД_Протокол.Форма.ФормаС�
   Автор_Key, ДатаПостановкиЗадачи, срок в ДатаФактическогоИсполнения, Отправлена=false).
   Дублируем строку в ПостоянныеЗадачиПротокола (Ответственный = ФИО строкой) — в разных базах
   форма показывает одну из табличных частей; так поручения видны на вкладке «Поставленные».
+- те же задачи пишутся в регистр InformationRegister_ТД_ЗадачиПротоколов (Протокол, ТемаСовещания,
+  ИдентификаторЗадачи) — нынешняя форма читает «Поставленные задачи» оттуда.
 
 Field / catalog mapping discovered live from $metadata and existing protocols
 (see scripts/_probe_td_protocol_result.json). The document is created as a draft
@@ -20,9 +22,11 @@ Field / catalog mapping discovered live from $metadata and existing protocols
 from __future__ import annotations
 
 import re
-from datetime import datetime
+import uuid
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
+from app.services.docflow_document_tasks import fio_matches
 from app.services.erp_assignments import (
     PROBE_MARK,
     _parse_day,
@@ -59,6 +63,10 @@ TOOL_NAME = "onec.meeting_protocol_write"
 TASKS_PART = "ПеременныеЗадачиПротокола"
 # Постоянные задачи протокола. Не вкладка «Поставленные».
 STANDING_TASKS_PART = "ПостоянныеЗадачиПротокола"
+# Форма протокола показывает «Поставленные задачи» из регистра, а не из табличной части.
+# Измерения: Протокол, ТемаСовещания, ИдентификаторЗадачи.
+TASK_REGISTER = "InformationRegister_ТД_ЗадачиПротоколов"
+_TASK_ID_NAMESPACE = uuid.UUID("5b0c7a52-31d4-4f0e-9a51-7d2f3c1e8a40")
 
 _EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 _UNDEFINED_TYPE = "StandardODATA.Undefined"
@@ -76,7 +84,12 @@ class ProtocolWriteError(RuntimeError):
 def _odata_get(args: dict[str, Any]) -> dict[str, Any]:
     from app.services.onec_tools import _fetch_odata_list
 
-    return _fetch_odata_list(args)
+    # Имена разбираем пачкой сами. Иначе список регистра превращается в отдельный
+    # GET автора и исполнителя на каждую строку, а карточка справочника — в обход
+    # всех его табличных частей.
+    payload = dict(args)
+    payload.setdefault("resolve_navigation", False)
+    return _fetch_odata_list(payload)
 
 
 def _odata_post(args: dict[str, Any]) -> dict[str, Any]:
@@ -89,6 +102,12 @@ def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
     from app.services.onec_tools import _odata_patch
 
     return _odata_patch(args)
+
+
+def _odata_delete(args: dict[str, Any]) -> dict[str, Any]:
+    from app.services.onec_tools import _odata_delete
+
+    return _odata_delete(args)
 
 
 def _escape(value: str) -> str:
@@ -269,6 +288,76 @@ def _field_of(item: Any, *keys: str) -> str:
 # --------------------------------------------------------------------------- body
 
 
+def previous_theme_protocol(theme_key: str, day: str) -> dict[str, Any] | None:
+    """Последний непомеченный протокол той же темы раньше дня совещания; проведённый важнее черновика."""
+    theme = _clean(theme_key)
+    if not _looks_like_guid(theme) or theme == _EMPTY_GUID:
+        return None
+    try:
+        rows = _rows(
+            _odata_get(
+                {
+                    "entity": PROTOCOL_ENTITY,
+                    "filter": (
+                        f"ТемаСовещания_Key eq guid'{theme}' and Date lt datetime'{_clean(day)[:10]}T00:00:00' "
+                        "and DeletionMark eq false"
+                    ),
+                    "select": "Ref_Key,Number,Date,Posted,Кабинет_Key,ДатаСледующегоСовещания",
+                    "top": _MAX_ROWS,
+                }
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    rows = [row for row in rows if isinstance(row, dict) and _clean(row.get("Date"))]
+    if not rows:
+        return None
+    return max(rows, key=lambda row: (bool(row.get("Posted")), _clean(row.get("Date"))))
+
+
+def _next_day_by_cadence(previous: dict[str, Any], day: str) -> str:
+    """Дата следующего совещания с тем же шагом, что у прошлого протокола (его Date → ДатаСледующегоСовещания)."""
+    try:
+        prev_day = date.fromisoformat(_clean(previous.get("Date"))[:10])
+        prev_next = date.fromisoformat(_clean(previous.get("ДатаСледующегоСовещания"))[:10])
+        current = date.fromisoformat(_clean(day)[:10])
+    except ValueError:
+        return ""
+    step = (prev_next - prev_day).days
+    if step <= 0 or step > 92:
+        return ""
+    target = current + timedelta(days=step)
+    while step < 7 and target.weekday() >= 5:
+        target += timedelta(days=1)
+    return f"{target.isoformat()}T00:00:00"
+
+
+def _standing_task_rows(items: Any, *, author_key: str, day_only: str) -> list[dict[str, Any]]:
+    """ПостоянныеЗадачиПротокола: исполнитель — строка ФИО, не ссылка."""
+    rows: list[dict[str, Any]] = []
+    for item in _as_list(items)[:_MAX_ROWS]:
+        text = _text_of(item, "text", "task", "title", "Задача", "what")
+        if not text:
+            continue
+        line_no = str(len(rows) + 1)
+        point = str(_field_of(item, "item", "point", "n", "НомерПунктаПротокола") or line_no)
+        row: dict[str, Any] = {
+            "LineNumber": line_no,
+            "НомерПунктаПротокола": point,
+            "Задача": text,
+            "Автор_Key": author_key,
+            "ДатаПостановкиЗадачи": day_only,
+            "Ответственный": _field_of(item, "executor", "responsible", "who", "assignee", "Ответственный"),
+            "Примечание": _field_of(item, "note", "comment", "Примечание"),
+            "Приоритет": _field_of(item, "priority", "Приоритет"),
+        }
+        due = _day_value(_field_of(item, "due", "deadline", "term", "Срок"), end=True)
+        if due:
+            row["ДатаФактическогоИсполнения"] = due
+        rows.append(row)
+    return rows
+
+
 def build_protocol_create_body(
     args: dict[str, Any],
     *,
@@ -366,8 +455,22 @@ def build_protocol_create_body(
         room_key = resolve_ref(ROOM_ENTITY, _ROOM_ALIASES.get(room_query.lower(), room_query))
         if not room_key:
             unresolved.append(f"кабинет «{room_query}»")
-    if not room_key and theme and _looks_like_guid(theme.get("Кабинет_Key")):
+    if not room_key and theme and _looks_like_guid(theme.get("Кабинет_Key")) and theme["Кабинет_Key"] != _EMPTY_GUID:
         room_key = str(theme["Кабинет_Key"])
+
+    next_day = _day_value(_first(args, "next_meeting_date", "ДатаСледующегоСовещания"))
+    if theme_key and (not room_key or not next_day):
+        previous = previous_theme_protocol(theme_key, day_only)
+        if previous:
+            meta["previous_protocol"] = _clean(previous.get("Number"))
+            previous_room = _clean(previous.get("Кабинет_Key"))
+            if not room_key and _looks_like_guid(previous_room) and previous_room != _EMPTY_GUID:
+                room_key = previous_room
+                meta["room_source"] = f"протокол {meta['previous_protocol']}"
+            if not next_day:
+                next_day = _next_day_by_cadence(previous, day_only)
+                if next_day:
+                    meta["next_meeting_source"] = f"периодичность по протоколу {meta['previous_protocol']}"
 
     access_query = _clean(_first(args, "access", "ГрифДоступа")) or DEFAULT_ACCESS_LABEL
     access_key = _clean(_first(args, "access_key", "ГрифДоступа_Key")) or resolve_ref(
@@ -442,14 +545,18 @@ def build_protocol_create_body(
             "Отменено": False,
             "НаличиеАртефакта": False,
         }
+        since = _day_value(_field_of(item, "since", "start", "ДатаНачала"))
+        if since:
+            row["ДатаНачала"] = since
         due = _day_value(_field_of(item, "due", "deadline", "ДатаОкончания"), end=True)
         if due:
             row["ДатаОкончания"] = due
         decision_rows.append(row)
 
     # ----- tasks («Поставленные задачи»)
+    # ПостоянныеЗадачиПротокола — нижняя таблица вкладки «Задачи для контроля»: задача,
+    # записанная ещё и туда, показывается в форме дважды. Её ведут вручную в 1С.
     task_rows: list[dict[str, Any]] = []
-    standing_rows: list[dict[str, Any]] = []
     for item in _as_list(_first(args, "tasks", "assignments", "Задачи", "Поручения"))[:_MAX_ROWS]:
         text = _text_of(item, "text", "task", "title", "Задача", "what")
         if not text:
@@ -467,32 +574,20 @@ def build_protocol_create_body(
             "Отправлена": False,
         }
         executor = _field_of(item, "executor", "responsible", "who", "assignee", "Ответственный")
-        executor_fio = _clean(executor)
         if executor:
             try:
-                resolved = resolve_person(executor)
-                row["Ответственный_Key"] = resolved["ref_key"]
-                executor_fio = resolved["fio"] or executor_fio
+                row["Ответственный_Key"] = resolve_person(executor)["ref_key"]
             except ProtocolWriteError:
                 unresolved.append(f"исполнитель задачи «{executor}»")
         due = _day_value(_field_of(item, "due", "deadline", "term", "Срок"), end=True)
         if due:
             row["ДатаФактическогоИсполнения"] = due
         task_rows.append(row)
-        mirror: dict[str, Any] = {
-            "LineNumber": line_no,
-            "НомерПунктаПротокола": point,
-            "Задача": text,
-            "Автор_Key": leader["ref_key"],
-            "ДатаПостановкиЗадачи": day_only,
-            "Примечание": row["Примечание"],
-            "Приоритет": row["Приоритет"],
-        }
-        if executor_fio:
-            mirror["Ответственный"] = executor_fio
-        if due:
-            mirror["ДатаФактическогоИсполнения"] = due
-        standing_rows.append(mirror)
+
+    standing_rows: list[dict[str, Any]] | None = None
+    if any(key in args for key in ("control_tasks", "standing_tasks")):
+        raw_control = next(args[key] for key in ("control_tasks", "standing_tasks") if key in args)
+        standing_rows = _standing_task_rows(raw_control, author_key=leader["ref_key"], day_only=day_only)
 
     raw_comment = _UNRESOLVED_NOTE_RE.sub("", str(_first(args, "comment", "Комментарий") or ""))
     comment = "\n".join(filter(None, (_clean(line) for line in raw_comment.splitlines())))
@@ -513,14 +608,14 @@ def build_protocol_create_body(
         "Комментарий": comment,
         "КраткийСоставДокумента": "; ".join(participant_names)[:1000],
         "ЗадачиРазосланы": False,
-        "ДокументОснование": "",
-        "ДокументОснование_Type": _UNDEFINED_TYPE,
+        **_basis_link(_first(args, "basis_ref_key", "basis_ref")),
         "ПрисутствующиеНаСовещании": participants,
         "ПовесткаСовещания": agenda_rows,
         "Решения": decision_rows,
         TASKS_PART: task_rows,
-        STANDING_TASKS_PART: standing_rows,
     }
+    if standing_rows is not None:
+        body[STANDING_TASKS_PART] = standing_rows
     if theme_key:
         body["ТемаСовещания_Key"] = theme_key
     if department_key:
@@ -537,7 +632,6 @@ def build_protocol_create_body(
         body["ВремяНачалаСовещания"] = start
     if end:
         body["ВремяОкончанияСовещания"] = end
-    next_day = _day_value(_first(args, "next_meeting_date", "ДатаСледующегоСовещания"))
     if next_day:
         body["ДатаСледующегоСовещания"] = next_day
     period_from = _day_value(_first(args, "report_period_from", "ОтчетныйПериодДатаНачала"))
@@ -567,6 +661,22 @@ def _iso_day(value: Any) -> str:
     return text[:10]
 
 
+_DUE_IN_TEXT = re.compile(r"\bдо\s+(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})\b", re.IGNORECASE)
+
+
+def _due_from_text(value: Any) -> str:
+    """Last «до ДД.ММ.ГГ» in a decision text — board decisions keep the deadline there."""
+    matches = list(_DUE_IN_TEXT.finditer(_clean(value)))
+    if not matches:
+        return ""
+    day, month, year = matches[-1].groups()
+    year_full = int(year) + 2000 if len(year) == 2 else int(year)
+    try:
+        return date(year_full, int(month), int(day)).isoformat()
+    except ValueError:
+        return ""
+
+
 def _iso_clock(value: Any) -> str:
     text = _clean(value)
     if "T" not in text:
@@ -584,7 +694,9 @@ def _description_of(entity: str, key: Any, cache: dict[str, str]) -> str:
         return cache[cache_key]
     name = ""
     try:
-        rows = _rows(_odata_get({"entity": entity, "ref_key": guid, "top": 1}))
+        rows = _rows(
+            _odata_get({"entity": entity, "ref_key": guid, "top": 1, "resolve_navigation": False})
+        )
         if rows:
             name = _clean(rows[0].get("Description") or rows[0].get("Наименование"))
     except Exception:  # noqa: BLE001
@@ -606,17 +718,61 @@ def _protocol_rows(card: dict[str, Any], section: str) -> list[dict[str, Any]]:
     return ordered
 
 
+_CARD_NAVS = (
+    "ТемаСовещания",
+    "Кабинет",
+    "ГрифДоступа",
+    "Подразделение",
+    "Проект",
+    "Руководитель",
+    "Ответственный",
+    "Подготовил",
+)
+
+
 def read_protocol_card(ref_key: str) -> dict[str, Any]:
+    """Один список с $expand: шапка, имена справочников и табличные части в одном ответе.
+
+    Точечный GET по guid заставляет OData следом обойти каждую табличную часть и каждую
+    навигационную ссылку. $expand в списке 1С принимает, одиночный GET — нет.
+    """
     guid = _clean(ref_key)
     if not _looks_like_guid(guid):
         raise ProtocolWriteError("ref_key протокола должен быть GUID")
-    rows = _rows(_odata_get({"entity": PROTOCOL_ENTITY, "ref_key": guid, "top": 1}))
+    from urllib.parse import quote
+
+    path = (
+        f"{PROTOCOL_ENTITY}?$format=json&$top=1"
+        f"&$filter={quote(f"Ref_Key eq guid'{guid}'", safe="=,'")}"
+        f"&$expand={','.join(_CARD_NAVS)}"
+    )
+    try:
+        rows = _rows(
+            _odata_get(
+                {
+                    "entity": PROTOCOL_ENTITY,
+                    "path": path,
+                    "top": 1,
+                    "resolve_navigation": False,
+                }
+            )
+        )
+    except Exception:  # noqa: BLE001 — старый точечный GET, если список с expand не принят
+        rows = []
+    if not rows:
+        rows = _rows(
+            _odata_get(
+                {"entity": PROTOCOL_ENTITY, "ref_key": guid, "top": 1, "resolve_navigation": False}
+            )
+        )
     if not rows:
         raise ProtocolWriteError(f"Протокол {guid} не найден в 1С")
     return rows[0]
 
 
-def _prefetch_descriptions(card: dict[str, Any], cache: dict[str, str]) -> None:
+def _prefetch_descriptions(
+    card: dict[str, Any], cache: dict[str, str], *, extra_persons: tuple[Any, ...] | list[Any] = ()
+) -> None:
     """One batched lookup per catalog, catalogs in parallel.
 
     Resolving each key with its own OData call takes 3–6 s apiece, so a
@@ -628,7 +784,7 @@ def _prefetch_descriptions(card: dict[str, Any], cache: dict[str, str]) -> None:
 
     def want(entity: str, key: Any) -> None:
         guid = _clean(key)
-        if _looks_like_guid(guid) and guid != _EMPTY_GUID:
+        if _looks_like_guid(guid) and guid != _EMPTY_GUID and f"{entity}:{guid}" not in cache:
             wanted.setdefault(entity, []).append(guid)
 
     for field in ("Руководитель_Key", "Ответственный_Key", "Подготовил_Key"):
@@ -643,6 +799,8 @@ def _prefetch_descriptions(card: dict[str, Any], cache: dict[str, str]) -> None:
     for part_name in ("ПовесткаСовещания", TASKS_PART, STANDING_TASKS_PART):
         for row in _protocol_rows(card, part_name):
             want(PERSON_ENTITY, row.get("Ответственный_Key"))
+    for key in extra_persons:
+        want(PERSON_ENTITY, key)
     batches = [
         (entity, chunk[index : index + 40])
         for entity, keys in wanted.items()
@@ -657,7 +815,16 @@ def _prefetch_descriptions(card: dict[str, Any], cache: dict[str, str]) -> None:
         requested = set(keys)
         odata_filter = " or ".join(f"Ref_Key eq guid'{key}'" for key in keys)
         try:
-            rows = _rows(_odata_get({"entity": entity, "filter": odata_filter, "top": len(keys)}))
+            rows = _rows(
+                _odata_get(
+                    {
+                        "entity": entity,
+                        "filter": odata_filter,
+                        "top": len(keys),
+                        "resolve_navigation": False,
+                    }
+                )
+            )
         except Exception:  # noqa: BLE001
             return entity, {}
         names: dict[str, str] = {}
@@ -674,11 +841,67 @@ def _prefetch_descriptions(card: dict[str, Any], cache: dict[str, str]) -> None:
                 cache[f"{entity}:{key}"] = name
 
 
-def read_protocol_form(ref_key: str) -> dict[str, Any]:
+def _register_rows_or_empty(protocol_key: str) -> list[dict[str, Any]]:
+    """Регистр задач протокола; при сбое чтения — пусто, форма открывается без него."""
+    try:
+        return read_task_register(protocol_key)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _mark_control_from_docflow(tasks: list[dict[str, Any]], session: dict[str, Any], base_ref: str) -> None:
+    """Выполнение в Документообороте закрывает задачу на контроле, даже если в регистре «Выполнена» пустая."""
+    import logging
+
+    try:
+        from app.services.docflow_protocols import _docflow_tasks, apply_docflow_execution
+
+        rows, _note = _docflow_tasks(session, [base_ref])
+        apply_docflow_execution(tasks, rows.get(base_ref, []))
+    except Exception as exc:  # noqa: BLE001 — карточка протокола открывается и без ДО
+        logging.getLogger(__name__).warning("control docflow execution %s failed: %s", base_ref, str(exc)[:200])
+
+
+def read_protocol_form(
+    ref_key: str,
+    *,
+    card: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Document_ТД_Протокол → form fields (names instead of GUIDs) for the desktop editor."""
-    card = read_protocol_card(ref_key)
+    card = card if isinstance(card, dict) and card else read_protocol_card(ref_key)
+    status = _clean(card.get("Статус"))
+    posted = bool(card.get("Posted"))
+    editable = (not posted) and status in ("", DRAFT_STATUS)
+    # Черновик Оркестратор пишет в табличную часть и регистр вместе; после проведения
+    # задачи добавляют в регистр — у проведённого протокола правда там.
+    # «Задачи для контроля» — задачи протокола-основания (прошлое совещание), тоже из регистра.
+    base_ref = _clean(card.get("ДокументОснование"))
+    if "ТД_Протокол" not in _clean(card.get("ДокументОснование_Type")) or not _looks_like_guid(base_ref):
+        base_ref = ""
+    register_key = "" if editable else (_clean(card.get("Ref_Key")) or ref_key)
     cache: dict[str, str] = {}
-    _prefetch_descriptions(card, cache)
+    # Регистры двух протоколов и имена из карточки не зависят друг от друга: читаем их параллельно.
+    # Раньше три запроса шли по очереди, и карточка с регистром ждала их сумму.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        register_future = pool.submit(_register_rows_or_empty, register_key) if register_key else None
+        control_future = pool.submit(_register_rows_or_empty, base_ref) if base_ref else None
+        _prefetch_descriptions(card, cache)
+        register_rows = register_future.result() if register_future else []
+        control_rows = control_future.result() if control_future else []
+    # Исполнители из регистров: докачиваем только тех, чьих имён ещё нет в кэше.
+    extra_keys = {
+        _clean(row.get("Ответственный_Key")) for row in register_rows + control_rows
+    }
+    missing = [
+        key
+        for key in extra_keys
+        if _looks_like_guid(key) and f"{PERSON_ENTITY}:{key}" not in cache
+    ]
+    if missing:
+        _prefetch_descriptions({}, cache, extra_persons=missing)
 
     def user_fio(key: Any) -> str:
         return _description_of(USER_ENTITY, key, cache)
@@ -702,45 +925,65 @@ def read_protocol_form(ref_key: str) -> dict[str, Any]:
     ]
     agenda = [
         {
+            "item": _clean(row.get("LineNumber")),
             "question": _clean(row.get("Вопрос")),
             "responsible": person_fio(row.get("Ответственный_Key")),
+            "has_file": bool(
+                _clean(row.get("Файл_Base64Data")) or _clean(row.get("ОтметкаОНаличииПриложений"))
+            ),
         }
         for row in _protocol_rows(card, "ПовесткаСовещания")
         if _clean(row.get("Вопрос"))
     ]
     decisions = [
         {
+            "item": _clean(row.get("LineNumber")),
             "text": _clean(row.get("ТекстРешения")),
             "due": _iso_day(row.get("ДатаОкончания")),
+            "due_in_text": _due_from_text(row.get("ТекстРешения")),
+            "since": _iso_day(row.get("ДатаНачала")),
+            "result": _clean(row.get("РезультатРешения")),
+            "done_date": _iso_day(row.get("ДатаИсполнения")),
+            "sent": row.get("Отправлено") is True,
+            "has_artifact": row.get("НаличиеАртефакта") is True,
+            "canceled": row.get("Отменено") is True,
+            "cancel_reason": _clean(row.get("ПричинаОтмены")),
         }
         for row in _protocol_rows(card, "Решения")
         if _clean(row.get("ТекстРешения"))
     ]
     tasks: list[dict[str, Any]] = []
-    seen_tasks: set[tuple[str, str]] = set()
+    seen_tasks: dict[tuple[str, str], dict[str, Any]] = {}
     for part_name in (TASKS_PART, STANDING_TASKS_PART):
         for row in _protocol_rows(card, part_name):
             text = _clean(row.get("Задача"))
             if not text:
                 continue
+            has_file = bool(_clean(row.get("Файл_Base64Data")))
             dedupe = (text, str(row.get("LineNumber") or ""))
             if dedupe in seen_tasks:
+                seen_tasks[dedupe]["has_file"] = seen_tasks[dedupe]["has_file"] or has_file
                 continue
-            seen_tasks.add(dedupe)
-            tasks.append(
-                {
-                    "text": text,
-                    "executor": _clean(row.get("Ответственный"))
-                    or person_fio(row.get("Ответственный_Key")),
-                    "due": _iso_day(row.get("ДатаФактическогоИсполнения")),
-                    "priority": _clean(row.get("Приоритет")),
-                    "note": _clean(row.get("Примечание")),
-                    "item": _clean(row.get("НомерПунктаПротокола")),
-                }
-            )
+            task = {
+                "text": text,
+                "executor": _clean(row.get("Ответственный"))
+                or person_fio(row.get("Ответственный_Key")),
+                "due": _iso_day(row.get("ДатаФактическогоИсполнения")),
+                "priority": _clean(row.get("Приоритет")),
+                "note": _clean(row.get("Примечание")),
+                "item": _clean(row.get("НомерПунктаПротокола")),
+                "sent": row.get("Отправлена") is True,
+                "process_started": _looks_like_guid(row.get("ПроцессID"))
+                and _clean(row.get("ПроцессID")) != _EMPTY_GUID,
+                "has_file": has_file,
+            }
+            seen_tasks[dedupe] = task
+            tasks.append(task)
+    tasks_source = "table"
+    if register_rows:
+        tasks = [_register_task_view(row, person_fio) for row in register_rows if _clean(row.get("Задача"))]
+        tasks_source = "register"
 
-    status = _clean(card.get("Статус"))
-    posted = bool(card.get("Posted"))
     form = {
         "topic": theme_name,
         "theme_key": theme_key if _looks_like_guid(theme_key) else "",
@@ -763,15 +1006,22 @@ def read_protocol_form(ref_key: str) -> dict[str, Any]:
         "agenda": agenda,
         "decisions": decisions,
         "tasks": tasks,
+        "tasks_source": tasks_source,
+        "base_ref_key": base_ref,
+        "control_tasks": [
+            _register_task_view(row, person_fio) for row in control_rows if _clean(row.get("Задача"))
+        ],
         "comment": _clean(card.get("Комментарий")),
     }
+    if base_ref and session:
+        _mark_control_from_docflow(form["control_tasks"], session, base_ref)
     return {
         "ref_key": _clean(card.get("Ref_Key")) or _clean(ref_key),
         "number": _clean(card.get("Number")),
         "date": _clean(card.get("Date")),
         "status": status,
         "posted": posted,
-        "editable": (not posted) and status in ("", DRAFT_STATUS),
+        "editable": editable,
         "entity": PROTOCOL_ENTITY,
         "form": form,
     }
@@ -802,6 +1052,18 @@ def build_protocol_update_body(
         if marker not in new_comment:
             new_comment = f"{new_comment}\n{marker}".strip()
     body["Комментарий"] = new_comment
+    standing = _protocol_rows(card, STANDING_TASKS_PART)
+    task_texts = {
+        _clean(row.get("Задача")).casefold()
+        for row in [*_protocol_rows(card, TASKS_PART), *body[TASKS_PART]]
+        if _clean(row.get("Задача"))
+    }
+    kept = [row for row in standing if _clean(row.get("Задача")).casefold() not in task_texts]
+    if len(kept) != len(standing) and not task_table_block(standing):
+        body[STANDING_TASKS_PART] = [
+            {**_row_copy(row), "LineNumber": str(index)} for index, row in enumerate(kept, start=1)
+        ]
+        meta["control_copies_removed"] = len(standing) - len(kept)
     return body, meta
 
 
@@ -814,6 +1076,342 @@ def _ref_from_write(result: dict[str, Any]) -> tuple[str, str]:
     ).strip()
     number = str(data.get("Number") or result.get("number") or "").strip()
     return ref_key, number
+
+
+# --------------------------------------------------------------------------- task register
+
+_TASK_REGISTER_KEYS = ("Протокол_Key", "ТемаСовещания_Key", "ИдентификаторЗадачи")
+
+
+def task_register_id(protocol_key: str, line: Any) -> str:
+    """ИдентификаторЗадачи строки протокола: повторное сохранение перезаписывает ту же запись."""
+    return str(uuid.uuid5(_TASK_ID_NAMESPACE, f"{_clean(protocol_key).lower()}:{line}"))
+
+
+def task_register_record(protocol_key: str, theme_key: str, row: dict[str, Any]) -> dict[str, Any]:
+    """Строка «Поставленных задач» → запись регистра (как ЗаполнитьЗначенияСвойств в форме)."""
+    line = _point(row.get("LineNumber"), 1)
+    return {
+        "Протокол_Key": protocol_key,
+        "ТемаСовещания_Key": _clean(theme_key) or _EMPTY_GUID,
+        "ИдентификаторЗадачи": task_register_id(protocol_key, line),
+        "НомерПунктаПротокола": _point(row.get("НомерПунктаПротокола"), line),
+        "Задача": str(row.get("Задача") or ""),
+        "Ответственный_Key": _clean(row.get("Ответственный_Key")) or _EMPTY_GUID,
+        "Автор_Key": _clean(row.get("Автор_Key")) or _EMPTY_GUID,
+        "ДатаПостановкиЗадачи": _clean(row.get("ДатаПостановкиЗадачи")) or _EMPTY_DATE,
+        "СрокИсполнения": _clean(row.get("ДатаФактическогоИсполнения")) or _EMPTY_DATE,
+        "Примечание": str(row.get("Примечание") or ""),
+        "Приоритет": _clean(row.get("Приоритет")),
+    }
+
+
+def sync_task_register(
+    protocol_key: str,
+    theme_key: str,
+    rows: list[dict[str, Any]],
+    *,
+    previous_count: int = 0,
+    previous_theme_key: str | None = None,
+) -> dict[str, Any]:
+    """Записать задачи протокола в регистр и убрать записи строк, которых больше нет.
+
+    Отправлена / Выполнена / Подтверждена / ПроцессID ведёт 1С — при перезаписи их не трогаем.
+    """
+    from app.services.onec_tools import OnecToolError
+
+    theme = _clean(theme_key) or _EMPTY_GUID
+    old_theme = theme if previous_theme_key is None else (_clean(previous_theme_key) or _EMPTY_GUID)
+    written = 0
+    errors: list[str] = []
+    for row in rows:
+        record = task_register_record(protocol_key, theme, row)
+        key = {name: record[name] for name in _TASK_REGISTER_KEYS}
+        body = {name: value for name, value in record.items() if name not in key}
+        try:
+            try:
+                _odata_patch({"entity": TASK_REGISTER, "key": key, "body": body})
+            except OnecToolError as exc:
+                if "HTTP 404" not in str(exc):
+                    raise
+                _odata_post({"entity": TASK_REGISTER, "body": {**record, "Отправлена": False}})
+            written += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"задача {record['НомерПунктаПротокола']}: {exc}")
+    first_stale = 1 if old_theme.lower() != theme.lower() else len(rows) + 1
+    removed = 0
+    for line in range(first_stale, previous_count + 1):
+        key = {
+            "Протокол_Key": protocol_key,
+            "ТемаСовещания_Key": old_theme,
+            "ИдентификаторЗадачи": task_register_id(protocol_key, line),
+        }
+        try:
+            _odata_delete({"entity": TASK_REGISTER, "key": key})
+            removed += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"удаление строки {line}: {exc}")
+    return {"entity": TASK_REGISTER, "written": written, "removed": removed, "errors": errors}
+
+
+def _register_note(register: dict[str, Any]) -> str:
+    if register.get("errors"):
+        return (
+            f"; задачи в регистр ТД_ЗадачиПротоколов записаны не все "
+            f"({register.get('written', 0)}, ошибок {len(register['errors'])}) — в форме их не видно"
+        )
+    return f"; задач в регистре: {register.get('written', 0)}" if register.get("written") else ""
+
+
+def read_task_register(protocol_key: str) -> list[dict[str, Any]]:
+    """Записи ТД_ЗадачиПротоколов протокола по номеру пункта — то, что видно в форме 1С."""
+    rows = _rows(
+        _odata_get(
+            {
+                "entity": TASK_REGISTER,
+                "filter": f"Протокол_Key eq guid'{_clean(protocol_key)}'",
+                "top": _MAX_ROWS,
+            }
+        )
+    )
+    rows.sort(key=lambda row: _point(row.get("НомерПунктаПротокола"), 0))
+    return rows
+
+
+def _task_started(row: dict[str, Any]) -> bool:
+    return row.get("Отправлена") is True or (
+        _looks_like_guid(row.get("ПроцессID")) and _clean(row.get("ПроцессID")) != _EMPTY_GUID
+    )
+
+
+def _register_task_view(row: dict[str, Any], person_fio: Callable[[Any], str]) -> dict[str, Any]:
+    return {
+        "id": _clean(row.get("ИдентификаторЗадачи")),
+        "text": _clean(row.get("Задача")),
+        "executor": person_fio(row.get("Ответственный_Key")),
+        "due": _iso_day(row.get("СрокИсполнения")),
+        "priority": _clean(row.get("Приоритет")),
+        "note": _clean(row.get("Примечание")),
+        "item": _clean(row.get("НомерПунктаПротокола")),
+        "sent": row.get("Отправлена") is True,
+        "completed": row.get("Выполнена") is True,
+        "done": row.get("Подтверждена") is True,
+        "done_date": _iso_day(row.get("ДатаИсполнения")),
+        "confirmed": row.get("Подтверждена") is True,
+        "process_started": _looks_like_guid(row.get("ПроцессID"))
+        and _clean(row.get("ПроцессID")) != _EMPTY_GUID,
+        "has_file": bool(_clean(row.get("Файл_Base64Data"))),
+    }
+
+
+def add_protocol_tasks(args: dict[str, Any]) -> dict[str, Any]:
+    """Дописать задачи в регистр проведённого протокола — как форма 1С (ИзмененныеСтроки → МенеджерЗаписи).
+
+    Документ не перепроводится: новая задача — новая запись с новым ИдентификаторЗадачи,
+    {id: …} меняет ещё не отправленную исполнителю запись этого протокола.
+    """
+    from app.services.onec_tools import OnecToolError
+
+    ref_key = _clean(_first(args, "ref_key", "Ref_Key", "erp_document_id"))
+    if not _looks_like_guid(ref_key):
+        raise ProtocolWriteError("Для action=add_tasks нужен ref_key протокола (GUID)")
+    items = _as_list(_first(args, "tasks", "assignments", "Задачи", "Поручения"))
+    if not items:
+        raise ProtocolWriteError("Для action=add_tasks нужен tasks: [{text, executor, due}] или [{id, …}]")
+    card = read_protocol_card(ref_key)
+    number = _clean(card.get("Number")) or ref_key
+    status = _clean(card.get("Статус"))
+    if not card.get("Posted") and status in ("", DRAFT_STATUS):
+        raise ProtocolWriteError(
+            f"Протокол {number} — черновик: задачи черновика меняются через action=update "
+            "(табличная часть и регистр вместе)"
+        )
+    try:
+        existing = read_task_register(ref_key)
+    except OnecToolError as exc:
+        raise ProtocolWriteError(f"Не прочитан регистр ТД_ЗадачиПротоколов: {exc}") from exc
+    by_id = {_clean(row.get("ИдентификаторЗадачи")).lower(): row for row in existing}
+    theme = _clean(card.get("ТемаСовещания_Key")) or _EMPTY_GUID
+    author = _clean(card.get("Руководитель_Key")) or _EMPTY_GUID
+    day_only = (_clean(card.get("Date"))[:10] or datetime.now().strftime("%Y-%m-%d")) + "T00:00:00"
+    next_point = max([_point(row.get("НомерПунктаПротокола"), 0) for row in existing], default=0) + 1
+    added: list[dict[str, Any]] = []
+    changed: list[dict[str, Any]] = []
+    errors: list[str] = []
+    unresolved: list[str] = []
+
+    def executor_key(item: Any) -> str | None:
+        name = _field_of(item, "executor", "responsible", "who", "assignee", "Ответственный")
+        key = _field_of(item, "executor_key", "responsible_key", "Ответственный_Key")
+        if _looks_like_guid(key):
+            return key
+        if not name:
+            return ""
+        try:
+            return resolve_person(name)["ref_key"]
+        except ProtocolWriteError:
+            unresolved.append(f"исполнитель задачи «{name}»")
+            return None
+
+    for item in items[:_MAX_ROWS]:
+        task_id = _field_of(item, "id", "task_id", "ИдентификаторЗадачи")
+        text = _text_of(item, "text", "task", "title", "Задача", "what")
+        due_raw = _field_of(item, "due", "deadline", "term", "Срок")
+        if task_id:
+            base = by_id.get(task_id.lower())
+            if base is None:
+                errors.append(f"задачи {task_id} нет в регистре протокола {number}")
+                continue
+            point = _point(base.get("НомерПунктаПротокола"), 0)
+            if _task_started(base):
+                errors.append(f"задача {point} уже отправлена исполнителю — меняется в 1С")
+                continue
+            body: dict[str, Any] = {}
+            if text and text != _clean(base.get("Задача")):
+                body["Задача"] = text
+            key = executor_key(item)
+            if key is None:
+                continue
+            if key and key != _clean(base.get("Ответственный_Key")):
+                body["Ответственный_Key"] = key
+            if due_raw:
+                body["СрокИсполнения"] = _day_value(due_raw, end=True)
+            new_point = _point(_field_of(item, "item", "point", "НомерПунктаПротокола"), point)
+            if new_point != point:
+                body["НомерПунктаПротокола"] = new_point
+            for field, target in (("priority", "Приоритет"), ("note", "Примечание")):
+                if isinstance(item, dict) and field in item:
+                    body[target] = str(item.get(field) or "").strip()
+            if not body:
+                continue
+            record_key = {
+                "Протокол_Key": ref_key,
+                "ТемаСовещания_Key": _clean(base.get("ТемаСовещания_Key")) or _EMPTY_GUID,
+                "ИдентификаторЗадачи": _clean(base.get("ИдентификаторЗадачи")),
+            }
+            try:
+                _odata_patch({"entity": TASK_REGISTER, "key": record_key, "body": body})
+                changed.append({"id": record_key["ИдентификаторЗадачи"], "item": point, "fields": sorted(body)})
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"задача {point}: {exc}")
+            continue
+        if not text:
+            continue
+        key = executor_key(item)
+        if key is None:
+            continue
+        point = _point(_field_of(item, "item", "point", "НомерПунктаПротокола"), next_point)
+        next_point = max(next_point, point) + 1
+        record = {
+            "Протокол_Key": ref_key,
+            "ТемаСовещания_Key": theme,
+            "ИдентификаторЗадачи": str(uuid.uuid4()),
+            "НомерПунктаПротокола": point,
+            "Задача": text,
+            "Ответственный_Key": key or _EMPTY_GUID,
+            "Автор_Key": author,
+            "ДатаПостановкиЗадачи": day_only,
+            "СрокИсполнения": _day_value(due_raw, end=True) or _EMPTY_DATE,
+            "Примечание": _field_of(item, "note", "comment", "Примечание"),
+            "Приоритет": _field_of(item, "priority", "Приоритет"),
+            "Отправлена": False,
+        }
+        try:
+            _odata_post({"entity": TASK_REGISTER, "body": record})
+            added.append({"id": record["ИдентификаторЗадачи"], "item": point, "text": text})
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"задача «{text[:60]}»: {exc}")
+    summary = f"Протокол {number}: в регистр задач добавлено {len(added)}, изменено {len(changed)}"
+    if unresolved:
+        summary += f"; не сопоставлено: {len(unresolved)} (эти задачи не записаны)"
+    if errors:
+        summary += f"; ошибок: {len(errors)}"
+    return {
+        "summary": summary,
+        "entity": TASK_REGISTER,
+        "ref_key": ref_key,
+        "number": _clean(card.get("Number")),
+        "status": status,
+        "posted": bool(card.get("Posted")),
+        "added": added,
+        "changed": changed,
+        "errors": errors,
+        "unresolved": unresolved,
+        "source": "odata",
+    }
+
+
+def check_protocol_tasks(args: dict[str, Any]) -> dict[str, Any]:
+    """Отметить выполнение задач протокола в регистре: Выполнена + ДатаИсполнения (+ Комментарий).
+
+    Задачу с запущенным процессом в Документообороте закрывает сам процесс — её не трогаем.
+    """
+    from app.services.onec_tools import OnecToolError
+
+    ref_key = _clean(_first(args, "ref_key", "Ref_Key", "erp_document_id"))
+    if not _looks_like_guid(ref_key):
+        raise ProtocolWriteError("Для action=check_tasks нужен ref_key протокола, которому принадлежат задачи (GUID)")
+    items = [item for item in _as_list(_first(args, "tasks", "done")) if isinstance(item, dict)]
+    if not items:
+        raise ProtocolWriteError("Для action=check_tasks нужен tasks: [{id, done_date, comment}] — только выполненные")
+    try:
+        existing = read_task_register(ref_key)
+    except OnecToolError as exc:
+        raise ProtocolWriteError(f"Не прочитан регистр ТД_ЗадачиПротоколов: {exc}") from exc
+    by_id = {_clean(row.get("ИдентификаторЗадачи")).lower(): row for row in existing}
+    today = datetime.now().strftime("%Y-%m-%dT00:00:00")
+    marked: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    errors: list[str] = []
+    for item in items[:_MAX_ROWS]:
+        task_id = _field_of(item, "id", "task_id", "ИдентификаторЗадачи")
+        base = by_id.get(task_id.lower()) if task_id else None
+        if base is None:
+            errors.append(f"задачи {task_id or '(без id)'} нет в регистре этого протокола")
+            continue
+        point = _point(base.get("НомерПунктаПротокола"), 0)
+        if base.get("Выполнена") is True:
+            skipped.append(f"задача {point} уже отмечена выполненной")
+            continue
+        process = _clean(base.get("ПроцессID"))
+        if _looks_like_guid(process) and process != _EMPTY_GUID:
+            skipped.append(f"задача {point}: процесс в Документообороте запущен — выполнение отмечается там")
+            continue
+        body: dict[str, Any] = {
+            "Выполнена": True,
+            "ДатаИсполнения": _day_value(_field_of(item, "done_date", "date", "ДатаИсполнения")) or today,
+        }
+        comment = _field_of(item, "comment", "note", "Комментарий")
+        if comment:
+            old = _clean(base.get("Комментарий"))
+            body["Комментарий"] = f"{old}\n{comment}".strip() if old and comment not in old else comment
+        key = {
+            "Протокол_Key": ref_key,
+            "ТемаСовещания_Key": _clean(base.get("ТемаСовещания_Key")) or _EMPTY_GUID,
+            "ИдентификаторЗадачи": _clean(base.get("ИдентификаторЗадачи")),
+        }
+        try:
+            _odata_patch({"entity": TASK_REGISTER, "key": key, "body": body})
+            marked.append({"id": key["ИдентификаторЗадачи"], "item": point, "done_date": body["ДатаИсполнения"][:10]})
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"задача {point}: {exc}")
+    card = read_protocol_card(ref_key)
+    number = _clean(card.get("Number")) or ref_key
+    summary = f"Протокол {number}: отмечено выполненными {len(marked)}"
+    if skipped:
+        summary += f", пропущено {len(skipped)}"
+    if errors:
+        summary += f"; ошибок: {len(errors)}"
+    return {
+        "summary": summary,
+        "entity": TASK_REGISTER,
+        "ref_key": ref_key,
+        "number": _clean(card.get("Number")),
+        "marked": marked,
+        "skipped": skipped,
+        "errors": errors,
+        "source": "odata",
+    }
 
 
 def handle_protocol_write(
@@ -830,20 +1428,33 @@ def handle_protocol_write(
         return probe_protocol_write(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
     if action == "update":
         return _update_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
+    if action == "next":
+        return _next_protocol(args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)
+    if action == "edit":
+        return edit_protocol(args, actor_fio=actor_fio)
+    if action == "add_tasks":
+        return add_protocol_tasks(args)
+    if action == "check_tasks":
+        return check_protocol_tasks(args)
     if action != "create":
-        raise ProtocolWriteError("action: create | update | probe")
+        raise ProtocolWriteError("action: create | update | next | edit | add_tasks | check_tasks | probe")
     body, meta = build_protocol_create_body(
         args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
-    if not (body["ПовесткаСовещания"] or body["Решения"] or body[TASKS_PART]):
-        raise ProtocolWriteError(
-            "Протокол пуст: нужна хотя бы повестка, решения или задачи (agenda / decisions / tasks)"
-        )
     result = _odata_post({"entity": PROTOCOL_ENTITY, "body": body})
     ref_key, number = _ref_from_write(result)
+    register = sync_task_register(ref_key, body.get("ТемаСовещания_Key", ""), body[TASKS_PART])
     summary = f"Создан протокол {number or ref_key} в 1С (черновик, статус «{body['Статус']}»)"
     if meta["unresolved"]:
         summary += f"; не сопоставлено: {len(meta['unresolved'])}"
+    if meta.get("room_source"):
+        summary += f"; кабинет взят из {meta['room_source']}"
+    if meta.get("next_meeting_source"):
+        summary += (
+            f"; дата следующего совещания {body['ДатаСледующегоСовещания'][:10]} — {meta['next_meeting_source']}, "
+            "проверь по календарю"
+        )
+    summary += _register_note(register)
     return {
         "summary": summary,
         "entity": PROTOCOL_ENTITY,
@@ -854,9 +1465,116 @@ def handle_protocol_write(
         "posted": False,
         "meta": meta,
         "unresolved": meta["unresolved"],
+        "task_register": register,
         "body": body,
         "source": "odata",
     }
+
+
+_NEXT_SKIP_ARGS = frozenset({"action", "ref_key", "Ref_Key", "source_ref_key", "erp_document_id"})
+
+
+def _basis_link(ref: Any) -> dict[str, str]:
+    """Как «Создать на основании» в форме 1С: ссылка, без копии задач в новый документ.
+
+    Форма читает «Задачи для контроля» из регистра протокола-основания, поэтому переносятся
+    все его задачи — и выполненные, и открытые. Копия в «Поставленные» назначила бы их заново.
+    """
+    key = _clean(ref)
+    if _looks_like_guid(key):
+        return {
+            "ДокументОснование": key,
+            "ДокументОснование_Type": f"StandardODATA.{PROTOCOL_ENTITY}",
+        }
+    return {"ДокументОснование": "", "ДокументОснование_Type": _UNDEFINED_TYPE}
+
+
+def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    """Create-args for the next meeting built from read_protocol_form() of the previous one.
+
+    Header, attendees and agenda are copied; decisions stay with the old protocol.
+    basis_ref_key links ДокументОснование, so every task of the source shows on
+    «Задачи для контроля» — the same way the 1C form fills a protocol created on basis.
+    """
+    form = previous.get("form") if isinstance(previous.get("form"), dict) else {}
+    number = _clean(previous.get("number"))
+    prev_day = _clean(form.get("date"))
+    day = _clean(_first(overrides, "date", "meeting_date")) or _clean(form.get("next_meeting_date"))
+    if not day:
+        raise ProtocolWriteError(
+            f"В прошлом протоколе{(' ' + number) if number else ''} не указана дата следующего совещания — "
+            "передай date (YYYY-MM-DD)"
+        )
+    tasks = [task for task in form.get("tasks") or [] if isinstance(task, dict) and _clean(task.get("text"))]
+    agenda = [
+        {"question": _clean(row.get("question")), "responsible": _clean(row.get("responsible"))}
+        for row in form.get("agenda") or []
+        if isinstance(row, dict) and _clean(row.get("question"))
+    ]
+    control = f"Контроль исполнения поручений протокола {number}".strip() if number else ""
+    if tasks and control and not any(row["question"] == control for row in agenda):
+        agenda.append({"question": control, "responsible": _clean(form.get("responsible"))})
+    basis = f"Подготовлен на основе протокола {number}" + (f" от {prev_day}" if prev_day else "")
+    args: dict[str, Any] = {
+        "topic": form.get("topic"),
+        "theme_key": form.get("theme_key"),
+        "date": day,
+        "time_start": form.get("time_start"),
+        "time_end": form.get("time_end"),
+        "leader": form.get("leader"),
+        "responsible": form.get("responsible"),
+        "room": form.get("room"),
+        "room_key": form.get("room_key"),
+        "department": form.get("department"),
+        "project": form.get("project"),
+        "access": form.get("access"),
+        "meeting_type": form.get("meeting_type"),
+        "participants": list(form.get("participants") or []),
+        "agenda": agenda,
+        "report_period_from": prev_day or day,
+        "report_period_to": day,
+        "comment": basis,
+        "basis_ref_key": _clean(previous.get("ref_key")),
+    }
+    for key, value in overrides.items():
+        if key in _NEXT_SKIP_ARGS or value in (None, "", [], {}):
+            continue
+        args[key] = value
+    extra = _clean(overrides.get("comment"))
+    if extra and basis not in extra:
+        args["comment"] = f"{basis}\n{extra}"
+    # Место совещания важнее кабинета прошлого протокола: ключ основания иначе его перекрывает.
+    if _clean(overrides.get("room")) and not _clean(overrides.get("room_key")):
+        args.pop("room_key", None)
+    return args
+
+
+def _next_protocol(
+    args: dict[str, Any],
+    *,
+    actor_fio: str = "",
+    actor_onec_ref: str = "",
+) -> dict[str, Any]:
+    source = _clean(_first(args, "source_ref_key", "ref_key", "Ref_Key", "erp_document_id"))
+    if not _looks_like_guid(source):
+        raise ProtocolWriteError(
+            "Для action=next нужен source_ref_key прошлого протокола (Ref_Key из onec.meeting_protocols)"
+        )
+    previous = read_protocol_form(source)
+    create_args = next_protocol_args(previous, args)
+    result = handle_protocol_write(
+        {**create_args, "action": "create"}, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
+    )
+    result["source_ref_key"] = source
+    result["source_number"] = _clean(previous.get("number"))
+    result["control_tasks"] = sum(
+        1 for task in previous.get("form", {}).get("tasks") or [] if isinstance(task, dict) and _clean(task.get("text"))
+    )
+    result["summary"] = (
+        f"{result.get('summary') or 'Создан протокол'}; на основании {result['source_number'] or source}, "
+        f"все задачи прошлого протокола на контроле: {result['control_tasks']}"
+    )
+    return result
 
 
 def _update_protocol(
@@ -878,16 +1596,22 @@ def _update_protocol(
     body, meta = build_protocol_update_body(
         args, card, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
-    if not (body["ПовесткаСовещания"] or body["Решения"] or body[TASKS_PART]):
-        raise ProtocolWriteError(
-            "Протокол пуст: нужна хотя бы повестка, решения или задачи (agenda / decisions / tasks)"
-        )
     _odata_patch({"entity": PROTOCOL_ENTITY, "ref_key": ref_key, "body": body})
+    old_theme = _clean(card.get("ТемаСовещания_Key"))
+    register = sync_task_register(
+        ref_key,
+        body.get("ТемаСовещания_Key") or old_theme,
+        body[TASKS_PART],
+        previous_count=len(_protocol_rows(card, TASKS_PART)),
+        previous_theme_key=old_theme,
+    )
     number = _clean(card.get("Number"))
     summary = f"Обновлён протокол {number or ref_key} в 1С (черновик, статус «{status or DRAFT_STATUS}»)"
     if meta["unresolved"]:
         summary += f"; не сопоставлено: {len(meta['unresolved'])}"
+    summary += _register_note(register)
     return {
+        "task_register": register,
         "summary": summary,
         "entity": PROTOCOL_ENTITY,
         "number": number,
@@ -903,8 +1627,255 @@ def _update_protocol(
     }
 
 
+# --------------------------------------------------------------------------- edit
+# Точечная правка из журнала «Протоколы»: update выше пересобирает документ целиком и теряет
+# перенесённые решения (ПротоколИсточник_Key), файлы строк и признаки отправки задач.
+
+EDIT_HEADER_FIELDS = (
+    "topic",
+    "meeting_type",
+    "time_start",
+    "time_end",
+    "next_meeting_date",
+    "leader",
+    "responsible",
+    "room",
+    "access",
+    "department",
+    "project",
+    "comment",
+)
+
+
+def protocol_edit_block(card: dict[str, Any], actor_fio: str) -> str:
+    """Почему протокол нельзя править из Оркестратора; пустая строка — можно."""
+    status = _clean(card.get("Статус"))
+    if bool(card.get("Posted")) or status not in ("", DRAFT_STATUS):
+        return f"Протокол уже {'проведён' if card.get('Posted') else 'в работе'} (статус «{status}») — правки только в 1С"
+    prepared = _description_of(USER_ENTITY, card.get("Подготовил_Key"), {})
+    if not actor_fio or not prepared or not fio_matches(prepared, actor_fio):
+        return f"Править протокол может только тот, кто его подготовил{f' ({prepared})' if prepared else ''}"
+    return ""
+
+
+def task_table_block(rows: list[dict[str, Any]]) -> str:
+    """PATCH заменяет таблицу целиком, а 1С не принимает обратно поле «Файл» (ValueList XDTO) через OData."""
+    if any(str(row.get("Файл_Base64Data") or "").strip() for row in rows):
+        return "К задачам приложены файлы — 1С не принимает их через OData, эту таблицу правьте в 1С"
+    return ""
+
+
+def _row_copy(row: dict[str, Any]) -> dict[str, Any]:
+    """Строка табличной части без ссылки на документ и навигаций — в том виде, как её принимает PATCH."""
+    return {
+        key: value
+        for key, value in row.items()
+        if key != "Ref_Key" and "@" not in key and not isinstance(value, (dict, list))
+    }
+
+
+def _point(value: Any, fallback: int) -> int:
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return fallback
+    return number if number > 0 else fallback
+
+
+def _edit_ref(entity: str, query: str, label: str, missing: list[str]) -> str:
+    text = _clean(query)
+    if not text:
+        return _EMPTY_GUID
+    key = resolve_ref(entity, text)
+    if not key:
+        missing.append(f"{label} «{text}»")
+    return key
+
+
+def _edit_header(fields: dict[str, Any], card: dict[str, Any], missing: list[str]) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    if "topic" in fields:
+        topic = _clean(fields["topic"])
+        theme = resolve_theme(topic) if topic else None
+        found = _clean(theme.get("Description")) if theme else ""
+        # Тема — ссылка на справочник, поиск 1С регистр не различает: «…по гк» найдёт «…по ГК».
+        if topic and not theme:
+            missing.append(f"тема совещания «{topic}»")
+        elif topic and found != topic:
+            raise ProtocolWriteError(
+                f"Тема совещания — элемент справочника «Темы совещаний». По «{topic}» найдена тема «{found}». "
+                "Выберите тему из списка; название самой темы меняется только в справочнике 1С — "
+                "и сразу во всех протоколах с этой темой."
+            )
+        body["ТемаСовещания_Key"] = str(theme.get("Ref_Key")) if theme else _EMPTY_GUID
+    if "meeting_type" in fields:
+        kind = _clean(fields["meeting_type"])
+        if kind not in MEETING_TYPES:
+            missing.append(f"вид совещания «{kind}»")
+        body["ВидСовещания"] = kind
+    for field, target in (("time_start", "ВремяНачалаСовещания"), ("time_end", "ВремяОкончанияСовещания")):
+        if field in fields:
+            body[target] = _time_value(fields[field]) or _EMPTY_DATE
+    if "next_meeting_date" in fields:
+        body["ДатаСледующегоСовещания"] = _day_value(fields["next_meeting_date"]) or _EMPTY_DATE
+    for field, target, label in (("leader", "Руководитель_Key", "руководитель"), ("responsible", "Ответственный_Key", "ответственный")):
+        if field not in fields:
+            continue
+        name = _clean(fields[field])
+        if not name:
+            missing.append(f"{label} не указан")
+            continue
+        try:
+            body[target] = resolve_user_card(name)["ref_key"]
+        except ProtocolWriteError:
+            missing.append(f"{label} «{name}»")
+    if "room" in fields:
+        room = _clean(fields["room"])
+        body["Кабинет_Key"] = _edit_ref(ROOM_ENTITY, _ROOM_ALIASES.get(room.lower(), room), "место", missing)
+    for field, entity, target, label in (
+        ("access", ACCESS_ENTITY, "ГрифДоступа_Key", "гриф доступа"),
+        ("department", DEPARTMENT_ENTITY, "Подразделение_Key", "подразделение"),
+        ("project", PROJECT_ENTITY, "Проект_Key", "проект"),
+    ):
+        if field in fields:
+            body[target] = _edit_ref(entity, fields[field], label, missing)
+    if "comment" in fields:
+        comment = str(fields["comment"] or "").strip()
+        for marker in re.findall(r"outlook:\S+", str(card.get("Комментарий") or "")):
+            if marker not in comment:
+                comment = f"{comment}\n{marker}".strip()
+        body["Комментарий"] = comment
+    return body
+
+
+def _edit_tasks(
+    items: list[Any],
+    existing: list[dict[str, Any]],
+    *,
+    assigned: bool,
+    author_key: str,
+    missing: list[str],
+) -> list[dict[str, Any]]:
+    """Полный список строк таблицы: PATCH табличной части заменяет её целиком."""
+    by_line = {str(row.get("LineNumber") or ""): row for row in existing}
+    # Отправленная исполнителю задача уже живёт своей жизнью — её строку не меняем и не удаляем.
+    locked = {line for line, row in by_line.items() if assigned and bool(row.get("Отправлена"))}
+    today = datetime.now().strftime("%Y-%m-%dT00:00:00")
+    rows: list[dict[str, Any]] = []
+    kept: set[str] = set()
+    for item in items[:_MAX_ROWS]:
+        if not isinstance(item, dict):
+            continue
+        line = str(item.get("line") or "").strip()
+        if line in locked:
+            rows.append(_row_copy(by_line[line]))
+            kept.add(line)
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        base = by_line.get(line)
+        row = _row_copy(base) if base else {"Автор_Key": author_key, "ДатаПостановкиЗадачи": today}
+        if base:
+            kept.add(line)
+        elif assigned:
+            row.update({"Отправлена": False, "ПроцессID": ""})
+        row["Задача"] = text
+        row["НомерПунктаПротокола"] = _point(item.get("n"), len(rows) + 1)
+        row["ДатаФактическогоИсполнения"] = _day_value(item.get("due"), end=True) or _EMPTY_DATE
+        row["Приоритет"] = _clean(item.get("priority"))
+        row["Примечание"] = str(item.get("note") or "").strip()
+        name = _clean(item.get("responsible"))
+        if assigned:
+            key = _clean(item.get("responsible_key"))
+            if _looks_like_guid(key):
+                row["Ответственный_Key"] = key
+            elif name:
+                try:
+                    row["Ответственный_Key"] = resolve_person(name)["ref_key"]
+                except ProtocolWriteError:
+                    missing.append(f"ответственный задачи «{name}»")
+            else:
+                row["Ответственный_Key"] = _EMPTY_GUID
+        else:
+            row["Ответственный"] = name
+        rows.append(row)
+    rows.extend(_row_copy(by_line[line]) for line in sorted(locked - kept, key=int))
+    for index, row in enumerate(rows, start=1):
+        row["LineNumber"] = str(index)
+    return rows
+
+
+def edit_protocol(args: dict[str, Any], *, actor_fio: str = "") -> dict[str, Any]:
+    """Правка черновика протокола его автором: изменённые поля шапки и таблицы задач."""
+    ref_key = _clean(_first(args, "ref_key", "Ref_Key"))
+    if not _looks_like_guid(ref_key):
+        raise ProtocolWriteError("Для правки нужен ref_key протокола (GUID)")
+    card = read_protocol_card(ref_key)
+    block = protocol_edit_block(card, actor_fio)
+    if block:
+        raise ProtocolWriteError(block)
+    fields = args.get("fields") if isinstance(args.get("fields"), dict) else {}
+    missing: list[str] = []
+    body = _edit_header({key: fields[key] for key in EDIT_HEADER_FIELDS if key in fields}, card, missing)
+    author_key = _clean(card.get("Подготовил_Key"))
+    for arg_name, part, assigned in (
+        ("control_tasks", STANDING_TASKS_PART, False),
+        ("assigned_tasks", TASKS_PART, True),
+    ):
+        if isinstance(args.get(arg_name), list):
+            existing = _protocol_rows(card, part)
+            table_block = task_table_block(existing)
+            if table_block:
+                raise ProtocolWriteError(table_block)
+            body[part] = _edit_tasks(
+                args[arg_name],
+                existing,
+                assigned=assigned,
+                author_key=author_key,
+                missing=missing,
+            )
+    if missing:
+        raise ProtocolWriteError("Не найдено в 1С: " + "; ".join(missing))
+    number = _clean(card.get("Number"))
+    if not body:
+        return {"summary": f"Протокол {number}: изменений нет", "ref_key": ref_key, "number": number, "updated": False}
+    _odata_patch({"entity": PROTOCOL_ENTITY, "ref_key": ref_key, "body": body})
+    old_theme = _clean(card.get("ТемаСовещания_Key"))
+    theme = _clean(body.get("ТемаСовещания_Key", old_theme))
+    register: dict[str, Any] | None = None
+    if TASKS_PART in body or theme.lower() != old_theme.lower():
+        existing = _protocol_rows(card, TASKS_PART)
+        register = sync_task_register(
+            ref_key,
+            theme,
+            body.get(TASKS_PART, existing),
+            previous_count=len(existing),
+            previous_theme_key=old_theme,
+        )
+    return {
+        "summary": f"Протокол {number or ref_key} сохранён в 1С" + (_register_note(register) if register else ""),
+        "entity": PROTOCOL_ENTITY,
+        "ref_key": ref_key,
+        "number": number,
+        "updated": True,
+        "task_register": register,
+        "fields": sorted(key for key in body if not key.endswith("ЗадачиПротокола")),
+        "control_tasks": len(body.get(STANDING_TASKS_PART) or []) if STANDING_TASKS_PART in body else None,
+        "assigned_tasks": len(body.get(TASKS_PART) or []) if TASKS_PART in body else None,
+        "source": "odata",
+    }
+
+
 def stub_protocol_write(args: dict[str, Any], **_: Any) -> dict[str, Any]:
     action = _clean(args.get("action") or "create").casefold()
+    if action == "edit":
+        return {
+            "summary": "stub: протокол в 1С не изменён (OData не настроена)",
+            "ref_key": _clean(args.get("ref_key")),
+            "updated": False,
+            "source": "stub",
+        }
     if action == "probe":
         return {
             "ok": True,
@@ -915,6 +1886,28 @@ def stub_protocol_write(args: dict[str, Any], **_: Any) -> dict[str, Any]:
             "test_left": False,
         }
     tasks = _as_list(_first(args, "tasks", "assignments") or [])
+    if action == "check_tasks":
+        return {
+            "summary": "stub: выполнение задач в регистре не отмечено (OData не настроена)",
+            "entity": TASK_REGISTER,
+            "ref_key": _clean(args.get("ref_key")),
+            "marked": [],
+            "skipped": [],
+            "errors": [],
+            "source": "stub",
+        }
+    if action == "add_tasks":
+        return {
+            "summary": "stub: задачи в регистр протокола не записаны (OData не настроена)",
+            "entity": TASK_REGISTER,
+            "ref_key": _clean(args.get("ref_key")),
+            "added": [],
+            "changed": [],
+            "errors": [],
+            "unresolved": [],
+            "requested": len(tasks),
+            "source": "stub",
+        }
     if action == "update":
         return {
             "summary": "stub: протокол в 1С не обновлён (OData не настроена)",
@@ -967,6 +1960,24 @@ def protocol_write_recipe(*, source: str = "odata") -> dict[str, Any]:
             "fields": ["ref_key", "header без ДатаСоздания/Posted/Статус/Подготовил_Key", "табличные части целиком"],
             "guard": "только Posted=false и Статус «Подготовлен»",
         },
+        "edit": {
+            "action": "edit",
+            "via": "odata_patch",
+            "fields": ["ref_key", "fields{} — только изменённые поля шапки", "control_tasks[] / assigned_tasks[] — таблица целиком"],
+            "guard": "черновик; автор = Подготовил_Key; отправленные задачи неизменны; таблица с файлами строк — только в 1С",
+        },
+        "add_tasks": {
+            "action": "add_tasks",
+            "via": f"odata_post / odata_patch {TASK_REGISTER}",
+            "fields": ["ref_key", "tasks[] — новые {text, executor, due} или правка {id, …}"],
+            "guard": "проведённый протокол; отправленные задачи неизменны; черновик — через update",
+        },
+        "check_tasks": {
+            "action": "check_tasks",
+            "via": f"odata_patch {TASK_REGISTER}",
+            "fields": ["ref_key протокола-владельца задач", "tasks[] — {id, done_date, comment} выполненных"],
+            "guard": "Выполнена/ДатаИсполнения только без запущенного процесса ДО (ПроцессID пуст)",
+        },
         "delete": {"via": "odata_delete"},
         "source": source,
     }
@@ -997,7 +2008,7 @@ def probe_protocol_write(
         "time_end": "10:30",
         "participants": [leader] if leader else [],
         "agenda": [f"{mark}: тестовый вопрос повестки"],
-        "decisions": [{"text": f"{mark}: тестовое решение", "due": datetime.now().strftime("%Y-%m-%d")}],
+        "decisions": [{"text": f"{mark}: тестовое решение", "since": datetime.now().strftime("%Y-%m-%d")}],
         "tasks": [
             {
                 "text": f"{mark}: тестовая задача",
@@ -1037,7 +2048,7 @@ def probe_protocol_write(
             "agenda": [updated_question],
             "decisions": [
                 *probe_args["decisions"],
-                {"text": f"{mark}: второе решение", "due": datetime.now().strftime("%Y-%m-%d")},
+                {"text": f"{mark}: второе решение", "since": datetime.now().strftime("%Y-%m-%d")},
             ],
         }
         _update_protocol(update_args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)

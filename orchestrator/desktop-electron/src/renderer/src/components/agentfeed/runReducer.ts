@@ -190,6 +190,8 @@ function pushAssistant(items: FeedItem[], text: string): FeedItem[] {
 export function pushSystem(items: FeedItem[], text: string, tone: 'info' | 'error' | 'success' = 'info'): FeedItem[] {
   const value = (text || '').trim()
   if (!value) return items
+  const last = items[items.length - 1]
+  if (last && last.kind === 'system' && last.tone === tone && last.text.trim() === value) return items
   return [...items, { kind: 'system', id: nextId('sys'), text: value, tone }]
 }
 

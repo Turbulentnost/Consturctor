@@ -59,6 +59,10 @@ const FIELD_LABELS: Record<string, string> = {
   СрокИсполнения: 'Срок исполнения',
   ТекстСлужебнойЗаписки: 'Текст',
   БизнесПроцессСтартован: 'Процесс запущен',
+  БизнесПроцессЗапущен: 'Процесс запущен',
+  ИсточникПоступления: 'Источник поступления',
+  Претензия: 'Претензия',
+  Subject: 'Тема',
   УтвержденоНачальникомУД: 'Утверждено начальником УД',
   ТекстHTML: 'Текст',
   ГрифДоступа: 'Гриф доступа'
@@ -105,6 +109,22 @@ function field(row: Record<string, unknown>, key: string): string {
   return textOf(row[`${key}_Name`]) || textOf(row[key])
 }
 
+function humanizeIdentifier(value: string): string {
+  const spaced = value
+    .replace(/_/g, ' ')
+    .replace(/([а-яёa-z])([А-ЯЁA-Z])/g, '$1 $2')
+    .replace(/([А-ЯЁA-Z])([А-ЯЁA-Z][а-яёa-z])/g, '$1 $2')
+    .trim()
+  return spaced
+    .split(/\s+/)
+    .map((word, index) => (index === 0 ? word : word.charAt(0).toLowerCase() + word.slice(1)))
+    .join(' ')
+}
+
+function looksLikeEnum(value: string): boolean {
+  return value.length > 2 && value.length < 48 && !/[\s\-«»]/.test(value) && /[а-яёa-z]/.test(value) && /[А-ЯЁA-Z]/.test(value.slice(1))
+}
+
 function displayValue(key: string, value: string): string {
   if (key === 'Date' || key.startsWith('Дата') || key.startsWith('Срок') || key.startsWith('Время')) {
     return formatCorrespondenceDate(value)
@@ -112,6 +132,7 @@ function displayValue(key: string, value: string): string {
   if (value === 'true') return 'Да'
   if (value === 'false') return 'Нет'
   if (key === 'ТекстСлужебнойЗаписки' || key === 'ТекстHTML') return stripHtml(value)
+  if (looksLikeEnum(value)) return humanizeIdentifier(value)
   return value
 }
 
@@ -137,7 +158,7 @@ function detailFields(
     if (SKIP_FIELD.test(key) || key.endsWith('_Name')) continue
     const value = field(row, key)
     if (!value) continue
-    const label = labels[key] || FIELD_LABELS[key] || key
+    const label = labels[key] || FIELD_LABELS[key] || humanizeIdentifier(key)
     if (seen.has(label)) continue
     seen.add(label)
     fields.push({ label, value: displayValue(key, value) })
@@ -269,6 +290,45 @@ export function loadDocflowCorrespondenceSession(
   return load
 }
 
+export function forgetDocflowCorrespondenceSession(user: UserProfile | null, kind: CorrespondenceKind): void {
+  sessionCache.delete(cacheKey(user, kind))
+}
+
+const INCOMING_FILES_ENTITY = 'Catalog_ТД_ВходящаяКорреспонденцияПрисоединенныеФайлы'
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Письмо, из которого зарегистрирована входящая: .msg в присоединённых файлах документа.
+ * Тома 1С (\\srv2\erp_file) пользователям закрыты, поэтому байты идут через hs/dtw/files backend.
+ */
+export async function openIncomingLetter(user: UserProfile | null, row: CorrespondenceRow): Promise<void> {
+  if (!GUID_RE.test(row.id)) throw new Error('У документа нет ссылки 1С')
+  const res = await api.invokeServerTool(
+    'onec.odata_get',
+    onecGatewayInvokeArgs(user, {
+      entity: INCOMING_FILES_ENTITY,
+      filter: `ВладелецФайла_Key eq guid'${row.id}' and Расширение eq 'msg' and DeletionMark eq false`,
+      select: 'Ref_Key,Description,Расширение,ДатаСоздания',
+      orderby: 'ДатаСоздания desc',
+      top: 1
+    }),
+    60_000
+  )
+  if (!res.ok) throw new Error(res.error || 'Не удалось прочитать файлы документа в 1С')
+  const file = rowsFromResult(res.result)[0]
+  const fileId = String(file?.Ref_Key || '')
+  if (!fileId) throw new Error('К документу не приложено письмо (.msg)')
+  const name = String(file?.Description || row.number || 'letter').replace(/[\\/:*?"<>|]+/g, '_')
+  const result = await window.api.download({
+    url: `/api/v1/tools/onec-artifacts/${encodeURIComponent(fileId)}`,
+    defaultName: `${name}.msg`,
+    token: api.getToken(),
+    temporary: true,
+    openAfter: true
+  })
+  if (!result.ok) throw new Error(result.error || 'Не удалось открыть письмо')
+}
+
 export function correspondenceInPeriod<T extends { date: string }>(rows: T[], from: string, to: string): T[] {
   return rows.filter((row) => {
     const day = row.date.slice(0, 10)
@@ -299,6 +359,29 @@ const ORDER_ENTITIES: { kind: OrderKind; label: string; entity: string }[] = [
   { kind: 'order', label: 'Приказ', entity: 'Document_ТД_Приказ' },
   { kind: 'directive', label: 'Распоряжение', entity: 'Document_ТД_Распоряжение' }
 ]
+
+/** Колонки журнала. Без «Содержания» и без $expand: полный документ с тремя справочниками не успевает вернуться, пока 1С занята выгрузкой задач. */
+const ORDER_LIST_SELECT = [
+  'Ref_Key',
+  'Number',
+  'Date',
+  'Posted',
+  'DeletionMark',
+  'Статус',
+  'ТемаСлужебнойЗаписки',
+  'Комментарий',
+  'Организация_Key',
+  'Ответственный_Key',
+  'ГрифДоступа_Key'
+].join(',')
+
+const ORDER_NAME_FIELDS: { key: string; entity: string }[] = [
+  { key: 'Организация_Key', entity: 'Catalog_Организации' },
+  { key: 'Ответственный_Key', entity: 'Catalog_Пользователи' },
+  { key: 'ГрифДоступа_Key', entity: 'Catalog_ТД_ГрифыДоступа' }
+]
+
+const NAME_CHUNK = 20
 
 const ORDER_LABELS: Record<string, string> = {
   Number: 'Номер',
@@ -333,55 +416,147 @@ function mapOrder(row: Record<string, unknown>, kind: OrderKind, kindLabel: stri
   }
 }
 
-async function loadOrderEntity(
+function isMarkedDeleted(row: Record<string, unknown>): boolean {
+  return row.DeletionMark === true || String(row.DeletionMark || '').toLowerCase() === 'true'
+}
+
+function orderGuid(value: unknown): string {
+  const text = String(value || '').trim()
+  if (!GUID_RE.test(text) || text === '00000000-0000-0000-0000-000000000000') return ''
+  return text.toLowerCase()
+}
+
+/** Фильтр DeletionMark eq false на этих документах возвращает единицы строк при сотнях непомеченных. Пометку отсекаем по полю. */
+async function loadOrderRaw(
   user: UserProfile | null,
   spec: (typeof ORDER_ENTITIES)[number]
-): Promise<{ rows: OrderRow[]; error: string }> {
-  const page = await loadJournalPages(user, {
+): Promise<{ rows: Record<string, unknown>[]; error: string }> {
+  const query = {
     entity: spec.entity,
-    filter: 'DeletionMark eq false',
-    expand: 'Организация,Ответственный,ГрифДоступа'
-  })
-  const seen = new Set<string>()
-  const collected = page.rows
-    .map((row) => mapOrder(row, spec.kind, spec.label))
-    .filter((row) => row.date || row.number || row.subject)
-    .filter((row) => (seen.has(row.id) ? false : seen.add(row.id) !== undefined))
-  if (!collected.length && page.error) {
-    return { rows: [], error: `${spec.label}: ${page.error}` }
+    select: ORDER_LIST_SELECT,
+    resolve_navigation: false
   }
-  return { rows: collected, error: '' }
+  let page = await loadJournalPages(user, query)
+  if (!page.rows.length && /timed out/i.test(page.error)) {
+    page = await loadJournalPages(user, query)
+  }
+  const rows = page.rows.filter((row) => !isMarkedDeleted(row))
+  if (!rows.length && page.error) return { rows: [], error: `${spec.label}: ${page.error}` }
+  return { rows, error: '' }
+}
+
+async function namesByKeys(
+  user: UserProfile | null,
+  entity: string,
+  keys: string[]
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>()
+  const unique = [...new Set(keys.map(orderGuid).filter(Boolean))]
+  for (let index = 0; index < unique.length; index += NAME_CHUNK) {
+    const chunk = unique.slice(index, index + NAME_CHUNK)
+    const filter = chunk.map((key) => `Ref_Key eq guid'${key}'`).join(' or ')
+    const res = await api.invokeServerTool(
+      'onec.odata_get',
+      onecGatewayInvokeArgs(user, {
+        entity,
+        filter,
+        select: 'Ref_Key,Description',
+        top: chunk.length,
+        resolve_navigation: false
+      }),
+      60_000
+    )
+    if (!res.ok) continue
+    for (const row of rowsFromResult(res.result)) {
+      const key = orderGuid(row.Ref_Key)
+      const name = textOf(row.Description)
+      if (key && name) names.set(key, name)
+    }
+  }
+  return names
+}
+
+async function fillOrderNames(user: UserProfile | null, rows: Record<string, unknown>[]): Promise<void> {
+  if (!rows.length) return
+  for (const spec of ORDER_NAME_FIELDS) {
+    const names = await namesByKeys(
+      user,
+      spec.entity,
+      rows.map((row) => String(row[spec.key] || ''))
+    )
+    const fieldName = spec.key.slice(0, -'_Key'.length)
+    for (const row of rows) {
+      const name = names.get(orderGuid(row[spec.key]))
+      if (!name) continue
+      row[fieldName] = name
+      row[`${fieldName}_Name`] = name
+    }
+  }
 }
 
 const orderCache = new Map<string, { rows: OrderRow[]; error: string }>()
 const orderLoads = new Map<string, Promise<{ rows: OrderRow[]; error: string }>>()
 
-/** Приказы и распоряжения из документов 1С. Один запрос каждого вида за сессию. */
+export function forgetDocflowOrdersSession(user: UserProfile | null): void {
+  orderCache.delete(cacheKey(user, 'orders'))
+}
+
+/** Приказы и распоряжения из документов 1С. Виды читаются по очереди, имена справочников — отдельными пачками. */
 export function loadDocflowOrdersSession(user: UserProfile | null): Promise<{ rows: OrderRow[]; error: string }> {
   const key = cacheKey(user, 'orders')
   const cached = orderCache.get(key)
   if (cached) return Promise.resolve(cached)
   const pending = orderLoads.get(key)
   if (pending) return pending
-  const load = Promise.all(ORDER_ENTITIES.map((spec) => loadOrderEntity(user, spec)))
-    .then((parts) => {
+  const load = (async () => {
+    const parts: { spec: (typeof ORDER_ENTITIES)[number]; rows: Record<string, unknown>[]; error: string }[] = []
+    for (const spec of ORDER_ENTITIES) {
+      const part = await loadOrderRaw(user, spec)
+      parts.push({ spec, ...part })
+    }
+    const raw = parts.flatMap((part) => part.rows)
+    await fillOrderNames(user, raw)
+    const seen = new Set<string>()
+    const rows = parts
+      .flatMap((part) => part.rows.map((row) => mapOrder(row, part.spec.kind, part.spec.label)))
+      .filter((row) => row.date || row.number || row.subject)
+      .filter((row) => (seen.has(row.id) ? false : seen.add(row.id) !== undefined))
+    rows.sort((left, right) => right.date.localeCompare(left.date))
+    const errors = parts.map((part) => part.error).filter(Boolean)
+    const error = rows.length
+      ? errors.join(' ')
+      : errors.join(' ') || 'Не удалось прочитать приказы и распоряжения из 1С'
+    if (rows.length && !error) orderCache.set(key, { rows, error: '' })
+    return { rows, error }
+  })()
+    .finally(() => {
       orderLoads.delete(key)
-      const rows = parts.flatMap((part) => part.rows)
-      rows.sort((left, right) => right.date.localeCompare(left.date))
-      const errors = parts.map((part) => part.error).filter(Boolean)
-      const result = {
-        rows,
-        error: rows.length ? '' : errors.join(' ') || 'Не удалось прочитать приказы и распоряжения из 1С'
-      }
-      if (!result.error) orderCache.set(key, result)
-      return result
-    })
-    .catch((err: unknown) => {
-      orderLoads.delete(key)
-      throw err
     })
   orderLoads.set(key, load)
   return load
+}
+
+/** Содержание карточки — отдельным чтением одного документа, не в списке журнала. */
+export async function loadOrderBody(user: UserProfile | null, row: OrderRow): Promise<OrderRow | null> {
+  if (!GUID_RE.test(row.id)) return row
+  const spec = ORDER_ENTITIES.find((item) => item.kind === row.kind)
+  if (!spec) return null
+  const res = await api.invokeServerTool(
+    'onec.odata_get',
+    onecGatewayInvokeArgs(user, {
+      entity: spec.entity,
+      ref_key: row.id,
+      resolve_navigation: false
+    }),
+    60_000
+  )
+  if (!res.ok) return null
+  const raw = rowsFromResult(res.result)[0]
+  if (!raw) return null
+  const content = stripHtml(field(raw, 'Содержание'))
+  const fields = row.fields.filter((item) => item.label !== 'Содержание')
+  if (content) fields.push({ label: 'Содержание', value: content })
+  return { ...row, content, fields }
 }
 
 export function formatCorrespondenceDate(raw: string): string {

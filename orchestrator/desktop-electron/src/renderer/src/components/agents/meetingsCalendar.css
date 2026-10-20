@@ -1,0 +1,1178 @@
+.mcal-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.mcal-root > .cal-legend {
+  align-items: center;
+  width: 100%;
+}
+
+.mcal-scroll {
+  scrollbar-gutter: stable;
+  overflow: auto;
+}
+
+/* ---- Неделя: у колонок есть минимальная ширина, узкое окно прокручивается ---- */
+.mcal-head,
+.mcal-body {
+  display: flex;
+  min-width: max-content;
+}
+
+.mcal-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  gap: 2px;
+  padding-right: 2px;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+  background: #fff;
+}
+
+/* box-sizing задаём явно: шапка и тело должны считать ширину колонки одинаково,
+   иначе колонки разъезжаются с заголовками дней. */
+.mcal-gutter-cell,
+.mcal-gutter,
+.mcal-head-day,
+.mcal-col {
+  box-sizing: border-box;
+}
+
+.mcal-gutter-cell,
+.mcal-gutter {
+  position: sticky;
+  left: 0;
+  flex: 0 0 42px;
+  width: 42px;
+  min-width: 42px;
+  background: #fff;
+}
+
+.mcal-gutter {
+  z-index: 2;
+}
+
+/* Шапка дня как в Google Calendar: мелкий день недели, под ним крупное число. */
+.mcal-head-day {
+  flex: 1 0 124px;
+  min-width: 124px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 2px 8px;
+  white-space: nowrap;
+}
+
+.mcal-head-dow {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6b7380;
+}
+
+.mcal-head-date {
+  display: grid;
+  place-items: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 4px;
+  border-radius: 17px;
+  font-size: 22px;
+  font-weight: 400;
+  color: #10141a;
+}
+
+.mcal-head-day.is-today .mcal-head-dow {
+  color: #2f6bd8;
+}
+
+/* Сегодняшнее число — залитый кружок, как в Google Calendar. */
+.mcal-head-day.is-today .mcal-head-date,
+.mcal-day-v-corner.is-today .mcal-head-date {
+  background: #2f6bd8;
+  color: #fff;
+}
+
+.mcal-head-count {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(16, 20, 26, 0.07);
+  font-size: 10px;
+  font-weight: 700;
+  color: #6b7380;
+}
+
+.mcal-head-day.is-today .mcal-head-count {
+  background: rgba(47, 107, 216, 0.14);
+  color: #2f6bd8;
+}
+
+.mcal-body {
+  position: relative;
+  gap: 2px;
+  padding-right: 2px;
+  background: #fff;
+}
+
+.mcal-gutter {
+  position: relative;
+}
+
+.mcal-hour {
+  position: absolute;
+  right: 4px;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  color: #6b7380;
+  white-space: nowrap;
+}
+
+/* z-index: 1 замыкает слои блоков внутри колонки, чтобы они не лезли на шкалу часов. */
+.mcal-col {
+  position: relative;
+  z-index: 1;
+  flex: 1 0 124px;
+  min-width: 124px;
+  border-left: 1px solid rgba(16, 20, 26, 0.08);
+}
+
+.mcal-col.is-today {
+  background: rgba(21, 101, 192, 0.05);
+}
+
+.mcal-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(16, 20, 26, 0.07);
+  pointer-events: none;
+}
+
+.mcal-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: #e5484d;
+  z-index: 30;
+  pointer-events: none;
+}
+
+/* ---- Блок совещания: заголовок, сразу под ним время ---- */
+.mcal-event {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  overflow: hidden;
+  padding: 4px 6px;
+  border: 1px solid;
+  border-left-width: 3px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.mcal-event.is-selected {
+  box-shadow: 0 0 0 2px rgba(16, 20, 26, 0.35);
+}
+
+/* Этот блок выиграл приоритет и остаётся видимым в пересечении. */
+.mcal-event.is-top {
+  border-left-width: 5px;
+  box-shadow: 0 1px 5px rgba(16, 20, 26, 0.2);
+}
+
+/* А этот перекрыт: наружу торчит только край — пунктирный и приглушённый. */
+.mcal-event.is-under {
+  border-style: dashed;
+  border-left-style: solid;
+  filter: saturate(0.55);
+}
+
+/* Совещание прошло — цвет человека остаётся, блок просто уходит на второй план. */
+.mcal-event.is-past {
+  opacity: 0.62;
+}
+
+.mcal-event.is-past:hover {
+  opacity: 1;
+}
+
+/* Текст лежит поверх штриховки и не перехватывает клики: по штриховке открывается
+   список пересечений, по чистой части блока — само совещание. */
+.mcal-event-title,
+.mcal-event-time {
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.mcal-event-title {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  /* Ровно 16px: от этого шага компонент считает, сколько строк влезает в блок. */
+  line-height: 16px;
+  color: inherit;
+}
+
+/* Обрезку с многоточием ставим на вложенный элемент: у флекс-элемента
+   display: -webkit-box блокифицируется во flow-root и line-clamp не работает. */
+.mcal-event-title-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.mcal-event-time {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  color: inherit;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+
+.mcal-event.has-protocol .mcal-event-title {
+  padding-right: 14px;
+}
+
+.mcal-event-doc {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.92);
+  color: inherit;
+  pointer-events: none;
+}
+
+/* В режиме дня top/height задаёт дорожка, left/width — время. */
+.mcal-event.is-horizontal {
+  position: absolute;
+  left: auto;
+  right: auto;
+  /* Короткая встреча всё равно должна показать заголовок. */
+  min-width: 118px;
+}
+
+.mcal-event.is-compact {
+  position: relative;
+  left: auto;
+  right: auto;
+  margin-bottom: 2px;
+}
+
+/* ---- Штриховка пересечений ----
+   Лежит внутри блока на перекрытом участке и в цвет самого блока (currentColor),
+   так что заголовок сверху остаётся читаемым. */
+.mcal-hatch {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    45deg,
+    currentColor 0,
+    currentColor 1px,
+    transparent 1px,
+    transparent 7px
+  );
+  cursor: pointer;
+}
+
+/* Приоритет читается по плотности штриха: у верхнего блока она еле заметна,
+   у перекрытого — густая, поэтому сразу видно, кто кого закрывает. */
+.mcal-event.is-top .mcal-hatch {
+  opacity: 0.16;
+}
+
+.mcal-event.is-under .mcal-hatch {
+  opacity: 0.42;
+}
+
+.mcal-hatch:hover {
+  opacity: 0.6;
+}
+
+.mcal-event.is-horizontal .mcal-hatch {
+  top: 0;
+  bottom: 0;
+  left: auto;
+  right: auto;
+}
+
+/* Метка пересечения на блоке в режиме месяца, где блоки стоят в столбик. */
+.mcal-event-hatch {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  z-index: 3;
+  width: 13px;
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    45deg,
+    currentColor 0,
+    currentColor 1.5px,
+    transparent 1.5px,
+    transparent 6px
+  );
+  opacity: 0.4;
+  cursor: pointer;
+}
+
+.mcal-event-hatch:hover {
+  opacity: 0.7;
+}
+
+/* ---- День: время сверху вниз, колонка на каждый календарь ---- */
+.mcal-day-v {
+  display: flex;
+  flex-direction: column;
+  min-width: max-content;
+}
+
+.mcal-day-v-head,
+.mcal-day-v-body {
+  display: grid;
+  grid-template-columns: 42px repeat(var(--mcal-cols, 1), minmax(160px, 1fr));
+}
+
+.mcal-day-v-head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: #fff;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+}
+
+.mcal-day-v-corner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 6px 2px 8px;
+}
+
+.mcal-day-v-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 8px 8px 10px;
+  border-left: 1px solid rgba(16, 20, 26, 0.08);
+  font-size: 12px;
+  font-weight: 600;
+  color: #10141a;
+}
+
+.mcal-day-dot {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.mcal-day-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcal-day-v-body {
+  position: relative;
+  background: #fff;
+}
+
+.mcal-day-v-col {
+  position: relative;
+  z-index: 1;
+  border-left: 1px solid rgba(16, 20, 26, 0.08);
+}
+
+.mcal-day-v-col.is-today {
+  background: rgba(21, 101, 192, 0.05);
+}
+
+.mcal-day-free {
+  position: absolute;
+  top: 12px;
+  left: 10px;
+  font-size: 11px;
+  color: #b5c2d3;
+}
+
+.mcal-print-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(13, 59, 115, 0.22);
+  border-radius: 8px;
+  background: #fff;
+  color: #0d3b73;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mcal-print-btn:hover {
+  background: #e8f1fb;
+}
+
+.mcal-print-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px;
+  background: rgba(16, 20, 26, 0.45);
+}
+
+.mcal-print-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #fff;
+  color: #10141a;
+}
+
+.mcal-print-tools,
+.mcal-print-orient,
+.mcal-print-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.mcal-print-tools button,
+.mcal-print-orient button,
+.mcal-print-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.22);
+  background: #fff;
+  color: #0d3b73;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mcal-print-tools button.is-on,
+.mcal-print-orient button.is-on {
+  border-color: #0d3b73;
+  background: #e8f1fb;
+}
+
+.mcal-print-hint {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  color: #5c6b7a;
+}
+
+.mcal-print-edit {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mcal-print-edit label {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 11px;
+  color: #5c6b7a;
+}
+
+.mcal-print-edit input {
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid #c9d3de;
+  border-radius: 6px;
+  color: #10141a;
+  font-size: 13px;
+}
+
+.mcal-print-actions {
+  margin-left: auto;
+}
+
+.mcal-print-actions button.is-primary {
+  border-color: #0d3b73;
+  background: #0d3b73;
+  color: #fff;
+}
+
+.mcal-print-preview {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #d5dee8;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.mcp-fit {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  max-width: 100%;
+  max-height: 100%;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(16, 20, 26, 0.16);
+}
+
+/* A4 landscape 297×210 мм */
+.mcal-print-backdrop.is-landscape .mcp-fit {
+  width: min(100%, calc((100dvh - 148px) * 297 / 210));
+  max-height: 100%;
+  aspect-ratio: 297 / 210;
+}
+
+/* A4 portrait 210×297 мм: колонка дня и рамки совещаний на всю ширину листа */
+.mcal-print-backdrop.is-portrait .mcp-fit {
+  width: min(100%, calc((100dvh - 148px) * 210 / 297));
+  height: min(100%, calc(100dvh - 148px));
+  aspect-ratio: 210 / 297;
+}
+
+.mcp-board.mcal-day-v {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mcp-board .mcal-day-v-head,
+.mcp-board .mcal-day-v-body {
+  width: 100%;
+  grid-template-columns: 42px repeat(var(--mcal-cols, 1), minmax(0, 1fr));
+}
+
+.mcp-board .mcp-body {
+  flex: 1;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.mcp-board .mcal-hour.is-first {
+  transform: none;
+}
+
+.mcp-board .mcal-hour.is-last {
+  transform: translateY(-100%);
+}
+
+.mcp-board.is-tool {
+  user-select: none;
+}
+
+.mcp-board.is-tool .mcal-day-v-col {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.mcp-board.is-tool .mcal-event {
+  pointer-events: none;
+}
+
+.mcp-board .mcal-day-v-name.mcp-colhead {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 0 4px;
+}
+
+.mcp-board .mcp-colhead .mcal-day-label {
+  padding: 0 10px;
+}
+
+.mcp-cols {
+  display: grid;
+  grid-template-columns: 4.6rem minmax(0, 1.45fr) minmax(8ch, 18ch) minmax(0, 2.2fr);
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+.mcp-cols-head {
+  color: #5c6b7a;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+.mcp-cols-head span {
+  min-width: 0;
+  padding: 0 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mcp-board .mcp-row {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mcp-sheet {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  align-items: stretch;
+}
+
+.mcp-track {
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.mcp-fill {
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--mcp-fill);
+  border-top: 1px solid var(--mcp-border);
+  border-bottom: 1px solid var(--mcp-border);
+}
+
+.mcp-fill .mcp-theme,
+.mcp-fill .mcp-room,
+.mcp-fill .mcp-people {
+  flex: 1 1 auto;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  background: transparent;
+  border: 0;
+}
+
+.mcp-time,
+.mcp-theme,
+.mcp-room,
+.mcp-people {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--mcp-ink);
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.mcp-time {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0;
+  padding: 1px 2px;
+  border: 1px solid var(--mcp-border);
+  border-left: 3px solid var(--mcp-dot);
+  background: var(--mcp-fill);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.mcp-theme,
+.mcp-room,
+.mcp-people {
+  padding: 4px 8px;
+  border-top: 1px solid var(--mcp-border);
+  border-bottom: 1px solid var(--mcp-border);
+  background: var(--mcp-fill);
+  font-size: 13px;
+  line-height: 17px;
+}
+
+.mcp-room,
+.mcp-people {
+  border-left: 1px solid var(--mcp-border);
+}
+
+.mcp-people {
+  border-right: 1px solid var(--mcp-border);
+}
+
+.mcp-theme-text {
+  display: -webkit-box;
+  width: 100%;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  overflow-wrap: break-word;
+}
+
+.mcp-time-range {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mcp-row.is-brief .mcp-theme,
+.mcp-row.is-brief .mcp-room,
+.mcp-row.is-brief .mcp-people,
+.mcp-row.is-tight .mcp-theme,
+.mcp-row.is-tight .mcp-room,
+.mcp-row.is-tight .mcp-people {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mcp-row.is-brief .mcp-theme-text,
+.mcp-row.is-tight .mcp-theme-text {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+}
+
+.mcp-row.is-brief .mcp-theme,
+.mcp-row.is-brief .mcp-room,
+.mcp-row.is-brief .mcp-people {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  line-height: 16px;
+}
+
+.mcp-row.is-tight .mcp-fill {
+  justify-content: center;
+}
+
+.mcp-row.is-tight .mcp-theme,
+.mcp-row.is-tight .mcp-room,
+.mcp-row.is-tight .mcp-people {
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 15px;
+}
+
+.mcp-row.is-tight .mcp-time {
+  justify-content: center;
+  padding: 0 1px;
+  font-size: 10px;
+  line-height: 12px;
+}
+
+/* Горизонтальный A4: текст по середине между верхней и нижней границей рамки. */
+.mcal-print-backdrop.is-landscape .mcp-fill {
+  align-self: stretch;
+  justify-content: center;
+  height: 100% !important;
+}
+
+.mcal-print-backdrop.is-landscape .mcp-fill .mcp-theme,
+.mcal-print-backdrop.is-landscape .mcp-fill .mcp-room,
+.mcal-print-backdrop.is-landscape .mcp-fill .mcp-people {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  height: auto;
+}
+
+.mcal-print-backdrop.is-landscape .mcp-time {
+  justify-content: center;
+  height: 100% !important;
+}
+
+/* 15 минут: на 2 размера меньше текущего (13→11, плотный 12→10, время 11→9 и 10→8). */
+.mcal-print-backdrop.is-landscape .mcp-row.is-q15 .mcp-theme,
+.mcal-print-backdrop.is-landscape .mcp-row.is-q15 .mcp-room,
+.mcal-print-backdrop.is-landscape .mcp-row.is-q15 .mcp-people {
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.mcal-print-backdrop.is-landscape .mcp-row.is-q15.is-tight .mcp-theme,
+.mcal-print-backdrop.is-landscape .mcp-row.is-q15.is-tight .mcp-room,
+.mcal-print-backdrop.is-landscape .mcp-row.is-q15.is-tight .mcp-people {
+  font-size: 10px;
+  line-height: 13px;
+}
+
+.mcal-print-backdrop.is-landscape .mcp-row.is-q15 .mcp-time {
+  font-size: 9px;
+  line-height: 11px;
+}
+
+.mcal-print-backdrop.is-landscape .mcp-row.is-q15.is-tight .mcp-time {
+  font-size: 8px;
+  line-height: 10px;
+}
+
+/* Вертикальный A4: рамка совещания на всю свободную высоту и ширину колонки. */
+.mcal-print-backdrop.is-portrait .mcp-time,
+.mcal-print-backdrop.is-portrait .mcp-fill {
+  height: 100% !important;
+}
+
+.mcp-room {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.mcp-people {
+  white-space: normal;
+  overflow-wrap: break-word;
+  line-height: 18px;
+}
+
+.mcp-range {
+  position: absolute;
+  right: 4px;
+  left: 4px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 0;
+  overflow: visible;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.mcp-range span {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mcp-range.is-insert {
+  border: 1px dashed #2f6bd8;
+  background: rgba(47, 107, 216, 0.16);
+  color: #17325f;
+}
+
+.mcp-range.is-delete {
+  border: 1px dashed #e5484d;
+  background: rgba(229, 72, 77, 0.18);
+  color: #6e1a1a;
+}
+
+.mcal-print-empty {
+  margin: 0;
+  color: #6b7380;
+  font-size: 13px;
+}
+
+@page {
+  size: A4 landscape;
+  margin: 0;
+}
+
+@page sheet-portrait {
+  size: A4 portrait;
+  margin: 0;
+}
+
+.mcal-print-backdrop.is-portrait {
+  page: sheet-portrait;
+}
+
+@media print {
+  html,
+  body {
+    margin: 0 !important;
+    overflow: hidden !important;
+  }
+
+  body > *:not(.mcal-print-backdrop) {
+    display: none !important;
+  }
+
+  .mcal-print-backdrop {
+    display: flex !important;
+    flex-direction: column;
+    position: static;
+    width: 297mm;
+    height: 210mm;
+    gap: 0;
+    padding: 6mm;
+    overflow: hidden;
+    background: #fff;
+    box-sizing: border-box;
+  }
+
+  .mcal-print-backdrop.is-portrait {
+    width: 210mm;
+    height: 297mm;
+  }
+
+  .mcp-fit {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    aspect-ratio: auto !important;
+    box-shadow: none !important;
+  }
+
+  .mcal-print-toolbar,
+  .mcp-range {
+    display: none !important;
+  }
+
+  .mcal-event.is-selected {
+    box-shadow: none !important;
+  }
+
+  .mcal-print-preview {
+    display: flex;
+    flex: 1;
+    width: auto;
+    height: auto;
+    padding: 0;
+    overflow: hidden;
+    background: #fff;
+    border-radius: 0;
+  }
+}
+
+.mcal-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  font-size: 12px;
+  color: #9aa4b2;
+}
+
+/* ---- Месяц ---- */
+.mcal-month {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mcal-month-head,
+.mcal-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.mcal-month-head span {
+  text-align: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #6b7380;
+}
+
+.mcal-month-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  min-height: 64px;
+  padding: 6px;
+  border: 1px solid rgba(16, 20, 26, 0.08);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.mcal-month-cell.is-out {
+  background: #fafbfd;
+}
+
+.mcal-month-cell.is-out .mcal-month-day {
+  color: #b5c2d3;
+}
+
+.mcal-month-cell.is-today {
+  border-color: #1565c0;
+  background: rgba(21, 101, 192, 0.05);
+}
+
+.mcal-month-day {
+  font-size: 12px;
+  font-weight: 700;
+  color: #10141a;
+}
+
+/* В месяце вместо блоков — число совещаний самого приоритетного человека. */
+.mcal-month-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* ---- Блок «что пересекается» ---- */
+.mcal-conflict {
+  flex: 0 0 auto;
+  margin-top: 6px;
+  border: 1px solid rgba(48, 58, 82, 0.28);
+  border-radius: 9px;
+  background: rgba(48, 58, 82, 0.05);
+  overflow: hidden;
+}
+
+.mcal-conflict-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #10141a;
+}
+
+.mcal-conflict-close {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #6b7380;
+  cursor: pointer;
+}
+
+.mcal-conflict-close:hover {
+  background: rgba(48, 58, 82, 0.12);
+  color: #10141a;
+}
+
+.mcal-conflict-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 6px 6px;
+  list-style: none;
+  max-height: 148px;
+  overflow: auto;
+}
+
+.mcal-conflict-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: #fff;
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcal-conflict-item:hover {
+  background: #e8f1fb;
+}
+
+.mcal-conflict-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.mcal-conflict-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcal-conflict-time {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: #6b7380;
+}
+
+.mcal-conflict-tag {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(21, 101, 192, 0.12);
+  font-size: 9.5px;
+  color: #1565c0;
+}

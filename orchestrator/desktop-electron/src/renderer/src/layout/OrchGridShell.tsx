@@ -41,6 +41,8 @@ interface OrchGridShellProps {
   /** Hide workplace title/search — used for agent run/history overlays. */
   subpage?: boolean
   pinnedExtensionNav?: SidebarNavItem[]
+  /** Полоса идущих агентов над сеткой вкладки. */
+  topStrip?: ReactNode
   children: ReactNode
 }
 
@@ -68,6 +70,7 @@ export function OrchGridShell({
   gridClassName = '',
   subpage = false,
   pinnedExtensionNav = [],
+  topStrip = null,
   children
 }: OrchGridShellProps): React.JSX.Element {
   const meta = TAB_REGISTRY[activeKey]
@@ -141,6 +144,8 @@ export function OrchGridShell({
         />
       </div>
 
+      <div className="orch-grid-column">
+      {topStrip}
       <div className={`orch-grid${gridMods ? ` ${gridMods}` : ''}`}>
       {subpage ? null : (
         <>
@@ -200,6 +205,7 @@ export function OrchGridShell({
       {toast ? <div className="orch-grid-toast">{toast}</div> : null}
 
       {children}
+      </div>
       </div>
     </div>
   )

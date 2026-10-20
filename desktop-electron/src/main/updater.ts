@@ -112,25 +112,14 @@ function authHeaders(): Record<string, string> {
   return headers
 }
 
-const INSTALLER_ORDER = ['constructor-setup.exe', 'orchestrator-setup.exe']
+const OWN_INSTALLER = 'constructor-setup.exe'
 
 export function pickInstallers(assets: GithubAsset[]): GithubAsset[] {
-  const exes = assets.filter((asset) => {
-    const name = String(asset.name || '').toLowerCase()
-    return name.endsWith('.exe') && !name.includes('blockmap')
+  const asset = assets.find((item) => {
+    const name = String(item.name || '').toLowerCase()
+    return name === OWN_INSTALLER
   })
-  const picked: GithubAsset[] = []
-  const seen = new Set<string>()
-  for (const wanted of INSTALLER_ORDER) {
-    const asset = exes.find((item) => String(item.name || '').toLowerCase() === wanted)
-    if (!asset) continue
-    const key = asset.browser_download_url || asset.name
-    if (seen.has(key)) continue
-    seen.add(key)
-    picked.push(asset)
-  }
-  if (!picked.length && exes[0]) picked.push(exes[0])
-  return picked
+  return asset ? [asset] : []
 }
 
 async function fetchLatestRelease(): Promise<GithubRelease | null> {

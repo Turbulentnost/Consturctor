@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
+import { scheduleUiSync } from '../../components/uiPrefsSync'
 import { resolveLayoutOverlaps } from './gridReflow'
 
 export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v6'
@@ -213,6 +214,7 @@ function readPersist(userId: string): TodayWidgetLayoutPersist {
 function writePersist(userId: string, state: TodayWidgetLayoutPersist): void {
   try {
     localStorage.setItem(storageKeyForUser(userId), JSON.stringify(state))
+    scheduleUiSync(userId, 'today')
   } catch {
     /* ignore quota */
   }
@@ -435,9 +437,7 @@ export function useTodayWidgetLayout(userId: string): {
 
   const layoutWithStatic = useMemo(() => {
     const flagged = applyTodayLayoutStaticFlags(layout, editMode, locked)
-    if (editMode) return flagged
-    const filtered = flagged.filter((item) => visible[item.i as TodayWidgetId] !== false)
-    return filtered.length ? filtered : flagged
+    return flagged.filter((item) => visible[item.i as TodayWidgetId] !== false)
   }, [layout, editMode, locked, visible])
 
   return {

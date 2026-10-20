@@ -1,0 +1,158 @@
+.spec-detail-actions.meeting-protocol-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  /* Floating «Чат» button (.chat-dock: fixed, bottom 24px, height 48px) sits over the card's bottom-right corner. */
+  margin-bottom: 56px;
+}
+.meeting-protocol-actions .cal-btn {
+  width: 100%;
+  min-height: 36px;
+  height: auto;
+  padding: 7px 12px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: normal;
+}
+.meeting-report-toolbar {
+  flex-wrap: nowrap;
+}
+.meeting-report-toolbar .modal-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.meeting-report-toolbar .meeting-report-toolbar-actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+.meeting-report-toolbar-actions .cal-btn {
+  width: auto;
+  height: 36px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.meeting-protocol-actions .cal-btn:disabled,
+.meeting-report-toolbar-actions .cal-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.meeting-protocol-actions .cal-btn:not(.primary):disabled:hover,
+.meeting-report-toolbar-actions .cal-btn:not(.primary):disabled:hover {
+  background: #fff;
+}
+.meeting-protocol-actions .cal-btn.primary:disabled:hover,
+.meeting-report-toolbar-actions .cal-btn.primary:disabled:hover {
+  background: #1565c0;
+}
+
+.meeting-protocol-file-row {
+  align-items: center;
+  min-width: 0;
+  padding-right: 20px;
+}
+
+.meeting-protocol-file {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.meeting-voice-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.meeting-voice {
+  border: 1px solid rgba(16, 20, 26, 0.08);
+  border-radius: 12px;
+  background: #f6f8fb;
+  padding: 10px 12px;
+}
+
+.meeting-voice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.meeting-voice-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0d3b73;
+}
+
+.meeting-voice-source {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fff;
+  color: #6b7380;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.meeting-voice-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meeting-voice-field > span {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7380;
+}
+
+.meeting-voice .onec-reconnect-input {
+  background: #fff;
+  min-height: 40px;
+}
+
+.meeting-voice-said {
+  max-height: 148px;
+  margin-top: 8px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #fff;
+  color: #3d4654;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.meeting-protocol-card--review .meeting-voice-said p {
+  margin: 0 0 6px;
+  color: #3d4654;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.meeting-protocol-card--review .meeting-voice-said p:last-child {
+  margin-bottom: 0;
+}
+
+.meeting-protocol-card--review .meeting-protocol-actions {
+  grid-template-columns: 1fr;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(16, 20, 26, 0.08);
+  background: #fff;
+}
+
+.meeting-protocol-continue {
+  min-height: 40px;
+}

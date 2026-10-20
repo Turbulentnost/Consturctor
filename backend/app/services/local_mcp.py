@@ -275,7 +275,10 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "СД — «ПСД» (основной), также «СПГ»/«СД». По умолчанию — черновики на проверку "
                 "(Posted=false или Статус=«Подготовлен»). "
                 "psd_mark=true — только пометка ПСД (номер ПСД*), все статусы, включая закрытые. "
-                "meeting_kind: rk или sd. date или date_from/date_to — период."
+                "meeting_kind: rk или sd. date или date_from/date_to — период. "
+                "pair=true — протоколы текущего и прошлого заседания «Совет директоров по ГК» "
+                "(или topic) с построчной сверкой поручений («Решения»), «Поставленных задач» и "
+                "повестки (reconciliation: строка + ошибки) и списком пробелов."
             ),
             "execution": "server",
             "input_schema": {
@@ -289,6 +292,15 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
                     "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
                     "number": _prop("string", "Точный номер протокола, например РК__001_О_037"),
+                    "pair": _prop(
+                        "boolean",
+                        "Текущий + прошлый протокол заседания и проверка задач. "
+                        "date — день текущего заседания; без date — последний черновик «Подготовлен»",
+                    ),
+                    "topic": _prop(
+                        "string",
+                        "Точное название темы совещания (для pair по умолчанию «Совет директоров по ГК»)",
+                    ),
                     "review_only": _prop(
                         "boolean",
                         "Только на проверку (Posted=false или Подготовлен). По умолчанию true",
@@ -305,6 +317,97 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "max_results": _prop("integer", "Максимум протоколов, не больше 100"),
                 },
                 "required": ["meeting_kind"],
+            },
+        },
+        {
+            "name": "onec.meeting_protocol_write",
+            "description": (
+                "Черновик протокола Document_ТД_Протокол в 1С (статус «Подготовлен», не проведён). "
+                "action=next + source_ref_key — протокол на основании прошлого, как в 1С: "
+                "копирует шапку, присутствующих и повестку, ставит ДокументОснование, "
+                "и все задачи прошлого протокола видны на контроле (в новый документ не копируются); "
+                "дата — date или «Дата следующего совещания» прошлого протокола; любое поле можно "
+                "передать явно. action=create — новый протокол, action=update + ref_key — перезаписать "
+                "черновик. action=add_tasks + ref_key — проведённый протокол: дописать задачи в регистр "
+                "ТД_ЗадачиПротоколов (документ не меняется); tasks — только новые {text, executor, due} "
+                "и правки неотправленных {id, …} (id из tasks[].id протокола). "
+                "action=check_tasks + ref_key протокола-владельца задач — отметить выполненные: "
+                "tasks=[{id, done_date YYYY-MM-DD, comment}] (Выполнена + ДатаИсполнения в регистре; "
+                "задачи с запущенным процессом ДО сервер пропустит). "
+                "ФИО передавай как в 1С. Требует подтверждения человека."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": _prop(
+                        "string", "create | update | next | add_tasks | check_tasks", default="create"
+                    ),
+                    "source_ref_key": _prop("string", "Ref_Key прошлого протокола (action=next)"),
+                    "ref_key": _prop("string", "Ref_Key протокола (action=update / add_tasks / check_tasks)"),
+                    "topic": _prop("string", "Тема совещания как в справочнике «Темы совещаний»"),
+                    "date": _prop("string", "Дата совещания YYYY-MM-DD"),
+                    "time_start": _prop("string", "Время начала HH:MM"),
+                    "time_end": _prop("string", "Время окончания HH:MM"),
+                    "leader": _prop("string", "ФИО руководителя совещания"),
+                    "responsible": _prop("string", "ФИО проверяющего"),
+                    "next_meeting_date": _prop("string", "Дата следующего совещания YYYY-MM-DD"),
+                    "participants": _prop("array", "ФИО присутствующих"),
+                    "agenda": _prop("array", "Вопросы повестки: строка или {question, responsible}"),
+                    "decisions": _prop(
+                        "array",
+                        "Решения: строка или {text, since, due}. since — дата начала YYYY-MM-DD, "
+                        "её пишет форма; due — дата окончания, только если названа отдельно",
+                    ),
+                    "tasks": _prop(
+                        "array",
+                        "Задачи: {text, executor (ФИО), due YYYY-MM-DD, priority, note}; "
+                        "для add_tasks правка существующей — {id, …изменённые поля}; "
+                        "для check_tasks — {id, done_date, comment} выполненных",
+                    ),
+                    "comment": _prop("string", "Комментарий к протоколу"),
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "onec.docflow_document_create",
+            "description": (
+                "Документ журнала «Документооборот» в 1С: incoming, outgoing, memo, assignment, payment, "
+                "forwarding, order, directive — ERP; incentive — база ДО под учёткой сеанса. "
+                "action=schema — поля формы, списки, виды «на основании»; action=lookup + kind + catalog + query — "
+                "поиск в справочнике формы; action=create + kind + values {поле: значение} (+ tables, files, "
+                "basis {kind, ref_key}, post=true — провести) — черновик, либо проведённый документ ERP; "
+                "action=read + ref_key — карточка; "
+                "action=update + ref_key + values + changed [поля] — изменить черновик (проведённый — только в 1С); "
+                "action=attach + ref_key + files — прикрепить файлы; action=basis + ref_key + target — значения "
+                "для «Создать на основании» / копии. Ссылки передавай наименованием как в 1С. "
+                "Перед первой записью вида сервер сам делает пробу CONSTRUCTOR_PROBE и удаляет её. "
+                "Требует подтверждения человека."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": _prop(
+                        "string", "schema | lookup | probe | create | read | update | attach | basis", default="schema"
+                    ),
+                    "kind": _prop(
+                        "string",
+                        "incoming | outgoing | memo | assignment | payment | forwarding | order | directive | incentive",
+                    ),
+                    "ref_key": _prop("string", "Ref_Key документа (read / update / attach / basis)"),
+                    "target": _prop("string", "Вид создаваемого документа (action=basis)"),
+                    "changed": _prop("array", "Ключи изменённых полей (action=update)"),
+                    "basis": _prop("object", "Документ-основание {kind, ref_key} (action=create)"),
+                    "catalog": _prop("string", "Справочник поля формы (action=lookup)"),
+                    "query": _prop("string", "Текст поиска (action=lookup)"),
+                    "values": _prop("object", "Значения полей формы: ключи из action=schema"),
+                    "tables": _prop("object", "Табличные части: {ключ: [{колонка: значение}]}"),
+                    "files": _prop("array", "Файлы к документу ERP: [{name, base64}], до 10 шт. по 20 МБ"),
+                    "post": _prop("boolean", "true — провести документ ERP при записи (action=create)"),
+                },
+                "required": ["action"],
             },
         },
         {
@@ -477,7 +580,8 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "action=list: по умолчанию открытые + за сегодня, фильтр customer=ФИО. "
                 "include_all=true — все статусы, без отсечения «только открытые/сегодня». "
                 "action=get: карточка по number (АСТ00-00093) со строками и файлами. "
-                "action=files / download / tasks / protocols. "
+                "action=files / download / tasks / protocols / reviewed. "
+                "action=reviewed — номера уже проверенных поручений из БД, их не перепроверяй. "
                 "action=protocols + psd_mark=true — только протоколы с номером ПСД*. "
                 "Содержимое файла: onec.download_artifact с file_id из action=files. "
                 "Не выдумывай ACT латиницей — номер кириллический АСТ. "
@@ -489,7 +593,7 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "properties": {
                     "action": _prop(
                         "string",
-                        "list | get | files | download | tasks | protocols",
+                        "list | get | files | download | tasks | protocols | reviewed",
                         default="list",
                     ),
                     "customer": _prop("string", "ФИО заказчика (Руководитель), например Амураль Игорь Борисович"),
@@ -513,6 +617,13 @@ def _raw_tools() -> list[dict[str, Any]]:
                         "Для action=protocols: только номера, которые начинаются с ПСД",
                     ),
                     "include_files": _prop("boolean", "Для list сразу вернуть файлы", default=False),
+                    "include_tasks": _prop(
+                        "boolean",
+                        "Для list/get: задачи поручения из 1С:Документооборот (docflow_tasks) — "
+                        "каждая отправка исполнителю: статус, возвраты, срок, комментарий исполнителя, "
+                        "его файлы, task_id открытой проверки; с мероприятиями задачи не связаны",
+                        default=False,
+                    ),
                     "file_id": _prop("string", "GUID вложения для action=download"),
                     "limit": _prop("integer", "Максимум записей", default=40),
                     "performer": _prop("string", "ФИО исполнителя задачи, для action=tasks"),
@@ -525,13 +636,16 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "Запись в журнал поручений 1С. Требует подтверждения человека. "
                 "action=create: новая карточка АСТ00. "
                 "action=update: статус, срок, строки, исполнитель. "
+                "action=close_if_accepted: «Принято», только если все мероприятия приняты в ДО. "
                 "action=comment_task: комментарий в задачу исполнителя (возврат)."
             ),
             "execution": "server",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "action": _prop("string", "create | update | comment_task", default="update"),
+                    "action": _prop(
+                        "string", "create | update | close_if_accepted | comment_task", default="update"
+                    ),
                     "number": _prop("string", "Номер АСТ00-... для update"),
                     "ref_key": _prop("string", "GUID документа для update"),
                     "topic": _prop("string", "ОЧем / текст поручения"),
@@ -585,6 +699,29 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "workflow_id": _prop("string", "id черновика, чтобы пометить тест"),
                     "intents": _prop("array", "Какие сущности и поля проверить"),
                 },
+            },
+        },
+        {
+            "name": "onec.docflow_rework",
+            "description": (
+                "Вернуть задачу 1С:Документооборот на доработку в том же бизнес-процессе. "
+                "Проверка исполнения закрывается с признаком «возвращено», срок того же "
+                "исполнителя сдвигается, комментарий попадает в историю выполнения "
+                "(«Задача возвращена на доработку» и новый срок). Текст задачи не заменяется "
+                "комментарием. task_id — открытая «Проверить исполнение» или уже закрытая "
+                "«Исполнить». due — новый срок ДД.ММ.ГГГГ. Сервер, запись."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task_id": _prop("string", "UID задачи документооборота"),
+                    "due": _prop("string", "Новый срок, ДД.ММ.ГГГГ"),
+                    "comment": _prop("string", "Почему задача возвращена на доработку"),
+                    "step": _prop("string", "Шаг процесса, если известен"),
+                    "title": _prop("string", "Наименование задачи"),
+                },
+                "required": ["task_id", "due", "comment"],
             },
         },
         {
@@ -801,6 +938,16 @@ def _turboproject_advanced_tools() -> list[dict[str, Any]]:
                 "cursor": _prop("string", "Cursor из предыдущего ответа"),
             },
             ["project_id"],
+        ),
+        (
+            "turboproject.tasks_for_people",
+            "Задачи TurboProject, назначенные переданным сотрудникам. "
+            "Берёт до 8 проектов, где эти люди есть в карточке, и оставляет их задачи.",
+            {
+                "fios": _prop("array", "ФИО сотрудников, чьи задачи нужны"),
+                "limit_projects": _prop("integer", "Сколько проектов открыть, не больше 8"),
+            },
+            ["fios"],
         ),
         (
             "turboproject.get_project_metrics",
@@ -1104,6 +1251,20 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             },
             ["filename"],
         ),
+        (
+            "report.closure_check",
+            "Сохранить выводы проверки поручений к закрытию для реестра поручений, по 2–3 поручения за вызов. "
+            "Повтор того же number заменяет поручение. Блок closure-check в ответ не пиши: Оркестратор добавит его сам.",
+            {
+                "assignments": _prop(
+                    "array",
+                    "[{number, target_id, conclusion, done, total, reason, tasks:[{n, performer, task, "
+                    "conclusion (Можно закрывать|Вернуть на доработку|Не выполнено), evidence, task_state, advice, "
+                    "comment (заключение к первым двум), action, task_id, step, title, reason, open_task_id}]}]",
+                ),
+            },
+            ["assignments"],
+        ),
         ("users.current", "Текущий пользователь сессии Constructor: id, ФИО, должность, подразделение. Если регламент говорит «текущий пользователь», «данный пользователь» или «мои данные» — вызови этот tool, не спрашивай человека.", {}),
         ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
             "query": _prop("string", "ФИО, email или id — не роль и не «все» / «получатели»"),
@@ -1125,6 +1286,11 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "send_at": _prop("string", "Когда отправить, ISO. Пусто — сразу"),
             "workflow_id": _prop("string", "id агента. Пусто — текущий"),
         }, ["user_id", "title"]),
+        ("chat.send_direct", "Личное сообщение в чат Constructor от имени владельца агента (помечается «[ИИ-агент]»). Получатель — user_id из users.list или ФИО (как в 1С/протоколе); если ФИО не найдено или неоднозначно, сообщение не уходит и в ответе note — зафиксируй это как пробел. Подтверждение не нужно.", {
+            "user_id": _prop("string", "id получателя из users.list"),
+            "fio": _prop("string", "ФИО получателя, если id нет"),
+            "text": _prop("string", "Текст сообщения"),
+        }, ["text"]),
         ("agent.schedule", "Запланировать запуск агента: в момент at (ISO), через after_seconds, или когда выполнится condition (свободный текст: файл, письмо, любое событие). Пустой workflow_id = текущий агент.", {
             "workflow_id": _prop("string", "id агента. Пусто — текущий"),
             "message": _prop("string", "Что сказать агенту при запуске"),
@@ -1137,7 +1303,14 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "trigger_id": _prop("string", "id триггера из ответа agent.schedule"),
         }, ["trigger_id"]),
     ]
-    server_tools = {"users.current", "users.list", "users.subordinates", "notify.send", "data.process"}
+    server_tools = {
+        "users.current",
+        "users.list",
+        "users.subordinates",
+        "notify.send",
+        "chat.send_direct",
+        "data.process",
+    }
     tools: list[dict[str, Any]] = []
     for item in items:
         name, description, properties = item[0], item[1], item[2]
@@ -1204,6 +1377,22 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         ["protocols"],
         "count",
     ),
+    "onec.meeting_protocol_write": (
+        "onec",
+        "protocol",
+        ("create", "update"),
+        ["action"],
+        ["ref_key", "number"],
+        "none",
+    ),
+    "onec.docflow_document_create": (
+        "onec",
+        "docflow_document",
+        ("list", "search", "read", "create", "update"),
+        ["action"],
+        ["ref_key", "number", "kinds", "items"],
+        "none",
+    ),
     "onec.sql_query": ("onec", "sql_table", "search", ["sql"], ["rows"], "count"),
     "onec.erp_tasks_current": ("onec", "task", "list", [], ["tasks"], "count"),
     "onec.erp_tasks_odata": ("onec", "task", "list", [], ["tasks"], "count"),
@@ -1249,6 +1438,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         "none",
     ),
     "onec.docflow_tasks": ("onec", "task", "list", [], ["tasks"], "count"),
+    "onec.docflow_rework": (
+        "onec",
+        "task",
+        "update",
+        ["task_id", "due", "comment"],
+        ["new_task_id", "business_process_id"],
+        "none",
+    ),
     "onec.search_documents": ("onec", "document", "search", [], ["documents"], "count"),
     "onec.get_document_card": (
         "onec",
@@ -1399,6 +1596,7 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "report.build_meeting_summary": ("desktop", "report", "generate", [], ["text"], "none"),
     "report.build_schedule_recommendations": ("desktop", "report", "generate", [], ["text"], "none"),
     "report.export_document": ("desktop", "report", "export", ["filename"], ["file"], "none"),
+    "report.closure_check": ("desktop", "report", "export", ["assignments"], ["numbers"], "none"),
     "users.current": ("constructor", "user", "read", [], ["user"], "none"),
     "users.list": ("constructor", "user", "list", [], ["users"], "count"),
     "users.subordinates": ("constructor", "subordinate", "list", [], ["users"], "count"),
@@ -1418,6 +1616,7 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         ["ok", "subjects"],
         "none",
     ),
+    "chat.send_direct": ("constructor", "chat_message", "notify", ["text"], ["sent"], "none"),
     "agent.schedule": ("constructor", "trigger", "create", [], ["trigger_id"], "none"),
     "agent.schedule.cancel": ("constructor", "trigger", "delete", ["trigger_id"], [], "none"),
 }

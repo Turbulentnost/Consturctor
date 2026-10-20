@@ -55,6 +55,10 @@
   min-height: 0;
 }
 
+.orch-today-tiles.orch-today-tiles-wide .spec-v04-tiles-rich {
+  grid-template-columns: repeat(8, minmax(0, 1fr)) !important;
+}
+
 .orch-today-tiles .spec-v04-tiles-rich {
   display: grid !important;
   grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
@@ -71,6 +75,86 @@
   overflow: hidden;
   padding: 8px 10px 6px;
   gap: 3px;
+}
+
+.orch-today-tiles .today-assignments-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 8px;
+}
+
+.today-assignments-open {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.today-assignments-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #10141a;
+}
+
+.today-assignments-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex: 1;
+  min-height: 0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.today-assignments-half {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0;
+  color: #fff;
+  text-align: center;
+  font: inherit;
+  cursor: pointer;
+}
+
+.today-assignments-half:hover {
+  filter: brightness(0.94);
+}
+
+.today-assignments-half.is-overdue {
+  background: #e53935;
+}
+
+.today-assignments-half.is-soon {
+  background: #f57c00;
+}
+
+.today-assignments-half span {
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+.today-assignments-half strong {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.today-assignments-error {
+  margin: 0;
+  font-size: 11px;
+  color: #c62828;
 }
 
 .today-widget-shell--kpi-focus {
@@ -1439,6 +1523,40 @@
 
 .today-mini-table tr.today-tr-new-onec td:first-child {
   box-shadow: inset 3px 0 0 #e53935;
+}
+
+/* Разделы по видам задач внутри виджета. */
+.today-mini-table tr.today-group-row {
+  cursor: pointer;
+}
+
+.today-mini-table tr.today-group-row td {
+  background: var(--surface-muted, #f4f6f9);
+  border-top: 1px solid var(--border-subtle, #e3e8ef);
+  padding: 4px 8px !important;
+}
+
+.today-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--content-muted);
+  cursor: pointer;
+}
+
+.today-group-toggle em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--content-muted);
+  opacity: 0.75;
 }
 
 /* Строка виджета открывает карточку записи. */

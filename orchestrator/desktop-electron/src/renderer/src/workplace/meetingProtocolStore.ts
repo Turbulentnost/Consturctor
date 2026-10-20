@@ -19,6 +19,21 @@ export type MeetingProtocolRecord = {
   reportFileId: string
   reportName: string
   reportUrl: string
+  /** transcribe — расшифровка, speakers — кому голос, review — автор правит ФИО, protocol — запись в 1С. */
+  stage?: 'transcribe' | 'speakers' | 'review' | 'protocol'
+  transcriptId?: string
+  /** Агент протокола. Не затирается, когда карточка переключается на агента говорящих. */
+  protocolWorkflowId?: string
+  mode?: 'create' | 'supplement'
+  refKey?: string
+  nextMeetingStart?: string
+  /** Сессия платформы агентов (конфигурация 2) текущего этапа: расшифровки или записи протокола в 1С. */
+  platformSessionId?: string
+}
+
+/** Расшифровка и запись протокола идут платформой агентов: ход и статус берутся из её сессии, а не из runs. */
+export function onPlatformRun(record: MeetingProtocolRecord | null | undefined): boolean {
+  return (record?.stage === 'protocol' || record?.stage === 'transcribe') && Boolean(record.platformSessionId)
 }
 
 type ProtocolBucket = Record<string, MeetingProtocolRecord>
@@ -71,6 +86,12 @@ export function saveMeetingProtocol(
   writeBucket(userId, bucket)
 }
 
+export function clearMeetingProtocol(userId: string, meeting: MeetingEvent): void {
+  const bucket = readBucket(userId)
+  delete bucket[meetingProtocolKey(meeting)]
+  writeBucket(userId, bucket)
+}
+
 function isAgentProducedFile(item: WorkflowFileItem): boolean {
   const source = String(item.source || '').toLowerCase()
   const origin = String(item.origin || '').toLowerCase()
@@ -107,6 +128,17 @@ function isCreatedAfterStart(item: WorkflowFileItem, startedAt: string): boolean
  * Files from other runs (different runId, or untagged but older than startedAt) are skipped —
  * otherwise a stale protocol-*.docx from a previous launch would be shown for a new meeting.
  */
+function isTranscriptFile(item: { name?: string; origin?: string }): boolean {
+  const name = String(item.name || '').trim()
+  const origin = String(item.origin || '').trim().toLowerCase()
+  return origin === 'transcript' || /^расшифровка/i.test(name)
+}
+
+function isProtocolFile(item: { name?: string }): boolean {
+  const name = String(item.name || '').trim()
+  return /^protocol[-_.]/i.test(name) || /^протокол/i.test(name)
+}
+
 function pickLatestDocx(
   files: WorkflowFileItem[],
   backendRunId = '',
@@ -116,6 +148,7 @@ function pickLatestDocx(
   const docx = files
     .filter(isAgentProducedFile)
     .filter((item) => /\.docx$/i.test(item.name || ''))
+    .filter((item) => !isTranscriptFile(item))
     .filter((item) => {
       const rid = String(item.runId || '').trim()
       const untagged = !rid || rid === 'local'
@@ -123,8 +156,10 @@ function pickLatestDocx(
       if (untagged) return isCreatedAfterStart(item, startedAt)
       return rid === wanted
     })
-    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
-  return docx[0] || null
+  const protocols = docx.filter(isProtocolFile)
+  const pool = protocols.length ? protocols : docx
+  pool.sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+  return pool[0] || null
 }
 
 function hasSuccessfulResult(entry: RunEntry): boolean {
@@ -163,6 +198,7 @@ export type MeetingProtocolHook = {
   runEntry: RunEntry | undefined
   rememberStart: (next: MeetingProtocolRecord) => void
   patchRecord: (partial: Partial<MeetingProtocolRecord>) => void
+  forgetRecord: () => void
 }
 
 export function useMeetingProtocol(
@@ -233,7 +269,12 @@ export function useMeetingProtocol(
         // untagged files count only when created after target.startedAt.
         const files = await api.listWorkflowFiles(wid, rid)
         const docx = pickLatestDocx(files, rid, target.startedAt || '')
-        if (!docx) return
+        if (!docx) {
+          if (isTranscriptFile({ name: target.reportName })) {
+            patchRecord({ reportFileId: '', reportName: '', reportUrl: '' })
+          }
+          return
+        }
         patchRecord({
           reportFileId: docx.id,
           reportName: docx.name,
@@ -258,7 +299,7 @@ export function useMeetingProtocol(
 
   // После перезапуска приложения startedRunIds пуст — снимаем залипший «running».
   useEffect(() => {
-    if (!record || record.status !== 'running') return
+    if (!record || record.status !== 'running' || onPlatformRun(record)) return
     const sharedLive =
       Boolean(sharedEntry?.state.running) ||
       Boolean(sharedEntry?.state.pendingHitl) ||
@@ -274,7 +315,9 @@ export function useMeetingProtocol(
       return
     }
     if (!sharedLive) {
-      patchRecord({ status: 'done' })
+      patchRecord({
+        status: record.stage === 'transcribe' && !record.transcriptId ? 'error' : 'done'
+      })
     }
   }, [
     record?.status,
@@ -366,8 +409,14 @@ export function useMeetingProtocol(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingKey, record?.workflowId])
 
+  const forgetRecord = useCallback(() => {
+    if (!meeting) return
+    clearMeetingProtocol(userId, meeting)
+    setRecord(null)
+  }, [meeting, userId])
+
   return useMemo(
-    () => ({ record, runEntry, rememberStart, patchRecord }),
-    [record, runEntry, rememberStart, patchRecord]
+    () => ({ record, runEntry, rememberStart, patchRecord, forgetRecord }),
+    [record, runEntry, rememberStart, patchRecord, forgetRecord]
   )
 }

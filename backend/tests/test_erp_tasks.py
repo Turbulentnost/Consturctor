@@ -559,3 +559,52 @@ def test_list_current_tasks_response_shape(monkeypatch) -> None:
         assert key in task
     assert task["number"] == "00-Л-000040259"
     assert task["source"] == "erp_pm"
+
+
+def test_attach_docflow_reads_cached_dump_without_per_person_calls(monkeypatch) -> None:
+    from app.services.erp_tasks import _attach_docflow
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("поход в документооборот на каждого подчинённого")
+
+    monkeypatch.setattr("app.services.docflow_tasks.list_docflow_for_people", _boom)
+    monkeypatch.setattr("app.tools.onec.dok_soap.read_cached_left_inbox_rows", lambda: [])
+    monkeypatch.setattr(
+        "app.tools.onec.dok_soap.read_cached_dump_rows",
+        lambda: (
+            [
+                {
+                    "id": "1",
+                    "number": "Т-1",
+                    "description": "Проверить ресурс",
+                    "performer": "Иванов Иван Иванович",
+                    "author": "Соломичева Светлана Викторовна",
+                    "due": "2026-10-05T18:00:00",
+                    "begin": "2026-09-20T10:00:00",
+                    "executed": False,
+                    "step": "Исполнить",
+                },
+                {
+                    "id": "2",
+                    "description": "Чужая задача",
+                    "performer": "Петров Пётр Петрович",
+                    "author": "Кто-то Другой",
+                    "due": "2026-10-05T18:00:00",
+                    "executed": False,
+                },
+            ],
+            False,
+        ),
+    )
+    tasks = {"Иванов Иван Иванович": []}
+    warning = _attach_docflow(
+        tasks,
+        date_from=datetime(2026, 9, 1),
+        date_to=datetime(2026, 10, 31, 23, 59, 59),
+        only_open=False,
+        limit_per_person=10,
+    )
+    assert warning == ""
+    assert len(tasks["Иванов Иван Иванович"]) == 1
+    assert tasks["Иванов Иван Иванович"][0]["title"] == "Проверить ресурс"
+    assert tasks["Иванов Иван Иванович"][0]["source"] == "документооборот"

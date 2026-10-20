@@ -232,6 +232,9 @@ export type OrchestratorErpLoad = {
 /** Полная выгрузка ДО идёт минутами, а на backend список ждёт до 420 с. */
 export const ONEC_LIVE_DUMP_TIMEOUT_MS = 600_000
 
+/** Потолок списка ДО: личные срезы Ильченко, Соломичевой и остальных умещаются целиком. */
+export const ONEC_DOCFLOW_TASK_LIMIT = 2000
+
 export async function loadOrchestratorErpTasks(
   user: UserProfile,
   erpFio: string,
@@ -239,7 +242,7 @@ export async function loadOrchestratorErpTasks(
 ): Promise<OrchestratorErpLoad> {
   const forceRefresh = Boolean(opts?.forceRefresh)
   const onecArgs = onecGatewayInvokeArgs(user, {
-    limit: 80,
+    limit: ONEC_DOCFLOW_TASK_LIMIT,
     only_open: true,
     today_and_overdue: false,
     force_refresh: forceRefresh
@@ -247,7 +250,7 @@ export async function loadOrchestratorErpTasks(
   const dfRes = await api.invokeServerTool(
     'onec.docflow_tasks',
     onecArgs,
-    forceRefresh ? ONEC_LIVE_DUMP_TIMEOUT_MS : 300_000
+    ONEC_LIVE_DUMP_TIMEOUT_MS
   )
   const dfParsed = parseErpToolTasks(dfRes, erpFio)
   const tasks = dfParsed.rows
@@ -383,11 +386,9 @@ export async function loadOrchestratorTurboPortfolio(
 
 export type { OrchestratorMailLoad } from './mailProbe'
 
-/** Неделя писем: IMAP (primary) + Outlook COM + probe today. */
-export async function loadOrchestratorOutlookMailWeek(
-  outlookMailbox: string
-): Promise<OrchestratorMailLoad> {
-  return loadOrchestratorMail(outlookMailbox)
+/** Неделя писем из Outlook этого компьютера. */
+export async function loadOrchestratorOutlookMailWeek(): Promise<OrchestratorMailLoad> {
+  return loadOrchestratorMail()
 }
 
 /** Projects to fetch for «Сегодня → проектные задачи»: pin, все где я руководитель, затем по числу открытых. */
@@ -541,12 +542,9 @@ export async function fetchOrchestratorCoreSources(
 export async function fetchOrchestratorTaskSources(
   user: UserProfile,
   erpFio: string,
-  outlookMailbox: string,
   opts?: { forceRefresh?: boolean; mailPeriod?: { dateFrom: string; dateTo: string } }
 ): Promise<OrchestratorTaskSourcesBundle> {
   const core = await fetchOrchestratorCoreSources(user, erpFio, opts)
-  const mail = await loadOrchestratorMail(outlookMailbox, opts?.mailPeriod, {
-    forceOutlook: opts?.forceRefresh
-  })
+  const mail = await loadOrchestratorMail(opts?.mailPeriod, { forceOutlook: opts?.forceRefresh })
   return { ...core, mail }
 }

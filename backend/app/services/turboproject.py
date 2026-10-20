@@ -25,6 +25,7 @@ GET_BLOCKED_TASKS_TOOL_NAME = "turboproject.get_projects_with_blocked_tasks"
 GET_WORKLOAD_SUMMARY_TOOL_NAME = "turboproject.get_workload_summary"
 GET_PORTFOLIO_SUMMARY_TOOL_NAME = "turboproject.get_project_portfolio_summary"
 GET_USER_PORTFOLIO_TOOL_NAME = "turboproject.get_user_portfolio"
+ASSIGNEE_TASKS_TOOL_NAME = "turboproject.tasks_for_people"
 
 TURBOPROJECT_TOOLS = frozenset(
     {
@@ -41,6 +42,7 @@ TURBOPROJECT_TOOLS = frozenset(
         GET_WORKLOAD_SUMMARY_TOOL_NAME,
         GET_PORTFOLIO_SUMMARY_TOOL_NAME,
         GET_USER_PORTFOLIO_TOOL_NAME,
+        ASSIGNEE_TASKS_TOOL_NAME,
     }
 )
 
@@ -1407,6 +1409,92 @@ def get_project_tasks(args: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
+def tasks_for_people(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Задачи проектов, где указанные сотрудники есть в карточке проекта и назначены исполнителями."""
+    payload = args if isinstance(args, dict) else {}
+    raw_fios = payload.get("fios") or payload.get("people") or payload.get("assignees") or []
+    if isinstance(raw_fios, str):
+        fios = [part.strip() for part in raw_fios.split(",") if part.strip()]
+    elif isinstance(raw_fios, list):
+        fios = [str(item).strip() for item in raw_fios if str(item).strip()]
+    else:
+        fios = []
+    fios = fios[:40]
+    if not fios:
+        return {
+            "summary": "TurboProject: не переданы сотрудники",
+            "tasks": [],
+            "projects_scanned": 0,
+            "source": "turboproject",
+            "mode": "assignee_tasks",
+        }
+    limit_projects = _int_filter(payload, "limit_projects", 8, 8)
+    token, creds = _login_for_args(payload)
+    summary = _get_index_files(token, creds=creds)
+    items = summary.get("items") or []
+    ranked: list[dict[str, Any]] = []
+    for item in items:
+        if not item.get("has_1c"):
+            continue
+        index_item = build_project_index_item(item)
+        if any(_matches_person(index_item, fio, mode="surname") for fio in fios):
+            ranked.append(index_item)
+    chosen = ranked[:limit_projects]
+    tasks: list[dict[str, Any]] = []
+    for project in chosen:
+        details = _get_card(project.get("file_id"), token, creds=creds)
+        project_name = str(
+            (details.get("project") or {}).get("name") or project.get("project_name") or ""
+        ).strip()
+        for task in _task_rows(details):
+            if task.get("is_summary"):
+                continue
+            executors = [str(name).strip() for name in task.get("executors") or [] if str(name).strip()]
+            performer = ""
+            for fio in fios:
+                if any(
+                    _person_name_matches(fio, name, mode="fio") or _person_name_matches(fio, name, mode="surname")
+                    for name in executors
+                ):
+                    performer = fio
+                    break
+            if not performer:
+                continue
+            percent = float(task.get("percent_complete") or 0.0)
+            done = percent >= 1.0
+            delay = int(task.get("delay_days") or 0)
+            tasks.append(
+                {
+                    "number": str(task.get("id") or task.get("uid") or ""),
+                    "title": str(task.get("name") or "").strip(),
+                    "done": done,
+                    "late": delay > 0 and not done,
+                    "created_at": task.get("start_date") or "",
+                    "due_at": task.get("finish_date") or "",
+                    "completed_at": "",
+                    "comment": project_name,
+                    "approval": "",
+                    "performer": performer,
+                    "source": "turboproject",
+                    "kind": "project",
+                    "origin": project_name,
+                    "project_id": str(project.get("file_id") or ""),
+                }
+            )
+            if len(tasks) >= 200:
+                break
+        if len(tasks) >= 200:
+            break
+    return {
+        "summary": f"TurboProject: {len(tasks)} задач в {len(chosen)} проектах",
+        "tasks": tasks,
+        "projects_scanned": len(chosen),
+        "matched_projects_count": len(ranked),
+        "source": "turboproject",
+        "mode": "assignee_tasks",
+    }
+
+
 def get_project_metrics(args: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = args if isinstance(args, dict) else {}
     raw_ids = payload.get("project_ids") or payload.get("file_ids") or []
@@ -1781,6 +1869,8 @@ def invoke_turboproject(tool: str, arguments: dict[str, Any] | None = None) -> d
             return get_project(args)
         if tool == GET_PROJECT_TASKS_TOOL_NAME:
             return get_project_tasks(args)
+        if tool == ASSIGNEE_TASKS_TOOL_NAME:
+            return tasks_for_people(args)
         if tool == GET_PROJECT_METRICS_TOOL_NAME:
             return get_project_metrics(args)
         if tool == GET_OVERDUE_PROJECTS_TOOL_NAME:

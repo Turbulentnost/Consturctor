@@ -15,6 +15,7 @@ import {
   countMeetingsOnDay,
   dedupeMeetingEvents,
   ensureOutlookMeetings,
+  useOutlookSyncTick,
   type MeetingEvent
 } from '../utils/outlookMeetings'
 import { hasComPassword } from '../store/session'
@@ -31,6 +32,7 @@ import { useWorkplaceData } from './WorkplaceBoard'
 import { summarizeDayLaunches } from './todayKpiLaunches'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
 import { useTrackedCalendarsVersion } from '../utils/trackedCalendars'
+import { useOwnMeetingsVersion } from './ownMeetings'
 import {
   fetchOrchestratorCoreSources,
   loadOrchestratorErpTasks,
@@ -61,6 +63,7 @@ const EMPTY: SpecV04SourcesState = {
   mailRows: [],
   mailCount: 0,
   mailLoading: false,
+  mailMailbox: '',
   mailImapPrimary: false,
   mailComError: '',
   mailImapError: '',
@@ -112,6 +115,9 @@ export function SpecV04SourcesProvider({
   const mailPeriodKeyRef = useRef('')
   const { generation, takeHardRefresh } = useGridDataRefreshContext()
   const trackedVersion = useTrackedCalendarsVersion()
+  const ownMeetingsVersion = useOwnMeetingsVersion()
+  const outlookSync = useOutlookSyncTick()
+  const meetingsGeneration = useRef(generation)
   const { agents, board, loading: agentsLoading } = useWorkplaceData({
     userId: user.id || '',
     fio: erpFio
@@ -130,6 +136,7 @@ export function SpecV04SourcesProvider({
   const [turboSource, setTurboSource] = useState('—')
   const [mailRows, setMailRows] = useState<SpecMailRow[]>([])
   const [mailSource, setMailSource] = useState('—')
+  const [mailMailbox, setMailMailbox] = useState('')
   const [mailComError, setMailComError] = useState('')
   const [mailImapError, setMailImapError] = useState('')
   const [mailImapPrimary, setMailImapPrimary] = useState(false)
@@ -183,8 +190,10 @@ export function SpecV04SourcesProvider({
         setErpError(bundle.erp.error)
         setErpSecondaryHint(bundle.erp.erpSecondaryHint || '')
         setOneCAuthFailure(bundle.erp.oneCAuthFailure)
-        // forced уже дал живой список; иначе он с диска — держим его до живой выгрузки.
+        // Список с диска показываем сразу. Живая выгрузка ДО идёт несколько минут
+        // и подменяет строки, когда дойдёт; до этого таблица не стоит на «Загружаем…».
         const liveRefreshPlanned = !forced && Boolean(erpFio) && !bundle.erp.oneCAuthFailure
+        publishErpLoad(bundle.erp, user.id)
         if (liveRefreshPlanned) {
           cachedErpRef.current = bundle.erp
           liveOneCSessionRef.current = ''
@@ -192,7 +201,6 @@ export function SpecV04SourcesProvider({
         } else {
           cachedErpRef.current = null
           setErpLivePending(false)
-          publishErpLoad(bundle.erp, user.id)
         }
         const blockingErp = bundle.erp.error?.trim() || ''
         if (blockingErp) {
@@ -232,9 +240,7 @@ export function SpecV04SourcesProvider({
     }
   }, [user.id, erpFio, outlookMailbox, generation, comCredsRevision])
 
-  // Каждый заход — живая выгрузка ДО: на диске она может быть многодневной,
-  // и до этого запроса в таблице нет задач, заведённых с её последнего обновления.
-  // Пока она идёт, erpLoading остаётся true: в таблице «Загружаем…», а не устаревший список.
+  // Живая выгрузка ДО идёт следом. Пока её нет, в таблице уже лежит список с диска.
   useEffect(() => {
     if (!user.id || !erpFio || sourcesLoading || !erpLivePending) return
     const sessionKey = `${user.id}:${erpFio}`
@@ -277,13 +283,13 @@ export function SpecV04SourcesProvider({
     if (!user.id) return
     let alive = true
     void loadOrchestratorMail(
-      outlookMailbox,
       { dateFrom: mailPeriodFrom, dateTo: mailPeriodTo },
       { forceOutlook: takeHardRefresh() }
     ).then((mail) => {
       if (!alive) return
       setMailRows(mail.rows)
       setMailSource(mail.sourceLabel)
+      setMailMailbox(mail.mailbox)
       setMailComError(mail.comError || '')
       setMailImapError(mail.imapError || '')
       setMailImapPrimary(Boolean(mail.imapPrimary))
@@ -293,13 +299,15 @@ export function SpecV04SourcesProvider({
     return () => {
       alive = false
     }
-  }, [user.id, outlookMailbox, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
+  }, [user.id, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
 
   useEffect(() => {
     if (!user.id) return
     let alive = true
     const today = new Date()
-    void ensureOutlookMeetings('week', today, { owner: erpFio })
+    const force = outlookSync > 0 || meetingsGeneration.current !== generation
+    meetingsGeneration.current = generation
+    void ensureOutlookMeetings('week', today, { owner: erpFio, force })
       .then((cal) => {
         if (alive) setMeetings(dedupeMeetingEvents(cal.meetings || []))
       })
@@ -309,7 +317,7 @@ export function SpecV04SourcesProvider({
     return () => {
       alive = false
     }
-  }, [user.id, erpFio, generation, trackedVersion])
+  }, [user.id, erpFio, generation, trackedVersion, ownMeetingsVersion, outlookSync])
 
   const regRows = useMemo(() => {
     return agents.filter((a) => !a.standalone).map(agentToProcessRow)
@@ -386,7 +394,7 @@ export function SpecV04SourcesProvider({
   const meetingCountToday = useMemo(() => countMeetingsOnDay(meetings), [meetings])
 
   const tableLoading = agentsLoading
-  const erpLoading = sourcesLoading || erpLivePending
+  const erpLoading = (sourcesLoading || erpLivePending) && erpTasks.length === 0
   const value = useMemo(
     (): SpecV04SourcesState => ({
       sourcesLoading,
@@ -410,6 +418,7 @@ export function SpecV04SourcesProvider({
       mailRows,
       mailCount: mailRows.length,
       mailLoading: sourcesLoading,
+      mailMailbox,
       mailImapPrimary,
       mailComError,
       mailImapError,
@@ -456,6 +465,7 @@ export function SpecV04SourcesProvider({
       turboTasksError,
       projects,
       mailRows,
+      mailMailbox,
       mailComError,
       mailImapError,
       mailImapPrimary,

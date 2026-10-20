@@ -1,0 +1,107 @@
+.messenger-bubble {
+  position: relative;
+}
+
+.messenger-bubble-actions {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(16, 20, 26, 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.messenger-bubble:hover .messenger-bubble-actions,
+.messenger-bubble:focus-within .messenger-bubble-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.messenger-bubble-actions button {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #4d5b56;
+  cursor: pointer;
+}
+
+.messenger-bubble-actions button:hover {
+  background: rgba(21, 101, 192, 0.1);
+  color: #1565c0;
+}
+
+.messenger-bubble-actions button[title='Удалить']:hover {
+  background: rgba(155, 28, 28, 0.08);
+  color: #9b1c1c;
+}
+
+.messenger-bubble.editing {
+  box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.35);
+}
+
+.messenger-bubble.deleted {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px dashed rgba(13, 59, 115, 0.18);
+}
+
+.messenger-bubble.deleted .messenger-bubble-text {
+  color: #7b8883;
+  font-style: italic;
+}
+
+.messenger-edited {
+  font-style: italic;
+  margin-right: 2px;
+}
+
+.messenger-editing {
+  box-sizing: border-box;
+  width: min(100%, var(--messenger-feed-max));
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #1565c0;
+  background: #e8f1fb;
+  border-radius: 10px 10px 0 0;
+}
+
+.messenger-editing span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #10141a;
+}
+
+.messenger-editing em {
+  color: #4d5b56;
+}
+
+.messenger-editing button {
+  display: inline-flex;
+  border: none;
+  background: transparent;
+  color: #4d5b56;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 6px;
+}
+
+.messenger-editing button:hover {
+  background: rgba(13, 59, 115, 0.1);
+}

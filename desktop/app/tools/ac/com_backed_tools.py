@@ -384,6 +384,44 @@ class OutlookCreateEventComTool(ComBackedTool):
         )
 
 
+class OutlookUpdateEventComTool(ComBackedTool):
+    """COM-backed изменение встречи Outlook по EntryID (форма совещаний в Orchestrator)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент изменения встречи Outlook."""
+        super().__init__(
+            ToolDefinition(
+                name="outlook.update_event",
+                title="Изменить встречу в Outlook",
+                description=(
+                    "Изменяет встречу Outlook по entry_id: тема, время, место, текст, участники. "
+                    "Поля, которых нет во входе, не меняются."
+                ),
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string", "description": "EntryID встречи Outlook"},
+                        "store_id": {"type": "string", "description": "StoreID, если встреча в общем календаре"},
+                        "subject": {"type": "string"},
+                        "start": {"type": "string", "description": "Начало ISO datetime"},
+                        "end": {"type": "string", "description": "Конец ISO datetime"},
+                        "location": {"type": "string"},
+                        "body": {"type": "string"},
+                        "attendees": {"type": "array", "items": {"type": "string"}},
+                        "send_invites": {"type": "boolean"},
+                    },
+                    "required": ["entry_id"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
 class OutlookReadTasksComTool(ComBackedTool):
     """COM-backed инструмент чтения задач Outlook через worker."""
 
@@ -460,6 +498,7 @@ def register_outlook_com_tools(
     registry.register(OutlookMarkReadComTool(write_worker))
     registry.register(OutlookDisplayMessageComTool(write_worker))
     registry.register(OutlookCreateEventComTool(write_worker))
+    registry.register(OutlookUpdateEventComTool(write_worker))
     registry.register(OutlookReadTasksComTool(read_worker))
     registry.register(EmailCreateDraftComTool(write_worker))
     registry.register(EmailSendComTool(write_worker))

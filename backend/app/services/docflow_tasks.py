@@ -31,6 +31,34 @@ class DocflowError(RuntimeError):
     pass
 
 
+# Задачи, где сотрудник сам исполнитель. Лимит списка их не отбрасывает.
+_INBOX_ROLES = frozenset({"executor", "both", "delegate"})
+# Личный срез в текущей выгрузке: у сотрудника до ~750 задач, у Ильченко 108, у Соломичевой 131.
+_DOCFLOW_LIST_LIMIT = 2000
+
+
+def _bounded_docflow_limit(limit: int) -> int:
+    return max(1, min(int(limit or _DOCFLOW_LIST_LIMIT), _DOCFLOW_LIST_LIMIT))
+
+
+def _cap_docflow_tasks(tasks: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Обрезать список до limit, не выкидывая задачи исполнителю.
+
+    Выгрузка идёт в порядке общего дампа: сначала чужие задачи, которые
+    сотрудник поставил. Срез «первые N» оставлял их и терял его собственные,
+    стоящие дальше по списку.
+    """
+    if limit <= 0 or len(tasks) <= limit:
+        return tasks
+    inbox = [row for row in tasks if str(row.get("role") or "").strip() in _INBOX_ROLES]
+    if not inbox:
+        return tasks[:limit]
+    if len(inbox) >= limit:
+        return inbox
+    rest = [row for row in tasks if str(row.get("role") or "").strip() not in _INBOX_ROLES]
+    return inbox + rest[: limit - len(inbox)]
+
+
 def docflow_base_url() -> str:
     explicit = settings.docflow_odata_base_url.strip()
     if explicit:
@@ -249,9 +277,7 @@ def _list_docflow_via_soap(
         tasks = [row for row in tasks if _task_in_period(row, date_from, date_to)]
     if only_open:
         tasks = [row for row in tasks if not row.get("done")]
-    if limit > 0:
-        tasks = tasks[: int(limit)]
-    return tasks, warning
+    return _cap_docflow_tasks(tasks, int(limit)), warning
 
 
 def _list_closed_via_soap(
@@ -275,9 +301,7 @@ def _list_closed_via_soap(
     except (RuntimeError, ValueError, OSError) as exc:
         return [], str(exc)
     tasks = [row for row in tasks if row.get("done")]
-    if limit > 0:
-        tasks = tasks[: int(limit)]
-    return tasks, warning
+    return _cap_docflow_tasks(tasks, int(limit)), warning
 
 
 def _fetch_closed_tasks(
@@ -298,7 +322,7 @@ def _fetch_closed_tasks(
     done = [row for row in http_tasks if row.get("done")]
     done = [row for row in done if _task_in_period(row, date_from, date_to)]
     if done:
-        return done[:limit], http_warn
+        return _cap_docflow_tasks(done, limit), http_warn
     tasks, warning = _list_closed_via_soap(
         fio,
         limit=limit,
@@ -323,7 +347,7 @@ def _fetch_docflow_tasks_merged(
     auth_args: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """TasksII HTTP (hs/dterp) first, then SOAP inbox dump."""
-    limit = max(1, min(int(limit or 200), 200))
+    limit = _bounded_docflow_limit(limit)
     http_tasks, http_warn = _list_docflow_via_http(
         fio,
         limit=limit,
@@ -337,7 +361,7 @@ def _fetch_docflow_tasks_merged(
             http_tasks = [row for row in http_tasks if _task_in_period(row, date_from, date_to)]
         if only_open:
             http_tasks = [row for row in http_tasks if not row.get("done")]
-        http_tasks = http_tasks[:limit]
+        http_tasks = _cap_docflow_tasks(http_tasks, limit)
         if http_tasks:
             return http_tasks, http_warn
     tasks, warning = _list_docflow_via_soap(
@@ -368,7 +392,7 @@ def list_docflow_tasks(
 ) -> list[dict[str, Any]]:
     from app.services.docflow_redis_cache import cache_key, get_cached_tasks, set_cached_tasks
 
-    limit = max(1, min(int(limit or 200), 200))
+    requested = _bounded_docflow_limit(limit)
     key = cache_key(
         fio,
         auth_args=auth_args,
@@ -377,12 +401,12 @@ def list_docflow_tasks(
     )
     if not force_refresh:
         cached = get_cached_tasks(key)
-        if cached is not None:
-            return cached[:limit]
+        if cached:
+            return _cap_docflow_tasks(cached, requested)
 
     tasks, warning = _fetch_docflow_tasks_merged(
         fio,
-        limit=limit,
+        limit=_DOCFLOW_LIST_LIMIT,
         date_from=date_from,
         date_to=date_to,
         only_open=only_open,
@@ -394,7 +418,7 @@ def list_docflow_tasks(
         raise DocflowError(warning)
     if tasks:
         set_cached_tasks(key, tasks)
-    return tasks
+    return _cap_docflow_tasks(tasks, requested)
 
 
 def list_docflow_for_people(
@@ -456,7 +480,7 @@ def handle_docflow_tasks(
         auth_args["fio"] = fio
     from app.services.docflow_redis_cache import cache_key, get_cached_tasks, set_cached_tasks
 
-    limit = int(args.get("limit") or 200)
+    requested = _bounded_docflow_limit(int(args.get("limit") or _DOCFLOW_LIST_LIMIT))
     key = cache_key(
         fio,
         auth_args=auth_args,
@@ -470,11 +494,11 @@ def handle_docflow_tasks(
     if not force_refresh:
         cached = get_cached_tasks(key)
         if cached is not None:
-            tasks = cached[:limit]
+            tasks = list(cached)
     if not tasks and closed_only:
         tasks, warning = _fetch_closed_tasks(
             fio,
-            limit=limit,
+            limit=_DOCFLOW_LIST_LIMIT,
             date_from=start,
             date_to=finish,
             auth_args=auth_args,
@@ -484,7 +508,7 @@ def handle_docflow_tasks(
     elif not tasks:
         tasks, warning = _fetch_docflow_tasks_merged(
             fio,
-            limit=limit,
+            limit=_DOCFLOW_LIST_LIMIT,
             date_from=None if today_and_overdue else start,
             date_to=None if today_and_overdue else finish,
             only_open=only_open,
@@ -494,6 +518,7 @@ def handle_docflow_tasks(
         )
         if tasks:
             set_cached_tasks(key, tasks)
+    tasks = _cap_docflow_tasks(tasks, requested)
     summary = (
         f"Закрытые задачи документооборота: {len(tasks)} ({fio})"
         if closed_only

@@ -14,8 +14,11 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-CLIENTS = frozenset({"constructor", "orchestrator"})
+# "server": the backend's own headless agent runs. Nobody logs in with it, so its
+# session store stays empty and never replaces the user's desktop session.
+CLIENTS = frozenset({"constructor", "orchestrator", "server"})
 DEFAULT_CLIENT = "constructor"
+SERVER_CLIENT = "server"
 
 _SESSION_KEY = "constructor:session:{user_id}"
 _SESSION_CLIENT_KEY = "constructor:session:{client}:{user_id}"
@@ -99,6 +102,8 @@ def _legacy_online_key(user_id: str) -> str:
 def replace_session(user_id: str, session_id: str, client: str = DEFAULT_CLIENT) -> None:
     """Register the active session for one desktop app only."""
     client = normalize_client(client)
+    if client == SERVER_CLIENT:
+        return
     redis_client = _redis()
     if redis_client is None:
         return
@@ -156,7 +161,7 @@ def mark_online(user_id: str, session_id: str = "", client: str = DEFAULT_CLIENT
     if redis_client is None:
         return
     client = normalize_client(client)
-    if not is_current_session(user_id, session_id, client):
+    if client == SERVER_CLIENT or not is_current_session(user_id, session_id, client):
         return
     value = (session_id or "").strip() or _PRESENT
     try:

@@ -17,6 +17,7 @@ from app.tools.ac.workers.outlook_com_actions import (
     _people_from_input,
     _people_names,
     _resolve_person_calendar_folder,
+    _wall_clock_shift,
     event_involves_person,
     stamp_ai_agent_meeting,
 )
@@ -25,6 +26,16 @@ from app.tools.ac.workers.outlook_com_actions import (
 class _DummyWorker:
     def execute(self, task):
         return None
+
+
+def test_wall_clock_shift_adds_moscow_offset_back() -> None:
+    wanted = datetime(2026, 10, 13, 13, 0)
+    observed = datetime(2026, 10, 13, 10, 0)
+    shift = _wall_clock_shift(wanted, observed)
+    assert shift is not None
+    assert int(shift.total_seconds()) == 3 * 3600
+    assert _wall_clock_shift(wanted, wanted) is None
+    assert _wall_clock_shift(wanted, datetime(2026, 10, 14, 13, 0)) is None
 
 
 def test_outlook_com_timeout_allows_slow_calendar() -> None:
@@ -96,6 +107,74 @@ def test_meeting_specs_keep_attendees_and_organizer() -> None:
     ]
     assert specs[0]["organizer"] == "Ильченко Екатерина Александровна"
     assert specs[0]["send_invites"] is True
+    assert specs[0]["recurrence_kind"] == ""
+    assert specs[0]["work_week"] is False
+
+
+def test_participants_body_lists_mail_and_planner() -> None:
+    from app.tools.ac.workers.outlook_com_actions import (
+        compose_participants_body,
+        meeting_planner_line,
+        short_person_name,
+    )
+
+    assert short_person_name("Жалыбин Максим Дмитриевич") == "Жалыбин М.Д."
+    planner = meeting_planner_line("Жалыбин Максим Дмитриевич", "Инженер")
+    lines = [
+        "Ясыров Богдан Джумазаевич <sktb_razvitie1@turbo-don.ru>",
+        "Жалыбин Максим Дмитриевич <npo_ii4@turbo-don.ru>",
+    ]
+    text = compose_participants_body(lines, planner, "")
+    assert text == (
+        "Участники\n"
+        "\n"
+        "Ясыров Богдан Джумазаевич <sktb_razvitie1@turbo-don.ru>;\n"
+        "Жалыбин Максим Дмитриевич <npo_ii4@turbo-don.ru>\n"
+        "\n"
+        "запланировал(а) Жалыбин М.Д. Инженер"
+    )
+    again = compose_participants_body(lines, planner, text + "\n\nПовестка")
+    assert again.count("Участники") == 1
+    assert again.endswith("Повестка")
+
+
+def test_workweek_moves_one_meeting_and_keeps_series_day() -> None:
+    from app.tools.ac.workers.outlook_com_actions import (
+        _meeting_span,
+        first_monthly_start,
+        nearest_workday,
+        outlook_weekday_mask,
+    )
+
+    saturday = datetime(2026, 10, 17, 13, 0)
+    sunday = datetime(2026, 10, 18, 13, 0)
+    assert nearest_workday(saturday) == datetime(2026, 10, 16, 13, 0)
+    assert nearest_workday(sunday) == datetime(2026, 10, 19, 13, 0)
+    assert outlook_weekday_mask(0) == 2
+    assert outlook_weekday_mask(5) == 64
+
+    one_start, one_end = _meeting_span(
+        {
+            "start": saturday,
+            "end": datetime(2026, 10, 17, 14, 0),
+            "recurrence_kind": "",
+            "work_week": True,
+        }
+    )
+    assert one_start == datetime(2026, 10, 16, 13, 0)
+    assert one_end == datetime(2026, 10, 16, 14, 0)
+
+    series_start, _series_end = _meeting_span(
+        {
+            "start": saturday,
+            "end": datetime(2026, 10, 17, 14, 0),
+            "recurrence_kind": "weekly",
+            "work_week": True,
+        }
+    )
+    assert series_start == saturday
+    assert first_monthly_start(datetime(2026, 10, 13, 13, 0), 15) == datetime(2026, 10, 15, 13, 0)
+    assert first_monthly_start(datetime(2026, 2, 1, 9, 0), 31) == datetime(2026, 3, 31, 9, 0)
 
 
 def test_attach_attendees_marks_meeting() -> None:
@@ -247,6 +326,15 @@ def test_iter_outlook_explorers_uses_collection_when_active_missing() -> None:
 def test_unreadable_calendar_has_access_hint() -> None:
     assert _calendar_access_hint("unreadable")
     assert not _calendar_access_hint("shared")
+
+
+def test_person_lookup_queries_expand_initials() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _person_lookup_queries
+
+    queries = _person_lookup_queries("Комарькова А.Э.")
+    assert queries[0] == "Комарькова А.Э."
+    assert "Комарькова А" in queries
+    assert "Комарькова" in queries
 
 
 def test_open_shared_calendar_unresolved() -> None:

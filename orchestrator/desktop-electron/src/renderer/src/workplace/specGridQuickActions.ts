@@ -1,7 +1,7 @@
 import type { UserProfile } from '../api/types'
 import { invokeLocalAcTool } from '../utils/localAcTool'
 import { openAssignmentListFormIn1C } from './assignmentRegistryOneCForm'
-import { openWorkplaceTab } from './workplaceNav'
+import { MEETING_PLANNER_AGENT, launchPlatformAgent, openWorkplaceTab } from './workplaceNav'
 
 export type SpecQuickActionTone = 'green' | 'orange' | 'blue' | 'yellow'
 
@@ -15,9 +15,9 @@ export interface SpecQuickActionDef {
   run: () => void | Promise<void>
 }
 
-/** Клик по «Запустить процесс» в шапке сетки — вкладка «Решения». */
+/** Клик по «Запустить процесс» в шапке сетки — новый запуск планировщика совещаний из 1С. */
 export function triggerHeaderQuickLaunch(): void {
-  openWorkplaceTab('decisions')
+  launchPlatformAgent(MEETING_PLANNER_AGENT.id, MEETING_PLANNER_AGENT.title)
 }
 
 async function runPowerShell(command: string): Promise<boolean> {

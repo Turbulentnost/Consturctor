@@ -12,6 +12,8 @@ const NEVER_CONFIRM = new Set([
 ])
 
 const READ_EXACT = new Set([
+  'get_current_date',
+  'kpi.read_methodology',
   'web_search',
   'site_browser',
   'browser.search_web',

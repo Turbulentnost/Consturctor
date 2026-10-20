@@ -66,6 +66,13 @@ const api = {
     openAfter?: boolean
   }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
     ipcRenderer.invoke('api:download', opts),
+  saveLocalFile: (opts: {
+    defaultName?: string
+    text?: string
+    base64?: string
+    filters?: { name: string; extensions: string[] }[]
+  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('api:saveLocalFile', opts),
   createWorkflow: <T = unknown>(opts: {
     notes: string
     draftId?: string
@@ -184,6 +191,7 @@ const api = {
       runId: string
       draftId?: string
       requestId?: string
+      body?: string
       openDecisions?: boolean
     }) => void
   ): (() => void) => {
@@ -375,8 +383,23 @@ const agent = {
   }
 }
 
+export interface AgentPlatformStatus {
+  ok: boolean
+  url: string
+  starting: boolean
+  error: string
+  root: string
+}
+
+const platform = {
+  ensure: (): Promise<AgentPlatformStatus> => ipcRenderer.invoke('platform:ensure'),
+  status: (): Promise<AgentPlatformStatus> => ipcRenderer.invoke('platform:status')
+}
+
 contextBridge.exposeInMainWorld('api', api)
 contextBridge.exposeInMainWorld('agent', agent)
+contextBridge.exposeInMainWorld('platform', platform)
 
 export type ExposedApi = typeof api
 export type ExposedAgent = typeof agent
+export type ExposedPlatform = typeof platform

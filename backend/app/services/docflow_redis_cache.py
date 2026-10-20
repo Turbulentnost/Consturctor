@@ -46,7 +46,7 @@ def cache_key(
     )
     if delegates:
         flags += ":d" + hashlib.sha256(delegates.encode("utf-8")).hexdigest()[:12]
-    return f"docflow:tasks:v2:{norm}:{_cred_fingerprint(auth_args)}:{flags}"
+    return f"docflow:tasks:v4:{norm}:{_cred_fingerprint(auth_args)}:{flags}"
 
 
 def get_cached_tasks(key: str) -> list[dict[str, Any]] | None:

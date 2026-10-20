@@ -13,9 +13,15 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
+from app.config import settings
 from app.core.jwt import AuthContext
 from app.schemas.workflow import WebSearchRequest, WebSearchResponse, WebSearchResultItem
 from app.services.imap_tools import ImapToolError, imap_configured, invoke_imap
+from app.services.meeting_planner import (
+    MEETING_PLANNER_TOOLS,
+    MEETING_PLANNER_WRITE_TOOLS,
+    invoke_meeting_planner,
+)
 from app.services.onec_artifacts import ArtifactError, load_artifact_file
 from app.services.onec_tools import ONEC_TOOLS, OnecToolError, invoke_onec, odata_configured
 from app.services.tool_names import resolve_tool_name
@@ -56,12 +62,28 @@ _USERS_TOOLS = frozenset(
         "users.subordinates",
         "users.list",
         "notify.send",
+        "chat.send_direct",
     }
 )
-_AUDIO_TOOLS = frozenset({"audio.transcribe"})
+_AUDIO_TOOLS = frozenset(
+    {
+        "audio.transcribe",
+        "audio.transcript",
+        "audio.speakers",
+        "audio.bind_speakers",
+        "audio.propose_speakers",
+        "audio.transcript_docx",
+    }
+)
 _KPI_TOOLS = frozenset({"kpi.publish_position_result"})
 _SERVER_TOOLS = (
-    _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS | _USERS_TOOLS | _AUDIO_TOOLS | _KPI_TOOLS
+    _IMAP_TOOLS
+    | ONEC_TOOLS
+    | _TURBOPROJECT_TOOLS
+    | _USERS_TOOLS
+    | _AUDIO_TOOLS
+    | _KPI_TOOLS
+    | MEETING_PLANNER_TOOLS
 )
 
 
@@ -107,7 +129,16 @@ def _dispatch_server_tool(
     tool_name = resolved
     try:
         if tool_name in _IMAP_TOOLS:
-            result = invoke_imap(tool_name, arguments)
+            imap_args = dict(arguments or {})
+            mail_login = str(imap_args.pop("mail_login", "") or "")
+            mail_password = str(imap_args.pop("mail_password", "") or "")
+            result = invoke_imap(
+                tool_name,
+                imap_args,
+                user_login=mail_login,
+                user_password=mail_password,
+                personal=True,
+            )
         elif tool_name in _TURBOPROJECT_TOOLS:
             result = invoke_turboproject(tool_name, arguments)
         elif tool_name in _USERS_TOOLS:
@@ -116,6 +147,10 @@ def _dispatch_server_tool(
             result = _invoke_audio_tool(tool_name, arguments, auth)
         elif tool_name in _KPI_TOOLS:
             result = _invoke_kpi_tool(arguments, auth)
+        elif tool_name in MEETING_PLANNER_TOOLS:
+            if tool_name in MEETING_PLANNER_WRITE_TOOLS:
+                _require_meeting_planner_writer(auth)
+            result = invoke_meeting_planner(tool_name, arguments)
         else:
             result = invoke_onec(
                 tool_name,
@@ -131,6 +166,20 @@ def _dispatch_server_tool(
     return {"ok": True, "tool": tool_name, "result": result}
 
 
+def _require_meeting_planner_writer(auth: AuthContext) -> None:
+    """Совещания создаются от служебного ящика — только помощнику ПСД и администраторам."""
+    from app.services.app_users import is_admin_user
+    from app.services.orchestrator.ilchenko import is_ilchenko
+
+    fio = auth.fio or ""
+    if is_ilchenko(user_id=auth.user_id, fio=fio) or is_admin_user(fio):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Создавать совещания в календаре «Совещания» может только помощник ПСД.",
+    )
+
+
 def _ensure_websearch_path() -> None:
     path = str(_TOOLS_WEBSEARCH)
     if path not in sys.path:
@@ -140,9 +189,11 @@ def _ensure_websearch_path() -> None:
 @router.get("/imap/status")
 async def imap_status(auth: AuthContext = Depends(get_current_user)) -> dict[str, Any]:
     _ = auth
+    configured = bool(settings.imap_host) or imap_configured()
     return {
-        "configured": imap_configured(),
-        "mode": "real" if imap_configured() else "stub",
+        "configured": configured,
+        "mode": "real" if configured else "stub",
+        "personal_mailbox": True,
         "tools": sorted(_IMAP_TOOLS),
     }
 
@@ -170,9 +221,11 @@ async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
 # Журналы 1С, полная SOAP-выгрузка задач и тяжёлый odata_get не делят одну очередь.
 # Иначе выгрузка на 3–4 минуты и таймаут приказа занимают оба потока, и служебные
 # записки не стартуют, пока клиент уже не ждёт.
+# Саму выгрузку ДО dok_soap пускает по одной; остальные потоки отдают кеш
+# другим пользователям, пока она идёт.
 _JOURNAL_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="tool-journal")
 _BULK_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-bulk")
-_SLOW_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool-slow")
+_SLOW_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tool-slow")
 _SLOW_TOOLS = frozenset({"onec.docflow_tasks"})
 _BULK_TOOLS = frozenset({"onec.odata_get"}) | _IMAP_TOOLS
 _READ_COALESCE = _SLOW_TOOLS | _BULK_TOOLS | frozenset(
@@ -183,6 +236,12 @@ _READ_COALESCE = _SLOW_TOOLS | _BULK_TOOLS | frozenset(
         "onec.docflow_assignment_card",
         "onec.docflow_protocols",
         "onec.docflow_protocol_card",
+        "onec.docflow_payment_requests",
+        "onec.docflow_payment_request_card",
+        "onec.docflow_forwarding",
+        "onec.docflow_forwarding_card",
+        "onec.docflow_incentive_orders",
+        "onec.docflow_incentive_order_card",
         "onec.erp_assignments",
         "onec.incoming_correspondence",
     }
@@ -393,7 +452,50 @@ def _invoke_audio_tool(
         set_tool_context,
     )
 
-    _ = tool_name
+    if tool_name == "audio.transcript":
+        from app.services.audio_transcribe import read_transcript
+
+        return read_transcript(str(arguments.get("transcript_path") or ""), arguments.get("part"))
+    if tool_name == "audio.speakers":
+        from app.services.speaker_bank import speakers_for_user
+
+        return speakers_for_user(str(arguments.get("transcript_id") or ""), auth.user_id)
+    if tool_name == "audio.bind_speakers":
+        from app.services.speaker_bank import confirm_speakers
+
+        raw = arguments.get("voices") or []
+        voices = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        return confirm_speakers(
+            str(arguments.get("transcript_id") or ""),
+            auth.user_id,
+            voices,
+            save_voices=arguments.get("save_voices") is not False,
+            initials=arguments.get("initials") is True,
+        )
+    if tool_name == "audio.propose_speakers":
+        from app.db.session import SessionLocal
+        from app.services.speaker_bank import propose_speakers
+
+        raw = arguments.get("voices") or []
+        voices = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        db = SessionLocal()
+        try:
+            return propose_speakers(
+                db,
+                transcript_id=str(arguments.get("transcript_id") or ""),
+                user_id=auth.user_id,
+                voices=voices,
+            )
+        finally:
+            db.close()
+    if tool_name == "audio.transcript_docx":
+        from app.services.speaker_bank import export_transcript_docx
+
+        return export_transcript_docx(
+            str(arguments.get("transcript_id") or ""),
+            auth.user_id,
+            str(arguments.get("workflow_id") or ""),
+        )
     set_tool_context(run_id="", user_id=auth.user_id)
     try:
         return _invoke_audio_transcribe(arguments)
@@ -426,6 +528,7 @@ def _invoke_users_tool(
     resolve the caller without an active SSE run.
     """
     from app.services.workflows.cursor_tools import (
+        _invoke_chat_send_direct,
         _invoke_notify_send,
         _invoke_users_current,
         _invoke_users_list,
@@ -442,6 +545,8 @@ def _invoke_users_tool(
             return _invoke_users_subordinates(arguments)
         if tool_name == "users.list":
             return _invoke_users_list(arguments)
+        if tool_name == "chat.send_direct":
+            return _invoke_chat_send_direct(arguments)
         return _invoke_notify_send(arguments)
     finally:
         clear_tool_context()

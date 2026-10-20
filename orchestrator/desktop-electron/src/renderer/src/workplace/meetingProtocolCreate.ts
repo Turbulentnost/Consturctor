@@ -1,5 +1,6 @@
 import { api } from '../api/client'
 import { meetingOutlookMarker, parseMeetingTime, type MeetingEvent } from '../utils/outlookMeetings'
+import { onecGatewayInvokeArgs } from './userContext'
 
 export type ProtocolQuestionDraft = {
   key: string
@@ -10,7 +11,23 @@ export type ProtocolQuestionDraft = {
 export type ProtocolDecisionDraft = {
   key: string
   text: string
+  /** ДатаНачала решения, ГГГГ-ММ-ДД. */
+  since: string
+}
+
+export type ProtocolControlTask = {
+  text: string
+  executor: string
   due: string
+  /** Подтверждена: последняя колонка маршрута, задача исполнена. */
+  done: boolean
+  /** Отправлена: задача есть у исполнителя. */
+  sent: boolean
+  /** Выполнена: средняя колонка регистра 1С. */
+  completed: boolean
+  /** Подтверждена. */
+  confirmed: boolean
+  doneDate: string
 }
 
 export type ProtocolTaskDraft = {
@@ -119,7 +136,7 @@ export function draftFromMeeting(meeting: MeetingEvent, actorFio: string): Proto
       .join('\n'),
     comment: '',
     agenda: [{ key: newProtocolRowKey(), question: '', responsible: '' }],
-    decisions: [{ key: newProtocolRowKey(), text: '', due: '' }],
+    decisions: [{ key: newProtocolRowKey(), text: '', since: '' }],
     tasks: [{ key: newProtocolRowKey(), text: '', executor: '', due: '', priority: '', note: '' }]
   }
 }
@@ -158,8 +175,9 @@ export type OnecProtocolForm = {
     project: string
     participants: string[]
     agenda: { question: string; responsible: string }[]
-    decisions: { text: string; due: string }[]
+    decisions: { text: string; due: string; since: string }[]
     tasks: { text: string; executor: string; due: string; priority: string; note: string; item?: string }[]
+    control_tasks: ProtocolControlTask[]
     comment: string
   }
 }
@@ -208,7 +226,11 @@ export function parseOnecProtocolForm(payload: unknown): OnecProtocolForm | null
       project: str(form.project),
       participants: Array.isArray(form.participants) ? form.participants.map((item) => str(item)).filter(Boolean) : [],
       agenda: list(form.agenda).map((row) => ({ question: str(row.question), responsible: str(row.responsible) })),
-      decisions: list(form.decisions).map((row) => ({ text: str(row.text), due: str(row.due) })),
+      decisions: list(form.decisions).map((row) => ({
+        text: str(row.text),
+        due: str(row.due),
+        since: str(row.since)
+      })),
       tasks: list(form.tasks).map((row) => ({
         text: str(row.text),
         executor: str(row.executor),
@@ -217,19 +239,56 @@ export function parseOnecProtocolForm(payload: unknown): OnecProtocolForm | null
         note: str(row.note),
         item: str(row.item) || undefined
       })),
+      control_tasks: list(form.control_tasks).map((row) => ({
+        text: str(row.text),
+        executor: str(row.executor),
+        due: str(row.due),
+        sent: row.sent === true,
+        completed: row.completed === true,
+        confirmed: row.confirmed === true || row.done === true,
+        done: row.done === true || row.confirmed === true,
+        doneDate: str(row.done_date)
+      })),
       comment: str(form.comment)
     }
   }
 }
 
-export async function fetchProtocolForm(refKey: string): Promise<{ ok: true; card: OnecProtocolForm } | { ok: false; error: string }> {
-  const key = refKey.trim()
-  if (!key) return { ok: false, error: 'Нет ссылки на протокол в 1С' }
-  const response = await api.invokeServerTool('onec.meeting_protocols', { meeting_kind: 'any', ref_key: key }, 120_000)
+type ProtocolFormResult = { ok: true; card: OnecProtocolForm } | { ok: false; error: string }
+
+const FORM_CACHE_TTL_MS = 3 * 60_000
+/** Карточка протокола по ref_key: повторное открытие и параллельные вызовы берут один и тот же запрос. */
+const formLoads = new Map<string, { at: number; promise: Promise<ProtocolFormResult> }>()
+
+async function loadProtocolForm(key: string): Promise<ProtocolFormResult> {
+  const response = await api.invokeServerTool(
+    'onec.meeting_protocols',
+    onecGatewayInvokeArgs(null, { meeting_kind: 'any', ref_key: key }),
+    120_000
+  )
   if (!response.ok) return { ok: false, error: response.error || 'Не удалось прочитать протокол из 1С' }
   const card = parseOnecProtocolForm(response.result)
   if (!card) return { ok: false, error: 'Протокол не найден в 1С' }
   return { ok: true, card }
+}
+
+export function fetchProtocolForm(refKey: string): Promise<ProtocolFormResult> {
+  const key = refKey.trim()
+  if (!key) return Promise.resolve({ ok: false, error: 'Нет ссылки на протокол в 1С' })
+  const cached = formLoads.get(key)
+  if (cached && Date.now() - cached.at < FORM_CACHE_TTL_MS) return cached.promise
+  const promise = loadProtocolForm(key).then((result) => {
+    // Неудачу не кэшируем: следующая попытка должна идти в 1С заново.
+    if (!result.ok && formLoads.get(key)?.promise === promise) formLoads.delete(key)
+    return result
+  })
+  formLoads.set(key, { at: Date.now(), promise })
+  return promise
+}
+
+/** Сбросить кэш карточки после записи в 1С, иначе форма покажет старую версию. */
+export function forgetProtocolForm(refKey: string): void {
+  formLoads.delete(refKey.trim())
 }
 
 /** Strip the Outlook link marker and the backend «Не сопоставлено» note (both rewritten on save). */
@@ -250,7 +309,7 @@ export function draftFromOnecForm(card: OnecProtocolForm): ProtocolCreateDraft {
     .map((row) => ({ key: newProtocolRowKey(), question: row.question, responsible: row.responsible }))
   const decisions = form.decisions
     .filter((row) => row.text)
-    .map((row) => ({ key: newProtocolRowKey(), text: row.text, due: row.due }))
+    .map((row) => ({ key: newProtocolRowKey(), text: row.text, since: row.since }))
   const tasks = form.tasks
     .filter((row) => row.text)
     .map((row) => ({
@@ -281,7 +340,7 @@ export function draftFromOnecForm(card: OnecProtocolForm): ProtocolCreateDraft {
     participants: form.participants.join('\n'),
     comment: stripOutlookMarker(form.comment),
     agenda: agenda.length ? agenda : [{ key: newProtocolRowKey(), question: '', responsible: '' }],
-    decisions: decisions.length ? decisions : [{ key: newProtocolRowKey(), text: '', due: '' }],
+    decisions: decisions.length ? decisions : [{ key: newProtocolRowKey(), text: '', since: '' }],
     tasks: tasks.length
       ? tasks
       : [{ key: newProtocolRowKey(), text: '', executor: '', due: '', priority: '', note: '' }]
@@ -300,7 +359,7 @@ function buildWriteArgs(draft: ProtocolCreateDraft, meeting: MeetingEvent): Writ
     .map((row) => ({ question: row.question.trim(), responsible: row.responsible.trim() }))
     .filter((row) => row.question)
   const decisions = draft.decisions
-    .map((row) => ({ text: row.text.trim(), due: row.due.trim() }))
+    .map((row) => ({ text: row.text.trim(), since: row.since.trim() }))
     .filter((row) => row.text)
   const tasks = draft.tasks
     .map((row) => ({
@@ -311,10 +370,6 @@ function buildWriteArgs(draft: ProtocolCreateDraft, meeting: MeetingEvent): Writ
       note: row.note.trim()
     }))
     .filter((row) => row.text)
-
-  if (!agenda.length && !decisions.length && !tasks.length) {
-    return { ok: false, error: 'Добавьте повестку, решение или задачу — пустой протокол в 1С не создаётся' }
-  }
 
   const marker = meetingOutlookMarker(meeting)
   const comment = [stripOutlookMarker(draft.comment), marker].filter(Boolean).join('\n')
@@ -361,6 +416,42 @@ async function invokeProtocolWrite(args: Record<string, unknown>, failMessage: s
   }
 }
 
+/** Черновик на основании протокола: шапка копируется, все задачи основания остаются на контроле. */
+export async function createProtocolOnBasis(
+  sourceRef: string,
+  date: string,
+  overrides: Record<string, unknown> = {}
+): Promise<ProtocolCreateResult> {
+  const key = sourceRef.trim()
+  const day = date.trim()
+  if (!key) return { ok: false, error: 'Нет ссылки на протокол-основание' }
+  if (!day) return { ok: false, error: 'Укажите дату нового совещания' }
+  return invokeProtocolWrite(
+    { action: 'next', source_ref_key: key, date: day, ...overrides },
+    'Не удалось создать протокол на основании'
+  )
+}
+
+/** Новый протокол выбранного совещания: основание — выбранный документ, дата и состав — из встречи. */
+export async function createMeetingProtocolOnBasis(
+  sourceRef: string,
+  meeting: MeetingEvent
+): Promise<ProtocolCreateResult> {
+  const seeded = draftFromMeeting(meeting, '')
+  const day = seeded.date.trim()
+  if (!day) return { ok: false, error: 'У совещания нет даты' }
+  const overrides: Record<string, unknown> = {}
+  if (seeded.topic.trim()) overrides.topic = seeded.topic.trim()
+  if (seeded.timeStart.trim()) overrides.time_start = seeded.timeStart.trim()
+  if (seeded.timeEnd.trim()) overrides.time_end = seeded.timeEnd.trim()
+  if (seeded.room.trim()) overrides.room = seeded.room.trim()
+  const people = lines(seeded.participants)
+  if (people.length) overrides.participants = people
+  const marker = meetingOutlookMarker(meeting)
+  if (marker) overrides.comment = marker
+  return createProtocolOnBasis(sourceRef, day, overrides)
+}
+
 export async function createProtocolInOneC(
   draft: ProtocolCreateDraft,
   meeting: MeetingEvent
@@ -379,6 +470,7 @@ export async function updateProtocolInOneC(
   if (!key) return { ok: false, error: 'Нет ссылки на протокол в 1С' }
   const built = buildWriteArgs(draft, meeting)
   if (!built.ok) return { ok: false, error: built.error }
+  forgetProtocolForm(key)
   return invokeProtocolWrite({ action: 'update', ref_key: key, ...built.args }, 'Не удалось сохранить протокол в 1С')
 }
 
@@ -446,12 +538,20 @@ const PROTOCOL_SEARCH_SELECT = [
   'ПрисутствующиеНаСовещании/Участник_Key'
 ].join(',')
 
-/** Document_ТД_Протокол by number: part of the number is enough («143_О_004»). */
+/** Размер страницы поиска протоколов в диалоге «Подгрузить протокол из 1С». */
+export const PROTOCOL_SEARCH_PAGE = 20
+
+/**
+ * Document_ТД_Протокол by number: part of the number is enough («143_О_004»).
+ * Страницы по $top/$skip: запрашиваем на одну запись больше, чтобы понять, есть ли следующая страница.
+ */
 export async function searchOnecProtocols(
-  query: string
-): Promise<{ ok: true; hits: OnecProtocolHit[] } | { ok: false; error: string }> {
+  query: string,
+  opts: { skip?: number } = {}
+): Promise<{ ok: true; hits: OnecProtocolHit[]; hasMore: boolean } | { ok: false; error: string }> {
   const text = query.trim().replace(/'/g, "''")
   if (text.length < 3) return { ok: false, error: 'Введите хотя бы 3 символа номера' }
+  const skip = Math.max(0, Math.floor(opts.skip ?? 0))
   const response = await api.invokeServerTool(
     'onec.odata_get',
     {
@@ -459,7 +559,8 @@ export async function searchOnecProtocols(
       filter: `substringof('${text}', Number) and DeletionMark eq false`,
       select: PROTOCOL_SEARCH_SELECT,
       expand: 'ТемаСовещания',
-      top: 20
+      top: PROTOCOL_SEARCH_PAGE + 1,
+      skip
     },
     150_000
   )
@@ -467,7 +568,9 @@ export async function searchOnecProtocols(
   const root = record(response.result)
   const nested = root.data && typeof root.data === 'object' ? record(root.data) : root
   const rows = list(Array.isArray(nested.value) ? nested.value : root.value)
+  const hasMore = rows.length > PROTOCOL_SEARCH_PAGE
   const hits = rows
+    .slice(0, PROTOCOL_SEARCH_PAGE)
     .map((row) => ({
       refKey: str(row.Ref_Key),
       number: str(row.Number),
@@ -477,7 +580,7 @@ export async function searchOnecProtocols(
       topic: str(record(row['ТемаСовещания']).Description)
     }))
     .filter((hit) => hit.refKey && hit.number)
-  return { ok: true, hits }
+  return { ok: true, hits, hasMore }
 }
 
 export async function searchMeetingThemes(query: string): Promise<ThemeHint[]> {

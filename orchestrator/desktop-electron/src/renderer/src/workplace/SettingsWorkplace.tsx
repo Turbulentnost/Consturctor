@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import {
   defaultTodayTileVisibility,
   defaultTodayWidgetVisibility,
+  readTodayTileOrder,
   readTodayTileVisibility,
   readTodayWidgetVisibility,
   TODAY_TILE_IDS,
@@ -13,16 +14,34 @@ import {
   TODAY_WIDGET_LABELS,
   type TodayTileId,
   type TodayWidgetId,
+  writeTodayTileOrder,
   writeTodayTileVisibility,
   writeTodayWidgetVisibility,
   TODAY_WIDGET_VISIBILITY_EVENT
 } from '../tabs/grid/todayWidgetSettings'
+import { isIlchenkoAccount } from './boardReportReadiness'
+import {
+  Activity,
+  Bell,
+  Bot,
+  Database,
+  Plug,
+  ShieldCheck,
+  SlidersHorizontal,
+  UsersRound,
+  type LucideIcon
+} from 'lucide-react'
+import { KpiPinSettings } from './KpiPinSettings'
+import { KpiProtectionSettings } from './KpiProtectionSettings'
+import { MyAgentsSection } from './MyAgentsSection'
 import { OneCSessionProfileSection } from './OneCSessionProfileSection'
 
 type SettingsSection =
   | 'general'
+  | 'my_agents'
   | 'notifications'
   | 'access'
+  | 'security'
   | 'diagnostics'
   | 'integrations'
   | 'onec_profile'
@@ -131,13 +150,15 @@ interface NotifyPrefs {
   highlightUnread: boolean
 }
 
-const TABS: { id: SettingsSection; label: string }[] = [
-  { id: 'general', label: 'Общие' },
-  { id: 'notifications', label: 'Уведомления' },
-  { id: 'access', label: 'Права доступа' },
-  { id: 'diagnostics', label: 'Диагностика' },
-  { id: 'onec_profile', label: 'Профиль 1С' },
-  { id: 'integrations', label: 'Интеграции' }
+const TABS: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
+  { id: 'general', label: 'Общие', icon: SlidersHorizontal },
+  { id: 'my_agents', label: 'Мои агенты', icon: Bot },
+  { id: 'notifications', label: 'Уведомления', icon: Bell },
+  { id: 'access', label: 'Права доступа', icon: UsersRound },
+  { id: 'security', label: 'Безопасность', icon: ShieldCheck },
+  { id: 'diagnostics', label: 'Диагностика', icon: Activity },
+  { id: 'onec_profile', label: 'Профиль 1С', icon: Database },
+  { id: 'integrations', label: 'Интеграции', icon: Plug }
 ]
 
 const DEFAULT_EVENTS: EventChannelRow[] = [
@@ -329,13 +350,19 @@ export function SettingsWorkplace({
   onDiagnostics,
   onTickets,
   onFiles,
-  onSupport
+  onSupport,
+  onOpenAgent,
+  onOpenPassport,
+  onOpenHistory
 }: {
   user: UserProfile
   onDiagnostics: () => void
   onTickets: () => void
   onFiles: () => void
   onSupport: () => void
+  onOpenAgent: (workflowId: string, title: string) => void
+  onOpenPassport: (workflowId: string, title: string) => void
+  onOpenHistory: (workflowId: string, title: string) => void
 }): React.JSX.Element {
   const [section, setSection] = useState<SettingsSection>('notifications')
   const [prefs, setPrefs] = useState<NotifyPrefs>(() => loadPrefs(user.id))
@@ -353,6 +380,8 @@ export function SettingsWorkplace({
     readTodayTileVisibility(user.id)
   )
   const [tileDraft, setTileDraft] = useState<Record<TodayTileId, boolean>>(() => readTodayTileVisibility(user.id))
+  const [tileOrder, setTileOrder] = useState<TodayTileId[]>(() => readTodayTileOrder(user.id))
+  const [tileOrderDraft, setTileOrderDraft] = useState<TodayTileId[]>(() => readTodayTileOrder(user.id))
 
   useEffect(() => {
     const next = loadPrefs(user.id)
@@ -364,6 +393,9 @@ export function SettingsWorkplace({
     const tiles = readTodayTileVisibility(user.id)
     setTileVisibility(tiles)
     setTileDraft(tiles)
+    const order = readTodayTileOrder(user.id)
+    setTileOrder(order)
+    setTileOrderDraft(order)
   }, [user.id])
 
   useEffect(() => {
@@ -371,6 +403,9 @@ export function SettingsWorkplace({
       const tiles = readTodayTileVisibility(user.id)
       setTileVisibility(tiles)
       setTileDraft(tiles)
+      const order = readTodayTileOrder(user.id)
+      setTileOrder(order)
+      setTileOrderDraft(order)
     }
     window.addEventListener(TODAY_TILE_VISIBILITY_EVENT, syncTiles)
     return () => window.removeEventListener(TODAY_TILE_VISIBILITY_EVENT, syncTiles)
@@ -426,8 +461,9 @@ export function SettingsWorkplace({
     () =>
       JSON.stringify(draft) !== JSON.stringify(prefs) ||
       JSON.stringify(widgetDraft) !== JSON.stringify(widgetVisibility) ||
-      JSON.stringify(tileDraft) !== JSON.stringify(tileVisibility),
-    [draft, prefs, widgetDraft, widgetVisibility, tileDraft, tileVisibility]
+      JSON.stringify(tileDraft) !== JSON.stringify(tileVisibility) ||
+      JSON.stringify(tileOrderDraft) !== JSON.stringify(tileOrder),
+    [draft, prefs, widgetDraft, widgetVisibility, tileDraft, tileVisibility, tileOrderDraft, tileOrder]
   )
 
   function patchEvent(id: string, patch: Partial<EventChannelRow>): void {
@@ -444,6 +480,8 @@ export function SettingsWorkplace({
     setWidgetVisibility(widgetDraft)
     writeTodayTileVisibility(user.id, tileDraft)
     setTileVisibility(tileDraft)
+    writeTodayTileOrder(user.id, tileOrderDraft)
+    setTileOrder(tileOrderDraft)
     setSavedNote('Изменения сохранены')
   }
 
@@ -453,12 +491,28 @@ export function SettingsWorkplace({
     const widgets = defaultTodayWidgetVisibility()
     setWidgetDraft(widgets)
     setTileDraft(defaultTodayTileVisibility())
+    setTileOrderDraft([...TODAY_TILE_IDS])
   }
 
   function saveTileSettings(): void {
     writeTodayTileVisibility(user.id, tileDraft)
     setTileVisibility(tileDraft)
+    writeTodayTileOrder(user.id, tileOrderDraft)
+    setTileOrder(tileOrderDraft)
     setSavedNote('Настройки плиток сохранены')
+  }
+
+  function moveTile(id: TodayTileId, direction: -1 | 1): void {
+    setTileOrderDraft((current) => {
+      const index = current.indexOf(id)
+      const next = index + direction
+      if (index < 0 || next < 0 || next >= current.length) return current
+      const copy = [...current]
+      const swapped = copy[index]
+      copy[index] = copy[next]
+      copy[next] = swapped
+      return copy
+    })
   }
 
   function toggleTileDraft(id: TodayTileId): void {
@@ -486,14 +540,15 @@ export function SettingsWorkplace({
   return (
     <div className="wp-page set-page">
       <nav className="set-tabs" aria-label="Разделы настроек">
-        {TABS.map((tab) => (
+        {TABS.map(({ id, label, icon: Icon }) => (
           <button
-            key={tab.id}
+            key={id}
             type="button"
-            className={section === tab.id ? 'active' : ''}
-            onClick={() => setSection(tab.id)}
+            className={section === id ? 'active' : ''}
+            onClick={() => setSection(id)}
           >
-            {tab.label}
+            <Icon size={16} strokeWidth={2} aria-hidden />
+            {label}
           </button>
         ))}
       </nav>
@@ -563,34 +618,69 @@ export function SettingsWorkplace({
           </section>
           <section className="set-card set-widgets-card">
             <h2>Плитки вкладки «Сегодня»</h2>
-            <p className="set-muted">Выберите, какие плитки показателей показывать над виджетами.</p>
-            <div className="set-widget-grid-9" role="group" aria-label="Видимость плиток">
-              {TODAY_TILE_IDS.map((id) => {
-                const on = tileDraft[id] !== false
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    className={`set-widget-toggle${on ? ' is-on' : ''}`}
-                    aria-pressed={on}
-                    onClick={() => toggleTileDraft(id)}
-                  >
-                    {TODAY_TILE_LABELS[id]}
-                  </button>
-                )
-              })}
+            <p className="set-muted">
+              Включите плитки и расставьте их стрелками. Сверху — левее на вкладке «Сегодня».
+            </p>
+            <div className="set-tile-order" role="list" aria-label="Порядок плиток">
+              {tileOrderDraft
+                .filter((id) => id !== 'assignments' || isIlchenkoAccount(user))
+                .map((id) => {
+                  const on = tileDraft[id] !== false
+                  const index = tileOrderDraft.indexOf(id)
+                  return (
+                    <div key={id} className="set-tile-order-row" role="listitem">
+                      <button
+                        type="button"
+                        className="set-tile-order-move"
+                        aria-label="Выше"
+                        disabled={index === 0}
+                        onClick={() => moveTile(id, -1)}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="set-tile-order-move"
+                        aria-label="Ниже"
+                        disabled={index === tileOrderDraft.length - 1}
+                        onClick={() => moveTile(id, 1)}
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        className={`set-widget-toggle${on ? ' is-on' : ''}`}
+                        aria-pressed={on}
+                        onClick={() => toggleTileDraft(id)}
+                      >
+                        {TODAY_TILE_LABELS[id]}
+                      </button>
+                    </div>
+                  )
+                })}
             </div>
             <div className="wp-actions set-widget-actions">
               <button className="btn-primary" type="button" onClick={saveTileSettings}>
                 Сохранить плитки
               </button>
-              <button className="btn-ghost" type="button" onClick={() => setTileDraft(defaultTodayTileVisibility())}>
+              <button
+                className="btn-ghost"
+                type="button"
+                onClick={() => {
+                  setTileDraft(defaultTodayTileVisibility())
+                  setTileOrderDraft([...TODAY_TILE_IDS])
+                }}
+              >
                 Все плитки
               </button>
             </div>
           </section>
           </div>
         </div>
+      ) : null}
+
+      {section === 'my_agents' ? (
+        <MyAgentsSection onOpen={onOpenAgent} onPassport={onOpenPassport} onHistory={onOpenHistory} />
       ) : null}
 
       {section === 'notifications' ? (
@@ -919,6 +1009,21 @@ export function SettingsWorkplace({
               </ul>
             </section>
           ) : null}
+        </div>
+      ) : null}
+
+      {section === 'security' ? (
+        <div className="set-body">
+          <header className="set-head">
+            <div>
+              <h1 className="page-title">Безопасность</h1>
+              <p className="set-sub">PIN-код для просмотра зарплаты и защита данных KPI</p>
+            </div>
+          </header>
+          <div className="set-security-grid">
+            <KpiPinSettings />
+            <KpiProtectionSettings userId={user.id} />
+          </div>
         </div>
       ) : null}
 

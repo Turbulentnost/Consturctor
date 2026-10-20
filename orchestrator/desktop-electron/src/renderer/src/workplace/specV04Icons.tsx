@@ -72,6 +72,50 @@ export function SpecIconCalendar(): React.JSX.Element {
   )
 }
 
+export function SpecIconCalendarRange(): React.JSX.Element {
+  return (
+    <svg className="spec-tile-ico" viewBox="0 0 24 24" aria-hidden>
+      <path
+        fill="currentColor"
+        d="M7 2h2v2h6V2h2v2h3a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3V2zm13 8H4v10h16V10zM6 13h5v2H6v-2zm7 0h5v2h-5v-2z"
+      />
+    </svg>
+  )
+}
+
+export function SpecIconCalendarDay(): React.JSX.Element {
+  return (
+    <svg className="spec-tile-ico" viewBox="0 0 24 24" aria-hidden>
+      <path
+        fill="currentColor"
+        d="M7 2h2v2h6V2h2v2h3a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3V2zm13 8H4v10h16V10zm-8 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"
+      />
+    </svg>
+  )
+}
+
+export function SpecIconDone(): React.JSX.Element {
+  return (
+    <svg className="spec-tile-ico" viewBox="0 0 24 24" aria-hidden>
+      <path
+        fill="currentColor"
+        d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1 14.4-4-4L8.4 11 11 13.6 15.6 9 17 10.4l-6 6z"
+      />
+    </svg>
+  )
+}
+
+export function SpecIconNext(): React.JSX.Element {
+  return (
+    <svg className="spec-tile-ico" viewBox="0 0 24 24" aria-hidden>
+      <path
+        fill="currentColor"
+        d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.3 5.3 4.7 4.7-4.7 4.7-1.4-1.4L13 12l-3.7-3.3 1.4-1.4z"
+      />
+    </svg>
+  )
+}
+
 export function SpecIconPlay(): React.JSX.Element {
   return (
     <svg className="spec-launch-play" viewBox="0 0 24 24" aria-hidden>
@@ -88,22 +132,29 @@ const TILE_ICON: Record<string, () => React.JSX.Element> = {
   proj: SpecIconProject,
   mail: SpecIconMail,
   meet: SpecIconMeeting,
-  ev: SpecIconMeeting
+  ev: SpecIconMeeting,
+  'meet-period': SpecIconCalendarRange,
+  'meet-today': SpecIconCalendarDay,
+  'meet-done': SpecIconDone,
+  'meet-next': SpecIconNext
+}
+
+const TILE_ICON_TONE: Record<string, string> = {
+  meet: 'yellow',
+  ev: 'yellow',
+  day: 'orange',
+  proj: 'proj',
+  'onec-from-me': 'onec',
+  'meet-period': 'blue',
+  'meet-today': 'yellow',
+  'meet-done': 'green',
+  'meet-next': 'proj'
 }
 
 export function SpecTileIcon({ id }: { id: string }): React.JSX.Element | null {
   const Icon = TILE_ICON[id]
   if (!Icon) return null
-  const tone =
-    id === 'meet' || id === 'ev'
-      ? 'yellow'
-      : id === 'day'
-        ? 'orange'
-        : id === 'proj'
-          ? 'proj'
-          : id === 'onec-from-me'
-            ? 'onec'
-            : id
+  const tone = TILE_ICON_TONE[id] || id
   return (
     <span className={`spec-tile-icon-wrap tone-${tone}`} aria-hidden>
       <Icon />

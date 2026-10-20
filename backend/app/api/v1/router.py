@@ -4,6 +4,7 @@ from app.api.v1 import (
     admin,
     admin_finance,
     agents,
+    assignment_reviews,
     auth,
     calendar,
     health,
@@ -17,6 +18,7 @@ from app.api.v1 import (
     regulations,
     tools,
     triggers,
+    user_ui,
     workflows,
     workplace,
 )
@@ -30,6 +32,7 @@ api_router.include_router(admin_finance.router, prefix="/api/v1")
 api_router.include_router(llm.router, prefix="/api/v1")
 api_router.include_router(regulations.router, prefix="/api/v1")
 api_router.include_router(agents.router, prefix="/api/v1")
+api_router.include_router(assignment_reviews.router, prefix="/api/v1")
 api_router.include_router(regulation_creation.router, prefix="/api/v1")
 api_router.include_router(workflows.router, prefix="/api/v1")
 api_router.include_router(tools.router, prefix="/api/v1")
@@ -40,5 +43,6 @@ api_router.include_router(orchestrator.router, prefix="/api/v1")
 api_router.include_router(position_kpi.router, prefix="/api/v1")
 api_router.include_router(position_kpi_builds.router, prefix="/api/v1")
 api_router.include_router(workplace.router, prefix="/api/v1")
+api_router.include_router(user_ui.router, prefix="/api/v1")
 api_router.include_router(platform_tasks.router, prefix="/api/v1")
 api_router.include_router(chat_router, prefix="/api/v1")

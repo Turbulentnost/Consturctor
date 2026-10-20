@@ -3,6 +3,10 @@ import { CheckCircle2, Circle, Clock3, Lock, User, Users } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import { loadMemoCard, loadMemoPage, type MemoCard, type MemoRow } from '../../workplace/fetchDocflowMemos'
+import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
+import { DocflowAttachments } from './DocflowAttachments'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -58,7 +62,7 @@ function StatusPill({ approved, status }: { approved: boolean; status: string })
   )
 }
 
-function MemoCardView({ card }: { card: MemoCard }): React.JSX.Element {
+function MemoCardView({ card, user }: { card: MemoCard; user: UserProfile }): React.JSX.Element {
   const { memo, tasks, route } = card
   const hidden = new Set(['Number', 'Date', 'Статус', 'ТемаСлужебнойЗаписки', 'ТекстСлужебнойЗаписки'])
   return (
@@ -72,6 +76,7 @@ function MemoCardView({ card }: { card: MemoCard }): React.JSX.Element {
       </header>
       {memo.subject ? <p className="docflow-side-subject">{memo.subject}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowAttachments user={user} entity={ATTACHED_FILES.memo} ownerId={memo.id} />
         <section className="docflow-card-block">
           <h4>
             <Users size={14} aria-hidden /> Маршрут
@@ -133,11 +138,13 @@ function MemoCardView({ card }: { card: MemoCard }): React.JSX.Element {
 export function DocflowMemosPanel({
   user,
   from,
-  to
+  to,
+  onOpenDocument
 }: {
   user: UserProfile
   from: string
   to: string
+  onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<MemoRow[]>([])
   const [nextSkip, setNextSkip] = useState(0)
@@ -350,6 +357,7 @@ export function DocflowMemosPanel({
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}
+                    onDoubleClick={() => onOpenDocument?.('memo', row.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -376,6 +384,9 @@ export function DocflowMemosPanel({
         </div>
       </div>
       <aside className="docflow-side wp-card" aria-label="Карточка служебной записки">
+        {selected ? (
+          <DocflowOpenFormBar refKey={selected.id} onOpen={onOpenDocument && (() => onOpenDocument('memo', selected.id))} />
+        ) : null}
         {!selected ? (
           <p className="docflow-status">Выберите служебную записку, чтобы увидеть карточку</p>
         ) : cardLoading ? (
@@ -388,7 +399,7 @@ export function DocflowMemosPanel({
             </button>
           </p>
         ) : card ? (
-          <MemoCardView card={card} />
+          <MemoCardView card={card} user={user} />
         ) : null}
       </aside>
     </div>

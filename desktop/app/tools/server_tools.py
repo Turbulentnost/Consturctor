@@ -372,12 +372,21 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             "По умолчанию черновики на проверку. date или date_from/date_to. "
             "ref_key - карточка одного протокола (шапка и табличные части с ФИО) для редактирования. "
             "psd_mark=true — только номер с «ПСД», все статусы включая закрытые, "
-            "выборка листается целиком, max_results её не обрезает."
+            "выборка листается целиком, max_results её не обрезает. "
+            "pair=true (sd) — протоколы текущего и прошлого заседания «Совет директоров по ГК» "
+            "с построчной сверкой поручений («Решения»), «Поставленных задач» и повестки "
+            "(reconciliation: строка + ошибки) и списком пробелов."
         ),
         _schema(
             {
                 "meeting_kind": _prop("string", "rk, sd или any (все протоколы за период, для календаря)"),
                 "ref_key": _prop("string", "Ref_Key протокола: вернуть форму одного документа (шапка + разделы)"),
+                "pair": _prop(
+                    "boolean",
+                    "Текущий + прошлый протокол заседания по теме (по умолчанию «Совет директоров по ГК») "
+                    "и проверка задач. date — день текущего заседания; без date — последний черновик",
+                ),
+                "topic": _prop("string", "Точное название темы совещания, например «Совет директоров по ГК»"),
                 "date": _prop("string", "Один день YYYY-MM-DD"),
                 "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
                 "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
@@ -404,11 +413,15 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             "подразделение, проект, кабинет, вид совещания, время), «Присутствующие», "
             "«Повестка совещания», «Решения» и «Поставленные задачи» (задача, исполнитель, срок). "
             "action=update с ref_key перезаписывает черновик «Подготовлен» (проведённый не трогает). "
+            "action=next с source_ref_key — протокол следующего совещания на основе прошлого: шапка, "
+            "присутствующие и повестка копируются, задачи переносятся на контроль исполнения, дата — "
+            "date или «Дата следующего совещания» прошлого протокола; явные поля перекрывают копию. "
             "ФИО передавай как в 1С — сервер сам найдёт ссылки. Требует подтверждения человека. Сервер."
         ),
         _schema(
             {
-                "action": _prop("string", "create | update | probe", default="create"),
+                "action": _prop("string", "create | update | next | probe", default="create"),
+                "source_ref_key": _prop("string", "Ref_Key прошлого протокола (только для action=next)"),
                 "ref_key": _prop("string", "Ref_Key существующего протокола (только для action=update)"),
                 "topic": _prop("string", "Тема совещания как в справочнике «Темы совещаний» 1С"),
                 "date": _prop("string", "Дата совещания YYYY-MM-DD"),
@@ -424,14 +437,18 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "next_meeting_date": _prop("string", "Дата следующего совещания YYYY-MM-DD"),
                 "participants": _prop("array", "ФИО присутствующих"),
                 "agenda": _prop("array", "Вопросы повестки: строка или {question, responsible}"),
-                "decisions": _prop("array", "Решения: строка или {text, due}"),
+                "decisions": _prop(
+                    "array",
+                    "Решения: строка или {text, since, due}. since — дата начала YYYY-MM-DD, "
+                    "её пишет форма; due — дата окончания, только если названа отдельно",
+                ),
                 "tasks": _prop(
                     "array",
                     "Поставленные задачи: {text, executor (ФИО), due YYYY-MM-DD, priority, note}",
                 ),
                 "comment": _prop("string", "Комментарий к протоколу"),
             },
-            ["date"],
+            ["action"],
         ),
     ),
     (
@@ -471,11 +488,13 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
     (
         "audio.transcribe",
         (
-            "Расшифровка аудио-вложения запуска (faster-whisper). Вызывай один раз на файл: "
-            "полный текст с таймкодами пишется во временный файл, в ответе transcript_path, "
-            "segment_count и duration_sec. Повторный вызов возвращает тот же файл и не распознаёт заново. "
+            "Расшифровка аудио-вложения запуска на видеокарте сервера: голоса (Nemotron), "
+            "одновременная речь (SepFormer), текст (Whisper large-v3). Один раз на файл: "
+            "реплики с таймкодами и меткой «Голос N» пишутся во временный файл, в ответе "
+            "transcript_path, segment_count, parts и duration_sec. Текст забирай через audio.transcript: "
+            "без part — цельный текст, с part — фрагмент. Повторный вызов тот же файл не распознаёт заново. "
             "file_id бери из блока «Вложения запуска». names — ФИО из Outlook. "
-            "Меток говорящих нет. Только чтение, подтверждение не нужно. Сервер."
+            "Только чтение, подтверждение не нужно. Сервер."
         ),
         _schema(
             {
@@ -486,6 +505,85 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 ),
             },
             ["file_id"],
+        ),
+    ),
+    (
+        "audio.transcript",
+        (
+            "Текст расшифровки audio.transcribe. Без part — цельный текст файла. "
+            "С part=1…parts — фрагмент по 120 реплик с таймкодами и меткой голоса. "
+            "Длинную запись читай частями по порядку: в ответе part, parts, next_part, "
+            "from/to и text. Только чтение, подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "transcript_path": _prop("string", "transcript_path из ответа audio.transcribe"),
+                "part": _prop("integer", "Номер фрагмента от 1 до parts. Пусто — вернуть цельный текст"),
+            },
+            ["transcript_path"],
+        ),
+    ),
+    (
+        "audio.speakers",
+        (
+            "Голоса сохранённой расшифровки. known=true — человек уже узнан по отпечатку голоса, "
+            "его не переназначай. У остальных в lines ключевые реплики. "
+            "transcript_id бери из ответа audio.transcribe. Только чтение. Сервер."
+        ),
+        _schema(
+            {
+                "transcript_id": _prop("string", "transcript_id из ответа audio.transcribe"),
+            },
+            ["transcript_id"],
+        ),
+    ),
+    (
+        "audio.bind_speakers",
+        (
+            "Подтверждённое сопоставление голосов с людьми. voices — по одному объекту на каждый голос: "
+            "speaker («Голос N»), fio (как назвал человек или как в списке сотрудников), user_id если есть. "
+            "Неизвестный голос записывается в базу и в следующий раз узнаётся сам. "
+            "В ответ — кто что сказал, и расшифровка с ФИО вместо «Голос N». Сервер."
+        ),
+        _schema(
+            {
+                "transcript_id": _prop("string", "transcript_id из ответа audio.transcribe"),
+                "voices": _prop(
+                    "array",
+                    "Список {speaker, fio, user_id} на каждый голос, без пропусков",
+                ),
+            },
+            ["transcript_id", "voices"],
+        ),
+    ),
+    (
+        "audio.propose_speakers",
+        (
+            "Предложить, кому принадлежит каждый голос. Не спрашивай человека и не вызывай "
+            "audio.bind_speakers: список правит автор на карточке совещания. "
+            "voices — все голоса: {speaker, fio, user_id, source}. "
+            "source=voice, если голос уже узнан; source=context, если ФИО явно следует из реплик "
+            "и есть в списке участников совещания. Неуверенное сопоставление — fio пустое. Сервер."
+        ),
+        _schema(
+            {
+                "transcript_id": _prop("string", "transcript_id из ответа audio.transcribe"),
+                "voices": _prop("array", "Список {speaker, fio, user_id, source} на каждый голос"),
+            },
+            ["transcript_id", "voices"],
+        ),
+    ),
+    (
+        "audio.transcript_docx",
+        (
+            "Файл Word с текстом расшифровки. Кладётся в файлы агента протокола. Сервер."
+        ),
+        _schema(
+            {
+                "transcript_id": _prop("string", "transcript_id расшифровки"),
+                "workflow_id": _prop("string", "id агента протокола, куда сохранить файл"),
+            },
+            ["transcript_id", "workflow_id"],
         ),
     ),
     (
@@ -503,6 +601,105 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "workflow_id": _prop("string", "id агента. Пусто - текущий"),
             },
             ["user_id", "title"],
+        ),
+    ),
+    (
+        "meetings.memo_requests",
+        (
+            "Служебные записки 1С на тему «Организация совещаний (регл.)» — по регламенту они идут "
+            "помощнику ПСД (Ильченко). По умолчанию только актуальные: не согласованы и дата проведения "
+            "не назначена, за последние 60 дней. На каждую записку: number, date, topic, purpose, agenda, "
+            "desired_date, start_time/end_time, duration_minutes, place, leader, author, participants (ФИО), "
+            "psd_level, planned (совещание уже создано агентом в календаре «Совещания» — второй раз не ставь). "
+            "numbers — конкретные номера (тогда без фильтра актуальности). Только чтение. Сервер."
+        ),
+        _schema(
+            {
+                "numbers": _prop(
+                    "array",
+                    "Номера записок, например [\"000016146\"]. Пусто — все актуальные",
+                    items={"type": "string"},
+                ),
+                "date_from": _prop("string", "С какой даты записки, YYYY-MM-DD. Пусто — 60 дней назад"),
+                "date_to": _prop("string", "По какую дату, YYYY-MM-DD. Пусто — сегодня"),
+                "only_open": _prop("boolean", "false — вместе с согласованными", default=True),
+                "max_results": _prop("integer", "Сколько записок вернуть", default=50),
+            }
+        ),
+    ),
+    (
+        "outlook.ews_availability",
+        (
+            "Занятость по Exchange: всегда проверяет Амураля И.Б. (шеф), плюс people — участники. "
+            "start (+duration_minutes или end) — проверить конкретное время: requested.boss_free, "
+            "boss_conflicts (с темами совещаний), place_conflicts (место занято другим совещанием "
+            "календаря «Совещания»), participants_busy. suggestions — ближайшие окна, где шеф и место "
+            "свободны, раньше те, где свободны и все участники; boss_free_windows — свободные окна шефа "
+            "(пн–пт 08:00–18:00). unresolved — ФИО, которых нет в адресной книге. Только чтение. Сервер."
+        ),
+        _schema(
+            {
+                "start": _prop("string", "Проверяемое начало, YYYY-MM-DDTHH:MM (местное время)"),
+                "end": _prop("string", "Окончание, YYYY-MM-DDTHH:MM. Пусто — start + duration_minutes"),
+                "duration_minutes": _prop("integer", "Длительность, минут", default=60),
+                "people": _prop(
+                    "array", "ФИО или e-mail участников из служебной записки", items={"type": "string"}
+                ),
+                "place": _prop("string", "Место из служебной записки — проверить, не занято ли"),
+                "date_from": _prop("string", "Искать окна с даты, YYYY-MM-DD. Пусто — дата start или сегодня"),
+                "date_to": _prop("string", "Искать окна по дату, YYYY-MM-DD. Пусто — +days"),
+                "days": _prop("integer", "Сколько дней смотреть вперёд, если нет date_to", default=5),
+                "max_suggestions": _prop("integer", "Сколько вариантов времени вернуть", default=8),
+            }
+        ),
+    ),
+    (
+        "outlook.ews_create_meeting",
+        (
+            "Создать совещание в общем календаре «Совещания» (calendar@turbo-don.ru) и разослать "
+            "приглашения участникам. Амураль И.Б. добавляется в участники всегда. Сначала проверяет, "
+            "свободен ли шеф: если занят — не создаёт и возвращает boss_busy + conflicts (force=true "
+            "только если человек сам велел ставить поверх). Если по memo_number совещание уже создано — "
+            "возвращает duplicate, второе не создаёт. Запись: нужно подтверждение человека. Сервер."
+        ),
+        _schema(
+            {
+                "subject": _prop("string", "Тема — тема совещания из служебной записки"),
+                "start": _prop("string", "Начало, YYYY-MM-DDTHH:MM (местное время)"),
+                "end": _prop("string", "Окончание, YYYY-MM-DDTHH:MM. Пусто — start + duration_minutes"),
+                "duration_minutes": _prop("integer", "Длительность, минут", default=60),
+                "location": _prop(
+                    "string", "Место, как в календаре: «руководитель <ФИО>, <место из записки>»"
+                ),
+                "attendees": _prop(
+                    "array", "ФИО или e-mail всех участников из записки и руководителя", items={"type": "string"}
+                ),
+                "leader": _prop("string", "Руководитель совещания (ФИО)"),
+                "purpose": _prop("string", "Цель совещания из записки"),
+                "agenda": _prop("array", "Пункты плана совещания из записки", items={"type": "string"}),
+                "body": _prop("string", "Дополнительный текст приглашения"),
+                "memo_number": _prop("string", "Номер служебной записки — защита от дубля"),
+                "memo_date": _prop("string", "Дата служебной записки, ДД.ММ.ГГГГ"),
+                "force": _prop("boolean", "Создать, даже если шеф занят (только по явному указанию)"),
+            },
+            ["subject", "start", "attendees"],
+        ),
+    ),
+    (
+        "chat.send_direct",
+        (
+            "Личное сообщение в чат Constructor от имени владельца агента (с пометкой «[ИИ-агент]»). "
+            "Получатель — user_id из users.list или ФИО как в 1С/протоколе. Если ФИО не найдено или "
+            "неоднозначно, сообщение не уходит, в ответе note — зафиксируй пробел. "
+            "Подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "user_id": _prop("string", "id получателя из users.list"),
+                "fio": _prop("string", "ФИО получателя, если id нет"),
+                "text": _prop("string", "Текст сообщения"),
+            },
+            ["text"],
         ),
     ),
 ]
@@ -528,8 +725,12 @@ SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,
     "onec.meeting_protocols": 300,
-    # faster-whisper small на CPU: ~8 минут на 25 минут аудио, берём запас.
-    "audio.transcribe": 3600,
+    # faster-whisper на CPU, beam 5: small ~7 минут на 25 минут аудио, large-v3-turbo — в разы дольше.
+    "audio.transcribe": 7200,
+    # 1C OData + справочники участников; Exchange free/busy по всем участникам.
+    "meetings.memo_requests": 180,
+    "outlook.ews_availability": 180,
+    "outlook.ews_create_meeting": 180,
 }
 
 

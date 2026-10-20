@@ -129,7 +129,7 @@ function onecInfraEnvFromDesktop(desktopRoot: string): Record<string, string> {
   return out
 }
 
-function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
+export function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
   const appData = process.env.APPDATA || ''
   const files = [
     appData ? join(appData, 'constructor-desktop-electron', '.env') : '',

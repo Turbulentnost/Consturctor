@@ -34,7 +34,11 @@ class DocflowAction:
 ACTIONS: dict[str, DocflowAction] = {
     "execute": DocflowAction(EXECUTED_POSITIVE, "Задача исполнена"),
     "accept": DocflowAction(EXECUTED_POSITIVE, "Исполнение принято"),
-    "return": DocflowAction(EXECUTED_NEGATIVE, "Задача возвращена на доработку", needs_comment=True),
+    "return": DocflowAction(
+        EXECUTED_POSITIVE,
+        "Задача возвращена на доработку: новый срок и комментарий в истории выполнения",
+        needs_comment=True,
+    ),
     "acquaint": DocflowAction(EXECUTED_POSITIVE, "Отмечено: ознакомлен"),
     "approve": DocflowAction(EXECUTED_POSITIVE, "Согласовано"),
     "approve_remarks": DocflowAction(
@@ -108,6 +112,19 @@ def resolve_action(action: str, kind: str) -> str:
     if kind == KIND_OTHER and key in ACTIONS and ACTIONS[key].mark == EXECUTED_POSITIVE:
         return key
     return ""
+
+
+def action_button(kind: str, action: str) -> int:
+    """Номер кнопки точки маршрута 1С слева направо: 1, 2 или 3.
+
+    Совпадает с порядком KIND_ACTIONS. Отказ на согласовании — 3,
+    на утверждении — 2, возврат проверки — 2, основное действие — 1.
+    """
+    allowed = KIND_ACTIONS.get(kind, KIND_ACTIONS[KIND_OTHER])
+    try:
+        return allowed.index(action) + 1
+    except ValueError:
+        return 1
 
 
 def web_client_task_url(server: str, port: int, base_path: str, task_id: str) -> str:

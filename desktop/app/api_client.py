@@ -2398,6 +2398,32 @@ class ApiClient:
             timeout=30.0,
         )
 
+    def update_local_agent_run_metrics(
+        self,
+        workflow_id: str,
+        run_id: str,
+        metrics: list[dict],
+    ) -> None:
+        self._request(
+            "PATCH",
+            f"/api/v1/workflows/{workflow_id}/runs/{run_id}/metrics",
+            json={"metrics": metrics},
+            timeout=30.0,
+        )
+
+    def update_local_agent_run_context(
+        self,
+        workflow_id: str,
+        run_id: str,
+        context: dict,
+    ) -> None:
+        self._request(
+            "PATCH",
+            f"/api/v1/workflows/{workflow_id}/runs/{run_id}/context",
+            json={"context": context},
+            timeout=30.0,
+        )
+
     def cancel_overlapping_slot(
         self,
         workflow_id: str,
@@ -2424,16 +2450,23 @@ class ApiClient:
         answer: str = "",
         events: list[dict] | None = None,
         message: str = "",
+        metrics: list[dict] | None = None,
+        context: dict | None = None,
     ) -> AgentRunHistoryItem:
+        payload: dict = {
+            "status": status,
+            "answer": answer,
+            "events": events or [],
+            "message": message,
+        }
+        if metrics is not None:
+            payload["metrics"] = metrics
+        if context is not None:
+            payload["context"] = context
         data = self._request(
             "POST",
             f"/api/v1/workflows/{workflow_id}/runs/{run_id}/finish",
-            json={
-                "status": status,
-                "answer": answer,
-                "events": events or [],
-                "message": message,
-            },
+            json=payload,
             timeout=30.0,
         )
         if not isinstance(data, dict):

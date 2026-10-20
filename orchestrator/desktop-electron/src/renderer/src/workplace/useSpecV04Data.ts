@@ -35,6 +35,8 @@ export interface SpecV04SourcesState {
   mailRows: SpecMailRow[]
   mailCount: number
   mailLoading: boolean
+  /** Ящик профиля Outlook этого компьютера, из которого прочитаны письма. */
+  mailMailbox: string
   mailImapPrimary: boolean
   mailComError: string
   mailImapError: string

@@ -29,6 +29,7 @@ node_modules/
 htmlcov/
 .tox/
 .cache/
+turbo-tester/
 
 # IDE / OS
 .idea/
@@ -44,6 +45,8 @@ backend/scripts/exports/*.txt
 
 # Local runtime
 *.log
+*.log.*
+logs/
 celerybeat-schedule*
 backend/storage/
 
@@ -62,3 +65,9 @@ orchestrator/desktop-electron/out/
 orchestrator/desktop-electron/release/
 orchestrator/desktop-electron/dist/
 *.tsbuildinfo
+
+# GPU speech-to-text weights (server only, not shipped with desktop installers)
+asr-server/models/
+
+# Local meeting recordings (too large for GitHub)
+orchestrator/desktop-electron/src/temp/audio/Meeting-1-904.wav

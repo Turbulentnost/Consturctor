@@ -161,6 +161,67 @@ def test_export_document_styles_word_table(tmp_path: Path) -> None:
     assert fill.upper() == "1B4F72"
 
 
+def test_export_document_appends_sections_in_parts(tmp_path: Path) -> None:
+    import importlib.util
+
+    if importlib.util.find_spec("docx") is None:
+        return
+    from docx import Document
+
+    tool = ReportExportDocumentTool(AgentWorkspaceResolver(tmp_path))
+    base = {"workflow_id": "wf-parts", "filename": "closure.docx"}
+    first = tool.execute(
+        {
+            **base,
+            "title": "Проверка поручений",
+            "summary": "Итог",
+            "kpis": [{"label": "Всего", "value": "2"}],
+            "sections": [{"heading": "Вывод по поручениям", "body": "| Номер |\n|---|\n| АСТ00-1 |"}],
+        }
+    )
+    second = tool.execute(
+        {**base, "append": True, "sections": [{"heading": "Мероприятия поручений", "body": "### АСТ00-1\nПункт 1"}]}
+    )
+
+    assert first.ok and second.ok
+    text = "\n".join(p.text for p in Document(second.output_data["path"]).paragraphs)
+    assert "Проверка поручений" in text
+    assert "Вывод по поручениям" in text
+    assert "Мероприятия поручений" in text
+
+
+def test_export_document_append_needs_started_report(tmp_path: Path) -> None:
+    result = ReportExportDocumentTool(AgentWorkspaceResolver(tmp_path)).execute(
+        {"workflow_id": "wf-none", "filename": "x.docx", "append": True, "sections": [{"heading": "A", "body": "b"}]}
+    )
+    assert not result.ok
+    assert result.error_type == "APPEND_WITHOUT_REPORT"
+
+
+def test_export_document_inserts_full_transcript(tmp_path: Path, monkeypatch) -> None:
+    from app.tools.ac import document_tools
+
+    lines = [f"[00:{i:02d}–00:{i:02d}] реплика {i}" for i in range(40)]
+    monkeypatch.setattr(
+        document_tools, "_load_transcript", lambda path: "Файл: a.wav\n\n" + "\n".join(lines)
+    )
+    result = ReportExportDocumentTool(AgentWorkspaceResolver(tmp_path)).execute(
+        {
+            "workflow_id": "wf-transcript",
+            "filename": "transcript-2026-10-01",
+            "format": "md",
+            "title": "Расшифровка",
+            "sections": [{"heading": "Сведения", "body": "Дата: 2026-10-01"}],
+            "transcript_path": "C:/tmp/abc-a.txt",
+        }
+    )
+    assert result.ok
+    assert result.output_data["transcript_lines"] == 40
+    text = Path(result.output_data["path"]).read_text(encoding="utf-8")
+    assert "## Расшифровка" in text
+    assert all(line in text for line in lines)
+
+
 def test_normalize_excel_newlines_keeps_windows_paths() -> None:
     from app.tools.ac.office_style import _normalize_excel_newlines
 

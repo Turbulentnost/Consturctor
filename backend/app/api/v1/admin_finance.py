@@ -7,19 +7,52 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin_page
+from app.api.deps import require_admin_page, require_any_admin_page
 from app.core.jwt import AuthContext
 from app.db.session import get_db
 from app.services import auth_service
-from app.services.admin import finance
+from app.services.admin import finance, salary_source
+from app.services.admin_access import FINANCE_ADMIN_PAGES
 
 router = APIRouter(prefix="/admin/finance", tags=["admin-finance"])
 
 
 def _http(exc: finance.FinanceError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+def _source_http(exc: salary_source.SalarySourceError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+_finance_admin = require_any_admin_page(*FINANCE_ADMIN_PAGES)
+
+
+class _SalarySourceIn(BaseModel):
+    mode: str = Field(min_length=1, max_length=16)
+
+
+@router.get("/salary-source")
+def read_salary_source(
+    _auth: AuthContext = Depends(_finance_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    return salary_source.salary_source_state(db)
+
+
+@router.put("/salary-source")
+def update_salary_source(
+    body: _SalarySourceIn,
+    _auth: AuthContext = Depends(_finance_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return salary_source.set_salary_source(db, body.mode)
+    except salary_source.SalarySourceError as exc:
+        raise _source_http(exc) from exc
 
 
 @router.get("/employees")

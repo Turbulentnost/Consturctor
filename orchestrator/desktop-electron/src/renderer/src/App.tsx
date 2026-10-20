@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { APP_TITLE, PAGE_LABELS, Sidebar, type PageKey, type SidebarNavItem } from './components/Sidebar'
+import { resetUiPrefsSync, startUiPrefsSync } from './components/uiPrefsSync'
 import { UserMenu } from './components/UserMenu'
 import { LoginPage } from './pages/LoginPage'
 import { MessengerPage } from './pages/MessengerPage'
@@ -24,7 +25,7 @@ import {
 import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSessionHints'
 import { fetchMyErpTasksOData } from './workplace/fetchMyErpTasksOData'
 import { erpActorFio } from './workplace/userContext'
-import { AgentRunPage } from './pages/AgentRunPage'
+import { AgentRunRouter } from './pages/AgentRunRouter'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
@@ -49,6 +50,7 @@ import { ExtensionsHubTab } from './tabs/grid/ExtensionsHubTab'
 import { ExtensionsProvider, useExtensions } from './extensions/ExtensionsProvider'
 import { EXTENSION_MODULES, extensionModuleForPage } from './extensions/extensionModules'
 import { RunProvider, useRuns } from './store/runs'
+import { ActiveAgentsStrip } from './components/ActiveAgentsStrip'
 import { isInFlightRunStatus, liveEntryMatchesRun } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
@@ -56,7 +58,8 @@ import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/Workplace
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
 import { WorkplacePeriodProvider } from './workplace/workplacePeriod'
 import { clearGridCacheForUser } from './workplace/gridDataCache'
-import { ORCH_OPEN_TAB, type WorkplaceTabIntent } from './workplace/workplaceNav'
+import { ORCH_LAUNCH_AGENT, ORCH_OPEN_TAB, type LaunchAgentDetail, type WorkplaceTabIntent } from './workplace/workplaceNav'
+import { forgetOpenedSession, platformWorkflowId } from './agentPlatform/PlatformAgentPage'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
 import {
   ComCredentialsRevisionProvider,
@@ -74,6 +77,7 @@ import { SettingsPage } from './admin/pages/SettingsPage'
 import { FinanceEmployeesPage } from './admin/pages/FinanceEmployeesPage'
 import { FinanceUploadPage } from './admin/pages/FinanceUploadPage'
 import { FinanceImportHistoryPage } from './admin/pages/FinanceImportHistoryPage'
+import { FinanceSalarySourceSwitch } from './admin/components/FinanceSalarySourceSwitch'
 import { resolveAdminPanel } from './admin/adminPanels'
 
 const ADMIN_TAB_KEYS: PageKey[] = [
@@ -114,7 +118,7 @@ type View =
   | { kind: 'diagnostics' }
   | { kind: 'files'; workflowId?: string; title?: string }
   | { kind: 'passport'; workflowId: string; title: string; tab?: PassportTab }
-  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string }
+  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string; launch?: number }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'schedule'; workflowId: string; title: string; published?: boolean }
 
@@ -226,6 +230,14 @@ function WithExtensionNav({
 function AppShell(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
   const [user, setUser] = useState<UserProfile | null>(null)
+  useEffect(() => {
+    const id = user?.id?.trim() || ''
+    if (!id) {
+      resetUiPrefsSync()
+      return
+    }
+    void startUiPrefsSync(id)
+  }, [user?.id])
   const [showLogout, setShowLogout] = useState(true)
   const [view, setView] = useState<View>({ kind: 'tab', key: 'overview' })
   const [lastTab, setLastTab] = useState<PageKey>('overview')
@@ -459,14 +471,26 @@ function AppShell(): React.JSX.Element {
   }, [user])
 
   useEffect(() => {
+    const onLaunchAgent = (event: Event): void => {
+      const { agentId = '', title = '' } = (event as CustomEvent<Partial<LaunchAgentDetail>>).detail || {}
+      const workflowId = platformWorkflowId(agentId)
+      if (!workflowId) return
+      // Кнопка просит новый запуск: прошлая открытая сессия не должна его заслонять, идущий запуск откроется сам.
+      forgetOpenedSession(workflowId)
+      setView({ kind: 'agentrun', workflowId, title: title || 'ИИ-агент', autoStart: true, launch: Date.now() })
+    }
+    window.addEventListener(ORCH_LAUNCH_AGENT, onLaunchAgent)
+    return () => window.removeEventListener(ORCH_LAUNCH_AGENT, onLaunchAgent)
+  }, [])
+
+  useEffect(() => {
     const stopUnsub = window.api.onNotificationStop?.((payload) => {
       const workflowId = payload?.workflowId || ''
       if (workflowId) runs.cancel(workflowId)
     })
     const unsubscribe = window.api.onNotificationOpen?.((payload) => {
       if (payload?.openDecisions || payload?.requestId) {
-        setLastTab('decisions')
-        setView({ kind: 'tab', key: 'decisions' })
+        openApprovalChat(payload?.workflowId || '', payload?.runId || '', payload?.body || '')
         return
       }
       const workflowId = payload?.workflowId || ''
@@ -582,6 +606,7 @@ function AppShell(): React.JSX.Element {
     setView({ kind: 'tab', key: 'overview' })
     setLastTab('overview')
     setAdminViewMode('user')
+    resetUiPrefsSync()
     setUser(null)
     setRequireComLogin(false)
   }
@@ -702,10 +727,24 @@ function AppShell(): React.JSX.Element {
     setView({ kind: 'agentrun', workflowId, title: nextTitle || 'ИИ-агент', autoStart: false })
   }
 
-  function openFromInbox(workflowId: string, runId = '', title = '', body = ''): void {
-    if (/ожидает подтверждения/i.test(title)) {
+  function openApprovalChat(workflowId: string, runId = '', body = ''): void {
+    if (!workflowId) {
       setLastTab('decisions')
       setView({ kind: 'tab', key: 'decisions' })
+      return
+    }
+    const fromBody = /^([^:]+):/.exec(body || '')?.[1]?.trim() || ''
+    const title = runs.entries[workflowId]?.title || fromBody || 'ИИ-агент'
+    setView({ kind: 'agentrun', workflowId, title, autoStart: false })
+    if (runId && !liveEntryMatchesRun(runs.entries[workflowId], runId)) {
+      runs.noteRunning(workflowId, title, runId)
+      void runs.attachHistoryFeed(workflowId)
+    }
+  }
+
+  function openFromInbox(workflowId: string, runId = '', title = '', body = ''): void {
+    if (/ожидает подтверждения/i.test(title)) {
+      openApprovalChat(workflowId, runId, body)
       return
     }
     const fromBody = /Агент «([^»]+)»/.exec(body || '')?.[1] || ''
@@ -751,12 +790,6 @@ function AppShell(): React.JSX.Element {
     })
   }
 
-  function askOrchestratorFromDock(message: string): void {
-    const tabKey = view.kind === 'tab' ? view.key : lastTab
-    const label = tabKey ? PAGE_LABELS[tabKey] || tabKey : ''
-    askOrchestratorFromTab(message, label ? `Вкладка «${label}»` : 'Рабочее место')
-  }
-
   function renderAdminContent(): React.JSX.Element {
     if (view.kind === 'chat') {
       return (
@@ -778,7 +811,7 @@ function AppShell(): React.JSX.Element {
       return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
     }
     if (view.kind === 'agentrun') {
-      return <AgentRunPage workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
+      return <AgentRunRouter key={`${view.workflowId}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
     }
     if (view.kind === 'passport') {
       return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'overview' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
@@ -878,12 +911,14 @@ function AppShell(): React.JSX.Element {
                 onAskOrchestrator: askOrchestratorFromTab,
                 onRunAgent: (workflowId, title, message) =>
                   setView({ kind: 'agentrun', workflowId, title, autoStart: false, initialMessage: message }),
+                onOpenRun: (workflowId, title, runId) => void openAgentRun(workflowId, runId, false, title),
                 onNavigate: (pageKey) => {
                   setLastTab(pageKey)
                   setView({ kind: 'tab', key: pageKey })
                 },
                 onOpenPassport: (workflowId, title, tab) =>
-                  setView({ kind: 'passport', workflowId, title, tab })
+                  setView({ kind: 'passport', workflowId, title, tab }),
+                registryTile: tabIntent?.registryTile
               })}
             </>
           )
@@ -893,6 +928,14 @@ function AppShell(): React.JSX.Element {
             user={activeUser}
             onAskOrchestrator={askOrchestratorFromTab}
             onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })}
+            onOpenMeetings={() => {
+              setLastTab('meetings')
+              setView({ kind: 'tab', key: 'meetings' })
+            }}
+            onOpenDocflow={() => {
+              setLastTab('docflow')
+              setView({ kind: 'tab', key: 'docflow' })
+            }}
             onOpenMetrics={() => setView({ kind: 'tab', key: 'kpi' })}
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
@@ -917,7 +960,7 @@ function AppShell(): React.JSX.Element {
       return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
     }
     if (view.kind === 'agentrun') {
-      return <AgentRunPage workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
+      return <AgentRunRouter key={`${view.workflowId}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
     }
     if (view.kind === 'passport') {
       return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
@@ -944,6 +987,9 @@ function AppShell(): React.JSX.Element {
         onTickets={() => setView({ kind: 'tickets' })}
         onFiles={() => setView({ kind: 'files' })}
         onSupport={openSupport}
+        onOpenAgent={(workflowId, title) => void openAgentRun(workflowId, '', false, title)}
+        onOpenPassport={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })}
+        onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
       />
     )
   }
@@ -959,6 +1005,13 @@ function AppShell(): React.JSX.Element {
   const workplaceShellKey: WorkplaceTabKey | null =
     workplaceGrid && view.kind === 'tab' && isWorkplaceTabKey(view.key) ? view.key : null
   const content = isAdminMode ? renderAdminContent() : renderUserContent()
+  const agentsStrip = isAdminMode ? null : (
+    <ActiveAgentsStrip
+      onOpenRun={(workflowId, title) =>
+        setView({ kind: 'agentrun', workflowId, title: title || 'ИИ-агент', autoStart: false })
+      }
+    />
+  )
 
   return (
     <ExtensionsProvider user={activeUser}>
@@ -989,6 +1042,8 @@ function AppShell(): React.JSX.Element {
                     ? 'orch-grid-kpi'
                     : workplaceShellKey === 'assignments_registry'
                       ? 'orch-grid-registry'
+                      : workplaceShellKey === 'subordinate_tasks'
+                        ? 'orch-grid-subtasks'
                       : workplaceShellKey === 'history'
                         ? 'orch-grid-history'
                         : workplaceShellKey === 'extensions'
@@ -1026,11 +1081,21 @@ function AppShell(): React.JSX.Element {
               canSwitchAdminView={Boolean(activeAdminPanel)}
               onSwitchAdminView={switchAdminView}
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
+              topStrip={agentsStrip}
             >
               {renderWorkplaceGridTab(workplaceShellKey)}
             </OrchGridShell>
             </PageSearchProvider>
-            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+            <ChatDock
+              userId={activeUser.id || ''}
+              pageKey={view.kind === 'tab' ? view.key : lastTab}
+              onNavigate={(key) => {
+                setTabIntent(null)
+                setLastTab(key)
+                setView({ kind: 'tab', key })
+              }}
+              onOpenSupport={openSupport}
+            />
           </div>
               ) : (
           <div className="app-root">
@@ -1055,8 +1120,10 @@ function AppShell(): React.JSX.Element {
               refreshAt={chatRefreshAt}
             />
             <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
+              {agentsStrip}
               <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
                 <div className="app-page-header">
+                  {isAdminMode && activeAdminPanel?.key === 'finance' ? <FinanceSalarySourceSwitch /> : null}
                   <UserMenu
                     user={activeUser}
                     avatarUrl={avatarUrl}
@@ -1077,7 +1144,16 @@ function AppShell(): React.JSX.Element {
                 {content}
               </div>
             </main>
-            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+            <ChatDock
+              userId={activeUser.id || ''}
+              pageKey={view.kind === 'tab' ? view.key : lastTab}
+              onNavigate={(key) => {
+                setTabIntent(null)
+                setLastTab(key)
+                setView({ kind: 'tab', key })
+              }}
+              onOpenSupport={openSupport}
+            />
           </div>
               )
             }

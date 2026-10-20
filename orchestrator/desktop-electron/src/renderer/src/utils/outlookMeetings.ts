@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react'
 import { addDays, mondayOf, type CalendarView } from './calendar'
 import {
   calendarStatusFor,
   publishCalendarStatus,
   readTrackedCalendars,
+  samePersonFio,
   type CalendarReadStatus
 } from './trackedCalendars'
 
@@ -49,6 +51,8 @@ export interface MeetingEvent {
   attendees: string
   owner: string
   ownCalendar?: boolean
+  /** Importance из Outlook: 0 — низкая, 1 — обычная, 2 — высокая. */
+  importance?: number
 }
 
 interface OutlookMeetingRaw {
@@ -62,9 +66,10 @@ interface OutlookMeetingRaw {
   organizer?: string
   required_attendees?: string
   optional_attendees?: string
+  importance?: number
 }
 
-const CACHE_KEY = 'orchOutlookMeetings:v5'
+const CACHE_KEY = 'orchOutlookMeetings:v8'
 const REQUEST_TIMEOUT_MS = 180_000
 
 function pad2(n: number): string {
@@ -173,11 +178,17 @@ function meetingDedupeKey(meeting: MeetingEvent): string {
   return `${start}\0${(meeting.subject || '').trim()}`
 }
 
+/** Outlook помечает отмену префиксом в теме: «Canceled:», «Cancelled:», «Отменено:», «Отмена:». */
+export function isCanceledMeeting(meeting: Pick<MeetingEvent, 'subject'>): boolean {
+  return /canceled|cancelled|отмен[её]н|отмена/i.test(meeting.subject || '')
+}
+
 /** Outlook COM may return the same appointment twice (shared calendars / merged folders). */
 export function dedupeMeetingEvents(meetings: MeetingEvent[]): MeetingEvent[] {
   const seen = new Set<string>()
   const out: MeetingEvent[] = []
   for (const meeting of meetings) {
+    if (isCanceledMeeting(meeting)) continue
     const key = meetingDedupeKey(meeting)
     if (seen.has(key)) continue
     seen.add(key)
@@ -200,7 +211,8 @@ function normalizeMeeting(raw: OutlookMeetingRaw, index: number): MeetingEvent {
     organizer: (raw.organizer || '').trim(),
     attendees,
     owner: (raw.calendar_owner || '').trim(),
-    ownCalendar: Boolean(raw.own_calendar) || isOutlookFolderOwner(raw.calendar_owner)
+    ownCalendar: Boolean(raw.own_calendar) || isOutlookFolderOwner(raw.calendar_owner),
+    importance: Number.isFinite(Number(raw.importance)) ? Number(raw.importance) : 1
   }
 }
 
@@ -225,6 +237,24 @@ interface MeetingCache {
   to: string
   owner: string
   meetings: MeetingEvent[]
+  fetchedAt?: number
+}
+
+/** Как часто перечитывать Outlook, пока программа открыта. */
+export const OUTLOOK_SYNC_MS = 2 * 60_000
+
+export function useOutlookSyncTick(): number {
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    const bump = (): void => setTick((value) => value + 1)
+    const timer = window.setInterval(bump, OUTLOOK_SYNC_MS)
+    window.addEventListener('focus', bump)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', bump)
+    }
+  }, [])
+  return tick
 }
 
 function readCache(): MeetingCache | null {
@@ -273,6 +303,7 @@ function requestOutlookMeetings(range: {
   forUser?: string
   allVisible?: boolean
   calendarOwners?: string[]
+  includeOwn?: boolean
 }): Promise<CalendarRequestResult> {
   return new Promise((resolve) => {
     const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -322,7 +353,8 @@ function requestOutlookMeetings(range: {
       people: range.people,
       forUser: range.forUser,
       allVisible: range.allVisible,
-      calendarOwners: range.calendarOwners
+      calendarOwners: range.calendarOwners,
+      includeOwn: range.includeOwn !== false
     })
   })
 }
@@ -338,33 +370,89 @@ export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()
   const m = anchor.getMonth()
   const d = anchor.getDate()
   return meetings.filter((item) => {
+    if (isCanceledMeeting(item)) return false
     const start = parseMeetingTime(item.start)
     if (!start) return false
     return start.getFullYear() === y && start.getMonth() === m && start.getDate() === d
   }).length
 }
 
+/** Ключ тумблера «Показывать мои совещания» — тот же, что в ownMeetings.ts. */
+function showOwnStored(fio: string): boolean {
+  try {
+    return window.localStorage.getItem(`orch.meetings.show-own.v2:${fio.trim().toLowerCase()}`) === '1'
+  } catch {
+    return false
+  }
+}
+
+/** У Ильченко личный календарь читается только при включённом тумблере. Остальным — всегда. */
+function includeOwnCalendar(owner: string): boolean {
+  if (!sharedMeetingCalendarFor(owner)) return true
+  return showOwnStored(owner)
+}
+
+function calendarScope(owner: string): { baseCalendar: string; calendarOwners: string[]; askOwners: boolean } {
+  const baseCalendar = sharedMeetingCalendarFor(owner)
+  const tracked = readTrackedCalendars(owner).filter(
+    (person) => !baseCalendar || !samePersonFio(person, baseCalendar)
+  )
+  const calendarOwners = [baseCalendar || owner, ...tracked].filter(
+    (person, index, all) =>
+      Boolean(person) && all.findIndex((item) => samePersonFio(item, person)) === index
+  )
+  return { baseCalendar, calendarOwners, askOwners: Boolean(baseCalendar || tracked.length) }
+}
+
+function subjectKey(subject: string): string {
+  return (subject || '').toLowerCase().replace(/^(re|fw|fwd|rv|ответ|пересл)\s*:\s*/i, '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Start of the next meeting of the same series (same subject) after `meeting`, up to 45 days
+ * ahead; '' when Outlook has none or does not answer. Bypasses the day cache: it holds only
+ * the window the calendar grid shows.
+ */
+export async function findNextMeetingOccurrence(meeting: MeetingEvent, owner: string): Promise<string> {
+  const start = parseMeetingTime(meeting.start)
+  const key = subjectKey(meeting.subject)
+  if (!start || !key) return ''
+  const from = addDays(new Date(start.getFullYear(), start.getMonth(), start.getDate()), 1)
+  const { calendarOwners, askOwners } = calendarScope((owner || '').trim())
+  const result = await requestOutlookMeetings({
+    dateFrom: dayKey(from),
+    dateTo: dayKey(addDays(from, 45)),
+    ...(askOwners ? { calendarOwners } : {})
+  })
+  if (!result.ok) return ''
+  const next = result.meetings
+    .filter((item) => subjectKey(item.subject) === key)
+    .map((item) => ({ item, at: parseMeetingTime(item.start) }))
+    .filter((row): row is { item: MeetingEvent; at: Date } => Boolean(row.at) && row.at!.getTime() >= from.getTime())
+    .sort((a, b) => a.at.getTime() - b.at.getTime())[0]
+  return next ? next.item.start : ''
+}
+
 export async function ensureOutlookMeetings(
   view: CalendarView,
   anchor: Date,
-  options: { force?: boolean; owner?: string; allVisible?: boolean } = {}
+  options: { force?: boolean; owner?: string; allVisible?: boolean; includeOwn?: boolean } = {}
 ): Promise<{ ok: boolean; meetings: MeetingEvent[]; error?: string; cached: boolean }> {
   const win = meetingWindow(view, anchor)
   const fromKey = dayKey(win.from)
   const toKey = dayKey(addDays(win.to, -1))
   const today = dayKey(new Date())
   const owner = (options.owner || '').trim()
-  const baseCalendar = sharedMeetingCalendarFor(owner)
-  const tracked = readTrackedCalendars(owner).filter(
-    (person) => person.toLocaleLowerCase('ru') !== baseCalendar.toLocaleLowerCase('ru')
-  )
-  const calendarOwners = baseCalendar || tracked.length ? [baseCalendar, ...tracked] : []
-  const cacheOwner = calendarOwners.length ? `${owner}@${calendarOwners.join('|')}` : owner
+  const includeOwn = options.includeOwn ?? includeOwnCalendar(owner)
+  const { baseCalendar, calendarOwners, askOwners } = calendarScope(owner)
+  const cacheOwner = `${askOwners ? `${owner}@${calendarOwners.join('|')}` : owner}|own=${includeOwn ? 1 : 0}`
 
   if (!options.force) {
     const cache = readCache()
+    const fresh = cache?.fetchedAt != null && Date.now() - cache.fetchedAt < OUTLOOK_SYNC_MS
     if (
       cache &&
+      fresh &&
       cache.day === today &&
       cache.owner === cacheOwner &&
       cache.from <= fromKey &&
@@ -373,7 +461,7 @@ export async function ensureOutlookMeetings(
       return {
         ok: true,
         meetings: dedupeMeetingEvents(
-          calendarOwners.length
+          askOwners
             ? cache.meetings
             : cache.meetings.filter((item) => meetingInvolvesPerson(item, owner))
         ),
@@ -384,13 +472,14 @@ export async function ensureOutlookMeetings(
   }
 
   const result = await requestOutlookMeetings(
-    calendarOwners.length
-      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners }
+    askOwners
+      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners, includeOwn }
       : {
           dateFrom: fromKey,
           dateTo: toKey,
           forUser: options.allVisible ? owner : undefined,
-          allVisible: Boolean(options.allVisible)
+          allVisible: Boolean(options.allVisible),
+          includeOwn
         }
   )
   if (!result.ok) return { ...result, cached: false }
@@ -399,6 +488,13 @@ export async function ensureOutlookMeetings(
   if (baseStatus?.hint && !result.meetings.length) {
     return { ok: false, meetings: [], error: `Календарь «${baseCalendar}»: ${baseStatus.hint}`, cached: false }
   }
-  writeCache({ day: today, from: fromKey, to: toKey, owner: cacheOwner, meetings: result.meetings })
+  writeCache({
+    day: today,
+    from: fromKey,
+    to: toKey,
+    owner: cacheOwner,
+    meetings: result.meetings,
+    fetchedAt: Date.now()
+  })
   return { ...result, cached: false }
 }

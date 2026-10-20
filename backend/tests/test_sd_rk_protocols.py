@@ -224,6 +224,48 @@ def test_empty_calendar_uses_protocols_of_the_month():
     assert report["fact_pct"] == 100.0
 
 
+def test_empty_calendar_uses_next_meeting_in_the_month():
+    protocols = [
+        {
+            "number": "РК__001_О_040",
+            "date": "2026-09-29",
+            "posted": True,
+            "status": "Закрыт",
+            "meeting_topic": "Еженедельное совещание с ревизионной комиссией",
+            "next_meeting": "2026-10-06",
+        },
+        {
+            "number": "ПСД_001_О_226",
+            "date": "2026-09-30",
+            "posted": True,
+            "status": "Закрыт",
+            "meeting_topic": "Совет директоров по ГК",
+            "next_meeting": "2026-10-27",
+        },
+        {
+            "number": "ПСД_001_О_209",
+            "date": "2026-08-28",
+            "posted": True,
+            "status": "Закрыт",
+            "meeting_topic": "Совет директоров по ГК (ООО «ИТЦ», ООО «Авион» и ИП Магакян Е.И.)",
+            "next_meeting": "2026-10-01",
+        },
+    ]
+    report = score_protocol_kpi(
+        [],
+        protocols,
+        as_of=date(2026, 10, 1),
+        date_from=date(2026, 10, 1),
+        date_to=date(2026, 10, 31),
+    )
+    assert report["plan_source"] == "protocols"
+    assert [row["plan_date"] for row in report["rows"]] == ["2026-10-01", "2026-10-06", "2026-10-27"]
+    due = [row for row in report["rows"] if row["due"]]
+    assert [row["plan_date"] for row in due] == ["2026-10-01"]
+    assert due[0]["on_time"] is True
+    assert report["fact_pct"] == 100.0
+
+
 def test_late_protocol_fails_gate():
     events = [
         {"subject": "Совет директоров по Группе компаний", "start": "2026-08-07T16:00:00"},

@@ -120,7 +120,9 @@ def test_read_image_uses_cursor_sdk_vision(tmp_path: Path, monkeypatch: pytest.M
     assert pages
     assert Path(workspace.directory / pages[0]["path"]).is_file()
     assert result.output_data["vision_source"] == "cursor_sdk"
-    assert "СПИСОК_ГОТОВ" in result.output_data["next_step"]
+    assert "СПИСОК_ГОТОВ" not in result.output_data["next_step"]
+    assert "KPI" not in result.output_data["next_step"]
+    assert "прочитан" in result.output_data["next_step"]
 
 
 def test_read_file_from_artifact_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -177,17 +179,20 @@ def test_xlsx_is_not_office_read(tmp_path: Path) -> None:
     assert "excel.read_workbook" in result.error_message
 
 
-def test_old_doc_is_rejected(tmp_path: Path) -> None:
+def test_old_doc_is_read(tmp_path: Path, monkeypatch) -> None:
+    import app.attachment_text as attachment_text
+
+    monkeypatch.setattr(attachment_text, "_read_doc_pieces", lambda path: "Извещение СТО-28-020\nУтвердил И.Б. Амураль")
     resolver = AgentWorkspaceResolver(tmp_path)
     workspace = resolver.for_agent("wf-office")
-    source = workspace.directory / "legacy.doc"
-    source.write_bytes(b"\xd0\xcf\x11\xe0")
+    (workspace.directory / "legacy.doc").write_bytes(b"\xd0\xcf\x11\xe0")
 
     result = _tool(tmp_path).execute(
         {"workflow_id": "wf-office", "filename": "legacy.doc"}
     )
-    assert not result.ok
-    assert result.error_type == "DOC_UNSUPPORTED"
+    assert result.ok
+    assert result.output_data["kind"] == "word"
+    assert "Утвердил И.Б. Амураль" in result.output_data["text"]
 
 
 def _write_scan_pdf_pages(path: Path, count: int) -> None:
@@ -199,6 +204,42 @@ def _write_scan_pdf_pages(path: Path, count: int) -> None:
         page.draw_rect(page.rect, color=(0.1, 0.1, 0.1), width=3)
     document.save(str(path))
     document.close()
+
+
+def test_two_scans_in_one_run_both_return_pages(tmp_path: Path) -> None:
+    resolver = AgentWorkspaceResolver(tmp_path)
+    workspace = resolver.for_agent("wf-closure")
+    _write_scan_pdf(workspace.directory / "card.pdf")
+    _write_scan_pdf(workspace.directory / "act.pdf")
+    tool = _tool(tmp_path)
+
+    first = tool.execute({"workflow_id": "wf-closure", "filename": "card.pdf"})
+    second = tool.execute({"workflow_id": "wf-closure", "filename": "act.pdf"})
+
+    assert first.ok and second.ok
+    assert first.output_data["vision_pages"]
+    assert second.output_data["vision_pages"]
+    assert second.output_data.get("cached") is not True
+    assert "СПИСОК_ГОТОВ" not in str(second.output_data.get("next_step") or "")
+
+
+def test_docx_table_is_text(tmp_path: Path) -> None:
+    import docx
+
+    resolver = AgentWorkspaceResolver(tmp_path)
+    workspace = resolver.for_agent("wf-closure")
+    source = workspace.directory / "act.docx"
+    document = docx.Document()
+    table = document.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].text = "Утверждено"
+    table.rows[0].cells[1].text = "СТО-18-231"
+    document.save(str(source))
+
+    result = _tool(tmp_path).execute({"workflow_id": "wf-closure", "filename": "act.docx"})
+    assert result.ok
+    assert "Утверждено" in result.output_data["text"]
+    assert "СТО-18-231" in result.output_data["text"]
+    assert result.output_data.get("vision") is not True
 
 
 def test_scan_pdf_uses_cursor_sdk_vision(tmp_path: Path) -> None:
@@ -253,87 +294,79 @@ def test_empty_filename_fails(tmp_path: Path) -> None:
     assert result.error_type == "INVALID_FILENAME"
 
 
-def test_kpi_build_skips_cover_page(tmp_path: Path) -> None:
+def test_reader_does_not_speak_kpi(tmp_path: Path) -> None:
     resolver = AgentWorkspaceResolver(tmp_path)
     workspace = resolver.for_agent("kpi-build-demo")
     source = workspace.directory / "scan.pdf"
     _write_scan_pdf_pages(source, 3)
 
     result = _tool(tmp_path).execute(
-        {"workflow_id": "kpi-build-demo", "filename": "scan.pdf"}
+        {"workflow_id": "kpi-build-demo", "filename": "scan.pdf", "max_pages": 1}
     )
     assert result.ok
-    assert result.output_data["vision"] is True
     pages = result.output_data["vision_pages"]
-    assert [item["page"] for item in pages] == [2]
-    assert result.output_data["start_page"] == 2
-    assert result.output_data["page_count"] == 3
-    assert result.output_data["next_start"] == 3
-    assert result.output_data.get("cached") is False
-    assert "max_pages=1" in str(result.output_data.get("next_step") or "")
-    assert "пока не пиши" in str(result.output_data.get("next_step") or "")
+    assert [item["page"] for item in pages] == [1]
+    step = str(result.output_data.get("next_step") or "")
+    assert "СПИСОК_ГОТОВ" not in step
+    assert "KPI" not in step
+    assert "start_page=2" in step
 
 
-def test_kpi_build_second_read_is_cached_repeat(tmp_path: Path) -> None:
+def test_second_file_is_not_blocked_by_the_first(tmp_path: Path) -> None:
     resolver = AgentWorkspaceResolver(tmp_path)
     workspace = resolver.for_agent("kpi-build-cache")
-    source = workspace.directory / "scan.pdf"
-    _write_scan_pdf_pages(source, 3)
+    _write_scan_pdf(workspace.directory / "first.pdf")
+    _write_scan_pdf(workspace.directory / "second.pdf")
     tool = _tool(tmp_path)
-    first = tool.execute({"workflow_id": "kpi-build-cache", "filename": "scan.pdf"})
-    last = tool.execute(
-        {"workflow_id": "kpi-build-cache", "filename": "scan.pdf", "start_page": 3}
-    )
-    repeat = tool.execute({"workflow_id": "kpi-build-cache", "filename": "scan.pdf"})
-    assert first.ok and last.ok and repeat.ok
-    assert [item["page"] for item in first.output_data["vision_pages"]] == [2]
-    assert first.output_data.get("next_start") == 3
-    assert [item["page"] for item in last.output_data["vision_pages"]] == [3]
-    assert last.output_data.get("next_start") is None
-    assert repeat.output_data.get("cached") is True
-    assert repeat.output_data.get("vision_pages") == []
-    assert "Повтор" in str(repeat.output_data.get("summary") or "")
-    assert "уже были" in str(repeat.output_data.get("summary") or "")
+    first = tool.execute({"workflow_id": "kpi-build-cache", "filename": "first.pdf"})
+    second = tool.execute({"workflow_id": "kpi-build-cache", "filename": "second.pdf"})
+    assert first.ok and second.ok
+    assert first.output_data["vision_pages"]
+    assert second.output_data["vision_pages"]
+    assert "СПИСОК_ГОТОВ" not in str(first.output_data.get("next_step") or "")
+    assert "СПИСОК_ГОТОВ" not in str(second.output_data.get("next_step") or "")
 
 
 def test_scan_pdf_vision_reads_one_page_then_next(tmp_path: Path) -> None:
     resolver = AgentWorkspaceResolver(tmp_path)
-    workspace = resolver.for_agent("kpi-build-six")
+    workspace = resolver.for_agent("wf-pages")
     source = workspace.directory / "scan.pdf"
     _write_scan_pdf_pages(source, 6)
     tool = _tool(tmp_path)
-    first = tool.execute({"workflow_id": "kpi-build-six", "filename": "scan.pdf"})
+    first = tool.execute(
+        {"workflow_id": "wf-pages", "filename": "scan.pdf", "max_pages": 1, "start_page": 1}
+    )
     second = tool.execute(
         {
-            "workflow_id": "kpi-build-six",
+            "workflow_id": "wf-pages",
             "filename": "scan.pdf",
+            "max_pages": 1,
             "start_page": first.output_data["next_start"],
         }
     )
     assert first.ok and second.ok
-    assert [item["page"] for item in first.output_data["vision_pages"]] == [2]
-    assert first.output_data["next_start"] == 3
-    assert [item["page"] for item in second.output_data["vision_pages"]] == [3]
-    assert second.output_data["next_start"] == 4
-    assert second.output_data.get("cached") is not True
+    assert [item["page"] for item in first.output_data["vision_pages"]] == [1]
+    assert first.output_data["next_start"] == 2
+    assert [item["page"] for item in second.output_data["vision_pages"]] == [2]
+    assert second.output_data["next_start"] == 3
 
 
 def test_office_read_folder_picks_pdf_inside(tmp_path: Path) -> None:
     resolver = AgentWorkspaceResolver(tmp_path)
-    workspace = resolver.for_agent("kpi-build-folder")
+    workspace = resolver.for_agent("wf-folder")
     folder = workspace.directory / "materials" / "attachments"
     folder.mkdir(parents=True)
     _write_scan_pdf_pages(folder / "001_method.pdf", 2)
 
     result = _tool(tmp_path).execute(
-        {"workflow_id": "kpi-build-folder", "filename": "materials/attachments"}
+        {"workflow_id": "wf-folder", "filename": "materials/attachments", "max_pages": 2}
     )
     assert result.ok
     assert result.output_data["filename"] == "001_method.pdf"
-    assert [item["page"] for item in result.output_data["vision_pages"]] == [2]
+    assert [item["page"] for item in result.output_data["vision_pages"]] == [1, 2]
 
 
-def test_kpi_build_one_page_still_reads_cover(tmp_path: Path) -> None:
+def test_one_page_scan_reads_that_page(tmp_path: Path) -> None:
     resolver = AgentWorkspaceResolver(tmp_path)
     workspace = resolver.for_agent("kpi-build-one")
     source = workspace.directory / "scan.pdf"

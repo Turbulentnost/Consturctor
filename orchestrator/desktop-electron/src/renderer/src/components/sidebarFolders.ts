@@ -1,3 +1,5 @@
+import { scheduleUiSync } from './uiPrefsSync'
+
 export const SIDEBAR_LAYOUT_STORAGE_KEY = 'orch-sidebar-layout-v1'
 
 export type SidebarScope = 'user' | `admin:${string}`
@@ -124,10 +126,16 @@ export function loadSidebarLayout(
   }
 }
 
-export function saveSidebarLayout(userId: string, scope: SidebarScope, layout: SidebarLayout): void {
+export function saveSidebarLayout(
+  userId: string,
+  scope: SidebarScope,
+  layout: SidebarLayout,
+  sync = true
+): void {
   if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(sidebarLayoutStorageKey(userId, scope), JSON.stringify(layout))
+    if (sync) scheduleUiSync(userId, 'sidebar')
   } catch {
     /* Ignore unavailable or full renderer storage. */
   }

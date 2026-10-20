@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from xml.etree import ElementTree as ET
 
-from app.tools.onec.docflow_inbox_map import map_inbox_row
+from app.tools.onec.docflow_inbox_map import completion_from_history, map_inbox_row
 import pytest
 
 from datetime import date
@@ -182,6 +182,39 @@ def test_parse_tasks_and_map_inbox_row() -> None:
     assert mapped["due_at"].startswith("2026-09-10")
     assert mapped["ref_key"] == "task-9"
     assert mapped["done"] is False
+
+
+def test_completion_date_comes_from_execution_history() -> None:
+    text = (
+        'Исполнить задачу №3 ("Протокол ДР от 05.10.2026 9:46:42 (Протокол)")\n'
+        "В документообороте во всех вкладках должна быть возможность создавать!\n\n"
+        "История выполнения:\n"
+        "------------------------------------\n"
+        "06.10.2026 17:20, Соломичева Светлана Викторовна. Задача завершена.\n"
+        "06.10.2026 17:01, Жалыбин Максим Дмитриевич. Задача выполнена.\n"
+    )
+    stamp = completion_from_history(text)
+    assert stamp is not None
+    assert stamp.strftime("%Y-%m-%d %H:%M") == "2026-10-06 17:01"
+    mapped = map_inbox_row(
+        {
+            "id": "task-done",
+            "description": text,
+            "executed": True,
+            "performer": "Жалыбин Максим Дмитриевич",
+            "author": "Соломичева Светлана Викторовна",
+            "begin": "2026-10-05T09:46:42",
+            "due": "2026-10-08T23:59:00",
+        },
+        fio="Жалыбин Максим Дмитриевич",
+    )
+    assert mapped["done"] is True
+    assert mapped["completed_at"].startswith("2026-10-06 17:01")
+    still_open = map_inbox_row(
+        {**{"id": "task-open", "description": text, "executed": False}},
+        fio="Жалыбин Максим Дмитриевич",
+    )
+    assert still_open["completed_at"] == ""
 
 
 def test_map_inbox_row_author_and_both_roles() -> None:
@@ -700,6 +733,7 @@ def test_inbox_cache_shares_dump_across_users(tmp_path, monkeypatch) -> None:
         }
 
     monkeypatch.setattr(dok_soap, "fetch_open_dump", fake_dump)
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", lambda *_args, **_kwargs: None)
     first = dok_soap.fetch_user_inbox_tasks("Иванов И.И.", today_and_overdue=True)
     second = dok_soap.fetch_user_inbox_tasks("Петров П.П.", today_and_overdue=True)
     assert calls["n"] == 1
@@ -710,8 +744,280 @@ def test_inbox_cache_shares_dump_across_users(tmp_path, monkeypatch) -> None:
     assert second["cached"] is True
     assert second["count"] == 1
     assert second["rows"][0]["id"] == "2"
+
     third = dok_soap.fetch_user_inbox_tasks(
         "Иванов И.И.", today_and_overdue=True, force_refresh=True
     )
+    assert third["cached"] is True
+    assert third["rows"][0]["id"] == "1"
+    assert calls["n"] == 1
+
+    for key, (fetched_at, payload) in list(dok_soap._inbox_cache.items()):
+        dok_soap._inbox_cache[key] = (fetched_at - dok_soap._FORCE_REUSE_SEC - 5, payload)
+    fourth = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", today_and_overdue=True, force_refresh=True
+    )
+    assert fourth["cached"] is False
+    assert fourth["rows"][0]["id"] == "1"
     assert calls["n"] == 2
-    assert third["cached"] is False
+
+
+def _session_dump_env(tmp_path, monkeypatch):
+    from app.tools.onec import dok_soap
+
+    dok_soap._inbox_cache.clear()
+    dok_soap._refreshing.clear()
+    dok_soap._verified_logins.clear()
+    monkeypatch.setattr(dok_soap, "_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        dok_soap,
+        "load_config",
+        lambda username=None, password=None, **_kwargs: DokConfig(
+            server="192.168.2.229",
+            port=81,
+            user=username or "svc",
+            password=password or "x",
+            timeout=210,
+            base_path="/doc",
+        ),
+    )
+    monkeypatch.setattr(dok_soap, "retrieve_tasks", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(dok_soap, "probe_by_user_delegates", lambda *_args, **_kwargs: {})
+    dumps: list[str] = []
+
+    def fake_dump(config, **_kwargs):
+        dumps.append(config.user)
+        return {
+            "kind": "open_dump",
+            "endpoint": config.soap_url(),
+            "only_open": True,
+            "count": 2,
+            "rows": [
+                {"id": "1", "performer": "Иванов И.И.", "executed": False, "due": "2026-09-16T18:00:00"},
+                {"id": "2", "performer": "Петров П.П.", "executed": False, "due": "2026-09-10T18:00:00"},
+            ],
+        }
+
+    monkeypatch.setattr(dok_soap, "fetch_open_dump", fake_dump)
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", lambda *_args, **_kwargs: None)
+    return dok_soap, dumps
+
+
+def test_scoped_user_list_skips_full_dump(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    retrieves: list[list[str]] = []
+
+    def scoped(_config, user_fio, **_kwargs):
+        return (
+            "user",
+            [{"id": "mine", "performer": user_fio, "executed": False, "due": "2026-09-16T18:00:00"}],
+        )
+
+    def retrieve(_config, ids, **_kwargs):
+        retrieves.append(list(ids))
+        return []
+
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", scoped)
+    monkeypatch.setattr(dok_soap, "retrieve_tasks", retrieve)
+    first = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", username="ivanov", password="a"
+    )
+    assert retrieves == []
+    second = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", username="ivanov", password="a"
+    )
+    assert dumps == []
+    assert first["cached"] is False
+    assert first["count"] == 1
+    assert first["rows"][0]["id"] == "mine"
+    assert second["cached"] is True
+    assert retrieves == [["mine"]]
+    other = dok_soap.fetch_user_inbox_tasks(
+        "Петров П.П.", username="petrov", password="b"
+    )
+    assert other["count"] == 1
+    assert other["rows"][0]["performer"] == "Петров П.П."
+    assert dumps == []
+
+
+def test_scoped_full_list_is_shared_without_second_dump(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def scoped(_config, _user_fio, **_kwargs):
+        calls["n"] += 1
+        return (
+            "all",
+            [
+                {"id": "1", "performer": "Иванов И.И.", "executed": False, "due": "2026-09-16T18:00:00"},
+                {"id": "2", "performer": "Петров П.П.", "executed": False, "due": "2026-09-10T18:00:00"},
+            ],
+        )
+
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", scoped)
+    monkeypatch.setattr(
+        dok_soap,
+        "find_user",
+        lambda config, name, **_kwargs: {"id": "u", "name": name, "type": "DMUser"},
+    )
+    first = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", today_and_overdue=True, username="ivanov", password="a"
+    )
+    second = dok_soap.fetch_user_inbox_tasks(
+        "Петров П.П.", today_and_overdue=True, username="petrov", password="b"
+    )
+    assert calls["n"] == 1
+    assert dumps == []
+    assert first["rows"][0]["id"] == "1"
+    assert second["cached"] is True
+    assert second["rows"][0]["id"] == "2"
+
+
+def test_scoped_timeout_does_not_start_full_dump(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+
+    def scoped(*_args, **_kwargs):
+        raise RuntimeError("Документооборот SOAP: нет ответа за 420 с")
+
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", scoped)
+    with pytest.raises(RuntimeError, match="420"):
+        dok_soap.fetch_user_inbox_tasks("Иванов И.И.", username="ivanov", password="a")
+    assert dumps == []
+
+
+def test_session_dump_shared_after_login_check(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    checked: list[str] = []
+    monkeypatch.setattr(
+        dok_soap,
+        "find_user",
+        lambda config, name, **_kwargs: checked.append(config.user) or {"id": "u", "name": name},
+    )
+    first = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", today_and_overdue=True, username="ivanov", password="a"
+    )
+    second = dok_soap.fetch_user_inbox_tasks(
+        "Петров П.П.", today_and_overdue=True, username="petrov", password="b"
+    )
+    assert dumps == ["ivanov"]
+    assert checked == ["petrov"]
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert [row["id"] for row in second["rows"]] == ["2"]
+
+
+def test_session_dump_not_shared_when_login_rejected(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", today_and_overdue=True, username="ivanov", password="a"
+    )
+
+    def reject(*_args, **_kwargs):
+        raise RuntimeError("HTTP 401: Документооборот отклонил Basic-учётку")
+
+    monkeypatch.setattr(dok_soap, "find_user", reject)
+    with pytest.raises(RuntimeError, match="401"):
+        dok_soap.fetch_user_inbox_tasks(
+            "Петров П.П.", today_and_overdue=True, username="petrov", password="wrong"
+        )
+    assert dumps == ["ivanov"]
+
+
+def test_background_refresh_skips_while_other_dump_runs(tmp_path, monkeypatch) -> None:
+    import threading
+
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    finished = threading.Event()
+    original_run = threading.Thread.run
+
+    def run_and_signal(self):
+        try:
+            original_run(self)
+        finally:
+            if self.name == "dok-soap-refresh":
+                finished.set()
+
+    monkeypatch.setattr(threading.Thread, "run", run_and_signal)
+    assert dok_soap._dump_gate.acquire(blocking=False)
+    try:
+        dok_soap._schedule_refresh(
+            "dump|http://192.168.2.229:81/doc/ws/dm.1cws|1|ivanov|fp",
+            endpoint="http://192.168.2.229:81/doc/ws/dm.1cws",
+            only_open=True,
+            user_fio="Иванов И.И.",
+            stale_at=0.0,
+            env_file=None,
+            username="ivanov",
+            password="a",
+        )
+        assert finished.wait(5)
+    finally:
+        dok_soap._dump_gate.release()
+    assert dumps == []
+    assert not dok_soap._refreshing
+
+
+def test_read_cached_dump_rows_keeps_only_newest_open_inbox(tmp_path, monkeypatch) -> None:
+    """Перенос срока оставляет старую задачу в прошлом снимке. В расчёт берём свежий ящик."""
+    import json
+
+    from app.tools.onec import dok_soap
+
+    folder = tmp_path / "docflow_inbox"
+    folder.mkdir()
+    monkeypatch.setattr(dok_soap, "_cache_dir", lambda: folder)
+
+    def _write(name: str, fetched_at: float, rows: list[dict], *, only_open: bool = True) -> None:
+        payload = {"kind": "open_dump", "only_open": only_open, "rows": rows}
+        (folder / name).write_text(
+            json.dumps({"fetched_at": fetched_at, "payload": payload}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    _write(
+        "old.json",
+        1.0,
+        [
+            {
+                "id": "old-overdue",
+                "name": "Исполнить задачу №6",
+                "performer": "Жалыбин Максим Дмитриевич",
+                "due": "2026-10-01T23:59:59",
+                "executed": False,
+            },
+            {
+                "id": "moved",
+                "name": "Исполнить заявку",
+                "performer": "Жалыбин Максим Дмитриевич",
+                "due": "2026-10-02T23:59:59",
+                "executed": False,
+            },
+        ],
+    )
+    _write(
+        "new.json",
+        2.0,
+        [
+            {
+                "id": "moved",
+                "name": "Исполнить заявку",
+                "performer": "Жалыбин Максим Дмитриевич",
+                "due": "2026-10-09T23:59:59",
+                "executed": False,
+            }
+        ],
+    )
+    _write(
+        "period.json",
+        3.0,
+        [{"id": "closed", "executed": True, "name": "Уже сдано"}],
+        only_open=False,
+    )
+
+    rows, includes_completed = dok_soap.read_cached_dump_rows()
+    assert includes_completed is False
+    assert [row["id"] for row in rows] == ["moved"]
+    assert rows[0]["due"] == "2026-10-09T23:59:59"
+    left = dok_soap.read_cached_left_inbox_rows()
+    assert [row["id"] for row in left] == ["old-overdue"]
+    assert left[0]["executed"] is True

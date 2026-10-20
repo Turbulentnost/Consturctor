@@ -642,10 +642,20 @@ def invoke_creation_tool(
         return _invoke_users_subordinates(args)
     if tool in {"notify.send", "notify"}:
         return _invoke_notify_send(args)
+    if tool == "chat.send_direct":
+        return _invoke_chat_send_direct(args)
     if tool in {"data.process", "data.process_dataset"}:
         return _invoke_data_process(args)
     if tool in {"audio.transcribe", "transcribe"}:
         return _invoke_audio_transcribe(args)
+    if tool == "audio.speakers":
+        return _invoke_audio_speakers(args)
+    if tool == "audio.bind_speakers":
+        return _invoke_audio_bind_speakers(args)
+    if tool == "audio.propose_speakers":
+        return _invoke_audio_propose_speakers(args)
+    if tool == "audio.transcript_docx":
+        return _invoke_audio_transcript_docx(args)
 
     ctx = current_tool_context()
     if ctx is None:
@@ -1094,12 +1104,25 @@ def _stream_cursor_with_tools_body(
                     "decision",
                     "«notify.send»: отправляю уведомление на компьютер…",
                 )
+            if name == "chat.send_direct":
+                _emit(
+                    on_event,
+                    "decision",
+                    "«chat.send_direct»: отправляю личное сообщение в чат…",
+                )
             if name in {"audio.transcribe", "transcribe"}:
                 _emit(
                     on_event,
                     "decision",
-                    "«audio.transcribe»: расшифровываю аудио-вложение "
-                    "(faster-whisper, может занять несколько минут)…",
+                    "«audio.transcribe»: расшифровываю аудио на видеокарте сервера…",
+                )
+            if name == "audio.speakers":
+                _emit(on_event, "decision", "«audio.speakers»: читаю голоса расшифровки…")
+            if name == "audio.bind_speakers":
+                _emit(
+                    on_event,
+                    "decision",
+                    "«audio.bind_speakers»: записываю, кому какой голос принадлежит…",
                 )
             try:
                 result = invoke_creation_tool(
@@ -1565,6 +1588,13 @@ def _invoke_notify_send(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _invoke_chat_send_direct(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.modules.chat.agent_messages import send_direct_message
+
+    ctx = current_tool_context()
+    return send_direct_message(ctx[1] if ctx else "", arguments)
+
+
 def _invoke_users_list(arguments: dict[str, Any]) -> dict[str, Any]:
     from app.db.session import SessionLocal
     from app.services.notifications.service import list_directory_users
@@ -1705,6 +1735,11 @@ def _format_tool_output(_name: str, result: dict[str, Any], *, limit: int = 1600
         if result.get("delivered"):
             return "Готово · уведомление на компьютер" + (f": {title}" if title else "")
         return "Уведомление записано, отправка на компьютер" + (f": {title}" if title else "")
+    if _name == "chat.send_direct":
+        who = str(result.get("recipient_fio") or result.get("recipient") or "").strip()
+        if result.get("sent"):
+            return "Готово · личное сообщение в чат" + (f": {who}" if who else "")
+        return str(result.get("note") or "Сообщение не отправлено")
     from pathlib import Path as _Path
 
     for key in ("file", "path", "filename"):
@@ -1789,6 +1824,73 @@ def _invoke_audio_transcribe(arguments: dict[str, Any]) -> dict[str, Any]:
     return transcribe_run_attachment(
         file_id=file_id, user_id=user_id, names=names, hint=hint
     )
+
+
+def _session_user_id() -> str:
+    ctx = current_tool_context()
+    user_id = ctx[1] if ctx else ""
+    if not user_id:
+        raise RuntimeError("Нет пользователя сессии")
+    return user_id
+
+
+def _invoke_audio_speakers(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.speaker_bank import speakers_for_user
+
+    transcript_id = str(arguments.get("transcript_id") or "").strip()
+    if not transcript_id:
+        raise RuntimeError("Для audio.speakers нужен transcript_id из ответа audio.transcribe")
+    return speakers_for_user(transcript_id, _session_user_id())
+
+
+def _invoke_audio_bind_speakers(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.speaker_bank import confirm_speakers
+
+    transcript_id = str(arguments.get("transcript_id") or "").strip()
+    raw = arguments.get("voices") or arguments.get("speakers") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        raise RuntimeError("Передай voices: список {speaker, fio, user_id}")
+    if not transcript_id:
+        raise RuntimeError("Для audio.bind_speakers нужен transcript_id")
+    return confirm_speakers(transcript_id, _session_user_id(), [item for item in raw if isinstance(item, dict)])
+
+
+def _voice_rows(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = arguments.get("voices") or arguments.get("speakers") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _invoke_audio_propose_speakers(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.db.session import SessionLocal
+    from app.services.speaker_bank import propose_speakers
+
+    transcript_id = str(arguments.get("transcript_id") or "").strip()
+    voices = _voice_rows(arguments)
+    if not transcript_id or not voices:
+        raise RuntimeError("Для audio.propose_speakers нужны transcript_id и voices")
+    db = SessionLocal()
+    try:
+        return propose_speakers(
+            db, transcript_id=transcript_id, user_id=_session_user_id(), voices=voices
+        )
+    finally:
+        db.close()
+
+
+def _invoke_audio_transcript_docx(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.speaker_bank import export_transcript_docx
+
+    transcript_id = str(arguments.get("transcript_id") or "").strip()
+    workflow_id = str(arguments.get("workflow_id") or "").strip()
+    if not transcript_id or not workflow_id:
+        raise RuntimeError("Для файла Word нужны transcript_id и workflow_id")
+    return export_transcript_docx(transcript_id, _session_user_id(), workflow_id)
 
 
 def _invoke_data_process(arguments: dict[str, Any]) -> dict[str, Any]:

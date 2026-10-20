@@ -75,7 +75,10 @@ _SD_TOOLS = [
     "office.read_file",
     "report.build_meeting_summary",
     "report.export_document",
+    "onec.meeting_protocol_write",
     "users.current",
+    "users.list",
+    "chat.send_direct",
 ]
 _SITE_SEARCH_TOOLS = ["site_browser", "web_search"]
 _BROWSER_TOOLS = ["site_browser", "web_search"]

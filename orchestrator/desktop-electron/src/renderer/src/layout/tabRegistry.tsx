@@ -22,6 +22,7 @@ export type WorkplaceTabKey =
   | 'knowledge'
   | 'extensions'
   | 'assignments_registry'
+  | 'subordinate_tasks'
   | 'agent_library'
   | 'task_create'
   | 'platform_task_create'
@@ -101,6 +102,10 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   assignments_registry: {
     title: 'Реестр поручений',
     subtitle: 'Журнал поручений АСТ00: контроль сроков, статусов и проверка закрытия через ИИ'
+  },
+  subordinate_tasks: {
+    title: PAGE_LABELS.subordinate_tasks,
+    subtitle: 'Загрузка и сроки задач, поставленных подчинённым в общей базе 1С'
   },
   task_create: {
     title: PAGE_LABELS.task_create,

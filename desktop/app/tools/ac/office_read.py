@@ -14,6 +14,7 @@ from app.tools.ac.readable_files import (
     READABLE_SUFFIXES,
     kind_for_suffix,
     resolve_readable_path,
+    with_detected_suffix,
 )
 from app.tools.ac.registry import ToolRegistry
 from app.tools.ac.tooling import (
@@ -25,27 +26,13 @@ from app.tools.ac.tooling import (
 
 _DEFAULT_MAX_CHARS = 16_000
 _SCAN_TEXT_CHARS = 80
-VISION_SDK_BATCH = 1
-_VISION_NEXT_STEP = (
-    "Это последние страницы. Документ прочитан. "
-    "Не вызывай office.read_file снова. "
-    "Не вызывай Read, Grep, excel.list_files и users.current. "
-    "Сразу выпиши ВСЕ KPI должности со всех страниц, не только первые. "
-    "Каждая строка: 1. Название — вес N%. Последняя строка: СПИСОК_ГОТОВ. "
-    "Откуда брать план и факт спросит следующий шаг — askQuestion не вызывай."
+# One call returns a few pages of this file. The caller asks for the rest.
+_VISION_PAGES_PER_CALL = 4
+_FILE_MORE_STEP = (
+    "В ответе страницы {start}–{last} файла {name}. "
+    "Дальше этот же файл: office.read_file, тот же filename, start_page={next_start}."
 )
-_VISION_MORE_STEP = (
-    "В ответе только этот кусок. Сразу вызови office.read_file "
-    "с тем же filename, start_page={next_start}, max_pages=1. "
-    "СПИСОК_ГОТОВ пока не пиши."
-)
-_CACHED_NEXT_STEP = (
-    "Это повтор: все страницы уже были. "
-    "Новых страниц нет. Не читай PDF снова. "
-    "Выпиши ВСЕ KPI должности со всех страниц. Последняя строка: СПИСОК_ГОТОВ. "
-    "askQuestion не вызывай."
-)
-_ATTACHED_FLAG = ".attached"
+_FILE_DONE_STEP = "Файл {name} прочитан. Страницы в ответе инструмента."
 
 
 class OfficeReadFileTool(BaseTool):
@@ -57,14 +44,15 @@ class OfficeReadFileTool(BaseTool):
                 name="office.read_file",
                 title="Чтение Word, PDF и картинок",
                 description=(
-                    "Читает Word (.docx), PDF и картинки (jpg/png/tif и др.). "
+                    "Читает Word (.docx и старый .doc, включая таблицы), PDF, презентации .pptx "
+                    "и картинки (jpg/png/tif и др.). "
                     "Если есть текстовый слой — вернёт текст. "
                     "Скан или фото передаёт в зрение модели Cursor SDK "
                     "(страницы в ответе инструмента). "
                     "filename — имя из excel.list_files или saved_path после "
                     "onec.download_artifact (Temp/constructor-onec-artifacts). "
                     "Не используй встроенные Read и Grep для этих файлов: они зависают. "
-                    "Excel — excel.read_workbook. Старый .doc не читается, нужен .docx."
+                    "Excel — excel.read_workbook."
                 ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.LOCAL,
@@ -112,17 +100,12 @@ class OfficeReadFileTool(BaseTool):
             return self._fail("INVALID_FILENAME", "Укажи filename или path.")
         try:
             workspace = self._resolver.for_agent(self._resolver.agent_id_from_input(input_data))
-            path = resolve_readable_path(workspace, raw)
+            path = with_detected_suffix(resolve_readable_path(workspace, raw))
         except WorkspaceError as exc:
             return self._fail("WORKSPACE_ERROR", str(exc))
 
         suffix = path.suffix.lower()
         kind = kind_for_suffix(suffix)
-        if suffix == ".doc":
-            return self._fail(
-                "DOC_UNSUPPORTED",
-                f"{path.name}: старый .doc не читается. Нужен .docx, PDF или картинка.",
-            )
         if suffix not in READABLE_SUFFIXES:
             hint = "Excel — excel.read_workbook." if suffix in {".xlsx", ".xlsm"} else ""
             return self._fail(
@@ -132,9 +115,7 @@ class OfficeReadFileTool(BaseTool):
 
         max_chars = _as_int(input_data.get("max_chars"), _DEFAULT_MAX_CHARS, lo=200, hi=80_000)
         max_pages = _as_int(input_data.get("max_pages"), 20, lo=1, hi=80)
-        workflow_id = str(self._resolver.agent_id_from_input(input_data) or "")
-        default_start = 2 if workflow_id.startswith("kpi-build-") else 1
-        start_page = _as_int(input_data.get("start_page"), default_start, lo=1, hi=80)
+        start_page = _as_int(input_data.get("start_page"), 1, lo=1, hi=80)
         try:
             text = extract_attachment_text(
                 str(path),
@@ -150,17 +131,32 @@ class OfficeReadFileTool(BaseTool):
         wants_vision = kind == "image" or suffix in IMAGE_SUFFIXES
         if suffix in PDF_SUFFIXES and (not usable or len(usable) < _SCAN_TEXT_CHARS):
             wants_vision = True
+        if kind in {"word", "slides"} and not usable:
+            wants_vision = True
 
         render_error = ""
         if wants_vision:
-            vision_limit = min(max_pages, VISION_SDK_BATCH, VISION_MAX_PAGES)
+            vision_limit = min(max_pages, _VISION_PAGES_PER_CALL, VISION_MAX_PAGES)
             try:
-                rendered = render_document_pages(
-                    path,
-                    workspace.directory / "materials" / "vision",
-                    max_pages=vision_limit,
-                    start_page=start_page,
-                )
+                if kind == "word":
+                    rendered = _render_word_images(
+                        path,
+                        workspace.directory / "materials" / "vision",
+                        max_pages=vision_limit,
+                    )
+                elif kind == "slides":
+                    rendered = _render_slide_images(
+                        path,
+                        workspace.directory / "materials" / "vision",
+                        max_pages=vision_limit,
+                    )
+                else:
+                    rendered = render_document_pages(
+                        path,
+                        workspace.directory / "materials" / "vision",
+                        max_pages=vision_limit,
+                        start_page=start_page,
+                    )
             except VisionRenderError as exc:
                 render_error = str(exc)
                 rendered = None
@@ -184,42 +180,16 @@ class OfficeReadFileTool(BaseTool):
                 total = int(rendered.get("page_count") or 0)
                 last_page = start + delivered - 1 if delivered else start
                 more = bool(total and last_page < total)
-                already_attached = _vision_already_attached(workspace.directory)
-                if already_attached:
-                    return ToolCallResult(
-                        ok=True,
-                        tool_name=self.definition.name,
-                        output_data={
-                            "filename": path.name,
-                            "path": str(path),
-                            "kind": kind,
-                            "ocr": False,
-                            "vision": True,
-                            "vision_source": "cursor_sdk",
-                            "cached": True,
-                            "text": "",
-                            "char_count": 0,
-                            "truncated": truncated,
-                            "page_count": total or rendered.get("page_count"),
-                            "delivered_pages": 0,
-                            "start_page": start,
-                            "vision_pages": [],
-                            "max_pages": max_pages if suffix in PDF_SUFFIXES else None,
-                            "summary": (
-                                f"Повтор: те же {delivered} стр. уже были. "
-                                "Не читай PDF снова."
-                            ),
-                            "next_step": _CACHED_NEXT_STEP,
-                        },
-                    )
-                if not more:
-                    _mark_vision_attached(workspace.directory)
                 next_start = last_page + 1
-                next_step = (
-                    _VISION_MORE_STEP.format(next_start=next_start)
-                    if more
-                    else _VISION_NEXT_STEP
-                )
+                if more:
+                    next_step = _FILE_MORE_STEP.format(
+                        name=path.name,
+                        start=start,
+                        last=last_page,
+                        next_start=next_start,
+                    )
+                else:
+                    next_step = _FILE_DONE_STEP.format(name=path.name)
                 return ToolCallResult(
                     ok=True,
                     tool_name=self.definition.name,
@@ -274,28 +244,78 @@ class OfficeReadFileTool(BaseTool):
         )
 
 
-def _vision_flag(workspace: Path) -> Path:
-    return Path(workspace) / "materials" / "vision" / _ATTACHED_FLAG
+def _render_word_images(source: Path, dest_dir: Path, *, max_pages: int) -> dict | None:
+    """Pictures inside a Word file that has no paragraph or table text."""
+    try:
+        import docx
+    except ImportError:
+        return None
+    document = docx.Document(str(source))
+    blobs: list[tuple[str, bytes]] = []
+    for rel in document.part.rels.values():
+        if "image" not in str(getattr(rel, "reltype", "")):
+            continue
+        part = getattr(rel, "target_part", None)
+        blob = getattr(part, "blob", b"") or b""
+        if len(blob) < 2048:
+            continue
+        blobs.append((str(getattr(part, "content_type", "") or ""), blob))
+    return _write_vision_blobs(source, dest_dir, blobs, max_pages=max_pages)
 
 
-def _vision_already_attached(workspace: Path) -> bool:
-    return _vision_flag(workspace).is_file()
+def _render_slide_images(source: Path, dest_dir: Path, *, max_pages: int) -> dict | None:
+    import zipfile
+
+    blobs: list[tuple[str, bytes]] = []
+    try:
+        with zipfile.ZipFile(source) as archive:
+            names = sorted(name for name in archive.namelist() if name.startswith("ppt/media/"))
+            for name in names:
+                blob = archive.read(name)
+                if len(blob) < 2048:
+                    continue
+                blobs.append((name, blob))
+    except Exception:  # noqa: BLE001
+        return None
+    return _write_vision_blobs(source, dest_dir, blobs, max_pages=max_pages)
 
 
-def _mark_vision_attached(workspace: Path) -> None:
-    flag = _vision_flag(workspace)
-    flag.parent.mkdir(parents=True, exist_ok=True)
-    flag.write_text("1", encoding="utf-8")
-
-
-def mark_vision_attached(workspace: Path) -> None:
-    _mark_vision_attached(workspace)
-
-
-def reset_vision_attached(workspace: Path) -> None:
-    flag = _vision_flag(workspace)
-    if flag.is_file():
-        flag.unlink()
+def _write_vision_blobs(
+    source: Path,
+    dest_dir: Path,
+    blobs: list[tuple[str, bytes]],
+    *,
+    max_pages: int,
+) -> dict | None:
+    if not blobs:
+        return None
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stem = "".join(ch if ch.isalnum() else "-" for ch in source.stem)[:40] or "page"
+    limit = max(1, int(max_pages or 1))
+    pages: list[dict] = []
+    for index, (hint, blob) in enumerate(blobs[:limit], start=1):
+        folded = hint.casefold()
+        if blob.startswith(b"\x89PNG") or "png" in folded:
+            ext, mime = ".png", "image/png"
+        else:
+            ext, mime = ".jpg", "image/jpeg"
+        dest = dest_dir / f"{stem}-p{index:03d}{ext}"
+        dest.write_bytes(blob)
+        pages.append(
+            {
+                "page": index,
+                "path": str(dest.resolve()),
+                "mimeType": mime,
+                "width": 0,
+                "height": 0,
+            }
+        )
+    return {
+        "pages": pages,
+        "page_count": len(blobs),
+        "start_page": 1,
+        "truncated": len(blobs) > len(pages),
+    }
 
 
 def _rel_to_workspace(workspace: Path, path: Path) -> str:

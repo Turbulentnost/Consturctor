@@ -21,6 +21,8 @@ from app.schemas.workflow import (
     AgentRunCancelSlot,
     AgentRunEventsUpdate,
     AgentRunFinish,
+    AgentRunContextUpdate,
+    AgentRunMetricsUpdate,
     AgentRunOut,
     AgentToolResultSubmit,
     ArtifactItem,
@@ -43,7 +45,9 @@ from app.services.agent_runs import (
     finish_agent_run,
     get_agent_run,
     list_agent_runs,
+    save_run_context,
     save_run_events,
+    save_run_metrics,
     start_agent_run,
 )
 from app.services.agent_runtime import AgentRuntimeError, available_tools, run_agent_task
@@ -543,6 +547,40 @@ def update_local_agent_run_events(
         raise
 
 
+@router.patch("/{workflow_id}/runs/{run_id}/metrics", response_model=AgentRunOut)
+def update_local_agent_run_metrics(
+    workflow_id: str,
+    run_id: str,
+    body: AgentRunMetricsUpdate,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentRunOut:
+    try:
+        get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+        save_run_metrics(db, run_id=run_id, metrics=body.metrics)
+        return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.patch("/{workflow_id}/runs/{run_id}/context")
+def update_local_agent_run_context(
+    workflow_id: str,
+    run_id: str,
+    body: AgentRunContextUpdate,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    try:
+        get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+        save_run_context(db, run_id=run_id, context=body.context)
+        return {"ok": True}
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
 @router.post("/{workflow_id}/runs/{run_id}/finish", response_model=AgentRunOut)
 def finish_local_agent_run(
     workflow_id: str,
@@ -560,6 +598,8 @@ def finish_local_agent_run(
             answer=body.answer,
             events=body.events,
             message=body.message,
+            metrics=body.metrics,
+            context=body.context,
         )
         return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
     except WorkflowError as exc:

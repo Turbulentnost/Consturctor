@@ -9,10 +9,15 @@ _TITLE_HINTS = (
     "предложение поручений к закрытию",
     "предложение к закрытию поручений",
 )
+# Its own seeded playbook (seed_assignment_closure_agent.py) grades every line;
+# its report title says «Проверка артефактов», which must not pull this one in.
+_OWN_PLAYBOOK_AGENTS = ("проверка поручений к закрытию",)
 
 
 def is_artifact_close_agent(*parts: str) -> bool:
     blob = " ".join(str(part or "") for part in parts).casefold()
+    if any(name in blob for name in _OWN_PLAYBOOK_AGENTS):
+        return False
     return any(hint in blob for hint in _TITLE_HINTS)
 
 

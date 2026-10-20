@@ -2,17 +2,99 @@ from types import SimpleNamespace
 
 from app.services.agent_runtime import _playbook_plan_text
 from app.services.agent_runs import (
+    ANSWER_MAX_CHARS,
     MISSING_WORK_RESULT_ANSWER,
     SDK_DEAD_ANSWER,
+    clip_answer,
     effective_run_status,
     is_successful_work_answer,
     slim_run_events,
+    slim_run_context,
+    slim_run_metrics,
 )
 from app.services.workflows.cursor_tools import (
     clear_tool_context,
     current_history_run_id,
     set_tool_context,
 )
+
+
+def test_slim_run_events_keeps_spaces_between_stream_tokens() -> None:
+    stored = slim_run_events(
+        [
+            {"type": "assistant", "text": "Нужны"},
+            {"type": "assistant", "text": " "},
+            {"type": "assistant", "text": "Мегрелишвили"},
+            {"type": "thinking", "text": "свер"},
+            {"type": "thinking", "text": "яю"},
+            {"type": "tool_call", "tool": "calendar.show_meetings", "arguments": {"day": "завтра"}},
+            {"type": "assistant", "text": "Готово"},
+        ]
+    )
+    assert [item["type"] for item in stored] == ["assistant", "thinking", "tool_call", "assistant"]
+    assert stored[0]["text"] == "Нужны Мегрелишвили"
+    assert stored[1]["text"] == "сверяю"
+    assert stored[3]["text"] == "Готово"
+
+
+def test_slim_run_metrics_keeps_numbers_only() -> None:
+    stored = slim_run_metrics(
+        [
+            {"t": 10, "cpu": 1.5, "ram": 2, "gpu": None, "note": "x"},
+            "bad",
+            {"cpu": 1},
+        ]
+    )
+    assert stored == [{"t": 10.0, "cpu": 1.5, "ram": 2.0}]
+
+
+def test_slim_run_metrics_keeps_spike_with_processes() -> None:
+    stored = slim_run_metrics(
+        [
+            {
+                "t": 20,
+                "cpu": 40,
+                "spike": {
+                    "marks": [
+                        {"metric": "cpu", "value": 40, "baseline": 2},
+                        {"metric": "gen", "value": 9, "baseline": 1},
+                        {"metric": "ram", "value": "x", "baseline": 1},
+                    ],
+                    "processes": [{"pid": 7, "name": "node.exe", "cpu": 39.5, "ram_mb": 300, "gpu": None, "disk": 0.1}, "bad"],
+                },
+            },
+            {"t": 21, "cpu": 3, "spike": {"marks": [{"metric": "gen", "value": 1, "baseline": 0}]}},
+        ]
+    )
+    assert stored[0]["spike"] == {
+        "marks": [{"metric": "cpu", "value": 40.0, "baseline": 2.0}],
+        "processes": [{"pid": 7, "name": "node.exe", "cpu": 39.5, "ram_mb": 300.0, "gpu": None, "disk": 0.1}],
+    }
+    assert "spike" not in stored[1]
+
+
+def test_slim_run_context_keeps_valid_ranges_and_clips_text() -> None:
+    stored = slim_run_context(
+        {
+            "items": {
+                "tools": {"type": "tools", "label": "Инструменты", "chars": 40, "text": "a, b"},
+                "1:user": {"turn": 1, "type": "user", "label": "Промпт", "chars": 5000, "text": "x" * 5000},
+                "1:s1": {"turn": 1, "type": "weird", "label": "?", "chars": 3, "text": "abc"},
+                "bad": {"type": "user", "chars": "many"},
+            },
+            "order": ["tools", "1:user", "1:s1", "bad", "missing"],
+            "snapshots": [
+                {"seq": 1, "turn": 1, "kind": "user", "reason": "промпт", "from": 0, "to": 1, "usage": {"inputTokens": 9, "x": "y"}},
+                {"seq": 2, "turn": 1, "kind": "thinking", "reason": "шаг", "from": 0, "to": 5},
+            ],
+        }
+    )
+    assert stored["order"] == ["1:user", "1:s1"]
+    assert len(stored["items"]["1:user"]["text"]) == 1500
+    assert stored["items"]["1:s1"]["type"] == "other"
+    assert [snap["seq"] for snap in stored["snapshots"]] == [1]
+    assert stored["snapshots"][0]["usage"] == {"inputTokens": 9}
+    assert slim_run_context("junk") == {"items": {}, "order": [], "snapshots": []}
 
 
 def test_slim_run_events_keeps_tool_and_work_result() -> None:
@@ -336,3 +418,15 @@ def test_compute_run_timing_keeps_agent_slice_before_human_wait() -> None:
     )
     assert timing["agent_work_ms"] == 5 * 60_000 + 26_000
     assert timing["human_wait_ms"] == 30 * 60_000 + 34_000
+
+
+def test_clip_answer_keeps_trailing_closure_check_block() -> None:
+    block = '```closure-check\n{"assignments":[{"number":"АСТ00-00113"}]}\n```'
+    clipped = clip_answer("x" * (ANSWER_MAX_CHARS + 500) + "\n\n" + block)
+
+    assert len(clipped) <= ANSWER_MAX_CHARS
+    assert clipped.endswith(block)
+
+
+def test_clip_answer_leaves_short_answer() -> None:
+    assert clip_answer("  ответ  ") == "ответ"

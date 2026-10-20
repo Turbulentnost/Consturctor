@@ -18,6 +18,7 @@ from app.schemas.trigger import ScheduleTriggerSpec, TriggerCreate, TriggerOut
 logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL = timedelta(seconds=45)
+SERVER_RUN_GRACE = timedelta(minutes=10)
 FIRE_COOLDOWN = timedelta(seconds=90)
 
 
@@ -768,6 +769,31 @@ def claim_due_trigger(db: Session, trigger_id: str, *, now: datetime | None = No
     return True
 
 
+def runs_on_server(workflow: Workflow) -> bool:
+    """Agents run on the owner's computer. A stored run_on_server flag is ignored."""
+    del workflow
+    return False
+
+
+def yields_to_server_backend(db: Session, row: AgentTrigger, *, now: datetime | None = None) -> bool:
+    """A server-run trigger is left to a backend that can run agents, for a grace period.
+
+    Backends share one database. One that cannot start the sidecar (e.g. the
+    Docker gateway without node) would claim the slot and fall back to the
+    desktop, skipping the run when the app is closed.
+    """
+    now = now or datetime.now(timezone.utc)
+    due = _as_utc(row.fire_at)
+    if due is not None and now - due > SERVER_RUN_GRACE:
+        return False
+    workflow = db.get(Workflow, row.workflow_id)
+    if workflow is None or not runs_on_server(workflow):
+        return False
+    from app.services.triggers.headless import unavailable_reason
+
+    return bool(unavailable_reason())
+
+
 def claim_due_agent_jobs(db: Session, *, user_id: str | None = None) -> list[AgentTrigger]:
     """Claim at most one due trigger per workflow per tick."""
     claimed: list[AgentTrigger] = []
@@ -775,6 +801,8 @@ def claim_due_agent_jobs(db: Session, *, user_id: str | None = None) -> list[Age
     for row in due_commands(db, user_id=user_id):
         workflow_id = (row.workflow_id or "").strip()
         if workflow_id and workflow_id in claimed_workflows:
+            continue
+        if yields_to_server_backend(db, row):
             continue
         if consume_skipped_due(db, row):
             continue

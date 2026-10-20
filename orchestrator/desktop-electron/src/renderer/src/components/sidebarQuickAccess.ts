@@ -1,3 +1,5 @@
+import { scheduleUiSync } from './uiPrefsSync'
+
 export const QUICK_ACCESS_STORAGE_KEY = 'orch-sidebar-quick-v1'
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = 'orch-sidebar-collapsed-v1'
 export const DEFAULT_QUICK_ACCESS = ['today', 'docflow', 'extensions', 'settings']
@@ -43,6 +45,7 @@ export function saveQuickAccess(userId: string, keys: string[]): void {
   if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(quickAccessStorageKey(userId), JSON.stringify(keys))
+    scheduleUiSync(userId, 'sidebar')
   } catch {
     /* Ignore unavailable or full renderer storage. */
   }
@@ -62,6 +65,7 @@ export function saveSidebarCollapsed(userId: string, collapsed: boolean): void {
   if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(sidebarCollapsedStorageKey(userId), collapsed ? '1' : '0')
+    scheduleUiSync(userId, 'sidebar')
   } catch {
     /* Ignore unavailable or full renderer storage. */
   }

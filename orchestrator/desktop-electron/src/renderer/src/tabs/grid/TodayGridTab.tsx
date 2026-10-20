@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
 import { TODAY_WIDGET_IDS, type TodayWidgetId } from './useTodayWidgetLayout'
-import { readTodayTileVisibility, TODAY_TILE_VISIBILITY_EVENT, type TodayTileId } from './todayWidgetSettings'
+import {
+  readTodayTileOrder,
+  readTodayTileVisibility,
+  TODAY_TILE_VISIBILITY_EVENT,
+  type TodayTileId
+} from './todayWidgetSettings'
 import { TodayOutlookMailPanel } from './TodayOutlookMailPanel'
 import { TrackedCalendarsControl } from './TrackedCalendarsControl'
 import {
@@ -12,17 +17,21 @@ import {
   SpecAskOrchestratorBlock,
   SpecPanel,
   SpecPill,
-  SpecSummaryTiles
+  SpecSummaryTileCard
 } from '../../workplace/specV04Components'
 import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useTodayKpiData } from '../../workplace/useTodayKpiData'
+import { formatProtocolDay, useBoardReportReadiness } from '../../workplace/boardReportReadiness'
+import { requestProtocolFocus } from '../../workplace/protocolFocus'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
 import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecSessionHints'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import { erpActorFio } from '../../workplace/userContext'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
-import { parseMeetingTime } from '../../utils/outlookMeetings'
+import { isCanceledMeeting, parseMeetingTime } from '../../utils/outlookMeetings'
+import { isIlchenkoAccount } from '../../workplace/boardReportReadiness'
+import { isSelfCalendarMeeting, ownMeetingsHidden, useShowOwnMeetings } from '../../workplace/ownMeetings'
 import { sameDay } from '../../utils/calendar'
 import { useTodayPreparedDecisions } from '../../workplace/useTodayPreparedDecisions'
 import {
@@ -35,14 +44,22 @@ import {
   applyTodayKpiTileClick,
   EMPTY_TODAY_KPI_TILE
 } from '../../workplace/tileFilters'
-import { docflowKindActions, docflowTaskKind } from '../../workplace/docflowTaskKind'
+import {
+  DOCFLOW_GROUP_ORDER,
+  docflowGroupKey,
+  docflowGroupLabel,
+  docflowKindActions,
+  docflowTaskKind,
+  type DocflowGroupKey
+} from '../../workplace/docflowTaskKind'
 import { runDocflowAction } from '../../workplace/taskSourceActions'
 import { taskActionContextFromTaskRow } from '../../workplace/taskSourceKind'
 import type { DocflowUiAction } from '../../workplace/taskSourceActions'
 import type { SpecTaskRow } from '../../workplace/specV04DemoData'
 import { acceptPlatformTask, completePlatformTask } from './PlatformTaskDetail'
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
-import { TodayFullPlanModal } from './TodayFullPlanModal'
+import { requestMeetingsDay } from '../../workplace/meetingsFocus'
+import { TodayIlchenkoAlertTile } from './TodayIlchenkoAlertTile'
 import { TodayTaskDetailModal, type TodayTaskDetailRow } from './TodayTaskDetailModal'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
@@ -144,12 +161,21 @@ function todayRowTone(status: string, deadline: string, urgent?: boolean): Today
   return 'neutral'
 }
 
+/** Раздел задачи в виджете: вид из Документооборота, остальное — «Прочие». */
+function todayGroupKey(row: SpecTaskRow): DocflowGroupKey {
+  const kind =
+    row.sourceKind === 'docflow' ? row.docflowKind ?? docflowTaskKind(row.step, row.taskName) : null
+  return docflowGroupKey(kind)
+}
+
 function MiniTableCard({
   title,
   columns,
   rows,
   rowTones,
   rowClassNames,
+  rowGroups,
+  closedGroups,
   onRowClick,
   loading,
   error,
@@ -165,6 +191,10 @@ function MiniTableCard({
   rowTones?: TodayRowTone[]
   /** Дополнительные классы строк (по индексам rows). */
   rowClassNames?: (string | undefined)[]
+  /** Название раздела для каждой строки; строки должны идти разделами подряд. */
+  rowGroups?: string[]
+  /** Разделы, свёрнутые при открытии. */
+  closedGroups?: string[]
   /** Клик по строке: открыть карточку записи. */
   onRowClick?: (index: number) => void
   loading?: boolean
@@ -175,6 +205,61 @@ function MiniTableCard({
   headerAction?: React.ReactNode
   tableClassName?: string
 }): React.JSX.Element {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(closedGroups || []))
+  const groups = useMemo(() => {
+    if (!rowGroups) return []
+    const out: { label: string; indexes: number[] }[] = []
+    rows.forEach((_, index) => {
+      const label = rowGroups[index] || ''
+      const last = out[out.length - 1]
+      if (last && last.label === label) last.indexes.push(index)
+      else out.push({ label, indexes: [index] })
+    })
+    return out
+  }, [rows, rowGroups])
+
+  const renderRow = (cells: React.ReactNode[], index: number): React.JSX.Element => {
+    const tone = rowTones?.[index]
+    const className = [
+      tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : '',
+      rowClassNames?.[index] || '',
+      onRowClick ? 'today-tr-clickable' : ''
+    ]
+      .filter(Boolean)
+      .join(' ')
+    return (
+      <tr
+        key={index}
+        className={className || undefined}
+        tabIndex={onRowClick ? 0 : undefined}
+        onClick={onRowClick ? () => onRowClick(index) : undefined}
+        onKeyDown={
+          onRowClick
+            ? (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onRowClick(index)
+                }
+              }
+            : undefined
+        }
+      >
+        {cells.map((cell, cellIndex) => (
+          <td key={cellIndex}>{cell}</td>
+        ))}
+      </tr>
+    )
+  }
+
+  const toggleGroup = (label: string): void => {
+    setCollapsed((current) => {
+      const next = new Set(current)
+      if (next.has(label)) next.delete(label)
+      else next.add(label)
+      return next
+    })
+  }
+
   const body = ((): React.ReactNode => {
     if (loading && !rows.length) {
       return (
@@ -194,36 +279,22 @@ function MiniTableCard({
         </tr>
       )
     }
-    return rows.map((cells, index) => {
-      const tone = rowTones?.[index]
-      const className = [
-        tone && tone !== 'neutral' ? `today-tr-tone-${tone}` : '',
-        rowClassNames?.[index] || '',
-        onRowClick ? 'today-tr-clickable' : ''
-      ]
-        .filter(Boolean)
-        .join(' ')
+    if (!groups.length) return rows.map(renderRow)
+    return groups.map((group) => {
+      const open = !collapsed.has(group.label)
       return (
-        <tr
-          key={index}
-          className={className || undefined}
-          tabIndex={onRowClick ? 0 : undefined}
-          onClick={onRowClick ? () => onRowClick(index) : undefined}
-          onKeyDown={
-            onRowClick
-              ? (event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    onRowClick(index)
-                  }
-                }
-              : undefined
-          }
-        >
-          {cells.map((cell, cellIndex) => (
-            <td key={cellIndex}>{cell}</td>
-          ))}
-        </tr>
+        <Fragment key={group.label}>
+          <tr className="today-group-row" onClick={() => toggleGroup(group.label)}>
+            <td colSpan={columns.length}>
+              <button type="button" className="today-group-toggle" aria-expanded={open}>
+                {open ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+                {group.label}
+                <em>{group.indexes.length}</em>
+              </button>
+            </td>
+          </tr>
+          {open ? group.indexes.map((index) => renderRow(rows[index], index)) : null}
+        </Fragment>
       )
     })
   })()
@@ -274,16 +345,21 @@ async function runTodayTaskAction(
   hooks: {
     setBusy: (value: boolean) => void
     setNote: (value: string) => void
-    onDone: () => void
+    onDone: (mode?: 'local') => void
   }
 ): Promise<void> {
   const spec = docflowKindActions(row.docflowKind ?? docflowTaskKind(row.step, row.taskName)).find(
     (item) => item.id === actionId
   )
   let comment = ''
+  let due = ''
   if (spec?.needsComment) {
     comment = window.prompt('Комментарий для 1С:Документооборот', '')?.trim() || ''
     if (!comment) return
+  }
+  if (spec?.needsDue) {
+    due = window.prompt('Новый срок (ДД.ММ.ГГГГ)', '')?.trim() || ''
+    if (!due) return
   }
   hooks.setBusy(true)
   hooks.setNote('')
@@ -301,10 +377,11 @@ async function runTodayTaskAction(
       user,
       taskActionContextFromTaskRow(row as SpecTaskRow),
       actionId as DocflowUiAction,
-      comment
+      comment,
+      due
     )
     hooks.setNote(result.message)
-    if (result.ok) hooks.onDone()
+    if (result.closed) hooks.onDone('local')
   } catch (err) {
     hooks.setNote(err instanceof Error ? err.message : 'Документооборот не принял действие')
   } finally {
@@ -320,11 +397,17 @@ function startOfToday(): Date {
 export function TodayGridTab({
   user,
   onOpenDecisions,
+  onOpenMeetings,
+  onOpenDocflow,
   onOpenRun,
   onAskOrchestrator
 }: {
   user: UserProfile
   onOpenDecisions: () => void
+  /** Кнопка «Открыть план»: переход во вкладку совещаний на выбранный день. */
+  onOpenMeetings?: (day: Date) => void
+  /** Плитка «Совет директоров»: журнал протоколов и карточка, по которой считалась готовность. */
+  onOpenDocflow?: () => void
   onOpenMetrics: () => void
   onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
@@ -334,20 +417,65 @@ export function TodayGridTab({
   const { forceRefresh } = useGridDataRefreshContext()
   const [periodDay, setPeriodDay] = useState(startOfToday)
   const { data, tiles: allTiles } = useTodayKpiData(user, periodDay)
+  const board = useBoardReportReadiness(user)
   const [tileVisibility, setTileVisibility] = useState(() => readTodayTileVisibility(user.id || ''))
+  const [tileOrder, setTileOrder] = useState(() => readTodayTileOrder(user.id || ''))
   useEffect(() => {
-    const sync = (): void => setTileVisibility(readTodayTileVisibility(user.id || ''))
+    const sync = (): void => {
+      setTileVisibility(readTodayTileVisibility(user.id || ''))
+      setTileOrder(readTodayTileOrder(user.id || ''))
+    }
     sync()
     window.addEventListener(TODAY_TILE_VISIBILITY_EVENT, sync)
     return () => window.removeEventListener(TODAY_TILE_VISIBILITY_EVENT, sync)
   }, [user.id])
-  const tiles = useMemo(
-    () => allTiles.filter((tile) => tileVisibility[tile.id as TodayTileId] !== false),
-    [allTiles, tileVisibility]
-  )
+  const tiles = useMemo(() => {
+    const visible = allTiles.filter((tile) => tileVisibility[tile.id as TodayTileId] !== false)
+    if (!board.enabled) return visible
+    const hint = board.loading
+      ? 'считаем…'
+      : board.readiness.total
+        ? `${board.readiness.done} из ${board.readiness.total}`
+        : 'нет задач'
+    const protocol = board.readiness.protocolNumber
+      ? `${board.readiness.protocolNumber}${
+          board.readiness.protocolDate ? ` от ${formatProtocolDay(board.readiness.protocolDate)}` : ''
+        }`
+      : 'протокол совета директоров по ГК'
+    return [
+      ...visible,
+      {
+        id: 'sd-board',
+        label: 'Совет директоров',
+        value: board.loading ? '—' : board.readiness.total ? `${board.readiness.percent}%` : '—',
+        hint,
+        tooltip: `Задачи на контроле: отчётность за 2 рабочих дня до совета директоров по ГК. ${protocol}. Выполнено ${board.readiness.done} из ${board.readiness.total}.`,
+        tone: 'blue' as const,
+        progress: board.loading || !board.readiness.total ? undefined : board.readiness.percent,
+        ring: false
+      }
+    ]
+  }, [allTiles, tileVisibility, board])
+  const tileStrip = useMemo(() => {
+    const byId = new Map(tiles.filter((tile) => tile.id !== 'sd-board').map((tile) => [tile.id, tile]))
+    const boardTile = tiles.find((tile) => tile.id === 'sd-board')
+    const showAssignments = isIlchenkoAccount(user) && tileVisibility.assignments !== false
+    const ordered: Array<'assignments' | (typeof tiles)[number]> = []
+    for (const id of tileOrder) {
+      if (id === 'assignments') {
+        if (showAssignments) ordered.push('assignments')
+        continue
+      }
+      if (tileVisibility[id] === false) continue
+      const tile = byId.get(id)
+      if (tile) ordered.push(tile)
+    }
+    if (boardTile) ordered.push(boardTile)
+    return ordered
+  }, [tileOrder, tileVisibility, tiles, user])
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
-  const [fullPlanOpen, setFullPlanOpen] = useState(false)
   const [taskDetail, setTaskDetail] = useState<TodayTaskDetailRow | null>(null)
+  const [closedTaskIds, setClosedTaskIds] = useState<Set<string>>(() => new Set())
   const [taskActionBusy, setTaskActionBusy] = useState(false)
   const [taskActionNote, setTaskActionNote] = useState('')
   const [kpiTiles, setKpiTiles] = useState(EMPTY_TODAY_KPI_TILE)
@@ -360,10 +488,12 @@ export function TodayGridTab({
   const outlookFromMe = kpiTiles.outlookFromMe
   const projectAsManager = kpiTiles.projectAsManager
   const canvasRef = useRef<HTMLDivElement | null>(null)
+  const erpFio = erpActorFio(user)
+  const [showOwnToday, setShowOwnToday] = useShowOwnMeetings(erpFio)
+  const hideOwnToday = ownMeetingsHidden(user, showOwnToday)
   const outlookMail = useTodayOutlookMail(periodDay)
   const preparedDecisions = useTodayPreparedDecisions(periodDay, user.id)
   const projectTasks = useTodayProjectTasks(periodDay, data)
-  const erpFio = erpActorFio(user)
 
   const projectRows = useMemo(() => {
     return projectTasks.rows.filter((row) =>
@@ -379,16 +509,25 @@ export function TodayGridTab({
       return onecFromMe ? isPlatformTaskFromMe(task) : isPlatformTaskMine(task)
     })
     const onecRows = data.erpTasks.filter((row) => {
+      if (closedTaskIds.has(row.id)) return false
       if (onecFromMe) {
         return isDocflowFromMe(row, erpFio) && isTaskDueOnDay(row, periodDay)
       }
       return isDocflowToMe(row)
     })
-    return [...platformRows, ...onecRows]
-  }, [data.erpTasks, data.platformTasks, onecFromMe, erpFio, periodDay])
+    // Раскладываем по видам задач: строки одного раздела должны идти подряд.
+    const all = [...platformRows, ...onecRows]
+    return DOCFLOW_GROUP_ORDER.flatMap((key) => all.filter((row) => todayGroupKey(row) === key))
+  }, [data.erpTasks, data.platformTasks, onecFromMe, erpFio, periodDay, closedTaskIds])
+  const taskGroupLabels = useMemo(
+    () => taskRows.map((row) => docflowGroupLabel(todayGroupKey(row))),
+    [taskRows]
+  )
   const meetingRows = useMemo(() => {
     return data.meetings
       .filter((meeting) => {
+        if (isCanceledMeeting(meeting)) return false
+        if (hideOwnToday && isSelfCalendarMeeting(meeting, erpFio)) return false
         const start = parseMeetingTime(meeting.start)
         return start ? sameDay(start, periodDay) : false
       })
@@ -407,7 +546,7 @@ export function TodayGridTab({
           participants: attendees.length ? `${attendees.length} чел.` : '—'
         }
       })
-  }, [data.meetings, periodDay])
+  }, [data.meetings, periodDay, hideOwnToday, erpFio])
 
   const ask = (message: string): void => {
     onAskOrchestrator(message, 'Вкладка «Сегодня»')
@@ -426,6 +565,17 @@ export function TodayGridTab({
   }, [kpiFocusWidgetIds])
 
   const onKpiTileSelect = (id: string): void => {
+    if (id === 'sd-board') {
+      const protocolId = board.readiness.protocolId.trim()
+      if (!protocolId) return
+      requestProtocolFocus({
+        id: protocolId,
+        date: board.readiness.protocolDate,
+        number: board.readiness.protocolNumber
+      })
+      onOpenDocflow?.()
+      return
+    }
     setKpiTiles((current) => applyTodayKpiTileClick(current, id))
   }
 
@@ -471,7 +621,10 @@ export function TodayGridTab({
             periodDay={periodDay}
             userId={user.id || ''}
             fio={erpFio}
-            onOpenFullPlan={() => setFullPlanOpen(true)}
+            onOpenFullPlan={() => {
+              requestMeetingsDay(periodDay)
+              onOpenMeetings?.(periodDay)
+            }}
           />
         </TodayWindow>
       ),
@@ -563,6 +716,8 @@ export function TodayGridTab({
           }
           emptyExtra={onecReconnectBlock}
           columns={onecFromMe ? ['Задача', 'Исполнитель', 'Статус'] : ['Задача', 'Статус']}
+          rowGroups={taskGroupLabels}
+          closedGroups={['Ознакомление']}
           rowTones={taskRows.map((row) => todayRowTone(row.status, row.deadline, row.urgent))}
           rowClassNames={taskRows.map((row) =>
             row.platform
@@ -663,6 +818,14 @@ export function TodayGridTab({
         <TodayWindow searchId="events">
         <MiniTableCard
           title="Предстоящие события"
+          headerAction={
+            isIlchenkoAccount(user) ? (
+              <label className="own-meetings-toggle is-compact">
+                <input type="checkbox" checked={showOwnToday} onChange={(event) => setShowOwnToday(event.target.checked)} />
+                <span>Мои совещания</span>
+              </label>
+            ) : undefined
+          }
           loading={data.sourcesLoading}
           emptyText="Нет событий Outlook на выбранный день"
           columns={['Время', 'Событие', 'Формат', 'Участники']}
@@ -791,12 +954,21 @@ export function TodayGridTab({
   return (
     <>
       <OrchSlotMetrics>
-        <div className="orch-today-tiles">
-          <SpecSummaryTiles
-            tiles={tiles}
-            activeId={kpiTiles.activeIds}
-            onSelect={onKpiTileSelect}
-          />
+        <div className={`orch-today-tiles${tileStrip.length > 7 ? ' orch-today-tiles-wide' : ''}`}>
+          <div className="spec-v04-tiles spec-v04-tiles-rich">
+            {tileStrip.map((item) =>
+              item === 'assignments' ? (
+                <TodayIlchenkoAlertTile key="assignments" user={user} />
+              ) : (
+                <SpecSummaryTileCard
+                  key={item.id}
+                  tile={item}
+                  active={kpiTiles.activeIds.includes(item.id)}
+                  onSelect={onKpiTileSelect}
+                />
+              )
+            )}
+          </div>
         </div>
       </OrchSlotMetrics>
 
@@ -849,19 +1021,17 @@ export function TodayGridTab({
           void runTodayTaskAction(user, taskDetail, actionId, {
             setBusy: setTaskActionBusy,
             setNote: setTaskActionNote,
-            onDone: () => {
+            onDone: (mode) => {
+              const id = taskDetail?.id || ''
               setTaskDetail(null)
+              if (mode === 'local' && id) {
+                setClosedTaskIds((current) => new Set(current).add(id))
+                return
+              }
               forceRefresh()
             }
           })
         }}
-      />
-      <TodayFullPlanModal
-        open={fullPlanOpen}
-        periodDay={periodDay}
-        fio={erpFio}
-        onClose={() => setFullPlanOpen(false)}
-        onOpenRun={onOpenRun}
       />
     </>
   )

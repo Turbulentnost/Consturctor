@@ -1,0 +1,8 @@
+{
+  "name": "turbotester-internal-tool-tester",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cursor/sdk": "^1.0.28"
+  }
+}

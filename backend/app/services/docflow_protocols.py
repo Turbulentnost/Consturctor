@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import logging
 import re
-from datetime import datetime
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import quote
+
+from app.services.docflow_document_tasks import fio_matches, normalize_fio
 
 logger = logging.getLogger(__name__)
 
 ENTITY = "Document_ТД_Протокол"
+FILES_ENTITY = "Catalog_ТД_ПротоколПрисоединенныеФайлы"
+ACCESS_ENTITY = "Catalog_ТД_ГрифыДоступа"
 _NAVS = (
     "Подготовил",
     "ГрифДоступа",
@@ -36,6 +45,7 @@ _FIELDS = (
     "Комментарий",
 )
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_GUID_IN_TEXT_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 _SECRET_RE = re.compile(r"конфиденц|секрет|тайн|дсп|служебного пользования", re.IGNORECASE)
 _DEFAULT_PAGE = 40
@@ -44,6 +54,16 @@ _NAME_CHUNK = 25
 _PEOPLE_CATALOGS = ("Catalog_Пользователи", "Catalog_ФизическиеЛица")
 STATUSES = {"Подготовлен": "Подготовлен", "НаИсполнении": "На исполнении", "Закрыт": "Закрыт"}
 KINDS = {"Отчетное": "Отчётное", "Внеплановое": "Внеплановое", "Селекторное": "Селекторное"}
+# Признака выполнения у строк задач протокола в ERP нет, поэтому у них статусы только эти два.
+TASK_OVERDUE = "Просрочена"
+TASK_OPEN = "Поставлена"
+# Выполнение знает только Документооборот: задачи «Исполнить задачу №N» с предметом-протоколом.
+TASK_DONE = "Выполнена"
+_DO_TARGET_TYPE = "DMInternalDocument"
+_DO_TIMEOUT_SEC = 45.0
+_DO_LIMIT = 300
+_DO_TASK_NO_RE = re.compile(r"задач[уаи]?\s*№\s*(\d+)", re.IGNORECASE)
+_dump_index: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
 
 _names: dict[str, str] = {}
 
@@ -103,6 +123,19 @@ def is_secret(row: dict[str, Any]) -> bool:
     return bool(_SECRET_RE.search(_nav(row, "ГрифДоступа")))
 
 
+def _own_fios(args: dict[str, Any]) -> list[str]:
+    raw = args.get("delegate_fios")
+    delegates = raw if isinstance(raw, (list, tuple)) else str(raw or "").split(";")
+    names = [str(args.get("fio") or ""), *(str(item) for item in delegates)]
+    return [name.strip() for name in names if name.strip()]
+
+
+def is_own(row: dict[str, Any], fios: list[str]) -> bool:
+    """Свой протокол — где пользователь подготовил документ или назначен ответственным."""
+    people = [_nav(row, "Подготовил"), _nav(row, "Ответственный")]
+    return any(fio_matches(person, fio) for person in people if person for fio in fios)
+
+
 def _resolve_names(keys: set[str]) -> None:
     """Ответственные — пользователи, участники — физические лица: ищем в обоих справочниках."""
     missing = sorted(key for key in keys if _GUID_RE.match(key) and key != _EMPTY_GUID and key not in _names)
@@ -141,6 +174,8 @@ def _row_view(row: dict[str, Any]) -> dict[str, Any]:
         "number": _text(row.get("Number")),
         "date": _text(row.get("Date")),
         "time": f"{start}–{finish}" if start and finish else start,
+        "time_start": start,
+        "time_end": finish,
         "status": _label(status, STATUSES),
         "status_code": status,
         "closed": status == "Закрыт",
@@ -154,6 +189,7 @@ def _row_view(row: dict[str, Any]) -> dict[str, Any]:
         "room": _nav(row, "Кабинет"),
         "project": _nav(row, "Проект"),
         "access": _nav(row, "ГрифДоступа"),
+        "secret": is_secret(row),
         "next_meeting": _text(row.get("ДатаСледующегоСовещания")),
         "tasks_sent": _flag(row.get("ЗадачиРазосланы")),
         "posted": _flag(row.get("Posted")),
@@ -198,7 +234,10 @@ def list_protocols(args: dict[str, Any]) -> dict[str, Any]:
     if kind:
         filters.append(f"ВидСовещания eq '{kind}'")
     raw = [row for row in (_odata(_list_path(filters, top=top, skip=skip, with_parts=False)).get("value") or []) if isinstance(row, dict)]
-    rows = [_row_view(row) for row in raw if not is_secret(row)]
+    fios = _own_fios(args)
+    # Конфиденциальный протокол показываем только его автору или ответственному — с пометкой «секретно».
+    allowed = [row for row in raw if not is_secret(row) or is_own(row, fios)]
+    rows = [_row_view(row) for row in allowed]
     return {
         "summary": f"Протоколы: {len(rows)}",
         "rows": rows,
@@ -206,7 +245,8 @@ def list_protocols(args: dict[str, Any]) -> dict[str, Any]:
         "skip": skip,
         "next_skip": skip + len(raw),
         "has_more": len(raw) >= top,
-        "hidden_secret": len(raw) - len(rows),
+        "hidden_secret": len(raw) - len(allowed),
+        "own_secret": sum(1 for row in rows if row["secret"]),
         "statuses": [{"code": code, "label": label} for code, label in STATUSES.items()],
         "kinds": [{"code": code, "label": label} for code, label in KINDS.items()],
     }
@@ -218,6 +258,368 @@ def _date(value: Any) -> str:
 
 def _person(key: Any) -> str:
     return _names.get(_text(key), "")
+
+
+def _files(ref: str) -> dict[str, dict[str, Any]]:
+    filt = _q(f"ВладелецФайла_Key eq guid'{ref}' and DeletionMark eq false")
+    try:
+        data = _odata(
+            f"{FILES_ENTITY}?$format=json&$top=100&$filter={filt}"
+            "&$select=Ref_Key,Description,Расширение,Размер,ДатаСоздания,ПодписанЭП"
+        )
+    except DocflowProtocolError as exc:
+        logger.warning("protocol %s files failed: %s", ref, str(exc)[:200])
+        return {}
+    files: dict[str, dict[str, Any]] = {}
+    for row in data.get("value") or []:
+        if not isinstance(row, dict):
+            continue
+        key = _text(row.get("Ref_Key"))
+        if not key:
+            continue
+        extension = _text(row.get("Расширение"))
+        name = _text(row.get("Description"))
+        files[key] = {
+            "id": key,
+            "name": f"{name}.{extension}" if name and extension else name or extension,
+            "extension": extension,
+            "size": int(_text(row.get("Размер")) or 0),
+            "created": _text(row.get("ДатаСоздания")),
+            "signed": _flag(row.get("ПодписанЭП")),
+        }
+    return files
+
+
+def _file_keys(value: Any) -> list[str]:
+    """Файл строки задачи лежит списком значений XDTO со ссылками на присоединённые файлы протокола."""
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    try:
+        text = base64.b64decode(raw).decode("utf-8", "replace")
+    except (ValueError, binascii.Error):
+        return []
+    return [key for key in _GUID_IN_TEXT_RE.findall(text) if key != _EMPTY_GUID]
+
+
+def _task_view(item: dict[str, Any], *, permanent: bool, files: dict[str, dict[str, Any]], today: str) -> dict[str, Any]:
+    """ДатаФактическогоИсполнения в ERP — это срок исполнения задачи, а не отметка о выполнении."""
+    due = _date(item.get("ДатаФактическогоИсполнения"))
+    overdue = bool(due and due[:10] < today)
+    return {
+        "line": int(item.get("LineNumber") or 0),
+        "n": int(item.get("НомерПунктаПротокола") or item.get("LineNumber") or 0),
+        "text": _text(item.get("Задача")),
+        "responsible": _text(item.get("Ответственный")) if permanent else _person(item.get("Ответственный_Key")),
+        "responsible_key": "" if permanent else _text(item.get("Ответственный_Key")),
+        "author": _person(item.get("Автор_Key")),
+        "set_at": _date(item.get("ДатаПостановкиЗадачи")),
+        "due": due,
+        "overdue": overdue,
+        "status": TASK_OVERDUE if overdue else TASK_OPEN,
+        "priority": _text(item.get("Приоритет")),
+        "sent": _flag(item.get("Отправлена")),
+        "note": _text(item.get("Примечание")),
+        "files": [files[key] for key in _file_keys(item.get("Файл_Base64Data")) if key in files],
+        "source": "erp",
+        "executed": False,
+    }
+
+
+def _register_rows(ref: str) -> list[dict[str, Any]]:
+    """Записи ТД_ЗадачиПротоколов протокола: туда пишут форма 1С и агент по аудио (add_tasks / check_tasks)."""
+    from app.services.meeting_protocol_write import read_task_register
+
+    if not ref:
+        return []
+    try:
+        return read_task_register(ref)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("protocol %s task register failed: %s", ref, str(exc)[:200])
+        return []
+
+
+def _register_task_view(item: dict[str, Any], today: str) -> dict[str, Any]:
+    executed = _flag(item.get("Подтверждена"))
+    due = "" if _text(item.get("СрокИсполнения")).startswith("0001") else _date(item.get("СрокИсполнения"))
+    done_at = "" if _text(item.get("ДатаИсполнения")).startswith("0001") else _date(item.get("ДатаИсполнения"))
+    overdue = bool(not executed and due and due[:10] < today)
+    return {
+        "line": 0,
+        "n": int(str(item.get("НомерПунктаПротокола") or "0").strip() or 0),
+        "text": _text(item.get("Задача")),
+        "responsible": _person(item.get("Ответственный_Key")),
+        "responsible_key": _text(item.get("Ответственный_Key")),
+        "author": _person(item.get("Автор_Key")),
+        "set_at": "" if _text(item.get("ДатаПостановкиЗадачи")).startswith("0001") else _date(item.get("ДатаПостановкиЗадачи")),
+        "due": due,
+        "done_at": done_at,
+        "overdue": overdue,
+        "status": TASK_DONE if executed else TASK_OVERDUE if overdue else TASK_OPEN,
+        "priority": _text(item.get("Приоритет")),
+        "sent": _flag(item.get("Отправлена")),
+        "completed": _flag(item.get("Выполнена")),
+        "confirmed": executed,
+        "note": "\n".join(filter(None, (_text(item.get("Примечание")), _text(item.get("Комментарий"))))),
+        "files": [],
+        "source": "register",
+        "executed": executed,
+    }
+
+
+def _do_request(config: Any, ref: str) -> list[dict[str, Any]]:
+    """Все задачи ДО (и исполненные) с предметом-протоколом: GUID протокола в ДО тот же, что в ERP."""
+    from app.tools.onec.dok_soap import bool_value, condition, execute_dm, object_id_value, parse_tasks
+
+    columns = (
+        "name", "performer", "author", "beginDate", "dueDate", "endDate", "executed", "executionMark",
+        "executionComment", "number", "description", "businessProcessStep", "target",
+    )
+    root = execute_dm(
+        config,
+        '<dm:request xsi:type="dm:DMGetObjectListRequest">'
+        "<dm:type>DMBusinessProcessTask</dm:type>"
+        "<dm:query>"
+        f"{condition('withExecuted', bool_value(True))}"
+        f"{condition('target', object_id_value(ref, _DO_TARGET_TYPE))}"
+        f"<dm:limit>{_DO_LIMIT}</dm:limit>"
+        + "".join(f"<dm:columnSet>{name}</dm:columnSet>" for name in columns)
+        + "</dm:query></dm:request>",
+        timeout=_DO_TIMEOUT_SEC,
+    )
+    rows = parse_tasks(root)
+    matched = [row for row in rows if str(row.get("target_id") or "").casefold() == ref.casefold()]
+    if len(rows) >= _DO_LIMIT and not matched:
+        raise RuntimeError("Документооборот не применил отбор по предмету")
+    return matched
+
+
+def _dump_open_rows(refs: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Открытые задачи из последней выгрузки ДО — когда сессии с паролем нет."""
+    global _dump_index
+    from app.tools.onec.dok_soap import _cache_dir, _dump_rows
+
+    try:
+        newest = max(_cache_dir().glob("*.json"), key=lambda path: path.stat().st_mtime)
+        mtime = newest.stat().st_mtime
+        if not _dump_index or _dump_index[0] != mtime:
+            data = json.loads(newest.read_text(encoding="utf-8"))
+            payload = data.get("payload") if isinstance(data, dict) else None
+            index: dict[str, list[dict[str, Any]]] = {}
+            for row in _dump_rows(payload if isinstance(payload, dict) else {}):
+                if str(row.get("target_type") or "") == _DO_TARGET_TYPE:
+                    index.setdefault(str(row.get("target_id") or "").casefold(), []).append(row)
+            _dump_index = (mtime, index)
+    except (OSError, ValueError) as exc:
+        logger.warning("protocol docflow dump read failed: %s", str(exc)[:200])
+        return {ref: [] for ref in refs}
+    return {ref: list(_dump_index[1].get(ref.casefold(), [])) for ref in refs}
+
+
+def _docflow_tasks(args: dict[str, Any], refs: list[str]) -> tuple[dict[str, list[dict[str, Any]]], str]:
+    """Задачи ДО по протоколам под сессией пользователя; иначе — открытые из выгрузки с пометкой."""
+    from app.tools.onec.docflow_inbox_fetch import _is_soap_http_auth_error, _soap_login_attempts
+    from app.tools.onec.dok_soap import load_config
+
+    refs = [ref for ref in dict.fromkeys(refs) if _GUID_RE.match(ref) and ref != _EMPTY_GUID]
+    if not refs:
+        return {}, ""
+    error = "нет пароля 1С с экрана входа"
+    for username, password in _soap_login_attempts(args) if str(args.get("password") or "").strip() else []:
+        try:
+            config = load_config(username=username, password=password)
+            with ThreadPoolExecutor(max_workers=len(refs)) as pool:
+                futures = {ref: pool.submit(_do_request, config, ref) for ref in refs}
+                return {ref: future.result() for ref, future in futures.items()}, ""
+        except (RuntimeError, ValueError, OSError, ET.ParseError) as exc:
+            error = str(exc)
+            if _is_soap_http_auth_error(error):
+                continue
+            logger.warning("protocol docflow tasks failed: %s", error[:300])
+            break
+    note = f"Документооборот недоступен ({error[:160]}) — показаны только открытые задачи из последней выгрузки"
+    return _dump_open_rows(refs), note
+
+
+def _point_no(value: Any) -> int:
+    match = re.match(r"\d+", str(value or "").strip())
+    return int(match.group(0)) if match else 0
+
+
+def _same_task_text(left: str, right: str) -> bool:
+    """Совпадение текста задачи. Общее начало «За 2 рабочих дня до совета…» само по себе не считается."""
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    short, long = (left, right) if len(left) <= len(right) else (right, left)
+    if len(short) < 80 or not long.startswith(short):
+        return False
+    return True
+
+
+def _route_column(row: dict[str, Any]) -> str:
+    """Колонка маршрута ДО.
+
+    Первая («отправлено» / «исполнить») значит, что задача есть.
+    Последняя («утверждено») значит, что она исполнена. Середина маршрута не считается.
+    """
+    text = _fold(f"{_text(row.get('step'))} {_text(row.get('name'))}")
+    if "ознаком" in text:
+        return ""
+    if "утверд" in text or "подтверд" in text:
+        return "approved"
+    if "отправ" in text or text.startswith("исполн") or " исполн" in f" {text}":
+        return "sent"
+    return ""
+
+
+def _approved_points(docflow_rows: list[dict[str, Any]]) -> tuple[set[int], list[str]]:
+    """Пункты, у которых закрыта именно последняя колонка маршрута."""
+    by_point: dict[int, list[dict[str, Any]]] = {}
+    loose: list[dict[str, Any]] = []
+    for row in docflow_rows:
+        if _route_column(row) != "approved":
+            continue
+        match = _DO_TASK_NO_RE.search(_text(row.get("name")))
+        if match:
+            by_point.setdefault(int(match.group(1)), []).append(row)
+        else:
+            loose.append(row)
+    done_points: set[int] = set()
+    for point, items in by_point.items():
+        items.sort(key=lambda item: _text(item.get("begin")))
+        if items[-1].get("executed"):
+            done_points.add(point)
+    done_texts = [
+        _fold(row.get("description"))
+        for row in loose
+        if row.get("executed") and len(_fold(row.get("description"))) >= 40
+    ]
+    return done_points, done_texts
+
+
+def apply_docflow_execution(tasks: list[dict[str, Any]], docflow_rows: list[dict[str, Any]]) -> None:
+    """Закрытая последняя колонка маршрута отмечает строку на контроле.
+
+    «Отправлено» и «Исполнить» задачу не закрывают: это только наличие поручения.
+    Общее начало «За 2 рабочих дня…» чужие строки не закрывает.
+    """
+    done_points, done_texts = _approved_points(docflow_rows)
+    if not done_points and not done_texts:
+        return
+    for task in tasks:
+        if task.get("executed") or task.get("done"):
+            continue
+        point = _point_no(task.get("n") or task.get("item") or task.get("point"))
+        folded = _fold(task.get("text"))
+        hit = bool(point and point in done_points)
+        if not hit and folded:
+            hit = any(folded == item for item in done_texts)
+        if not hit:
+            continue
+        task["executed"] = True
+        task["done"] = True
+        task["confirmed"] = True
+        task["overdue"] = False
+        if "status" in task:
+            task["status"] = TASK_DONE
+
+
+def _mark_task_done(task: dict[str, Any]) -> None:
+    task["executed"] = True
+    task["done"] = True
+    task["confirmed"] = True
+    task["overdue"] = False
+    if "status" in task:
+        task["status"] = TASK_DONE
+
+
+def _same_listed_task(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Одна строка на контроле: тот же пункт и тот же исполнитель.
+
+    Одинаковый текст «За 2 рабочих дня…» у разных людей — разные задачи.
+    """
+    left_n = _point_no(left.get("n"))
+    right_n = _point_no(right.get("n"))
+    left_who = normalize_fio(_text(left.get("responsible")))
+    right_who = normalize_fio(_text(right.get("responsible")))
+    if left_n and right_n:
+        if left_n != right_n:
+            return False
+        if not left_who or not right_who or left_who == right_who:
+            return True
+        return left_who.startswith(right_who) or right_who.startswith(left_who)
+    if left_who and right_who and left_who != right_who:
+        return False
+    return _same_task_text(_fold(left.get("text"))[:180], _fold(right.get("text"))[:180])
+
+
+def _merge_listed_tasks(primary: list[dict[str, Any]], extra: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Строка Документооборота, которая повторяет регистр, в счётчик не входит.
+
+    Выполнение с повторной строки переносится на регистр: иначе вкладка
+    показывает 12 при 11 задачах, из которых одна выполнена и попала в список дважды.
+    """
+    fresh: list[dict[str, Any]] = []
+    for row in extra:
+        match = next((item for item in primary if _same_listed_task(row, item)), None)
+        if match is None:
+            match = next((item for item in fresh if _same_listed_task(row, item)), None)
+        if match is None:
+            fresh.append(row)
+            continue
+        if (row.get("executed") or row.get("done")) and not (match.get("executed") or match.get("done")):
+            _mark_task_done(match)
+    return fresh
+
+
+def _docflow_task_views(rows: list[dict[str, Any]], today: str) -> list[dict[str, Any]]:
+    """Строка на пункт и исполнителя. Исполнение — только последняя колонка «Утвердить»."""
+    groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    approvals_by_point: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        name = _text(row.get("name"))
+        column = _route_column(row)
+        match = _DO_TASK_NO_RE.search(name)
+        number = int(match.group(1)) if match else 0
+        if column == "approved":
+            approvals_by_point.setdefault(number, []).append(row)
+            continue
+        if column != "sent":
+            continue
+        groups.setdefault((number, normalize_fio(_text(row.get("performer")))), []).append(row)
+    views: list[dict[str, Any]] = []
+    for (number, _), items in groups.items():
+        items.sort(key=lambda item: _text(item.get("begin")))
+        first, last = items[0], items[-1]
+        approvals = sorted(approvals_by_point.get(number, []), key=lambda item: _text(item.get("begin")))
+        executed = bool(number and approvals and approvals[-1].get("executed"))
+        due = _text(last.get("due"))
+        overdue = bool(not executed and due and due[:10] < today)
+        text = next((_text(item.get("description")) for item in reversed(items) if _text(item.get("description"))), "")
+        views.append(
+            {
+                "line": 0,
+                "n": number,
+                "text": text or _text(last.get("name")),
+                "responsible": _text(last.get("performer")),
+                "responsible_key": "",
+                "author": _text(last.get("author")),
+                "set_at": _text(first.get("begin")),
+                "due": due,
+                "overdue": overdue,
+                "status": TASK_DONE if executed else TASK_OVERDUE if overdue else TASK_OPEN,
+                "priority": "",
+                "sent": True,
+                "note": f"Срок переносился: {len(items) - 1}" if len(items) > 1 else "",
+                "files": [],
+                "source": "docflow",
+                "executed": executed,
+            }
+        )
+    views.sort(key=lambda item: (item["n"], item["responsible"]))
+    return views
 
 
 def _plan_rows(items: list[dict[str, Any]], *, text_key: str) -> list[dict[str, Any]]:
@@ -237,6 +639,39 @@ def _plan_rows(items: list[dict[str, Any]], *, text_key: str) -> list[dict[str, 
     ]
 
 
+def _access_options() -> list[str]:
+    try:
+        data = _odata(
+            f"{ACCESS_ENTITY}?$format=json&$top=50&$filter={_q('DeletionMark eq false')}&$select=Description"
+        )
+    except DocflowProtocolError as exc:
+        logger.warning("protocol access options failed: %s", str(exc)[:200])
+        return []
+    return sorted({_text(row.get("Description")) for row in data.get("value") or [] if isinstance(row, dict)} - {""})
+
+
+def _edit_view(
+    view: dict[str, Any],
+    fio: str,
+    tables: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Карандаш — только автору (Подготовил); сервер при записи проверяет то же по ФИО из токена."""
+    from app.services.meeting_protocol_write import DRAFT_STATUS, task_table_block
+
+    author = bool(fio and view["prepared_by"] and fio_matches(view["prepared_by"], fio))
+    reason = ""
+    if author and (view["posted"] or view["status_code"] not in ("", DRAFT_STATUS)):
+        reason = f"Протокол уже {'проведён' if view['posted'] else 'в работе'} (статус «{view['status']}») — правки только в 1С"
+    return {
+        "author": author,
+        "allowed": author and not reason,
+        "reason": reason,
+        "control_block": task_table_block(tables["control"]) if author else "",
+        "assigned_block": task_table_block(tables["assigned"]) if author else "",
+        "access_options": _access_options() if author and not reason else [],
+    }
+
+
 def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
     ref = str(args.get("ref_key") or args.get("id") or "").strip()
     if not _GUID_RE.match(ref):
@@ -246,8 +681,8 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
     row = found[0] if found and isinstance(found[0], dict) else {}
     if not row:
         raise DocflowProtocolError("1С не вернула протокол")
-    if is_secret(row):
-        raise DocflowProtocolError("Протокол с ограниченным грифом доступа — в Оркестраторе не показывается.")
+    if is_secret(row) and not is_own(row, _own_fios(args)):
+        raise DocflowProtocolError("Протокол с ограниченным грифом доступа — открыт только автору и ответственному.")
 
     def part(name: str) -> list[dict[str, Any]]:
         items = [item for item in (row.get(name) or []) if isinstance(item, dict)]
@@ -262,8 +697,15 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
         part("ПланФакт"),
     )
     attendees = part("ПрисутствующиеНаСовещании")
+    base_ref = _text(row.get("ДокументОснование")) if "ТД_Протокол" in _text(row.get("ДокументОснование_Type")) else ""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        own_register_job = pool.submit(_register_rows, ref)
+        base_register_job = pool.submit(_register_rows, base_ref if _GUID_RE.match(base_ref) else "")
+        own_register, base_register = own_register_job.result(), base_register_job.result()
     keys: set[str] = set()
     for items, fields in (
+        (own_register, ("Ответственный_Key", "Автор_Key")),
+        (base_register, ("Ответственный_Key", "Автор_Key")),
         (agenda, ("Ответственный_Key",)),
         (variable, ("Ответственный_Key", "Автор_Key")),
         (permanent, ("Автор_Key",)),
@@ -277,35 +719,39 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
     _resolve_names(keys)
 
     view = _row_view(row)
-    tasks = [
-        {
-            "n": int(item.get("НомерПунктаПротокола") or item.get("LineNumber") or 0),
-            "text": _text(item.get("Задача")),
-            "responsible": _person(item.get("Ответственный_Key")),
-            "author": _person(item.get("Автор_Key")),
-            "set_at": _date(item.get("ДатаПостановкиЗадачи")),
-            "done_at": _date(item.get("ДатаФактическогоИсполнения")),
-            "priority": _text(item.get("Приоритет")),
-            "sent": _flag(item.get("Отправлена")),
-            "note": _text(item.get("Примечание")),
-            "permanent": False,
-        }
-        for item in variable
-    ] + [
-        {
-            "n": int(item.get("НомерПунктаПротокола") or item.get("LineNumber") or 0),
-            "text": _text(item.get("Задача")),
-            "responsible": _text(item.get("Ответственный")),
-            "author": _person(item.get("Автор_Key")),
-            "set_at": _date(item.get("ДатаПостановкиЗадачи")),
-            "done_at": _date(item.get("ДатаФактическогоИсполнения")),
-            "priority": _text(item.get("Приоритет")),
-            "sent": False,
-            "note": _text(item.get("Примечание")),
-            "permanent": True,
-        }
-        for item in permanent
-    ]
+    files = _files(ref)
+    today = date.today().isoformat()
+    # Вкладки как в 1С: постоянные задачи — «Задачи для контроля», переменные — «Поставленные задачи».
+    control = [_task_view(item, permanent=True, files=files, today=today) for item in permanent]
+    assigned = [_task_view(item, permanent=False, files=files, today=today) for item in variable]
+    assigned_register = [_register_task_view(item, today) for item in own_register if _text(item.get("Задача"))]
+    control_register = [_register_task_view(item, today) for item in base_register if _text(item.get("Задача"))]
+    # Верхний список этих вкладок форма 1С берёт из Документооборота: на контроле — задачи
+    # по протоколу-основанию (прошлое совещание), поставленные — задачи по этому протоколу.
+    docflow, docflow_note = _docflow_tasks(args, [ref, base_ref])
+    control_docflow = _docflow_task_views(docflow.get(base_ref, []), today) if base_ref else []
+    assigned_docflow = _docflow_task_views(docflow.get(ref, []), today)
+    if base_ref:
+        apply_docflow_execution(control_register, docflow.get(base_ref, []))
+        apply_docflow_execution(control, docflow.get(base_ref, []))
+    base_number = ""
+    if base_ref:
+        try:
+            base_rows = _odata(
+                f"{ENTITY}?$format=json&$top=1&$filter={_q(f'Ref_Key eq guid{chr(39)}{base_ref}{chr(39)}')}&$select=Number,Date"
+            ).get("value") or []
+            base_number = _text(base_rows[0].get("Number")) if base_rows else ""
+        except DocflowProtocolError as exc:
+            logger.warning("protocol %s base number failed: %s", ref, str(exc)[:200])
+    # Регистр — то, что форма 1С показывает во вкладках; таблица документа — его старая копия.
+    # Задача ДО, которая уже есть в регистре, в счётчик не добавляется: выполненная
+    # строка иначе стоит и в Документообороте, и в регистре.
+    control_base = control_register or control
+    control_docflow = _merge_listed_tasks(control_base, control_docflow)
+    assigned_base = assigned_register or assigned
+    assigned_docflow = _merge_listed_tasks(assigned_base, assigned_docflow)
+    control_all = control_docflow + control_base
+    assigned_all = assigned_docflow + assigned_base
     decision_rows = [
         {
             "n": int(item.get("LineNumber") or 0),
@@ -332,22 +778,178 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
                 "text": _text(item.get("Вопрос")),
                 "responsible": _person(item.get("Ответственный_Key")),
                 "attachments": _text(item.get("ОтметкаОНаличииПриложений")),
+                "files": [files[key] for key in _file_keys(item.get("Файл_Base64Data")) if key in files],
             }
             for item in agenda
         ],
         "decisions": decision_rows,
-        "tasks": tasks,
+        "control_tasks": control,
+        "assigned_tasks": assigned,
+        "control_docflow": control_docflow,
+        "assigned_docflow": assigned_docflow,
+        "control_register": control_register,
+        "assigned_register": assigned_register,
+        "base_protocol": {"id": base_ref, "number": base_number} if base_ref else None,
+        "docflow_note": docflow_note,
+        "files": sorted(files.values(), key=lambda item: item["created"], reverse=True),
         "period_done": _plan_rows(period_done, text_key="Задача"),
         "period_plan": _plan_rows(period_plan, text_key="Задача"),
         "plan_fact": _plan_rows(plan_fact, text_key="ОтчетОВыполненнойРаботе"),
+        "edit": _edit_view(
+            view,
+            str(args.get("fio") or "").strip(),
+            {"control": permanent, "assigned": variable},
+        ),
         "stats": {
             "decisions": len(decision_rows),
             "decisions_done": sum(1 for item in decision_rows if item["done_at"] and not item["cancelled"]),
             "decisions_cancelled": sum(1 for item in decision_rows if item["cancelled"]),
-            "tasks": len(tasks),
-            "tasks_done": sum(1 for item in tasks if item["done_at"]),
+            "control_tasks": len(control_all),
+            "control_overdue": sum(1 for item in control_all if item["overdue"]),
+            "control_done": sum(1 for item in control_all if item["executed"]),
+            "assigned_tasks": len(assigned_all),
+            "assigned_overdue": sum(1 for item in assigned_all if item["overdue"]),
+            "assigned_done": sum(1 for item in assigned_all if item["executed"]),
+            "files": len(files),
         },
         "loaded_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+BOARD_THEME_TITLE = "Совет директоров по ГК"
+# Только поставленные задачи, название которых начинается с «За 2 дня» / «За 2 рабочих дня».
+_BOARD_TASK_START = re.compile(r"^(?:\d+[\.)]\s*)?за\s+2(?:\s+рабочих)?\s+дн")
+
+
+def _fold(value: Any) -> str:
+    text = str(value or "").casefold().replace("ё", "е").replace("\u00a0", " ")
+    return " ".join(text.split())
+
+
+def is_board_report_task(text: str) -> bool:
+    """Задача совета директоров: текст начинается с «За 2 дня» или «За 2 рабочих дня»."""
+    return _BOARD_TASK_START.match(_fold(text)) is not None
+
+
+def pick_month_protocol(rows: list[dict[str, Any]], today: date | None = None) -> dict[str, Any] | None:
+    """Протокол совета директоров текущего месяца, иначе последний поставленный."""
+    day = today or date.today()
+    dated: list[tuple[str, dict[str, Any]]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        stamp = _text(row.get("Date"))[:10]
+        if len(stamp) == 10:
+            dated.append((stamp, row))
+    dated.sort(key=lambda item: item[0], reverse=True)
+    if not dated:
+        return None
+    month = day.strftime("%Y-%m")
+    for stamp, row in dated:
+        if stamp.startswith(month):
+            return row
+    return dated[0][1]
+
+
+def board_report_readiness(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """План-факт задач отчётности к совету директоров по ГК, которые стоят на контроле."""
+    args = args or {}
+    themes = _odata(
+        "Catalog_ТД_ТемыСовещаний?$format=json&$top=5&$select=Ref_Key,Description"
+        f"&$filter={_q(f"DeletionMark eq false and Description eq '{BOARD_THEME_TITLE}'")}"
+    ).get("value") or []
+    theme = next(
+        (
+            row
+            for row in themes
+            if isinstance(row, dict) and _text(row.get("Description")) == BOARD_THEME_TITLE
+        ),
+        None,
+    )
+    empty = {
+        "summary": "Протокол совета директоров по ГК за период не найден",
+        "theme": BOARD_THEME_TITLE,
+        "protocol": None,
+        "total": 0,
+        "done": 0,
+        "percent": 0,
+        "current_month": False,
+        "tasks": [],
+    }
+    if not isinstance(theme, dict) or not _text(theme.get("Ref_Key")):
+        return empty
+    theme_key = _text(theme.get("Ref_Key"))
+    found = _odata(
+        f"{ENTITY}?$format=json&$top=8&$orderby=Date desc"
+        "&$select=Ref_Key,Number,Date,Статус,ДокументОснование,ДокументОснование_Type"
+        f"&$filter={_q(f"DeletionMark eq false and ТемаСовещания_Key eq guid'{theme_key}'")}"
+    ).get("value") or []
+    today = date.today()
+    chosen = pick_month_protocol([row for row in found if isinstance(row, dict)], today)
+    if not chosen:
+        return empty
+    from app.services.meeting_protocol_write import read_task_register
+
+    ref = _text(chosen.get("Ref_Key"))
+    base_ref = (
+        _text(chosen.get("ДокументОснование"))
+        if "ТД_Протокол" in _text(chosen.get("ДокументОснование_Type"))
+        else ""
+    )
+    if not _GUID_RE.match(base_ref):
+        base_ref = ""
+
+    def register_of(key: str) -> list[dict[str, Any]]:
+        if not key:
+            return []
+        try:
+            return read_task_register(key)
+        except Exception as exc:  # noqa: BLE001 — полоска не должна ронять журнал
+            logger.warning("board readiness register %s failed: %s", key, str(exc)[:200])
+            return []
+
+    # На контроле у текущего протокола лежат задачи протокола-основания.
+    control_rows = [row for row in register_of(base_ref) if is_board_report_task(_text(row.get("Задача")))]
+    own_rows = [row for row in register_of(ref) if is_board_report_task(_text(row.get("Задача")))]
+    tasks = control_rows or own_rows
+    source_ref = base_ref if control_rows else ref
+    _resolve_names({_text(row.get("Ответственный_Key")) for row in tasks})
+    today_iso = today.isoformat()
+    views = [_register_task_view(row, today_iso) for row in tasks]
+    if source_ref:
+        docflow, _note = _docflow_tasks(args, [source_ref])
+        apply_docflow_execution(views, docflow.get(source_ref, []))
+        # Выполненная задача ДО не увеличивает «из 11»: она уже есть в регистре.
+        _merge_listed_tasks(views, _docflow_task_views(docflow.get(source_ref, []), today_iso))
+    views = _merge_listed_tasks([], views)
+    items = [
+        {
+            "text": view["text"],
+            "done": bool(view.get("executed")),
+            "responsible": view["responsible"],
+            "point": str(view.get("n") or ""),
+        }
+        for view in views
+    ]
+    done = sum(1 for item in items if item["done"])
+    total = len(items)
+    stamp = _text(chosen.get("Date"))[:10]
+    percent = round(done * 100 / total) if total else 0
+    status = _text(chosen.get("Статус"))
+    return {
+        "summary": f"Совет директоров: выполнено {done} из {total}",
+        "theme": BOARD_THEME_TITLE,
+        "protocol": {
+            "id": ref,
+            "number": _text(chosen.get("Number")),
+            "date": stamp,
+            "status": _label(status, STATUSES),
+        },
+        "total": total,
+        "done": done,
+        "percent": percent,
+        "current_month": stamp.startswith(today.strftime("%Y-%m")),
+        "tasks": items,
     }
 
 
@@ -355,6 +957,8 @@ def handle_docflow_protocols(args: dict[str, Any], **_: Any) -> dict[str, Any]:
     from app.services.onec_tools import OnecToolError
 
     try:
+        if str((args or {}).get("action") or "") == "board_readiness":
+            return board_report_readiness(args)
         return list_protocols(args)
     except DocflowProtocolError as exc:
         raise OnecToolError(str(exc)) from exc

@@ -37,6 +37,37 @@ def test_imap_unknown_tool() -> None:
         pass
 
 
+def test_imap_personal_requires_user_mailbox(monkeypatch) -> None:
+    from app.services import imap_tools
+
+    monkeypatch.setattr(imap_tools.settings, "imap_host", "mail.example.local")
+    monkeypatch.setattr(imap_tools.settings, "imap_username", "service")
+    monkeypatch.setattr(imap_tools.settings, "imap_password", "service-secret")
+    try:
+        invoke_imap("imap.list_unread", {"limit": 1}, personal=True)
+        raise AssertionError("expected ImapToolError")
+    except ImapToolError as exc:
+        assert "Общий ящик" in str(exc)
+
+    seen: list[tuple[str, str] | None] = []
+
+    def fake_list_unread(args):
+        seen.append(imap_tools._mailbox_login.get())
+        return {"login": imap_tools._imap_meta()["login"]}
+
+    monkeypatch.setitem(imap_tools.REAL_HANDLERS, "imap.list_unread", fake_list_unread)
+    result = invoke_imap(
+        "imap.list_unread",
+        {"limit": 1},
+        user_login="ivanov",
+        user_password="pw",
+        personal=True,
+    )
+    assert seen == [("ivanov", "pw")]
+    assert result["login"] == "ivanov"
+    assert imap_tools._mailbox_login.get() is None
+
+
 def test_imap_date_token_english_month() -> None:
     assert imap_date_token("2026-09-16") == "16-Sep-2026"
     assert imap_date_token("01.02.2026") == "1-Feb-2026"

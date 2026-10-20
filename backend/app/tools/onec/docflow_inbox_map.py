@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -16,6 +17,37 @@ from app.tools.onec.dok_soap import (
     source_for_role,
     task_role_for_user,
 )
+
+
+_HISTORY_LINE = re.compile(
+    r"(?m)^(\d{2}\.\d{2}\.\d{4})(?:[ \t]+(\d{1,2}:\d{2}))?,\s+.+?\.\s+Задача\s+(выполнена|завершена)\b",
+    re.IGNORECASE,
+)
+
+
+def completion_from_history(text: str) -> datetime | None:
+    """День из «Истории выполнения»: сначала «Задача выполнена», иначе «Задача завершена»."""
+    body = str(text or "")
+    marker = body.rfind("История выполнения")
+    if marker >= 0:
+        body = body[marker:]
+    done_at: datetime | None = None
+    closed_at: datetime | None = None
+    for match in _HISTORY_LINE.finditer(body):
+        clock = match.group(2)
+        try:
+            stamp = datetime.strptime(
+                f"{match.group(1)} {clock}" if clock else match.group(1),
+                "%d.%m.%Y %H:%M" if clock else "%d.%m.%Y",
+            )
+        except ValueError:
+            continue
+        if "выполн" in match.group(3).casefold():
+            if done_at is None or stamp > done_at:
+                done_at = stamp
+        elif closed_at is None or stamp > closed_at:
+            closed_at = stamp
+    return done_at or closed_at
 
 
 def _parse_due(raw: Any) -> datetime | None:
@@ -37,6 +69,7 @@ def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
     due = _parse_due(row.get("due"))
     created = _parse_due(row.get("begin"))
     done = bool(row.get("executed"))
+    completed = completion_from_history(str(row.get("description") or "")) if done else None
     author = str(row.get("author") or "").strip()
     step = str(row.get("step") or "").strip()
     name = " ".join(str(row.get("name") or "").split())
@@ -53,10 +86,10 @@ def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
         "title": title,
         "status": "выполнена" if done else "открыта",
         "done": done,
-        "late": task_is_late(done=done, completed_at=None, due_at=due),
+        "late": task_is_late(done=done, completed_at=completed, due_at=due),
         "created_at": created.isoformat(sep=" ") if created else "",
         "due_at": due.isoformat(sep=" ") if due else "",
-        "completed_at": "",
+        "completed_at": completed.isoformat(sep=" ") if completed else "",
         "comment": "; ".join(comment_parts),
         "approval": step or ("завершена" if done else "не согласовано"),
         "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

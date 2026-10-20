@@ -35,7 +35,10 @@ FINANCE_POSITION_NAMES = (
     "Финансовый директор",
     "Ведущий бухгалтер по заработной плате",
 )
-PERSONAL_FINANCE_ADMIN_FIOS = ("Комарькова Анастасия Эдуардовна",)
+PERSONAL_FINANCE_ADMIN_FIOS = (
+    "Комарькова Анастасия Эдуардовна",
+    "Мангасарян Давид Каренович",
+)
 
 
 def seed_default_panel() -> tuple[int, list[str]]:

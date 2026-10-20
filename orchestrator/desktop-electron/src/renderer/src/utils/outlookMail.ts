@@ -15,6 +15,33 @@ export function skipOutlookCom(): boolean {
   return flag === '1' || flag === 'true' || flag === 'yes'
 }
 
+/** entry_id → StoreID писем общего ящика: без StoreID Outlook ищет письмо только в ящике профиля. */
+const mailStoreIds = new Map<string, string>()
+
+export function outlookMailStoreId(entryId: string): string {
+  return mailStoreIds.get(entryId.trim()) || ''
+}
+
+function rememberMailStores(messages: Record<string, unknown>[]): void {
+  for (const msg of messages) {
+    const entryId = String(msg.entry_id || '').trim()
+    const storeId = String(msg.store_id || '').trim()
+    if (entryId && storeId) mailStoreIds.set(entryId, storeId)
+  }
+}
+
+export interface OutlookMailResult {
+  ok: boolean
+  messages: Record<string, unknown>[]
+  error?: string
+  source?: string
+  /** Outlook не подключён к Exchange: список из локального кэша, его не запоминаем. */
+  warning?: string
+  offline?: boolean
+  /** Ящик профиля Outlook этого компьютера. */
+  profileMailbox?: string
+}
+
 function requestOutlookMail(range: {
   date?: string
   dateFrom?: string
@@ -22,21 +49,11 @@ function requestOutlookMail(range: {
   folder?: string
   maxResults?: number
   query?: string
-}): Promise<{
-  ok: boolean
-  messages: Record<string, unknown>[]
-  error?: string
-  source?: string
-}> {
+}): Promise<OutlookMailResult> {
   return new Promise((resolve) => {
     const requestId = `mail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     let settled = false
-    const finish = (result: {
-      ok: boolean
-      messages: Record<string, unknown>[]
-      error?: string
-      source?: string
-    }): void => {
+    const finish = (result: OutlookMailResult): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -52,12 +69,17 @@ function requestOutlookMail(range: {
       if (String(payload.requestId || '') !== requestId) return
       if (payload.ok) {
         const raw = Array.isArray(payload.messages) ? payload.messages : []
+        const messages = raw.filter(
+          (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
+        )
+        rememberMailStores(messages)
         finish({
           ok: true,
-          messages: raw.filter(
-            (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
-          ),
-          source: String(payload.source || 'outlook_com')
+          messages,
+          source: String(payload.source || 'outlook_com'),
+          warning: String(payload.warning || ''),
+          offline: Boolean(payload.offline),
+          profileMailbox: String(payload.profileMailbox || '')
         })
       } else {
         finish({
@@ -80,10 +102,11 @@ function requestOutlookMail(range: {
 }
 
 const MAIL_FETCH_MAX_DAYS = 90
-const MAIL_CACHE_KEY = 'orchOutlookMail:v1'
+const MAIL_CACHE_KEY = 'orchOutlookMail:v3'
 
 interface OutlookMailCache {
   day: string
+  /** Ящик профиля Outlook, из которого прочитаны письма. */
   mailbox: string
   dateFrom: string
   dateTo: string
@@ -112,37 +135,30 @@ function writeMailCache(cache: OutlookMailCache): void {
 }
 
 /**
- * Письма за период — не чаще одного COM-запроса в день на тот же диапазон
- * (как ensureOutlookMeetings для календаря).
+ * Письма за период из Outlook этого компьютера — ящик его профиля, кто бы ни вошёл в оркестратор.
+ * Не чаще одного COM-запроса в день на тот же диапазон (как ensureOutlookMeetings для календаря).
  */
 export async function ensureOutlookMailRange(
-  mailbox: string,
   dateFrom: string,
   dateTo: string,
   options: { force?: boolean; folder?: string; maxResults?: number } = {}
-): Promise<{
-  ok: boolean
-  messages: Record<string, unknown>[]
-  error?: string
-  cached: boolean
-}> {
+): Promise<OutlookMailResult & { cached: boolean }> {
   const fromKey = (dateFrom || '').trim()
   const toKey = (dateTo || '').trim()
   const today = dayKeyLocal(new Date())
   const folder = options.folder || 'All'
-  const box = (mailbox || '').trim().toLowerCase()
 
   if (!options.force && fromKey && toKey) {
     const cache = readMailCache()
     if (
       cache &&
       cache.day === today &&
-      cache.mailbox === box &&
       cache.dateFrom === fromKey &&
       cache.dateTo === toKey &&
       cache.folder === folder
     ) {
-      return { ok: true, messages: cache.messages, cached: true }
+      rememberMailStores(cache.messages)
+      return { ok: true, messages: cache.messages, profileMailbox: cache.mailbox, cached: true }
     }
   }
 
@@ -152,10 +168,11 @@ export async function ensureOutlookMailRange(
     folder,
     maxResults: options.maxResults ?? 120
   })
-  if (result.ok && fromKey && toKey) {
+  // Кэш отключённого Outlook устаревший: после подключения письма надо перечитать сразу.
+  if (result.ok && !result.warning && !result.offline && fromKey && toKey) {
     writeMailCache({
       day: today,
-      mailbox: box,
+      mailbox: result.profileMailbox || '',
       dateFrom: fromKey,
       dateTo: toKey,
       folder,

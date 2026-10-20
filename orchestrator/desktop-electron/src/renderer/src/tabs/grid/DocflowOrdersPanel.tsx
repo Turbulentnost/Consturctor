@@ -17,9 +17,14 @@ import { loadDocflowApprovalSheet, type DocflowApprovalSheet } from '../../workp
 import {
   formatCorrespondenceDate,
   loadDocflowOrdersSession,
+  loadOrderBody,
   type OrderKind,
   type OrderRow
 } from '../../workplace/fetchDocflowCorrespondence'
+import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
+import { DocflowAttachments } from './DocflowAttachments'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -151,7 +156,13 @@ function FilterSelect({
   )
 }
 
-export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.Element {
+export function DocflowOrdersPanel({
+  user,
+  onOpenDocument
+}: {
+  user: UserProfile
+  onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
+}): React.JSX.Element {
   const [rows, setRows] = useState<OrderRow[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -166,6 +177,8 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
   const [organization, setOrganization] = useState('')
   const [approver, setApprover] = useState('')
   const [selectedId, setSelectedId] = useState('')
+  const [bodyLoading, setBodyLoading] = useState(false)
+  const loadedBody = useRef(new Set<string>())
   const [sheets, setSheets] = useState<Record<string, DocflowApprovalSheet>>({})
   const [sheetProgress, setSheetProgress] = useState('')
   const sheetsRef = useRef(sheets)
@@ -270,6 +283,31 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
   useRegisterGlobalSearch(GLOBAL_SEARCH_SOURCE, globalSearchEntries)
 
   const selected = visible.find((row) => row.id === selectedId) || listed.find((row) => row.id === selectedId) || null
+
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  useEffect(() => {
+    const row = rowsRef.current.find((item) => item.id === selectedId)
+    if (!selectedId || !row || loadedBody.current.has(selectedId)) {
+      setBodyLoading(false)
+      return
+    }
+    let alive = true
+    setBodyLoading(true)
+    void loadOrderBody(user, row)
+      .then((next) => {
+        if (!alive) return
+        if (!next) return
+        loadedBody.current.add(selectedId)
+        setRows((prev) => prev.map((item) => (item.id === next.id ? next : item)))
+      })
+      .finally(() => {
+        if (alive) setBodyLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [user, selectedId])
   const selectedSheet = selected ? sheets[selected.id] : undefined
   const filtered = Boolean(
     query.trim() || kind || status || access || responsible || organization || approver || period !== 'all'
@@ -418,6 +456,7 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
                     className={`docflow-row${selected?.id === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => setSelectedId(row.id)}
+                    onDoubleClick={() => onOpenDocument?.(row.kind === 'order' ? 'order' : 'directive', row.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -459,8 +498,20 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
               </div>
               <StatusPill row={selected} />
             </header>
+            <DocflowOpenFormBar
+              refKey={selected.id}
+              onOpen={
+                onOpenDocument &&
+                (() => onOpenDocument(selected.kind === 'order' ? 'order' : 'directive', selected.id))
+              }
+            />
             {selected.subject ? <p className="docflow-side-subject">{selected.subject}</p> : null}
             <div className="docflow-side-scroll">
+              <DocflowAttachments
+                user={user}
+                entity={selected.kind === 'order' ? ATTACHED_FILES.order : ATTACHED_FILES.directive}
+                ownerId={selected.id}
+              />
               <section className="docflow-card-block">
                 <h4>
                   <Stamp size={14} aria-hidden /> Согласующие
@@ -494,6 +545,7 @@ export function DocflowOrdersPanel({ user }: { user: UserProfile }): React.JSX.E
               </section>
               <section className="docflow-card-block">
                 <h4>Реквизиты</h4>
+                {bodyLoading ? <p className="docflow-muted">Подгружаем содержание…</p> : null}
                 <dl className="docflow-detail-list">
                   {selected.fields.map((field) => (
                     <div key={field.label}>

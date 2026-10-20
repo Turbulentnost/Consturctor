@@ -7,6 +7,7 @@ class ChatCommandIn(BaseModel):
     type: str
     client_id: str = ""
     thread_id: str = ""
+    message_id: str = ""
     peer_id: str = ""
     kind: str = ""
     text: str = ""

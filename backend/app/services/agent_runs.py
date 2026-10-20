@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 STALE_STARTED = timedelta(minutes=25)
@@ -33,8 +35,23 @@ _MISSING_WORK_RESULT_RE = re.compile(
     re.I,
 )
 _TESTS_FAIL_RE = re.compile(r"TESTS:\s*FAIL", re.I)
+ANSWER_MAX_CHARS = 32000
+_CLOSURE_CHECK_RE = re.compile(r"```closure-check\s*\n[\s\S]*?```", re.I)
 
 logger = logging.getLogger(__name__)
+
+
+def clip_answer(answer: str) -> str:
+    """The registry reads the trailing closure-check block: shorten the text before it, not the block."""
+    value = (answer or "").strip()
+    if len(value) <= ANSWER_MAX_CHARS:
+        return value
+    blocks = list(_CLOSURE_CHECK_RE.finditer(value))
+    block = blocks[-1].group(0) if blocks else ""
+    if not block or len(block) >= ANSWER_MAX_CHARS - 2:
+        return value[:ANSWER_MAX_CHARS]
+    head = _CLOSURE_CHECK_RE.sub("", value).strip()[: ANSWER_MAX_CHARS - len(block) - 2].rstrip()
+    return f"{head}\n\n{block}" if head else block
 
 from app.models.agent_run import AgentRun
 from app.models.trigger import AgentTrigger
@@ -88,6 +105,86 @@ def start_agent_run(
         agent_title=workflow.title or "агент",
     )
     return row
+
+
+_run_columns: dict[str, bool] = {}
+
+
+def _run_column_ready(db: Session, column: str) -> bool:
+    """Колонка появляется миграцией. Пока её нет, данные не пишем и чтение запусков не ломаем."""
+    known = _run_columns.get(column)
+    if known is not None:
+        return known
+    try:
+        with db.begin_nested():
+            row = db.execute(
+                text(
+                    """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'agent_runs'
+                      AND column_name = :column
+                    """
+                ),
+                {"column": column},
+            ).first()
+    except SQLAlchemyError:
+        _run_columns[column] = False
+        return False
+    _run_columns[column] = row is not None
+    return _run_columns[column]
+
+
+def _metrics_column_ready(db: Session) -> bool:
+    return _run_column_ready(db, "metrics_json")
+
+
+def _write_context(db: Session, run_id: str, context: dict[str, Any]) -> None:
+    if not _run_column_ready(db, "context_json"):
+        return
+    db.execute(
+        text("UPDATE agent_runs SET context_json = CAST(:body AS json) WHERE id = :id"),
+        {"id": run_id, "body": json.dumps(slim_run_context(context), ensure_ascii=False)},
+    )
+
+
+def save_run_context(db: Session, *, run_id: str, context: dict[str, Any]) -> None:
+    row = db.get(AgentRun, run_id)
+    if row is None or not _row_in_flight(row):
+        return
+    _write_context(db, run_id, context)
+    db.commit()
+
+
+def _write_metrics(db: Session, run_id: str, metrics: list[dict[str, Any]]) -> None:
+    if not _metrics_column_ready(db):
+        return
+    db.execute(
+        text("UPDATE agent_runs SET metrics_json = CAST(:body AS json) WHERE id = :id"),
+        {"id": run_id, "body": json.dumps(slim_run_metrics(metrics), ensure_ascii=False)},
+    )
+
+
+def read_run_metrics(db: Session, run_id: str) -> list[dict[str, Any]]:
+    if not _metrics_column_ready(db):
+        return []
+    try:
+        value = db.execute(
+            text("SELECT metrics_json FROM agent_runs WHERE id = :id"),
+            {"id": run_id},
+        ).scalar()
+    except SQLAlchemyError:
+        logger.warning("run metrics read failed run=%s", run_id, exc_info=True)
+        return []
+    return slim_run_metrics(value if isinstance(value, list) else [])
+
+
+def save_run_metrics(db: Session, *, run_id: str, metrics: list[dict[str, Any]]) -> None:
+    row = db.get(AgentRun, run_id)
+    if row is None or not _row_in_flight(row):
+        return
+    _write_metrics(db, run_id, metrics)
+    db.commit()
 
 
 def save_run_events(db: Session, *, run_id: str, events: list[dict[str, Any]]) -> None:
@@ -265,6 +362,15 @@ def cancel_overlapping_slot(
         trigger_reason=reason[:2000],
         started_at=slot,
         finished_at=datetime.now(timezone.utc),
+        events_json=[
+            {
+                "type": "status",
+                "text": (
+                    "Слот расписания не запущен: агент уже выполнял другой запуск. "
+                    "Журнал этой попытки пуст — ход работы остаётся у того запуска."
+                ),
+            }
+        ],
     )
     db.add(row)
     db.commit()
@@ -297,13 +403,15 @@ def finish_agent_run(
     answer: str = "",
     events: list[dict[str, Any]] | None = None,
     message: str = "",
+    metrics: list[dict[str, Any]] | None = None,
+    context: dict[str, Any] | None = None,
     notify: bool = True,
 ) -> None:
     row = db.get(AgentRun, run_id)
     if row is None:
         return
     was_open = _row_in_flight(row)
-    row.answer = (answer or "").strip()[:32000]
+    row.answer = clip_answer(answer)
     row.status = effective_run_status(_normalize_run_status(status), row.answer, in_flight=False)
     row.finished_at = datetime.now(timezone.utc)
     incoming = slim_run_events(events or [])
@@ -314,6 +422,10 @@ def finish_agent_run(
     if message.strip() and not any(str(item.get("type") or "") == "user_message" for item in stored):
         stored.insert(0, {"type": "user_message", "text": message.strip()[:8000]})
     row.events_json = stored
+    if metrics is not None:
+        _write_metrics(db, row.id, metrics)
+    if context is not None:
+        _write_context(db, row.id, context)
     db.commit()
     try:
         from app.models.workflow import Workflow
@@ -365,6 +477,7 @@ def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:
         raise WorkflowError("Запуск не найден", status_code=404)
     out = _to_out(row, include_events=True)
+    out.metrics = read_run_metrics(db, row.id)
     out.calendar_meetings = _calendar_meetings_for(
         db, user_id=user_id, workflow_id=workflow_id
     )
@@ -738,7 +851,14 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
         item: dict[str, Any] = {"type": kind}
         for key in ("text", "message", "tool", "title", "request_id", "requestId", "error", "status", "at", "wait"):
             value = raw.get(key)
-            if isinstance(value, str) and value.strip():
+            if not isinstance(value, str) or not value:
+                continue
+            # Куски ответа модели приходят по токену, пробел — отдельным куском.
+            # strip() выбрасывал эти пробелы, и журнал склеивался в одно слово.
+            if key == "text":
+                item["text"] = value[:8000]
+                continue
+            if value.strip():
                 item[key] = value.strip()[:8000]
         request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
         if request_id:
@@ -762,7 +882,167 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
             if isinstance(value, list) and value:
                 item[key] = _clip_json(value)
         stored.append(item)
-    return _trim_run_events(stored)
+    return _trim_run_events(_coalesce_stream(stored))
+
+
+_STREAM_EVENT_TYPES = {"assistant", "thinking", "agent_message"}
+_STREAM_TEXT_LIMIT = 64_000
+_METRIC_KEYS = ("t", "turn", "cpu", "ram", "ram_mb", "gpu", "disk", "disk_read", "disk_write", "processes", "gen")
+_METRIC_LIMIT = 7_200
+_SPIKE_METRICS = frozenset({"cpu", "ram", "gpu", "disk"})
+_SPIKE_PROCESS_LIMIT = 20
+_SPIKE_NAME_CHARS = 120
+
+
+def _coalesce_stream(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Склеить подряд идущие куски одного ответа, не трогая инструменты между ними."""
+    merged: list[dict[str, Any]] = []
+    for item in events:
+        kind = str(item.get("type") or "")
+        last = merged[-1] if merged else None
+        if (
+            last is not None
+            and kind in _STREAM_EVENT_TYPES
+            and last.get("type") == kind
+            and not item.get("tool")
+            and not last.get("tool")
+        ):
+            text = f"{last.get('text') or ''}{item.get('text') or ''}"
+            if len(text) > _STREAM_TEXT_LIMIT:
+                text = "…" + text[-_STREAM_TEXT_LIMIT:]
+            last["text"] = text
+            continue
+        merged.append(item)
+    return merged
+
+
+def slim_run_metrics(metrics: list[Any] | None) -> list[dict[str, Any]]:
+    """Оставить числовой ряд производительности. Мусор и строки отбрасываются."""
+    if not isinstance(metrics, list):
+        return []
+    stored: list[dict[str, Any]] = []
+    for raw in metrics:
+        if not isinstance(raw, dict):
+            continue
+        sample: dict[str, Any] = {}
+        for key in _METRIC_KEYS:
+            value = raw.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            sample[key] = round(float(value), 3)
+        if "t" not in sample:
+            continue
+        spike = _slim_spike(raw.get("spike"))
+        if spike:
+            sample["spike"] = spike
+        stored.append(sample)
+    if len(stored) > _METRIC_LIMIT:
+        stored = stored[-_METRIC_LIMIT:]
+    return stored
+
+
+_CONTEXT_TYPES = frozenset({"tools", "user", "thinking", "assistant", "tool_call", "tool_result", "other"})
+_CONTEXT_ITEM_LIMIT = 1_000
+_CONTEXT_SNAPSHOT_LIMIT = 2_000
+_CONTEXT_TEXT_CHARS = 1_500
+_CONTEXT_LABEL_CHARS = 200
+
+
+def _count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return int(value)
+
+
+def slim_run_context(context: Any) -> dict[str, Any]:
+    """Контекст окна модели по шагам: части (items), их порядок и снимки-диапазоны order[from:to]."""
+    empty: dict[str, Any] = {"items": {}, "order": [], "snapshots": []}
+    if not isinstance(context, dict):
+        return empty
+    raw_items = context.get("items") if isinstance(context.get("items"), dict) else {}
+    items: dict[str, dict[str, Any]] = {}
+    for key, raw in list(raw_items.items())[:_CONTEXT_ITEM_LIMIT]:
+        if not isinstance(raw, dict) or not isinstance(key, str) or not key:
+            continue
+        chars = _count(raw.get("chars"))
+        if chars is None:
+            continue
+        kind = str(raw.get("type") or "")
+        items[key[:120]] = {
+            "id": key[:120],
+            "turn": _count(raw.get("turn")) or 0,
+            "type": kind if kind in _CONTEXT_TYPES else "other",
+            "label": str(raw.get("label") or "")[:_CONTEXT_LABEL_CHARS],
+            "chars": chars,
+            "text": str(raw.get("text") or "")[:_CONTEXT_TEXT_CHARS],
+        }
+    raw_order = context.get("order") if isinstance(context.get("order"), list) else []
+    order = [key for key in raw_order if isinstance(key, str) and key in items and key != "tools"]
+    snapshots: list[dict[str, Any]] = []
+    raw_snapshots = context.get("snapshots") if isinstance(context.get("snapshots"), list) else []
+    for raw in raw_snapshots[-_CONTEXT_SNAPSHOT_LIMIT:]:
+        if not isinstance(raw, dict):
+            continue
+        start, end = _count(raw.get("from")), _count(raw.get("to"))
+        if start is None or end is None or start > end or end > len(order):
+            continue
+        usage = raw.get("usage")
+        kind = str(raw.get("kind") or "")
+        snapshots.append(
+            {
+                "seq": _count(raw.get("seq")) or len(snapshots) + 1,
+                "at": str(raw.get("at") or "")[:40],
+                "turn": _count(raw.get("turn")) or 0,
+                "reason": str(raw.get("reason") or "")[:_CONTEXT_LABEL_CHARS],
+                "kind": kind if kind in _CONTEXT_TYPES else "",
+                "from": start,
+                "to": end,
+                "usage": (
+                    {key: int(value) for key, value in usage.items() if _count(value) is not None and isinstance(key, str)}
+                    if isinstance(usage, dict)
+                    else None
+                ),
+            }
+        )
+    return {"items": items, "order": order, "snapshots": snapshots}
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return round(float(value), 3)
+
+
+def _slim_spike(raw: Any) -> dict[str, Any] | None:
+    """Скачок замера: отметки по метрикам и снимок процессов агента в этот момент."""
+    if not isinstance(raw, dict):
+        return None
+    marks: list[dict[str, Any]] = []
+    for item in raw.get("marks") or []:
+        if not isinstance(item, dict) or item.get("metric") not in _SPIKE_METRICS:
+            continue
+        value, baseline = _number(item.get("value")), _number(item.get("baseline"))
+        if value is None or baseline is None:
+            continue
+        marks.append({"metric": item["metric"], "value": value, "baseline": baseline})
+    if not marks:
+        return None
+    listed = raw.get("processes")
+    processes: list[dict[str, Any]] = []
+    for item in (listed if isinstance(listed, list) else [])[:_SPIKE_PROCESS_LIMIT]:
+        if not isinstance(item, dict) or _number(item.get("pid")) is None:
+            continue
+        processes.append(
+            {
+                "pid": int(item["pid"]),
+                "name": str(item.get("name") or "")[:_SPIKE_NAME_CHARS],
+                "cpu": _number(item.get("cpu")) or 0.0,
+                "ram_mb": _number(item.get("ram_mb")) or 0.0,
+                "gpu": _number(item.get("gpu")),
+                "disk": _number(item.get("disk")) or 0.0,
+            }
+        )
+    return {"marks": marks, "processes": processes}
 
 
 def _calendar_meetings_for(

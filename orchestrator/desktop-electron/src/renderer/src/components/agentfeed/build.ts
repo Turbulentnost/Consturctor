@@ -100,6 +100,8 @@ export function buildFeedItems(
   const pushSystem = (text: string, tone: 'info' | 'error' | 'success' = 'info'): void => {
     const value = (text || '').trim()
     if (!value || isTriggerCheckNoise(value)) return
+    const last = items[items.length - 1]
+    if (last && last.kind === 'system' && last.tone === tone && last.text.trim() === value) return
     items.push({ kind: 'system', id: nextId('sys'), text: value, tone })
   }
 

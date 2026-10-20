@@ -11,11 +11,21 @@ import {
   type DocflowTaskKind
 } from './docflowTaskKind'
 
-export type DocflowUiAction = DocflowActionId | 'open_card'
+/**
+ * `close` — основное действие по типу задачи (у проверки — «Принять исполнение»).
+ * `close_without_report` — автор закрывает задачу исполнителя и сразу принимает проверку.
+ */
+export type DocflowUiAction = DocflowActionId | 'open_card' | 'close' | 'close_without_report'
 
 export type TurboUiAction = 'open_project' | 'mark_done' | 'refresh'
 
-export type TaskActionResult = { ok: boolean; message: string }
+export type TaskActionResult = {
+  ok: boolean
+  message: string
+  /** 1С закрыла задачу. Строку списка убираем только в этом случае. */
+  closed?: boolean
+  needsForm?: boolean
+}
 
 export function docflowKindOfContext(ctx: TaskActionContext): DocflowTaskKind {
   return ctx.docflowKind ?? docflowTaskKind(ctx.step, ctx.taskName)
@@ -49,7 +59,8 @@ export async function runDocflowAction(
   user: UserProfile,
   ctx: TaskActionContext,
   action: DocflowUiAction,
-  comment = ''
+  comment = '',
+  due = ''
 ): Promise<TaskActionResult> {
   const refKey = (ctx.refKey || '').trim()
   if (!refKey) {
@@ -69,8 +80,9 @@ export async function runDocflowAction(
     window.open(url, '_blank', 'noopener,noreferrer')
     return { ok: true, message: 'Карточка задачи открыта в веб-клиенте 1С:Документооборот.' }
   }
+  const rework = action === 'return'
   const res = await api.invokeServerTool(
-    'onec.docflow_task_action',
+    rework ? 'onec.docflow_rework' : 'onec.docflow_task_action',
     onecGatewayInvokeArgs(user, {
       action,
       task_id: refKey,
@@ -78,16 +90,24 @@ export async function runDocflowAction(
       target_id: ctx.targetId,
       step: ctx.step,
       title: ctx.title,
-      comment: comment.trim()
+      comment: comment.trim(),
+      due: due.trim()
     }),
-    180_000
+    rework || action === 'close_without_report' ? 90_000 : 30_000
   )
   if (res.ok) {
     const payload = res.result && typeof res.result === 'object' ? (res.result as Record<string, unknown>) : {}
-    const summary = String(payload.summary || payload.message || 'Действие отправлено в 1С:Документооборот.')
-    return { ok: true, message: summary }
+    const summary = String(payload.summary || payload.message || '').trim()
+    const closed = payload.closed === true
+    const needsForm = payload.needs_form === true || payload.needsForm === true
+    return {
+      ok: closed,
+      closed,
+      needsForm,
+      message: summary || (closed ? 'Задача закрыта в 1С.' : 'Документооборот не закрыл задачу.')
+    }
   }
-  return { ok: false, message: res.error || 'Документооборот не принял действие.' }
+  return { ok: false, closed: false, message: res.error || 'Документооборот не принял действие.' }
 }
 
 export async function runTurboAction(

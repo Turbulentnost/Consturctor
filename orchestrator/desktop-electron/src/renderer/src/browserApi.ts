@@ -1,4 +1,4 @@
-const BACKEND = String(import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:7812').replace(/\/+$/, '')
+const BACKEND = String(import.meta.env.VITE_BACKEND_URL || 'http://192.168.1.157:7812').replace(/\/+$/, '')
 
 function errorText(data: unknown, fallback: string): string {
   if (!data || typeof data !== 'object') return fallback

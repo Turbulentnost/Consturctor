@@ -264,6 +264,30 @@ def test_map_document_executor_row_subject_and_action() -> None:
     assert item["performer"] == "Жалыбин Максим Дмитриевич"
 
 
+def test_cap_keeps_executor_task_behind_authored_block() -> None:
+    from app.services.docflow_tasks import _cap_docflow_tasks
+
+    authored = [
+        {"number": f"a-{index}", "role": "author", "done": False}
+        for index in range(90)
+    ]
+    mine = {"number": "mine-1", "role": "executor", "done": False}
+    capped = _cap_docflow_tasks([*authored, mine], 80)
+    assert len(capped) == 80
+    assert capped[0]["number"] == "mine-1"
+    assert sum(1 for row in capped if row["role"] == "author") == 79
+
+
+def test_cap_returns_every_inbox_task_when_they_exceed_limit() -> None:
+    from app.services.docflow_tasks import _cap_docflow_tasks
+
+    inbox = [{"number": f"e-{index}", "role": "executor"} for index in range(85)]
+    authored = [{"number": "a-1", "role": "author"}]
+    capped = _cap_docflow_tasks([*authored, *inbox], 80)
+    assert len(capped) == 85
+    assert all(row["role"] == "executor" for row in capped)
+
+
 def test_list_docflow_tasks_no_limit_keeps_full_user_slice(monkeypatch) -> None:
     from app.services import docflow_tasks
 

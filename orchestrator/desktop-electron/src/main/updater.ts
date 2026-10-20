@@ -41,7 +41,7 @@ interface FoundUpdate {
 const CHECK_INTERVAL_MS = 30 * 60 * 1000
 const FIRST_CHECK_MS = 4_000
 const USER_AGENT = 'OrchestratorDesktop'
-const INSTALLER_ORDER = ['constructor-setup.exe', 'orchestrator-setup.exe']
+const OWN_INSTALLER = 'orchestrator-setup.exe'
 
 let options: UpdaterOptions = { owner: '', repo: '' }
 let timer: NodeJS.Timeout | null = null
@@ -125,22 +125,11 @@ function authHeaders(): Record<string, string> {
 }
 
 export function pickInstallers(assets: GithubAsset[]): GithubAsset[] {
-  const exes = assets.filter((asset) => {
-    const name = String(asset.name || '').toLowerCase()
-    return name.endsWith('.exe') && !name.includes('blockmap')
+  const asset = assets.find((item) => {
+    const name = String(item.name || '').toLowerCase()
+    return name === OWN_INSTALLER
   })
-  const picked: GithubAsset[] = []
-  const seen = new Set<string>()
-  for (const wanted of INSTALLER_ORDER) {
-    const asset = exes.find((item) => String(item.name || '').toLowerCase() === wanted)
-    if (!asset) continue
-    const key = asset.browser_download_url || asset.name
-    if (seen.has(key)) continue
-    seen.add(key)
-    picked.push(asset)
-  }
-  if (!picked.length && exes[0]) picked.push(exes[0])
-  return picked
+  return asset ? [asset] : []
 }
 
 async function fetchLatestRelease(): Promise<GithubRelease> {
@@ -287,7 +276,11 @@ async function downloadInstaller(asset: GithubAsset, dest: string): Promise<void
 }
 
 function launchInstaller(installerPath: string): void {
-  const child = spawn(installerPath, ['/S', '--updated', '--force-run'], {
+  // CreateProcess cannot raise UAC. ShellExecute with runas asks for administrator,
+  // which the route script needs in order to write a persistent LAN route.
+  const escaped = installerPath.replace(/'/g, "''")
+  const command = `Start-Process -FilePath '${escaped}' -ArgumentList '/S','--updated','--force-run' -Verb RunAs`
+  const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true

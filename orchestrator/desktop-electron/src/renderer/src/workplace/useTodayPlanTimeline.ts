@@ -4,8 +4,10 @@ import {
   dedupeMeetingEvents,
   ensureOutlookMeetings,
   parseMeetingTime,
+  useOutlookSyncTick,
   type MeetingEvent
 } from '../utils/outlookMeetings'
+import { useOwnMeetingsVersion } from './ownMeetings'
 import { parseIso, sameDay } from '../utils/calendar'
 import { useWorkplaceData } from './WorkplaceBoard'
 import {
@@ -16,7 +18,7 @@ import {
 } from '../tabs/grid/todayDemoData'
 import { readTrackedCalendars, useTrackedCalendarsVersion } from '../utils/trackedCalendars'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
-import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
+import { readGridCache, writeGridCache } from './gridDataCache'
 
 export const TODAY_PLAN_DAY_START = 9
 export const TODAY_PLAN_DAY_END = 18
@@ -231,23 +233,25 @@ export function useTodayPlanTimeline(
   const dayKey = `${periodDay.getFullYear()}-${periodDay.getMonth()}-${periodDay.getDate()}`
   const generation = useGridRefreshGeneration()
   const trackedVersion = useTrackedCalendarsVersion()
+  const ownMeetingsVersion = useOwnMeetingsVersion()
+  const outlookSync = useOutlookSyncTick()
+  const seenGeneration = useRef(generation)
 
   useEffect(() => {
     let alive = true
-    const cacheKey = `today-plan-meetings:${userId}:${dayKey}:${readTrackedCalendars(fio).join('|')}`
-    if (!shouldRunGridFetch(cacheKey, generation)) {
-      const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
-      if (cached) {
-        setMeetings(cached.meetings)
-        setMeetingsError(cached.error)
-        setMeetingsLoading(false)
-        return
-      }
+    const force = outlookSync > 0 || seenGeneration.current !== generation
+    seenGeneration.current = generation
+    const cacheKey = `today-plan-meetings:${userId}:${dayKey}:${readTrackedCalendars(fio).join('|')}:${ownMeetingsVersion}`
+    const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
+    if (cached && !outlookSync) {
+      setMeetings(cached.meetings)
+      setMeetingsError(cached.error)
+      setMeetingsLoading(false)
     }
-    const hadCache = Boolean(readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey))
+    const hadCache = Boolean(cached)
     if (!hadCache) setMeetingsLoading(true)
     setMeetingsError('')
-    void ensureOutlookMeetings('day', periodDay, { owner: fio })
+    void ensureOutlookMeetings('day', periodDay, { owner: fio, force })
       .then((res) => {
         if (!alive) return
         if (!res.ok) {
@@ -273,7 +277,7 @@ export function useTodayPlanTimeline(
     return () => {
       alive = false
     }
-  }, [dayKey, fio, generation, periodDay, userId, trackedVersion])
+  }, [dayKey, fio, generation, periodDay, userId, trackedVersion, ownMeetingsVersion, outlookSync])
 
   const stableMeetingsRef = useRef<TodayPlanBlock[]>([])
   const stableAiRef = useRef<TodayPlanBlock[]>([])

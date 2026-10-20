@@ -1,12 +1,12 @@
 import type { SpecMailRow } from './specV04DemoData'
-import { imapMessageToMailRow, outlookMessageToMailRow } from './specV04Mappers'
+import { outlookMessageToMailRow } from './specV04Mappers'
 import {
   fetchImapListUnread,
   fetchImapSearch,
   fetchImapStatus,
   formatImapStatusLine,
-  isImapStubMode,
-  nextDayKey
+  imapMailboxLogin,
+  isImapStubMode
 } from '../utils/imapMail'
 import {
   dayKeyLocal,
@@ -45,6 +45,8 @@ export type MailProbeResult = {
 export type OrchestratorMailLoad = {
   rows: SpecMailRow[]
   sourceLabel: string
+  /** Ящик профиля Outlook этого компьютера, из которого прочитаны письма. */
+  mailbox: string
   primary: MailPrimary
   imapPrimary: boolean
   comError: string
@@ -53,7 +55,7 @@ export type OrchestratorMailLoad = {
 }
 
 const PROBE_TTL_MS = 600_000
-let probeCache: { at: number; day: string; result: MailProbeResult } | null = null
+let probeCache: { at: number; day: string; mailbox: string; result: MailProbeResult } | null = null
 
 const RE_PREFIX = /^(re|fw|fwd|ответ|пересл)\s*:\s*/i
 
@@ -227,10 +229,12 @@ export async function probeMailToday(
   options?: { comToday?: Record<string, unknown>[]; comOk?: boolean; comError?: string }
 ): Promise<MailProbeResult> {
   const day = dayKeyLocal(now)
+  const mailbox = imapMailboxLogin()
   if (
     !options?.comToday &&
     probeCache &&
     probeCache.day === day &&
+    probeCache.mailbox === mailbox &&
     Date.now() - probeCache.at < PROBE_TTL_MS
   ) {
     return probeCache.result
@@ -295,7 +299,7 @@ export async function probeMailToday(
     imapToday,
     comToday
   }
-  probeCache = { at: Date.now(), day, result }
+  probeCache = { at: Date.now(), day, mailbox, result }
   return result
 }
 
@@ -311,8 +315,11 @@ export function pickMailRows(input: {
   return []
 }
 
+/**
+ * Письма вкладки «Письма»: только Outlook этого компьютера — ящик его профиля,
+ * даже если в оркестратор вошёл другой сотрудник. IMAP в список не подмешивается.
+ */
 export async function loadOrchestratorMail(
-  outlookMailbox: string,
   period?: { dateFrom: string; dateTo: string },
   options?: { forceOutlook?: boolean }
 ): Promise<OrchestratorMailLoad> {
@@ -321,123 +328,45 @@ export async function loadOrchestratorMail(
     period?.dateTo || '',
     outlookMailWeekRange()
   )
-  const imapWeekP = fetchImapSearch({
-    since: range.dateFrom,
-    before: nextDayKey(range.dateTo),
-    limit: 120
-  })
-
-  let comWeek: {
-    ok: boolean
-    messages: Record<string, unknown>[]
-    error?: string
-    source?: string
-    cached?: boolean
-  }
+  const empty = { primary: 'outlook' as const, imapPrimary: false, imapError: '', imapStatus: '' }
   if (skipOutlookCom()) {
-    comWeek = {
-      ok: false,
-      messages: [],
-      error: 'Outlook COM отключён (VITE_SKIP_OUTLOOK_COM)',
-      source: ''
-    }
-  } else {
-    const ensured = await ensureOutlookMailRange(
-      outlookMailbox,
-      range.dateFrom,
-      range.dateTo,
-      { folder: 'All', maxResults: 120, force: options?.forceOutlook }
-    )
-    comWeek = {
-      ok: ensured.ok,
-      messages: ensured.messages,
-      error: ensured.error,
-      source: 'outlook_com',
-      cached: ensured.cached
+    return {
+      ...empty,
+      rows: [],
+      sourceLabel: 'outlook_mail',
+      mailbox: '',
+      comError: 'Outlook COM отключён (VITE_SKIP_OUTLOOK_COM)'
     }
   }
-
-  const todayKey = dayKeyLocal(new Date())
-  const comToday = comWeek.ok ? filterMessagesOnDay(comWeek.messages, todayKey) : []
-  const [probe, imapWeek] = await Promise.all([
-    probeMailToday(new Date(), {
-      comToday,
-      comOk: comWeek.ok,
-      comError: comWeek.error
-    }),
-    imapWeekP
-  ])
-
-  const comError = uniqueMailErrors(probe.comError, comWeek.ok ? '' : comWeek.error || 'Outlook недоступен')
-  const imapError = uniqueMailErrors(probe.imapError, imapWeek.ok ? '' : imapWeek.error || '')
-  const imapWeekMessages = probe.imapUsable
-    ? imapWeek.messages.length
-      ? imapWeek.messages
-      : probe.imapToday
-    : []
-  const imapRows = attachOutlookEntryIds(
-    imapWeekMessages.map((msg, index) => imapMessageToMailRow(msg, index)),
-    [...(comWeek.ok ? comWeek.messages : []), ...probe.comToday]
-  )
-  const comRows = (comWeek.ok ? comWeek.messages : []).map((msg, index) =>
-    outlookMessageToMailRow(msg, index)
-  )
-  const rows = pickMailRows({
-    primary: probe.primary,
-    imapUsable: probe.imapUsable,
-    imapRows,
-    comRows
+  const ensured = await ensureOutlookMailRange(range.dateFrom, range.dateTo, {
+    folder: 'All',
+    maxResults: 120,
+    force: options?.forceOutlook
   })
-
-  const sourceLabel = probe.imapPrimary
-    ? `imap (primary, today extras=${probe.extrasCount})`
-    : comWeek.ok
-      ? comWeek.source || `outlook_mail (${range.dateFrom}…${range.dateTo}, All)`
-      : comError || (outlookMailbox ? `Outlook: ${outlookMailbox}` : 'outlook_mail')
-
+  const mailbox = ensured.profileMailbox || ''
+  const rows = ensured.ok ? ensured.messages.map((msg, index) => outlookMessageToMailRow(msg, index)) : []
   return {
+    ...empty,
     rows: rows.map(withFormattedMailTime),
-    sourceLabel,
-    primary: probe.primary,
-    imapPrimary: probe.imapPrimary,
-    comError,
-    imapError,
-    imapStatus: probe.imapPrimary ? probe.statusLine : probe.statusLine
+    sourceLabel: `Outlook: ${mailbox || 'этот компьютер'}`,
+    mailbox,
+    comError: ensured.ok ? '' : ensured.error || 'Outlook недоступен'
   }
-}
-
-function uniqueMailErrors(...chunks: (string | undefined | null)[]): string {
-  const seen = new Set<string>()
-  const parts: string[] = []
-  for (const chunk of chunks) {
-    if (!chunk?.trim()) continue
-    const text = chunk.trim()
-    if (seen.has(text)) continue
-    seen.add(text)
-    parts.push(text)
-  }
-  return parts.join(' · ')
 }
 
 export function mailListEmptyHint(input: {
   loading: boolean
-  imapPrimary: boolean
   mailbox: string
-  imapStatus?: string
+  error?: string
   periodFrom?: string
   periodTo?: string
 }): string {
   if (input.loading) return 'Загружаем письма…'
-  const status = input.imapStatus?.trim() || ''
   const period =
     input.periodFrom && input.periodTo
       ? ` за период ${input.periodFrom} — ${input.periodTo}`
       : ' за выбранный период'
-  if (input.imapPrimary) {
-    return status ? `Нет писем в IMAP${period}. ${status}` : `Нет писем в IMAP${period}.`
-  }
-  const box = input.mailbox ? ` Ящик: ${input.mailbox}.` : ''
-  return status
-    ? `Нет писем${period} (Outlook COM).${box} ${status}`
-    : `Нет писем${period} (Outlook COM).${box}`.trim()
+  const box = input.mailbox ? ` Ящик Outlook на этом компьютере: ${input.mailbox}.` : ''
+  const error = input.error?.trim() ? ` ${input.error.trim()}` : ''
+  return `Нет писем${period}.${box}${error}`
 }

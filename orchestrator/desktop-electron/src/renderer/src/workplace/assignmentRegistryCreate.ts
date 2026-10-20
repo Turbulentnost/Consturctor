@@ -1,4 +1,5 @@
 import { api } from '../api/client'
+import { clearDocflowPages } from './docflowPageCache'
 
 export type AssignmentCreateLineDraft = {
   key: string
@@ -93,6 +94,7 @@ export async function createAssignmentInOneC(
   if (!response.ok) {
     return { ok: false, error: response.error || 'Не удалось создать поручение в 1С' }
   }
+  clearDocflowPages()
   const parsed = parseCreateResult(response.result)
   return {
     ok: true,

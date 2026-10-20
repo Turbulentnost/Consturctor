@@ -91,7 +91,9 @@ function parseWorkflowList(data: unknown): WorkflowListItem[] {
       title: String(item.title ?? ''),
       phase: String(item.phase ?? ''),
       documentName: String(item.document_name ?? item.documentName ?? ''),
-      updatedAt: String(item.updatedAt ?? item.updated_at ?? '')
+      updatedAt: String(item.updatedAt ?? item.updated_at ?? ''),
+      paused: Boolean(item.paused),
+      autoRun: Boolean(item.auto_run ?? item.autoRun)
     }))
     .filter((item) => item.id)
 }
@@ -316,7 +318,11 @@ function parsePositionKpiDaily(raw: Record<string, unknown> | null | undefined):
         fact: asNullableNumber(row.fact),
         score: asNullableNumber(row.score),
         contrib: asNullableNumber(row.contrib),
-        evidence: String(row.evidence ?? '')
+        evidence: String(row.evidence ?? ''),
+        history: (Array.isArray(row.history) ? row.history : [])
+          .map((point) => asRecord(point))
+          .map((point) => ({ day: String(point.day ?? ''), value: asNullableNumber(point.value) }))
+          .filter((point): point is { day: string; value: number } => Boolean(point.day) && point.value != null)
       } satisfies PositionKpiTile
     })
   return {
@@ -427,7 +433,16 @@ function parsePositionKpiCompensation(
     effectiveFrom: String(data.effective_from ?? data.effectiveFrom ?? ''),
     salary: asNullableNumber(data.salary),
     bonus: asNullableNumber(data.bonus),
-    total: asNullableNumber(data.total)
+    total: asNullableNumber(data.total),
+    history: (Array.isArray(data.history) ? data.history : []).map((item) => {
+      const point = asRecord(item)
+      return {
+        effectiveFrom: String(point.effective_from ?? point.effectiveFrom ?? ''),
+        salary: asNullableNumber(point.salary),
+        bonus: asNullableNumber(point.bonus),
+        total: asNullableNumber(point.total)
+      }
+    })
   }
 }
 
@@ -590,6 +605,8 @@ export function parseChatMessage(value: unknown): ChatMessage {
     text: decoded.text,
     clientId: String(data.clientId ?? data.client_id ?? ''),
     createdAt: String(data.createdAt ?? data.created_at ?? ''),
+    editedAt: String(data.editedAt ?? data.edited_at ?? ''),
+    deleted: Boolean(data.deleted),
     receipt: String(data.receipt ?? 'delivered'),
     attachments: files.map((item) => {
       const row = asRecord(item)
@@ -1361,6 +1378,14 @@ export class ApiClient {
     return { accessToken: token, user: parseUser((data.user as Record<string, unknown>) ?? {}) }
   }
 
+  async getUiPrefs(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/me/ui', { timeoutMs: 15_000 })
+  }
+
+  async patchUiPrefs(body: Record<string, unknown>): Promise<void> {
+    await this.request('PATCH', '/api/v1/me/ui', { body, timeoutMs: 15_000 })
+  }
+
   async me(timeoutMs = 15_000): Promise<UserProfile> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/auth/me', {
       timeoutMs
@@ -2111,6 +2136,24 @@ export class ApiClient {
     return latest
   }
 
+  /** Временные вложения запуска на сервере: по их id серверные инструменты (audio.transcribe) находят файл. */
+  async uploadRunAttachments(workflowId: string, runId: string, filePaths: string[]): Promise<WorkflowFileItem[]> {
+    let latest: WorkflowFileItem[] = []
+    for (const filePath of filePaths) {
+      const res = await window.api.upload<Record<string, unknown>>({
+        endpoint: `/api/v1/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/attachments`,
+        filePath,
+        fieldName: 'files',
+        token: this.resolveToken(),
+        timeoutMs: 600_000
+      })
+      if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить файл на сервер', res.status)
+      const stored = (res.data?.run_attachments as Record<string, unknown>[]) ?? []
+      latest = stored.map((item) => parsePlatformFile({ ...item, workflow_id: workflowId }))
+    }
+    return latest
+  }
+
   // ---------- Notifications ----------
   async listChatThreads(search = ''): Promise<ChatThread[]> {
     try {
@@ -2380,6 +2423,32 @@ export class ApiClient {
     }
   }
 
+  async listAssignmentReviews(dateFrom = '', dateTo = ''): Promise<Record<string, unknown>[]> {
+    const params = new URLSearchParams()
+    if (dateFrom) params.set('date_from', dateFrom)
+    if (dateTo) params.set('date_to', dateTo)
+    const query = params.toString()
+    const data = await this.request<{ reviews?: Record<string, unknown>[] }>(
+      'GET',
+      `/api/v1/assignment-reviews${query ? `?${query}` : ''}`,
+      { timeoutMs: 30_000 }
+    )
+    return Array.isArray(data.reviews) ? data.reviews : []
+  }
+
+  async getAssignmentReview(refKey: string): Promise<Record<string, unknown> | null> {
+    try {
+      return await this.request<Record<string, unknown>>(
+        'GET',
+        `/api/v1/assignment-reviews/${encodeURIComponent(refKey)}`,
+        { timeoutMs: 20_000 }
+      )
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null
+      return null
+    }
+  }
+
   async invokeServerTool(
     tool: string,
     args: Record<string, unknown> = {},
@@ -2487,6 +2556,25 @@ export class ApiClient {
     return parsePositionKpiCompensation(data ?? {})
   }
 
+  async getKpiPin(): Promise<{ hasPin: boolean }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/pin')
+    return { hasPin: Boolean(data?.has_pin) }
+  }
+
+  async createKpiPin(pin: string, pinRepeat: string): Promise<{ hasPin: boolean }> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/position-kpi/pin', {
+      body: { pin, pin_repeat: pinRepeat }
+    })
+    return { hasPin: Boolean(data?.has_pin) }
+  }
+
+  async changeKpiPin(currentPin: string, pin: string, pinRepeat: string): Promise<{ hasPin: boolean }> {
+    const data = await this.request<Record<string, unknown>>('PUT', '/api/v1/position-kpi/pin', {
+      body: { current_pin: currentPin, pin, pin_repeat: pinRepeat }
+    })
+    return { hasPin: Boolean(data?.has_pin) }
+  }
+
   async getPositionKpiMetric(position: string, code: string): Promise<PositionKpiMetricDetail> {
     const data = await this.request<Record<string, unknown>>(
       'GET',
@@ -2511,17 +2599,19 @@ export class ApiClient {
   async downloadPositionKpiForm(
     fio: string,
     from = '',
-    to = ''
+    to = '',
+    unlockToken = ''
   ): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
     const params = new URLSearchParams()
     if (fio.trim()) params.set('fio', fio.trim())
     if (from) params.set('from', from)
     if (to) params.set('to', to)
+    if (unlockToken) params.set('unlock', unlockToken)
     const surname = fio.trim().split(/\s+/)[0] || 'сотрудник'
     const stamp = (from || '').slice(0, 7) || 'period'
     return window.api.download({
       url: `/api/v1/position-kpi/bonus-form?${params.toString()}`,
-      defaultName: `ИЦПП_${surname}_${stamp}.xlsx`,
+      defaultName: `ИЦПП_${surname}_${stamp}${unlockToken ? '_руб' : ''}.xlsx`,
       token: this.resolveToken()
     })
   }
@@ -2549,6 +2639,33 @@ export class ApiClient {
       defaultName: `ИЦПП_${surname}_${month || 'period'}.xlsx`,
       token: this.resolveToken()
     })
+  }
+
+  async getKpiProtection(): Promise<{ enabled: boolean; hasPassword: boolean }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/position-kpi/protection')
+    return { enabled: Boolean(data?.enabled), hasPassword: Boolean(data?.has_password) }
+  }
+
+  async updateKpiProtection(body: {
+    enabled: boolean
+    password?: string
+    currentPassword?: string
+  }): Promise<{ enabled: boolean; hasPassword: boolean }> {
+    const data = await this.request<Record<string, unknown>>('PUT', '/api/v1/position-kpi/protection', {
+      body: {
+        enabled: body.enabled,
+        password: body.password || null,
+        current_password: body.currentPassword || null
+      }
+    })
+    return { enabled: Boolean(data?.enabled), hasPassword: Boolean(data?.has_password) }
+  }
+
+  async unlockKpiMoney(password: string): Promise<{ token: string; expiresAt: number }> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/position-kpi/unlock', {
+      body: { password }
+    })
+    return { token: String(data?.token || ''), expiresAt: Number(data?.expires_at || 0) }
   }
 
   async startPositionKpiBuild(position = ''): Promise<PositionKpiBuildSession> {
@@ -2642,6 +2759,14 @@ export class ApiClient {
   }
 
   // ---------- Admin finance panel ----------
+  async adminFinanceSalarySource(): Promise<unknown> {
+    return this.request<unknown>('GET', '/api/v1/admin/finance/salary-source')
+  }
+
+  async updateAdminFinanceSalarySource(mode: 'file' | 'onec'): Promise<unknown> {
+    return this.request<unknown>('PUT', '/api/v1/admin/finance/salary-source', { body: { mode } })
+  }
+
   async adminFinanceEmployees(): Promise<unknown> {
     return this.request<unknown>('GET', '/api/v1/admin/finance/employees')
   }

@@ -132,7 +132,14 @@ export function setComCredentials(
   syncComSecretToMain(opts?.persist ?? rememberPreference())
 }
 
-/** After JWT restore: sync v8users.Name / FIO from profile without touching password. */
+function samePerson(left: string, right: string): boolean {
+  const fold = (value: string): string => value.trim().toLocaleLowerCase('ru').replace(/ё/g, 'е')
+  const a = fold(left)
+  const b = fold(right)
+  return Boolean(a && b && a === b)
+}
+
+/** After login or JWT restore: SOAP login follows the signed-in employee, password stays. */
 export function syncComProfileFromUser(user: { fio?: string; nameMail?: string } | null): void {
   if (!user) return
   const nextMail = (user.nameMail || '').trim()
@@ -142,7 +149,7 @@ export function syncComProfileFromUser(user: { fio?: string; nameMail?: string }
     comNameMail = nextMail
     changed = true
   }
-  if (!comLogin && nextLogin) {
+  if (nextLogin && !samePerson(comLogin, nextLogin)) {
     comLogin = nextLogin
     changed = true
   }
@@ -150,6 +157,7 @@ export function syncComProfileFromUser(user: { fio?: string; nameMail?: string }
     comCredentialsRevision += 1
     if (comPassword) {
       writeRendererComSecret({ login: comLogin, password: comPassword, nameMail: comNameMail })
+      syncComSecretToMain(rememberPreference())
     }
   }
 }
