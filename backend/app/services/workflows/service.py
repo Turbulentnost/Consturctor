@@ -94,6 +94,9 @@ def workflow_health() -> WorkflowHealth:
 
 
 def list_workflows(db: Session, *, user_id: str) -> list[WorkflowListItem]:
+    from app.services.agent_library import ensure_kpi_launch_agent
+
+    ensure_kpi_launch_agent(db, user_id=user_id)
     rows = (
         db.query(Workflow)
         .filter(Workflow.user_id == user_id)

@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.base import Base
 from app.models.user import AppUser
 from app.models.workflow import Workflow
-from app.services.agent_library import adopt_library_agent, list_agent_library
+from app.services.agent_library import adopt_library_agent, ensure_kpi_launch_agent, list_agent_library
+from app.services.workflows.kpi_launch_playbook import KPI_LAUNCH_PLATFORM_ID
 
 
 def _session() -> Session:
@@ -114,3 +115,44 @@ def test_adopt_creates_one_clone_without_touching_source_owner() -> None:
         if item["workflow_id"] == clone_id or item.get("adopted_workflow_id") == clone_id
     ]
     assert len(b_mine) == 1
+
+
+def test_kpi_launch_agent_is_connected_for_every_user() -> None:
+    db = _session()
+    now = datetime.now(timezone.utc)
+    owner = "owner"
+    other = "other"
+    source_id = "kpi-launch-source"
+    db.add(AppUser(id=owner, fio="Автор"))
+    db.add(AppUser(id=other, fio="Сотрудник"))
+    db.add(
+        Workflow(
+            id=source_id,
+            user_id=owner,
+            title="Запуск модулей KPI",
+            phase="done",
+            notes=f"platform:{KPI_LAUNCH_PLATFORM_ID}",
+            local_run={"published": True, "status": "published", "tools": ["onec.position_holders"]},
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db.commit()
+
+    first = ensure_kpi_launch_agent(db, user_id=other)
+    assert first is not None
+    assert first.id != source_id
+    assert first.user_id == other
+    assert first.phase == "done"
+    assert KPI_LAUNCH_PLATFORM_ID in (first.notes or "")
+    assert (first.local_run or {}).get("library_source_id") == source_id
+
+    again = ensure_kpi_launch_agent(db, user_id=other)
+    assert again is not None
+    assert again.id == first.id
+    assert _count_workflows(db, other) == 1
+
+    own = ensure_kpi_launch_agent(db, user_id=owner)
+    assert own is not None
+    assert own.id == source_id
+    assert _count_workflows(db, owner) == 1

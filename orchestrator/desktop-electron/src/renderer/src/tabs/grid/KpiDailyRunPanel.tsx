@@ -127,7 +127,15 @@ export function KpiDailyRunPanel({
               Открыть чат
             </button>
           ) : null}
-          <button type="button" className="btn-primary" onClick={daily.retry}>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              daily.retry()
+            }}
+          >
             Пересчитать
           </button>
         </div>

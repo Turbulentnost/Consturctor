@@ -2,39 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 import time
 from contextlib import asynccontextmanager
 
-# Happ publishes ALL_PROXY=socks4://127.0.0.1:10808. httpx rejects that scheme
-# while building any client, so login and 1C calls die before the request.
-_PROXY_ENV_KEYS = (
-    "ALL_PROXY",
-    "all_proxy",
-    "HTTP_PROXY",
-    "http_proxy",
-    "HTTPS_PROXY",
-    "https_proxy",
-)
+# Happ publishes socks4://127.0.0.1:10808. httpx rejects that scheme while
+# building any client, so login dies before the request. The value also lives
+# in the Windows proxy registry, which urllib reads after the env vars are gone.
+from app.net_proxy import install as _install_net_proxy
 
-
-def _drop_unsupported_proxy_env() -> None:
-    allowed = ("http://", "https://")
-    try:
-        import socksio  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        allowed = allowed + ("socks5://", "socks5h://")
-    for key in _PROXY_ENV_KEYS:
-        value = (os.environ.get(key) or "").strip()
-        if not value or value.lower().startswith(allowed):
-            continue
-        os.environ.pop(key, None)
-
-
-_drop_unsupported_proxy_env()
+_install_net_proxy()
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse

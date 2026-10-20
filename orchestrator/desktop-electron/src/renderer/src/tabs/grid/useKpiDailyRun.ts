@@ -20,24 +20,39 @@ export function sameAgentTitle(title: string, expected: string): boolean {
   return title.trim().toLowerCase().replace(/ё/g, 'е') === expected
 }
 
+function launchAgentTitle(title: string): boolean {
+  return title.trim().toLowerCase().replace(/ё/g, 'е').includes(KPI_LAUNCH_TITLE)
+}
+
 let launchAgentCache: { workflowId: string; title: string } | null = null
 /** Days this session already handed the other positions to a hidden run. */
 const othersStartedFor = new Set<string>()
 
-async function resolveLaunchAgent(): Promise<{ workflowId: string; title: string } | null> {
-  if (launchAgentCache) return launchAgentCache
+function rememberLaunchAgent(workflowId: string, title: string): { workflowId: string; title: string } {
+  launchAgentCache = { workflowId, title: title.trim() || KPI_LAUNCH_DEFAULT_TITLE }
+  return launchAgentCache
+}
+
+async function resolveLaunchAgent(force = false): Promise<{ workflowId: string; title: string } | null> {
+  if (!force && launchAgentCache) return launchAgentCache
+  launchAgentCache = null
   const rows = await api.listWorkflows()
-  const candidates = rows.filter(
-    (item) => item.phase === 'done' && item.title.toLowerCase().replace(/ё/g, 'е').includes(KPI_LAUNCH_TITLE)
-  )
+  const candidates = rows
+    .filter((item) => launchAgentTitle(item.title))
+    .sort((a, b) => Number(b.phase === 'done') - Number(a.phase === 'done'))
+  let fallback: { workflowId: string; title: string } | null = null
   for (const item of candidates) {
     const record = await api.getWorkflow(item.id).catch(() => null)
-    if (!record) continue
-    if ((record.notes || '').includes(KPI_LAUNCH_PLATFORM_ID) || sameAgentTitle(record.title, KPI_LAUNCH_TITLE)) {
-      launchAgentCache = { workflowId: record.id, title: record.title || item.title || KPI_LAUNCH_DEFAULT_TITLE }
-      return launchAgentCache
+    const title = record?.title || item.title
+    const notes = record?.notes || ''
+    if (notes.includes(KPI_LAUNCH_PLATFORM_ID)) {
+      return rememberLaunchAgent(record?.id || item.id, title)
+    }
+    if (!fallback && launchAgentTitle(title)) {
+      fallback = { workflowId: record?.id || item.id, title }
     }
   }
+  if (fallback) return rememberLaunchAgent(fallback.workflowId, fallback.title)
   return null
 }
 
@@ -108,8 +123,11 @@ export function useKpiDailyRun(user: UserProfile | undefined, onDone: () => void
   const [agent, setAgent] = useState<{ workflowId: string; title: string } | null>(launchAgentCache)
   const [error, setError] = useState('')
   const busyRef = useRef(false)
+  const queuedRef = useRef<{ autoStart: boolean; retryFailed?: boolean } | null>(null)
+  const forceResolveRef = useRef(false)
   const ownStartedRef = useRef(false)
   const sawRunningRef = useRef(false)
+  const autoRetriedRef = useRef(false)
   const onDoneRef = useRef(onDone)
   onDoneRef.current = onDone
   const userId = user?.id || ''
@@ -138,7 +156,11 @@ export function useKpiDailyRun(user: UserProfile | undefined, onDone: () => void
 
   const startOwn = useCallback(
     async (retryFailed: boolean) => {
-      const found = agent || (await resolveLaunchAgent())
+      const force = forceResolveRef.current
+      forceResolveRef.current = false
+      setError('')
+      setPhase('running')
+      const found = (!force && agent) || (await resolveLaunchAgent(force))
       if (!found) {
         setPhase('failed')
         setError('В «Моих агентах» нет карточки «Запуск модулей KPI».')
@@ -182,11 +204,15 @@ export function useKpiDailyRun(user: UserProfile | undefined, onDone: () => void
 
   const check = useCallback(
     async (opts: { autoStart: boolean; retryFailed?: boolean } = { autoStart: true }) => {
-      if (busyRef.current) return
+      if (busyRef.current) {
+        if (opts.retryFailed) queuedRef.current = opts
+        return
+      }
       busyRef.current = true
       try {
         const status = await api.getKpiTodayRun()
         setToday(status)
+        const restart = Boolean(opts.autoStart || opts.retryFailed)
         switch (status.status) {
           case 'ready':
             setPhase('ready')
@@ -196,11 +222,11 @@ export function useKpiDailyRun(user: UserProfile | undefined, onDone: () => void
             break
           case 'missing':
           case 'running_here':
-            if (opts.autoStart) await startOwn(false)
+            if (restart) await startOwn(Boolean(opts.retryFailed))
             else setPhase(status.status === 'missing' ? 'failed' : 'running')
             break
           case 'failed':
-            if (opts.retryFailed) {
+            if (restart) {
               await startOwn(true)
             } else {
               setPhase('failed')
@@ -221,6 +247,9 @@ export function useKpiDailyRun(user: UserProfile | undefined, onDone: () => void
         setError(err instanceof Error ? err.message : 'Не удалось проверить расчёт KPI')
       } finally {
         busyRef.current = false
+        const queued = queuedRef.current
+        queuedRef.current = null
+        if (queued) void check(queued)
       }
     },
     [startOthers, startOwn]
@@ -257,6 +286,11 @@ export function useKpiDailyRun(user: UserProfile | undefined, onDone: () => void
         if (status.status === 'ready') {
           setPhase('ready')
           setError('')
+          onDoneRef.current()
+          void startOthers(status.day)
+        } else if (!autoRetriedRef.current) {
+          autoRetriedRef.current = true
+          await startOwn(true)
         } else {
           setPhase('failed')
           setError(
@@ -264,17 +298,25 @@ export function useKpiDailyRun(user: UserProfile | undefined, onDone: () => void
               run?.state.error ||
               'Агент закончил работу, но не выгрузил расчёт на сервер.'
           )
+          onDoneRef.current()
+          void startOthers(status.day)
         }
-        onDoneRef.current()
-        void startOthers(status.day)
       } catch (err) {
         setPhase('failed')
         setError(err instanceof Error ? err.message : 'Не удалось проверить расчёт KPI')
       }
     })()
-  }, [running, run?.state.error, startOthers])
+  }, [running, run?.state.error, startOthers, startOwn])
 
-  const retry = useCallback(() => void check({ autoStart: true, retryFailed: true }), [check])
+  const retry = useCallback(() => {
+    forceResolveRef.current = true
+    autoRetriedRef.current = false
+    launchAgentCache = null
+    setAgent(null)
+    setError('')
+    setPhase('running')
+    void check({ autoStart: true, retryFailed: true })
+  }, [check])
   const refresh = useCallback(() => void check({ autoStart: false }), [check])
 
   return {
