@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import type { PositionKpiCompensation, PositionKpiMethodology } from '../../api/types'
@@ -197,7 +197,8 @@ export function KpiEmployeePanel({
   onCalculate,
   onDetails,
   onInfo,
-  variant = 'panel'
+  variant = 'panel',
+  leadTile
 }: {
   metrics: WorkplaceKpiEmployeeMetric[]
   compensation: PositionKpiCompensation
@@ -216,6 +217,7 @@ export function KpiEmployeePanel({
   /** Открыть код, источник и формулу показателя. */
   onInfo?: (code: string) => void
   variant?: 'panel' | 'bar'
+  leadTile?: ReactNode
 }): React.JSX.Element {
   const gradPrefix = useId().replace(/:/g, '')
   const pendingMetrics = (methodology?.metrics ?? []).filter((item) => !item.moduleReady)
@@ -263,6 +265,7 @@ export function KpiEmployeePanel({
         />
       ) : null}
       <div className="kpi-employee-grid">
+        {leadTile}
         <KpiSalaryTile
           compensation={compensation}
           loading={compensationLoading}

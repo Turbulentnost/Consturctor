@@ -332,6 +332,11 @@
   gap: 12px;
 }
 
+.kpi-launch-error {
+  color: #c0392b;
+  font-size: 12px;
+}
+
 .kpi-dash-agent-search {
   margin-left: auto;
   min-width: 220px;
@@ -480,6 +485,10 @@
   gap: 5px;
 }
 
+.kpi-employee-panel--bar .kpi-employee-grid:has(.kpi-daily-run-tile) {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
 .kpi-employee-panel--bar .kpi-employee-tile {
   padding: 6px 8px;
   border-radius: 7px;
@@ -521,10 +530,35 @@
   padding-top: 40px;
 }
 
-.orch-grid-kpi .tab-chrome-tiles-bar:has(.kpi-method-offer) {
+.orch-grid-kpi .tab-chrome-tiles-bar:has(.kpi-method-offer),
+.orch-grid-kpi .tab-chrome-tiles-bar:has(.kpi-daily-run) {
   height: 320px;
   min-height: 320px;
   max-height: 320px;
+}
+
+.orch-grid-kpi .tab-chrome-tiles-bar:has(.kpi-daily-run-question) {
+  height: 360px;
+  min-height: 360px;
+  max-height: 360px;
+}
+
+.orch-grid-kpi .tab-chrome-tiles-bar:has(.kpi-daily-run-feed) {
+  height: 620px;
+  min-height: 620px;
+  max-height: 620px;
+}
+
+.kpi-daily-run:has(.kpi-daily-run-feed) {
+  align-items: flex-start;
+}
+
+.kpi-daily-run-feed {
+  margin-top: 10px;
+  max-height: 300px;
+  overflow-y: auto;
+  border-top: 1px solid #e3e8e6;
+  padding-top: 8px;
 }
 
 .kpi-tiles-stack {
@@ -920,6 +954,136 @@
 .kpi-employee-empty--compact {
   flex: 0 0 auto;
   padding: 5px 0 0;
+}
+
+.kpi-daily-run-tile {
+  justify-content: flex-start;
+  gap: 4px;
+  border-color: #b9d7cf;
+  background: #f3faf7;
+}
+
+.kpi-daily-run-tile p {
+  margin: 0;
+  color: var(--content-muted);
+  font-size: 12px;
+  line-height: 1.3;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.kpi-daily-run {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid #b9d7cf;
+  border-radius: 8px;
+  background: #f3faf7;
+  overflow: hidden;
+}
+
+.kpi-daily-run.is-error {
+  border-color: #e7b3ab;
+  background: #fff6f4;
+}
+
+.kpi-daily-run > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.kpi-daily-run strong {
+  display: block;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.kpi-daily-run-time {
+  color: var(--content-muted);
+  font-weight: 400;
+}
+
+.kpi-daily-run p {
+  margin: 2px 0 0;
+  color: var(--content-muted);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kpi-daily-run p.is-error {
+  color: #c0392b;
+  white-space: normal;
+}
+
+.kpi-daily-run .btn-primary,
+.kpi-daily-run > .spec-btn-outline,
+.kpi-daily-run-actions .spec-btn-outline {
+  flex: 0 0 auto;
+  width: auto;
+  height: 36px;
+  padding: 0 18px;
+}
+
+.kpi-daily-run > .kpi-daily-run-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.kpi-daily-run-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kpi-daily-run-steps li {
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid #d4dcd9;
+  color: var(--content-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.kpi-daily-run-steps li.is-active {
+  border-color: #08745f;
+  color: #08745f;
+  animation: kpi-daily-pulse 1.4s ease-in-out infinite;
+}
+
+.kpi-daily-run-steps li.is-done {
+  border-color: #08745f;
+  background: #08745f;
+  color: #fff;
+}
+
+.kpi-daily-run-steps li.is-error {
+  border-color: #c0392b;
+  color: #c0392b;
+}
+
+@keyframes kpi-daily-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.kpi-daily-run-question > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .kpi-method-offer {

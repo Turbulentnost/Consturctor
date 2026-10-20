@@ -27,6 +27,8 @@ import { usePositionCompensation } from '../../workplace/usePositionCompensation
 import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel, KpiMethodOffer } from './KpiEmployeePanel'
 import { KpiMetricCodeModal } from './KpiMetricCodeModal'
+import { KpiDailyRunPanel, KpiDailyWaitingTile } from './KpiDailyRunPanel'
+import { sameAgentTitle, useKpiDailyRun } from './useKpiDailyRun'
 import './kpiGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
@@ -64,11 +66,6 @@ function cardsToTiles(cards: WorkplaceKpiCard[]): SpecSummaryTile[] {
 
 const KPI_GENERATOR_PLATFORM_ID = 'f856136c-d75a-493b-8814-99bf6b06d721'
 const KPI_GENERATOR_TITLE = 'генератор модулей kpi'
-
-function sameAgentTitle(title: string): boolean {
-  return title.trim().toLowerCase().replace(/ё/g, 'е') === KPI_GENERATOR_TITLE
-}
-
 function kpiGeneratorTask(position: string, department: string): string {
   const place = department ? `, подразделение «${department}»` : ''
   return (
@@ -83,6 +80,7 @@ export function KpiGridTab(_props: {
   onOpenProcesses?: () => void
   onOpenDecisions?: () => void
   onRunAgent?: (workflowId: string, title: string, message: string) => void
+  onOpenRun?: (workflowId: string, title: string) => void
 }): React.JSX.Element {
   const { from, to } = useWorkplacePeriod()
   const selfFio = (_props.user?.fio || '').trim()
@@ -100,6 +98,7 @@ export function KpiGridTab(_props: {
   const [buildingMethod, setBuildingMethod] = useState(false)
   const [launchingGenerator, setLaunchingGenerator] = useState(false)
   const [launchError, setLaunchError] = useState('')
+  const dailyRun = useKpiDailyRun(_props.user, positionKpi.reload)
   const [codeFor, setCodeFor] = useState('')
 
   useEffect(() => {
@@ -119,13 +118,13 @@ export function KpiGridTab(_props: {
     setLaunchError('')
     setLaunchingGenerator(true)
     try {
-      const fromBoard = workflowBoard.agents.find((item) => sameAgentTitle(item.title))
+      const fromBoard = workflowBoard.agents.find((item) => sameAgentTitle(item.title, KPI_GENERATOR_TITLE))
       let workflowId = ''
       let title = 'Генератор модулей KPI'
       if (fromBoard?.id) {
         const record = await api.getWorkflow(fromBoard.id).catch(() => null)
         const notes = record?.notes || ''
-        if (!record || notes.includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title)) {
+        if (!record || notes.includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title, KPI_GENERATOR_TITLE)) {
           workflowId = fromBoard.id
           title = record?.title || fromBoard.title || title
         }
@@ -133,11 +132,11 @@ export function KpiGridTab(_props: {
       if (!workflowId) {
         const rows = await api.listWorkflows()
         const candidates = rows.filter(
-          (item) => item.phase === 'done' && (sameAgentTitle(item.title) || item.title.toLowerCase().includes('генератор модулей'))
+          (item) => item.phase === 'done' && (sameAgentTitle(item.title, KPI_GENERATOR_TITLE) || item.title.toLowerCase().includes('генератор модулей'))
         )
         for (const item of candidates) {
           const record = await api.getWorkflow(item.id)
-          if ((record.notes || '').includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title)) {
+          if ((record.notes || '').includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title, KPI_GENERATOR_TITLE)) {
             workflowId = record.id
             title = record.title || item.title
             break
@@ -159,6 +158,14 @@ export function KpiGridTab(_props: {
       setLaunchError(err instanceof Error ? err.message : 'Не удалось запустить агента')
     } finally {
       setLaunchingGenerator(false)
+    }
+  }
+
+  const downloadDailyReport = async (): Promise<void> => {
+    const month = (dailyRun.today?.day || '').slice(0, 7)
+    const result = await api.downloadKpiTodayReport(selfFio, month)
+    if (!result.ok && !result.canceled) {
+      setFormNote(result.error || 'Не удалось скачать отчёт ИЦПП')
     }
   }
 
@@ -324,9 +331,21 @@ export function KpiGridTab(_props: {
               error={launchError}
               onCalculate={() => void launchGenerator()}
             />
+            <KpiDailyRunPanel
+              daily={dailyRun}
+              onDownloadReport={() => void downloadDailyReport()}
+              onOpenChat={_props.onOpenRun ? () => _props.onOpenRun?.(dailyRun.workflowId, dailyRun.title) : undefined}
+            />
             <div className="kpi-two-tier-tiles">
             <KpiEmployeePanel
               variant="bar"
+              leadTile={
+                dailyRun.phase === 'waiting' ? (
+                  <KpiDailyWaitingTile
+                    day={dailyRun.today?.day ? dailyRun.today.day.split('-').reverse().join('.') : 'сегодня'}
+                  />
+                ) : null
+              }
               metrics={positionKpi.metrics}
               compensation={positionCompensation.compensation}
               compensationLoading={positionCompensation.loading}

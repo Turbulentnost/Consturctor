@@ -2,7 +2,18 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    JSON,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -199,6 +210,54 @@ class PositionKpiSubjectFact(Base):
     period_to: Mapped[date] = mapped_column(Date, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class PositionKpiDailyRun(Base):
+    """Дневной прогон агента «Запуск модулей KPI» по должности: захват, итог, отчёт ИЦПП."""
+
+    __tablename__ = "position_kpi_daily_runs"
+    __table_args__ = (UniqueConstraint("profile_id", "day", name="uq_position_kpi_daily_runs_key"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("position_kpi_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+    claimed_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # [{fio, subject, status, error, report_filename}] — кто посчитан, кто нет и почему.
+    people_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+
+class PositionKpiDailyReport(Base):
+    """Отчёт ИЦПП сотрудника, собранный агентом за день. Отчёт у каждого сотрудника свой."""
+
+    __tablename__ = "position_kpi_daily_reports"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "subject", "day", name="uq_position_kpi_daily_reports_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("position_kpi_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    subject: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    subject_fio: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    filename: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

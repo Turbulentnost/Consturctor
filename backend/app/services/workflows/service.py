@@ -2632,6 +2632,10 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         daily_assignment_runtime_tools,
         is_daily_assignment_agent,
     )
+    from app.services.workflows.kpi_launch_playbook import (
+        is_kpi_launch_agent,
+        kpi_launch_runtime_tools,
+    )
 
     collected = collect_runtime_whitelist(
         row=row,
@@ -2668,6 +2672,9 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
 
     if is_daily_assignment_agent(blob):
         return daily_assignment_runtime_tools()
+
+    if is_kpi_launch_agent(blob):
+        return kpi_launch_runtime_tools()
 
     if kind == "calendar_control" or is_calendar_control_agent(blob):
         return calendar_control_runtime_tools()

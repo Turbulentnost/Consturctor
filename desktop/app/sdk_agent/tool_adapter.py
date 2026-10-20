@@ -10,6 +10,8 @@ DEFAULT_TOOL_TIMEOUT_SECONDS = 90
 ASK_QUESTION_TIMEOUT_SECONDS = 15 * 60
 WAIT_TOOL_NAME = "agent.wait"
 WAIT_TIMEOUT_BUFFER_SECONDS = 60
+POWERSHELL_TOOL_NAME = "workspace.powershell_run"
+POWERSHELL_TIMEOUT_BUFFER_SECONDS = 15
 
 ASK_QUESTION_SPEC: dict[str, Any] = {
     "name": ASK_QUESTION_NAME,
@@ -159,6 +161,16 @@ def tool_timeout_seconds(name: str, arguments: dict[str, Any] | None = None) -> 
             limit = max(limit, int(registry.get(folded).definition.timeout_seconds))
     except Exception:
         pass
+    if folded == POWERSHELL_TOOL_NAME and isinstance(arguments, dict):
+        from app.tools.ac.powershell_tools import MAX_TIMEOUT_SECONDS
+
+        try:
+            requested = int(arguments.get("timeout_seconds") or 0)
+        except (TypeError, ValueError):
+            requested = 0
+        if requested > 0:
+            # The tool stops the command itself; leave it time to report that.
+            limit = max(limit, min(requested, MAX_TIMEOUT_SECONDS) + POWERSHELL_TIMEOUT_BUFFER_SECONDS)
     return int(limit)
 
 

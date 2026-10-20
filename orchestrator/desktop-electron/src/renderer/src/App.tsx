@@ -481,6 +481,7 @@ function AppShell(): React.JSX.Element {
   useEffect(() => {
     const watchingDecisions = view.kind === 'tab' && view.key === 'decisions'
     for (const entry of Object.values(runs.entries)) {
+      if (entry.hidden) continue
       const hitl = entry.state.pendingHitl
       const question = entry.state.pendingQuestion
       const requestId = hitl?.requestId || question?.requestId || ''
@@ -503,6 +504,7 @@ function AppShell(): React.JSX.Element {
 
   useEffect(() => {
     for (const entry of Object.values(runs.entries)) {
+      if (entry.hidden) continue
       const runId = entry.backendRunId || entry.state.activeRunId || entry.workflowId
       if (!runId) continue
       const live = Boolean(entry.state.running || entry.state.pendingHitl || entry.state.pendingQuestion)
@@ -849,7 +851,7 @@ function AppShell(): React.JSX.Element {
       case 'decisions':
         return <DecisionsGridTab user={activeUser} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
       case 'kpi':
-        return <KpiGridTab user={activeUser} onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} onRunAgent={(workflowId, title, message) => { setLastTab('kpi'); setView({ kind: 'agentrun', workflowId, title, autoStart: true, initialMessage: message }) }} />
+        return <KpiGridTab user={activeUser} onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} onRunAgent={(workflowId, title, message) => { setLastTab('kpi'); setView({ kind: 'agentrun', workflowId, title, autoStart: true, initialMessage: message }) }} onOpenRun={(workflowId, title) => { setLastTab('kpi'); void openAgentRun(workflowId, '', false, title) }} />
       case 'knowledge':
         return <KnowledgeGridTab user={activeUser} />
       case 'history':

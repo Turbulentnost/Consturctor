@@ -126,6 +126,8 @@ def _invoke_server_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """
     from app.tools import runtime_api
 
+    if name == "kpi.publish_position_result":
+        args = _attach_kpi_reports(args)
     timeout = _server_tool_timeout(name)
     try:
         data = runtime_api.request(
@@ -142,6 +144,35 @@ def _invoke_server_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         return _materialize_downloaded_artifact(payload)
     payload = data if isinstance(data, dict) else {"result": data}
     return _materialize_downloaded_artifact(payload) if isinstance(data, dict) else payload
+
+
+_KPI_REPORT_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _attach_kpi_reports(args: dict[str, Any]) -> dict[str, Any]:
+    """Отчёт ИЦПП лежит на этом компьютере: сервер получает его содержимое, не путь."""
+    people = args.get("people")
+    if not isinstance(people, list):
+        return args
+    out: list[Any] = []
+    for person in people:
+        if not isinstance(person, dict):
+            out.append(person)
+            continue
+        item = dict(person)
+        raw_path = str(item.pop("report_path", "") or "").strip()
+        if raw_path and not item.get("report_base64"):
+            path = Path(raw_path).expanduser()
+            if not path.is_file():
+                raise ToolHostError(f"Отчёт не найден: {raw_path}")
+            if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+                raise ToolHostError(f"Отчёт должен быть xlsx: {raw_path}")
+            if path.stat().st_size > _KPI_REPORT_MAX_BYTES:
+                raise ToolHostError(f"Отчёт больше 10 МБ: {raw_path}")
+            item["report_base64"] = base64.b64encode(path.read_bytes()).decode("ascii")
+            item.setdefault("report_filename", path.name)
+        out.append(item)
+    return {**args, "people": out}
 
 
 def _write_artifact_bytes(name: str, content: bytes, result: dict[str, Any]) -> dict[str, Any]:

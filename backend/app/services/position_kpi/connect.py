@@ -24,6 +24,7 @@ from app.models.position_kpi import (
     PositionKpiSubjectFact,
 )
 from app.services.position_kpi.daily import (
+    _is_agent_payload,
     department_key,
     normalize_position_name,
     resolve_profile,
@@ -524,7 +525,12 @@ def invalidate_profile_cache(db: Session, profile_id: str) -> None:
     if not profile_id:
         return
     db.execute(delete(PositionKpiDailyFact).where(PositionKpiDailyFact.profile_id == profile_id))
-    db.execute(delete(PositionKpiSubjectFact).where(PositionKpiSubjectFact.profile_id == profile_id))
+    rows = db.scalars(
+        select(PositionKpiSubjectFact).where(PositionKpiSubjectFact.profile_id == profile_id)
+    ).all()
+    for row in rows:
+        if not _is_agent_payload(row.payload):
+            db.delete(row)
 
 
 BUILTIN_PREFIX = "kpi.sources."

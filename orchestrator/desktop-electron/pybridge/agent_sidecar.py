@@ -149,6 +149,7 @@ from app.sdk_agent.files import (  # noqa: E402
     seed_workflow_files,
 )
 from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E402
+from app.tools.ac.powershell_tools import is_destructive_powershell_command  # noqa: E402
 from app.sdk_agent.prompt import (  # noqa: E402
     build_continue_run_prompt,
     build_demo_sdk_prompt,
@@ -183,6 +184,7 @@ _NEVER_CONFIRM = frozenset(
     {
         "notify.send",
         "notify",
+        "kpi.publish_position_result",
         "code.write_python",
         "code.run_python",
         "report.export_document",
@@ -206,6 +208,7 @@ _READ_EXACT = frozenset(
         "office.read_file",
         "onec.odata_catalog",
         "onec.odata_get",
+        "onec.position_holders",
         "onec.sql_query",
         "onec.erp_assignments",
         "onec.download_artifact",
@@ -224,6 +227,8 @@ _READ_EXACT = frozenset(
         "users.subordinates",
         "agent.schedule",
         "agent.schedule.cancel",
+        "get_current_date",
+        "kpi.read_methodology",
     }
 )
 _READ_PREFIXES = ("onec.search_", "onec.get_", "imap.", "turboproject.")
@@ -885,11 +890,50 @@ def _whitelist_tool_names(record: Any) -> list[str]:
     return names
 
 
+_KPI_LAUNCH_PLATFORM_ID = "80d85957-2002-480d-b058-caa7a8198711"
+_KPI_LAUNCH_TITLE = "запуск модулей kpi"
+_KPI_LAUNCH_TOOLS = frozenset(
+    {
+        "onec.position_holders",
+        "onec.odata_catalog",
+        "onec.odata_get",
+        "onec.sql_query",
+        "kpi.publish_position_result",
+        "workspace.powershell_run",
+    }
+)
+_KPI_SHELL_TOOL = "workspace.powershell_run"
+# A module waits up to 120 s for Outlook and then reads 1C: 90 s cut it off mid-run.
+_KPI_SHELL_TIMEOUT_SECONDS = 300
+# Runner and bridge give up a little later than the tool, so its own timeout error gets through.
+_KPI_SHELL_SPEC_TIMEOUT_SECONDS = _KPI_SHELL_TIMEOUT_SECONDS + 15
+# Workflow ids whose PowerShell runs unattended; destructive commands still ask a person.
+_KPI_LAUNCH_WORKFLOWS: set[str] = set()
+
+
+def _is_kpi_launch_workflow(record: Any) -> bool:
+    title = " ".join(str(getattr(record, "title", "") or "").casefold().split())
+    notes = str(getattr(record, "notes", "") or "").casefold()
+    return _KPI_LAUNCH_TITLE in title or _KPI_LAUNCH_PLATFORM_ID in notes
+
+
+def _kpi_shell_auto_approved(workflow_id: str, tool: str, args: dict[str, Any]) -> bool:
+    if tool != _KPI_SHELL_TOOL or workflow_id not in _KPI_LAUNCH_WORKFLOWS:
+        return False
+    return not is_destructive_powershell_command(str(args.get("command") or ""))
+
+
 def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
     """Limit an agent to its formation whitelist; fall back to SD/RK/calendar packs."""
     allowed: set[str] | None = None
     names = _whitelist_tool_names(record)
-    if names:
+    kpi_launch = _is_kpi_launch_workflow(record)
+    workflow_id = str(getattr(record, "id", "") or "")
+    if kpi_launch and workflow_id:
+        _KPI_LAUNCH_WORKFLOWS.add(workflow_id)
+    if kpi_launch:
+        allowed = set(names) | _KPI_LAUNCH_TOOLS
+    elif names:
         allowed = set(names)
     elif _is_calendar_control_workflow(record):
         allowed = _CALENDAR_CONTROL_TOOLS
@@ -899,13 +943,22 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
         allowed = _RK_MEETING_TOOLS
     if allowed is None:
         return None
+    allowed = set(allowed)
     allowed.add("get_current_date")
     allowed.add("kpi.read_methodology")
-    return [
+    specs = [
         item
         for item in sdk_tool_specs()
         if str(item.get("name") or "") in allowed
     ]
+    if kpi_launch:
+        specs = [
+            {**item, "timeoutSeconds": _KPI_SHELL_SPEC_TIMEOUT_SECONDS}
+            if item.get("name") == _KPI_SHELL_TOOL
+            else item
+            for item in specs
+        ]
+    return specs
 
 
 def _is_outlook_series_prompt(prompt: str) -> bool:
@@ -1740,6 +1793,9 @@ class ElectronBridge(CursorSdkBridge):
                 },
             )
             return
+        if tool == _KPI_SHELL_TOOL and workflow_id in _KPI_LAUNCH_WORKFLOWS:
+            args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+            payload = {**payload, "arguments": {**args, "timeout_seconds": _KPI_SHELL_TIMEOUT_SECONDS}}
         return super()._handle_tool_request(
             process,
             payload,
@@ -1790,6 +1846,8 @@ class ElectronBridge(CursorSdkBridge):
             if not needs_confirmation(tool):
                 return True, None
         except Exception:  # noqa: BLE001
+            return True, None
+        if _kpi_shell_auto_approved(str(self._knowledge_workflow_id or ""), tool, args):
             return True, None
         approved = self._hitl_gate.request(tool, args)
         if approved:

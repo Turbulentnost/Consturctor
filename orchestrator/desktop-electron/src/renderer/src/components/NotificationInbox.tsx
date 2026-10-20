@@ -58,7 +58,7 @@ export function NotificationInbox({
   const [now, setNow] = useState(() => Date.now())
   const liveItems = useMemo(() => {
     return Object.values(runs.entries)
-      .filter((entry) => !entry.background && isLiveRunState(entry.state))
+      .filter((entry) => !entry.background && !entry.hidden && isLiveRunState(entry.state))
       .map((entry) => {
         const startedAt = entry.state.runningSinceMs || now
         const runId = entry.state.activeRunId || entry.backendRunId || entry.workflowId

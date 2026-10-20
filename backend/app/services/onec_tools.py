@@ -201,6 +201,7 @@ ONEC_TOOLS = frozenset(
         "onec.docflow_protocol_card",
         "onec.meeting_protocols",
         "onec.meeting_protocol_write",
+        "onec.position_holders",
     }
 )
 ONEC_ODATA_WRITE_TOOLS = frozenset(
@@ -1582,6 +1583,22 @@ def _stub_odata_catalog(args: dict[str, Any]) -> dict[str, Any]:
     return _catalog_from_sources(args, allow_live=False)
 
 
+def _position_holders(args: dict[str, Any]) -> dict[str, Any]:
+    from app.tools.onec.position_holders import invoke_position_holders
+
+    try:
+        return invoke_position_holders(args)
+    except ValueError as exc:
+        raise OnecToolError(str(exc)) from exc
+
+
+def _stub_position_holders(args: dict[str, Any]) -> dict[str, Any]:
+    del args
+    raise OnecToolError(
+        "ODATA_BASE_URL не настроен. onec.position_holders читает, кто сейчас на должности."
+    )
+
+
 STUB_HANDLERS = {
     "onec.odata_catalog": _stub_odata_catalog,
     "onec.odata_get": _stub_odata_get,
@@ -1612,6 +1629,7 @@ STUB_HANDLERS = {
     "onec.docflow_protocol_card": _docflow_protocol_card,
     "onec.meeting_protocols": _stub_meeting_protocols,
     "onec.meeting_protocol_write": _stub_meeting_protocol_write,
+    "onec.position_holders": _stub_position_holders,
 }
 
 REAL_HANDLERS = {
@@ -1643,4 +1661,5 @@ REAL_HANDLERS = {
     "onec.docflow_protocol_card": _docflow_protocol_card,
     "onec.meeting_protocols": _list_meeting_protocols,
     "onec.meeting_protocol_write": _meeting_protocol_write,
+    "onec.position_holders": _position_holders,
 }
