@@ -652,6 +652,7 @@ export function SubordinateKpiDialog({
   dateFrom,
   dateTo,
   person,
+  initialMode = 'all',
   onClose,
   onDownload,
   onApply,
@@ -664,6 +665,7 @@ export function SubordinateKpiDialog({
   dateFrom: string
   dateTo: string
   person: string
+  initialMode?: ChartMode
   onClose: () => void
   onDownload: () => void
   onApply: (slice: KpiSlice) => void
@@ -682,7 +684,7 @@ export function SubordinateKpiDialog({
   const [selected, setSelected] = useState<string[]>([])
   const [query, setQuery] = useState('')
   const [groups, setGroups] = useState<StaffGroup[]>(() => readGroups(ownerId))
-  const [mode, setMode] = useState<ChartMode>('all')
+  const [mode, setMode] = useState<ChartMode>(initialMode)
   const [view, setView] = useState<KpiView>('summary')
   const [renameId, setRenameId] = useState('')
   const [openIds, setOpenIds] = useState<Set<string>>(new Set())

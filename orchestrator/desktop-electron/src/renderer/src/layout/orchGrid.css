@@ -137,6 +137,25 @@
   font-weight: 600;
 }
 
+.orch-grid-header-actions .docflow-refresh-btn {
+  gap: 6px;
+}
+
+.orch-grid-header-actions .docflow-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.orch-grid-header-actions .docflow-refresh-btn .is-spinning {
+  animation: docflow-refresh-spin 0.8s linear infinite;
+}
+
+@keyframes docflow-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .orch-grid-header-actions .spec-launch-play {
   width: 12px;
   height: 12px;

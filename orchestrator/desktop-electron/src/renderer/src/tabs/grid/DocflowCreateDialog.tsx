@@ -27,7 +27,10 @@ import {
   postDocflowDocument,
   missingFields,
   readDocflowDocument,
+  loadOutgoingPhones,
   readUploadFile,
+  saveOutlookMessageFile,
+  sendOutgoingLetter,
   recallLastValues,
   rememberLastValues,
   updateDocflowDocument,
@@ -40,7 +43,7 @@ import {
   type DocflowUploadFile
 } from '../../workplace/docflowDocumentCreate'
 import { openDocflowAttachment } from '../../workplace/docflowAttachments'
-import { erpActorFio } from '../../workplace/userContext'
+import { erpActorFio, TURBO_DON_MAIL_DOMAIN, turboNameMailSlug } from '../../workplace/userContext'
 import { FioCombobox } from './FioCombobox'
 import './docflowCreate.css'
 
@@ -176,6 +179,7 @@ function FieldInput({
   field,
   value,
   userHints,
+  emailHints,
   readOnly,
   onChange
 }: {
@@ -184,6 +188,7 @@ function FieldInput({
   field: DocflowField
   value: string
   userHints: string[]
+  emailHints: string[]
   readOnly: boolean
   onChange: (value: string) => void
 }): React.JSX.Element {
@@ -219,11 +224,13 @@ function FieldInput({
   if (wraps) {
     return <GrowText value={value} placeholder={field.hint} onChange={onChange} />
   }
+  const emailList = field.key === 'EmailПолучателяПисьма' && emailHints.length ? 'df1c-outgoing-emails' : undefined
   return (
     <input
       className={`df1c-input${field.type === 'number' ? ' df1c-number' : ''}${field.type === 'date' ? ' df1c-date' : ''}`}
       type={field.type === 'date' ? 'date' : 'text'}
       inputMode={field.type === 'number' ? 'decimal' : undefined}
+      list={emailList}
       value={value}
       placeholder={field.hint}
       onChange={(event) => onChange(event.target.value)}
@@ -276,6 +283,8 @@ export function DocflowCreateDialog({
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [userHints, setUserHints] = useState<string[]>([])
+  const [emailHints, setEmailHints] = useState<string[]>([])
+  const [letterhead, setLetterhead] = useState(true)
   const [openedAt, setOpenedAt] = useState(nowLabel)
 
   const resetState = (): void => {
@@ -297,6 +306,14 @@ export function DocflowCreateDialog({
     setCard(null)
     if (request.mode === 'create') {
       setCardLoading(false)
+      setLetterhead(schema.id === 'outgoing')
+      if (schema.id === 'outgoing') {
+        const fromSchema = schema.recipient_emails || []
+        const seeded = 'zhalibin.max@gmail.com'
+        setEmailHints(
+          fromSchema.some((item) => item.toLowerCase() === seeded) ? fromSchema : [seeded, ...fromSchema]
+        )
+      }
       const base = initialValues(schema, erpActorFio(user))
       const last = request.prefill ? {} : recallLastValues(user.id, schema)
       const given = request.prefill?.values || {}
@@ -485,15 +502,100 @@ export function DocflowCreateDialog({
     setError('')
     try {
       if (request.mode === 'create') {
+        let uploadFiles = files
+        if (schema.id === 'outgoing') {
+          const subject = (values.ТемаСлужебнойЗаписки || '').trim()
+          const letterBody = (values.Содержание || '').trim()
+          const draft: Record<string, string> = {
+            ...payloadValues(),
+            ТемаСлужебнойЗаписки: subject,
+            Содержание: letterBody
+          }
+          const email = (draft.EmailПолучателяПисьма || '').trim()
+          if (!email.includes('@')) {
+            setError('Укажите email получателя — на него уйдёт письмо, и оно прикрепится к документу')
+            setPending(null)
+            return
+          }
+          if (!letterBody) {
+            setError('Укажите содержание — этот текст будет в письме')
+            setPending(null)
+            return
+          }
+          const phones = await loadOutgoingPhones(user)
+          const mailSlug = turboNameMailSlug(user)
+          const sender = {
+            fio: erpActorFio(user),
+            position: (user?.position || '').trim(),
+            from_email: mailSlug ? `${mailSlug}@${TURBO_DON_MAIL_DOMAIN}` : '',
+            work_phone: phones.work_phone,
+            mobile_phone: phones.mobile_phone
+          }
+          const existing = request.outgoingMail
+          if (existing) {
+            if (!existing.entryId) {
+              setError('У этого письма нет карточки Outlook, файл .msg прикрепить нельзя')
+              setPending(null)
+              return
+            }
+            const saved = await saveOutlookMessageFile(user, existing.entryId)
+            if (!saved.ok) {
+              setError(saved.error)
+              setPending(null)
+              return
+            }
+            uploadFiles = [...files.filter((file) => file.name !== saved.file.name), saved.file]
+          } else {
+            const sent = await sendOutgoingLetter(user, { to: email, subject, body: letterBody, sender })
+            if (!sent.ok) {
+              setError(sent.error)
+              setPending(null)
+              return
+            }
+            if (sent.fromEmail.includes('@')) sender.from_email = sent.fromEmail
+            uploadFiles = [...files.filter((file) => file.name !== sent.file.name), sent.file]
+          }
+          const result = await createDocflowDocument(
+            user,
+            schema.id,
+            draft,
+            payloadTables(),
+            uploadFiles,
+            request.prefill?.basis || null,
+            post,
+            letterhead,
+            sender
+          )
+          if (result.ok) {
+            setEmailHints((current) => (current.some((item) => item.toLowerCase() === email.toLowerCase()) ? current : [...current, email]))
+          }
+          if (!result.ok) {
+            setError(result.error)
+            setPending(null)
+            return
+          }
+          if (!request.prefill) rememberLastValues(user.id, schema, values)
+          onSaved(result.summary)
+          if (close) onClose()
+          else onRequest({ mode: 'edit', kind: schema.id, refKey: result.refKey })
+          return
+        }
         const result = await createDocflowDocument(
           user,
           schema.id,
           payloadValues(),
           payloadTables(),
-          files,
+          uploadFiles,
           request.prefill?.basis || null,
-          post
+          post,
+          false
         )
+        if (result.ok && schema.id === 'outgoing') {
+          const email = (payloadValues().EmailПолучателяПисьма || '').trim()
+          if (email.includes('@')) {
+            setEmailHints((current) => (current.some((item) => item.toLowerCase() === email.toLowerCase()) ? current : [...current, email]))
+          }
+        }
         if (!result.ok) {
           setError(result.error)
           setPending(null)
@@ -607,6 +709,7 @@ export function DocflowCreateDialog({
             field={field}
             value={values[field.key] || ''}
             userHints={userHints}
+            emailHints={emailHints}
             readOnly={readOnly}
             onChange={(value) => setValue(field.key, value)}
           />
@@ -642,7 +745,9 @@ export function DocflowCreateDialog({
           : editing
             ? `Записать изменения (${changedLabels.slice(0, 4).join(', ')}${changedLabels.length > 4 ? '…' : ''})?`
             : `Записать черновик${topic ? ` «${topic.trim().slice(0, 60)}»` : ''}${
-                files.length ? `, файлов: ${files.length}` : ''
+                schema.id === 'outgoing' && letterhead ? ', с фирменным бланком' : ''
+              }${files.length ? `, файлов: ${files.length}` : ''}${
+                schema.id === 'outgoing' ? '. Письмо уйдёт на email получателя и прикрепится файлом .msg' : ''
               }?`
 
   return createPortal(
@@ -990,6 +1095,7 @@ export function DocflowCreateDialog({
                                   }
                                   value={row.cells[column.key] || ''}
                                   userHints={userHints}
+                                  emailHints={emailHints}
                                   readOnly={readOnly}
                                   onChange={(value) => patchRow(table.key, row.id, column.key, value)}
                                 />
@@ -1033,6 +1139,25 @@ export function DocflowCreateDialog({
                     ? '«Записать» сохраняет черновик. «Провести» проводит документ и оставляет форму. «Провести и закрыть» проводит и закрывает форму.'
                     : 'Проведённый документ здесь только для просмотра. Новый документ можно создать на основании или копированием.'}
                 </p>
+              ) : schema.id === 'outgoing' ? (
+                <>
+                  <label className="df1c-letterhead">
+                    <input type="checkbox" checked={letterhead} onChange={(event) => setLetterhead(event.target.checked)} />
+                    Приложить фирменный бланк: текст, email, подпись и логотип
+                  </label>
+                  {emailHints.length ? (
+                    <datalist id="df1c-outgoing-emails">
+                      {emailHints.map((email) => (
+                        <option key={email} value={email} />
+                      ))}
+                    </datalist>
+                  ) : null}
+                  <p className="df1c-muted">
+                    {request.mode === 'create' && request.outgoingMail
+                      ? '«Записать» регистрирует это письмо исходящей в 1С и прикрепляет его файл .msg. Повторно оно не отправляется. На бланк попадает текст из «Содержание».'
+                      : '«Записать» отправляет письмо: в текст попадает «Содержание», затем подпись и логотип. Тема остаётся темой. Письмо прикрепляется файлом .msg, документ сохраняется черновиком. «Провести» проводит его в 1С.'}
+                  </p>
+                </>
               ) : (
                 <p className="df1c-muted">
                   «Записать» сохраняет черновик. «Провести» проводит документ и оставляет форму. «Провести и закрыть»

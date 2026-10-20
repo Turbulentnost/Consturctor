@@ -6,11 +6,7 @@ import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { WorkplaceGlobalMonthPicker, WorkplaceGlobalRangePicker } from '../../workplace/workplacePeriod'
 import {
   STANDARD_TAB_LABELS,
-  TAB_CHROME_COLS,
   TAB_CHROME_MARGIN,
-  TAB_CHROME_MAX_ROWS,
-  tabChromeGridDimensions,
-  tabUsesSnapGrid,
   computeTabChromeMetrics,
   TAB_CHROME_SNAP_MIN_ROW,
   isTileWidgetId,
@@ -19,6 +15,7 @@ import {
   type TabChromeMeta,
   useTabChromeLayout
 } from './useTabChromeLayout'
+import { tabChromeGridDimensions, tabUsesSnapGrid } from './tabLayouts'
 import './tabChrome.css'
 
 const RESIZE_HANDLES = ['s', 'w', 'e', 'n', 'sw', 'nw', 'se', 'ne'] as const
@@ -304,10 +301,9 @@ export function TabChromeGrid({
     if (!node) return
     const measure = (): void => {
       if (!node.isConnected) return
-      // Hidden / collapsed canvases (tab not visible, zero box) must not bin widgets.
-      if (node.offsetParent === null && node.getClientRects().length === 0) return
       const height = node.clientHeight
       const width = node.clientWidth
+      // Скрытая вкладка даёт нулевой размер — замер пропускаем, чтобы не сбить раскладку.
       if (height < 8 || width < 8) return
       const next = computeTabChromeMetrics(height, width, usedRows, metricsOptions)
       setMetrics((prev) =>

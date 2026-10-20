@@ -867,6 +867,12 @@ def _resolve_navigation_names(row: dict[str, Any], args: dict[str, Any], *, budg
                 return
             if not str(key).endswith("@navigationLinkUrl"):
                 continue
+            field = key[: -len("@navigationLinkUrl")]
+            existing = obj.get(field)
+            if isinstance(existing, dict) and _navigation_display_name(existing):
+                continue
+            if _nonempty_odata_value(existing) and not _GUID_RE.match(str(existing).strip()):
+                continue
             path = str(value or "").strip().lstrip("/")
             if not path:
                 continue

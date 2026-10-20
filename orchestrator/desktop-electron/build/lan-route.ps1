@@ -27,17 +27,45 @@ try {
     $installed = $null -ne $app
   }
   if (-not $installed) {
+    $proc = Get-Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.ProcessName -like '*Happ*' } |
+      Select-Object -First 1
+    $svc = Get-Service -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -like '*Happ*' -or $_.DisplayName -like '*Happ*' } |
+      Select-Object -First 1
+    $installed = ($null -ne $proc) -or ($null -ne $svc)
+  }
+  if (-not $installed) {
     Write-Log 'Happ is not installed, route skipped'
     exit 0
   }
 
   $happNames = @($happ | ForEach-Object { $_.Name })
-  $lan = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+  # Happ often replaces 0.0.0.0/0, so the physical gateway lives on the NIC, not in the winning default route.
+  $nic = Get-NetIPConfiguration -ErrorAction SilentlyContinue |
     Where-Object {
-      $_.NextHop -and $_.NextHop -ne '0.0.0.0' -and ($happNames -notcontains $_.InterfaceAlias)
+      $_.NetAdapter.Status -eq 'Up' -and
+      $_.IPv4DefaultGateway -and
+      $_.IPv4DefaultGateway.NextHop -and
+      ($happNames -notcontains $_.InterfaceAlias) -and
+      $_.InterfaceAlias -notlike 'happ-*' -and
+      $_.InterfaceDescription -notlike '*Happ*' -and
+      $_.InterfaceAlias -notlike 'vEthernet*'
     } |
-    Sort-Object RouteMetric, InterfaceMetric |
     Select-Object -First 1
+  if ($nic) {
+    $lan = [pscustomobject]@{
+      InterfaceAlias = $nic.InterfaceAlias
+      NextHop = $nic.IPv4DefaultGateway.NextHop
+    }
+  } else {
+    $lan = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.NextHop -and $_.NextHop -ne '0.0.0.0' -and ($happNames -notcontains $_.InterfaceAlias)
+      } |
+      Sort-Object RouteMetric, InterfaceMetric |
+      Select-Object -First 1
+  }
   if (-not $lan) {
     Write-Log 'Happ is present, but no physical default gateway was found'
     exit 0

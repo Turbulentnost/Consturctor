@@ -8,6 +8,7 @@ from app.tools.ac.com_backed_tools import (
 from app.tools.ac.workers.outlook_com_actions import (
     _attach_attendees,
     _calendar_access_hint,
+    _calendar_read_targets,
     _compute_free_slots,
     _folder_matches_person,
     _is_public_meetings_label,
@@ -26,6 +27,17 @@ from app.tools.ac.workers.outlook_com_actions import (
 class _DummyWorker:
     def execute(self, task):
         return None
+
+
+def test_calendar_read_targets_do_not_prepend_profile_owner() -> None:
+    amural = "Амураль Игорь Борисович"
+    ilchenko = "Ильченко Екатерина Александровна"
+    assert _calendar_read_targets([amural], [], ilchenko, include_own=False) == [amural]
+    assert _calendar_read_targets([amural], [], ilchenko, include_own=True) == [amural, ilchenko]
+    # На компьютере Мангасаряна его календарь уже в списке — второй раз не добавляем.
+    assert _calendar_read_targets([amural], [], amural, include_own=True) == [amural]
+    # Без явного списка по-прежнему читается календарь профиля.
+    assert _calendar_read_targets([], [], ilchenko, include_own=False) == [ilchenko]
 
 
 def test_wall_clock_shift_adds_moscow_offset_back() -> None:
@@ -53,6 +65,121 @@ def test_outlook_create_runs_in_gui_process() -> None:
     read = registry.get("outlook.read_calendar")
     assert isinstance(create._worker, OutlookComWorker)
     assert isinstance(read._worker, OutlookComWorker)
+
+
+class _FakeWinreg:
+    HKEY_CURRENT_USER = "HKCU"
+    KEY_READ = 1
+    KEY_SET_VALUE = 2
+
+    def __init__(self, values: dict[str, int] | None) -> None:
+        self.values = values
+
+    def OpenKey(self, _root, _path, _reserved, _access):  # noqa: N802
+        if self.values is None:
+            raise OSError("no key")
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+    def QueryValueEx(self, _key, name):  # noqa: N802
+        if name not in self.values:
+            raise OSError(name)
+        return self.values[name], 4
+
+    def DeleteValue(self, _key, name):  # noqa: N802
+        del self.values[name]
+
+
+def test_deny_policy_written_by_app_is_removed() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _remove_deny_policy
+
+    prompts = ("PromptOOMSend", "PromptOOMAddressBookAccess")
+    fake = _FakeWinreg({"AdminSecurityMode": 3, "PromptOOMSend": 2, "PromptOOMAddressBookAccess": 2})
+    _remove_deny_policy(fake, "16.0", prompts)
+    assert fake.values == {}
+
+
+def test_admin_outlook_policy_is_kept() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _remove_deny_policy
+
+    prompts = ("PromptOOMSend", "PromptOOMAddressBookAccess")
+    admin = {"AdminSecurityMode": 3, "PromptOOMSend": 1, "PromptOOMAddressBookAccess": 2}
+    fake = _FakeWinreg(dict(admin))
+    _remove_deny_policy(fake, "16.0", prompts)
+    assert fake.values == admin
+    _remove_deny_policy(_FakeWinreg(None), "16.0", prompts)
+
+
+def test_outgoing_letter_body_is_content_not_subject() -> None:
+    import pytest
+
+    from app.tools.ac.workers.outlook_com_actions import _outgoing_letter_fields
+    from app.tools.ac.workers.outlook_com_errors import OutlookAccessError
+
+    _to, subject, body = _outgoing_letter_fields(
+        {
+            "to": "a@b.ru",
+            "subject": "ПРОВЕРКА ОТПРАВКИ ИСХОДЯШКИ",
+            "body": "Текст из содержания исходящей",
+        }
+    )
+    assert subject == "ПРОВЕРКА ОТПРАВКИ ИСХОДЯШКИ"
+    assert body == "Текст из содержания исходящей"
+    with pytest.raises(OutlookAccessError, match="содержание"):
+        _outgoing_letter_fields({"to": "a@b.ru", "subject": "Тема", "body": "  "})
+
+
+def test_send_outgoing_letter_requires_email() -> None:
+    import pytest
+
+    from app.tools.ac.workers.outlook_com_actions import send_outgoing_letter
+    from app.tools.ac.workers.outlook_com_errors import OutlookAccessError
+
+    with pytest.raises(OutlookAccessError, match="email"):
+        send_outgoing_letter({"to": "не адрес", "subject": "Тема", "body": "Текст"})
+
+
+def test_outgoing_letter_signature_keeps_company_and_phones() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _signature_lines
+
+    lines = _signature_lines(
+        {
+            "fio": "Жалыбин Максим Дмитриевич",
+            "position": "Инженер",
+            "work_phone": "200",
+            "mobile_phone": "900",
+        },
+        "testii@turbo-don.ru",
+    )
+    assert lines[0] == "С уважением,"
+    assert "ГК «Турбулентность-ДОН»" in lines
+    assert "1-ый километр Новошахтинского шоссе, база «Спектр», стр. 6/8" in lines
+    assert "testii@turbo-don.ru" in lines
+    assert "раб. тел: 200" in lines
+    assert "тел. моб.: 900" in lines
+
+
+def test_send_outgoing_letter_is_routed() -> None:
+    from app.tools.ac.dispatch import build_registry
+    from app.tools.ac.workers.models import WorkerTask
+    from app.tools.ac.workers.outlook_com_worker import OutlookComWorker
+
+    registry = build_registry()
+    assert registry.has_tool("outlook.send_outgoing_letter")
+    result = OutlookComWorker(allow_direct_com_calls=False).execute(
+        WorkerTask(
+            task_id="outgoing-letter",
+            tool_name="outlook.send_outgoing_letter",
+            input_data={"to": "a@b.c", "subject": "Тема", "body": "Текст"},
+        )
+    )
+    assert result.ok is False
+    assert result.error_type == "DIRECT_COM_CALL_DISABLED"
 
 
 def test_outlook_mail_panel_tools_registered() -> None:
@@ -104,7 +231,16 @@ def test_meeting_specs_keep_attendees_and_organizer() -> None:
     assert specs[0]["attendees"] == [
         "Мангасарян Давид Каренович",
         "Уставицкий А. А.",
+        "Совещания <calendar@turbo-don.ru>",
     ]
+    again = _meeting_specs(
+        {
+            "subject": "Планерка",
+            "start": "2026-09-07T10:00:00",
+            "attendees": ["Совещания <calendar@turbo-don.ru>"],
+        }
+    )
+    assert again[0]["attendees"] == ["Совещания <calendar@turbo-don.ru>"]
     assert specs[0]["organizer"] == "Ильченко Екатерина Александровна"
     assert specs[0]["send_invites"] is True
     assert specs[0]["recurrence_kind"] == ""

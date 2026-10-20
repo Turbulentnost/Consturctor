@@ -1,6 +1,7 @@
 import { Send } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { PageKey } from '../components/Sidebar'
+import { openWorkplaceTab } from './workplaceNav'
 import { useRuns } from '../store/runs'
 import { personalAgentWorkflowId } from './personalAgent'
 import {
@@ -32,14 +33,14 @@ function openInBrowser(url: string): void {
   window.open(url, '_blank', 'noopener')
 }
 
-function applyActions(actions: AssistantAction[], onNavigate: (key: PageKey) => void): void {
+function applyActions(actions: AssistantAction[]): void {
   for (const action of actions) {
-    if (action.type === 'navigate') onNavigate(action.key)
+    if (action.type === 'navigate') openWorkplaceTab(action.key, action.intent)
     else openInBrowser(action.url)
   }
 }
 
-export function ChatDock({ userId, pageKey, onNavigate, onOpenSupport }: ChatDockProps): React.JSX.Element {
+export function ChatDock({ userId, pageKey, onOpenSupport }: ChatDockProps): React.JSX.Element {
   const runs = useRuns()
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'orch' | 'support'>('orch')
@@ -71,8 +72,9 @@ export function ChatDock({ userId, pageKey, onNavigate, onOpenSupport }: ChatDoc
     if (!state || state.running) return
     if (state.activeRunId && state.activeRunId !== awaitingRun) return
     const result = [...state.items].reverse().find((item) => item.kind === 'result')
+    const spoken = [...state.items].reverse().find((item) => item.kind === 'message' && item.role === 'agent')
     const errorItem = [...state.items].reverse().find((item) => item.kind === 'system' && item.tone === 'error')
-    const raw = result?.text || state.error || errorItem?.text || ''
+    const raw = result?.text || spoken?.text || state.error || errorItem?.text || ''
     consumedRun.current = awaitingRun
     setAwaitingRun('')
     if (!raw.trim()) {
@@ -84,12 +86,12 @@ export function ChatDock({ userId, pageKey, onNavigate, onOpenSupport }: ChatDoc
     }
     const parsed = takeMarkers(raw)
     setLines((prev) => [...prev, { id: lineId(), role: 'assistant', text: parsed.text }])
-    applyActions(parsed.actions, onNavigate)
-  }, [awaitingRun, onNavigate, runs, workflowId, run?.state.running, run?.state.items, run?.state.error])
+    applyActions(parsed.actions)
+  }, [awaitingRun, runs, workflowId, run?.state.running, run?.state.items, run?.state.error])
 
   function pushAssistant(text: string, actions: AssistantAction[]): void {
     setLines((prev) => [...prev, { id: lineId(), role: 'assistant', text }])
-    applyActions(actions, onNavigate)
+    applyActions(actions)
   }
 
   function send(text: string): void {
@@ -155,7 +157,12 @@ export function ChatDock({ userId, pageKey, onNavigate, onOpenSupport }: ChatDoc
               </p>
             ))}
             {pending?.question ? <p className="chat-dock-line is-assistant">{pending.question}</p> : null}
-            {awaitingRun ? <p className="chat-dock-line is-wait">Смотрю по приложению…</p> : null}
+            {awaitingRun ? (
+              <p className="chat-dock-line is-assistant">
+                {[...(run?.state.items || [])].reverse().find((item) => item.kind === 'message' && item.role === 'agent')
+                  ?.text || 'Смотрю по приложению…'}
+              </p>
+            ) : null}
           </div>
           <form
             className="chat-dock-form"

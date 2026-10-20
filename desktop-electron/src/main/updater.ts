@@ -224,10 +224,21 @@ async function downloadInstaller(asset: GithubAsset, dest: string): Promise<void
 }
 
 function launchInstaller(installerPath: string): void {
-  const child = spawn(installerPath, ['/S', '--updated', '--force-run'], {
+  // CreateProcess cannot raise UAC. Orchestrator-Setup is per-machine, so a direct
+  // spawn fails with EACCES and crashes the main process. ShellExecute runas asks
+  // for administrator the same way the Orchestrator updater already does.
+  const escaped = installerPath.replace(/'/g, "''")
+  const command = [
+    `Unblock-File -LiteralPath '${escaped}' -ErrorAction SilentlyContinue`,
+    `Start-Process -FilePath '${escaped}' -ArgumentList '/S','--updated','--force-run' -Verb RunAs`
+  ].join('; ')
+  const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true
+  })
+  child.on('error', (err) => {
+    console.error(`Installer launch failed: ${err.message}`)
   })
   child.unref()
 }

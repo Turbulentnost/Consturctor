@@ -109,7 +109,22 @@ export interface RunStore {
   hydrateLive: () => Promise<void>
 }
 
-const RunContext = createContext<RunStore | null>(null)
+// Горячее обновление пересоздаёт модуль и новый createContext. Старый
+// RunProvider остаётся в дереве, useRuns читает уже другой context и роняет
+// всё окно — вместе с запросами к Outlook. Держим один context на жизнь страницы.
+const runContextHolder = globalThis as typeof globalThis & {
+  __orchestratorRunContext?: React.Context<RunStore | null>
+}
+if (!runContextHolder.__orchestratorRunContext) {
+  runContextHolder.__orchestratorRunContext = createContext<RunStore | null>(null)
+}
+const RunContext = runContextHolder.__orchestratorRunContext
+
+if (import.meta.hot) {
+  const hotData = import.meta.hot.data as { runsModule?: boolean }
+  if (hotData.runsModule) window.location.reload()
+  hotData.runsModule = true
+}
 
 function isActive(entry: RunEntry): boolean {
   return !entry.background && !entry.hidden && isLiveRunState(entry.state)

@@ -124,8 +124,47 @@ def pywin32_dll_dirs() -> list[str]:
     return dirs
 
 
+def redirect_win32com_cache() -> None:
+    """Писать gen_py в профиль пользователя, не в site-packages.
+
+    Установщик кладёт Python в Program Files. pywin32 при первом Dispatch
+    создаёт win32com/gen_py/__init__.py рядом с пакетом и падает с
+    Permission denied, если каталог gen_py уже есть, но не доступен для записи.
+    """
+    if not is_windows():
+        return
+    if "win32com.client.gencache" in sys.modules:
+        return
+    root = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP")
+    if not root:
+        return
+    gen_path = os.path.join(
+        root,
+        "Orchestrator",
+        "gen_py",
+        f"{sys.version_info.major}.{sys.version_info.minor}",
+    )
+    try:
+        os.makedirs(gen_path, exist_ok=True)
+        probe = os.path.join(gen_path, ".write-probe")
+        with open(probe, "w", encoding="ascii") as handle:
+            handle.write("")
+        os.remove(probe)
+    except OSError:
+        return
+    try:
+        win32com = importlib.import_module("win32com")
+    except Exception:
+        return
+    win32com.__gen_path__ = gen_path
+    generated = sys.modules.get("win32com.gen_py")
+    if generated is not None:
+        generated.__path__ = [gen_path]
+
+
 def ensure_pywin32_dll_path() -> None:
     """Добавить pywin32 DLL в PATH — иначе embedded Python после установщика не грузит COM."""
+    redirect_win32com_cache()
     extras = pywin32_dll_dirs()
     if not extras:
         return

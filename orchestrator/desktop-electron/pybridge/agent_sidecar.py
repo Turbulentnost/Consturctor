@@ -60,8 +60,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from run_context import RunContext
-from run_metrics import RunMetrics, runner_pid
+# Встроенный Python установщика (python312._pth) не кладёт папку скрипта в sys.path.
+_PYBRIDGE_DIR = str(Path(__file__).resolve().parent)
+if _PYBRIDGE_DIR not in sys.path:
+    sys.path.insert(0, _PYBRIDGE_DIR)
+
+from run_context import RunContext  # noqa: E402
+from run_metrics import RunMetrics, runner_pid  # noqa: E402
 
 os.environ["CONSTRUCTOR_SDK_OWNER"] = str(Path(__file__).resolve())
 
@@ -3111,8 +3116,13 @@ def _build_personal_agent_prompt(message: str, app_context: str = "") -> str:
         "Ты — Оркестратор, базовый агент рабочего места сотрудника в приложении «Оркестратор». "
         "Ты видишь и можешь использовать данные всего приложения: вкладки Сегодня, Процессы, Решения, "
         "Показатели, История, Настройки, а также серверные инструменты (пользователь, board, 1С, почта, "
-        "Turbo Project, файлы). Сначала получай факты инструментами, потом давай итог. "
-        "Весь ответ и вопросы пиши на русском."
+        "Turbo Project, файлы). "
+        "На приветствие и вопрос о текущей странице отвечай сразу по переданному контексту, "
+        "без чтения журнала запуска, поиска файлов и прочих инструментов. "
+        "Инструменты вызывай только если без них нельзя ответить: задачи, письма, протоколы, цифры. "
+        "Один итог и стоп: не повторяй тот же поиск. Весь ответ пиши по-русски, целиком, без обрывков слов. "
+        "Чтобы открыть вкладку, последней строкой добавь [[nav:КЛЮЧ]]. "
+        "Сводка KPI по людям одного сектора: [[nav:subordinate_tasks|kpi=people|unit=сектор ии]]."
         f"{context_block}\n"
         f"Вопрос сотрудника:\n{task}"
     )
@@ -5349,8 +5359,8 @@ class Sidecar:
         calendar_owner = isinstance(calendar_owners, list) and bool(calendar_owners)
         if calendar_owner:
             input_data["calendar_owners"] = [str(item or "").strip() for item in calendar_owners]
-        if "includeOwn" in command:
-            input_data["include_own"] = bool(command.get("includeOwn"))
+        if command.get("includeOwn"):
+            input_data["include_own"] = True
         days_forward = command.get("daysForward")
         if isinstance(days_forward, int) and days_forward > 0:
             input_data["days_forward"] = days_forward

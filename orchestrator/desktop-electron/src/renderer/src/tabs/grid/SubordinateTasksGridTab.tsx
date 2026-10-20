@@ -8,6 +8,7 @@ import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/gl
 import { textMatchesPageSearch, usePageSearchOptional } from '../../layout/pageSearchContext'
 import { SpecSummaryTiles } from '../../workplace/specV04Components'
 import { SubordinateKpiDialog } from './SubordinateKpiDialog'
+import type { SubordinateKpiNav } from '../../workplace/workplaceNav'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import './subordinateTasks.css'
 
@@ -460,7 +461,25 @@ function matchesFilter(row: FlatTask, filter: TaskFilter): boolean {
   return row.kind === filter
 }
 
-export function SubordinateTasksGridTab({ user }: { user: UserProfile }): React.JSX.Element {
+function foldUnit(value: string): string {
+  return value.toLowerCase().replace(/ё/g, 'е')
+}
+
+function textHitsUnit(text: string, unit: string): boolean {
+  const query = foldUnit(unit)
+  if (!query) return true
+  const hay = foldUnit(text)
+  if (hay.includes(query)) return true
+  return /искусствен|сектор ии|\bии\b/.test(query) && /искусствен/.test(hay)
+}
+
+export function SubordinateTasksGridTab({
+  user,
+  navKpi = null
+}: {
+  user: UserProfile
+  navKpi?: SubordinateKpiNav | null
+}): React.JSX.Element {
   const allowed = canUseSubordinateTasks(user)
   const initial = spanRange()
   const [preset, setPreset] = useState<PeriodPreset>('span')
@@ -470,6 +489,8 @@ export function SubordinateTasksGridTab({ user }: { user: UserProfile }): React.
   const [picked, setPicked] = useState<string[]>(() => readPicked(user.id))
   const [focusFio, setFocusFio] = useState('')
   const [kpiOpen, setKpiOpen] = useState(false)
+  const [kpiMode, setKpiMode] = useState<'all' | 'groups' | 'people'>('all')
+  const appliedKpi = useRef('')
   const [nameQuery, setNameQuery] = useState('')
   const [sort, setSort] = useState<SortState>(null)
   const [columnFilters, setColumnFilters] = useState<Partial<Record<TaskColumn, string>>>({})
@@ -491,6 +512,22 @@ export function SubordinateTasksGridTab({ user }: { user: UserProfile }): React.
   const pickedOwner = useRef(user.id)
   const pageSearch = usePageSearchOptional()
   const pageQuery = pageSearch?.query ?? ''
+
+  useEffect(() => {
+    if (!navKpi || !people.length) return
+    const token = `${navKpi.mode}|${navKpi.unit}|${people.map((person) => person.fio).join('|')}`
+    if (appliedKpi.current === token) return
+    appliedKpi.current = token
+    const named = groups.find((group) => textHitsUnit(group.name, navKpi.unit))
+    const names = named
+      ? named.members
+      : people.filter((person) => textHitsUnit(`${person.department} ${person.position}`, navKpi.unit)).map((person) => person.fio)
+    if (names.length) setPicked(names)
+    else if (navKpi.unit) setWarning(`Среди подчинённых нет подразделения «${navKpi.unit}».`)
+    setStaffView('people')
+    setKpiMode(navKpi.mode)
+    setKpiOpen(true)
+  }, [groups, navKpi, people])
 
   useEffect(() => {
     if (!allowed || !dateFrom || !dateTo) return
@@ -917,7 +954,15 @@ export function SubordinateTasksGridTab({ user }: { user: UserProfile }): React.
             {source ? ` · ${sourceLabel(source)}` : ''}
           </span>
           <div className="sub-tasks-actions">
-            <button type="button" className="sub-tasks-btn" onClick={() => setKpiOpen(true)} disabled={picked.length === 0}>
+            <button
+              type="button"
+              className="sub-tasks-btn"
+              onClick={() => {
+                setKpiMode('all')
+                setKpiOpen(true)
+              }}
+              disabled={picked.length === 0}
+            >
               Сводка KPI
             </button>
             <button type="button" className="sub-tasks-btn" onClick={exportTasks} disabled={visibleTasks.length === 0}>
@@ -1260,6 +1305,7 @@ export function SubordinateTasksGridTab({ user }: { user: UserProfile }): React.
           dateFrom={dateFrom}
           dateTo={dateTo}
           person={focusedFio}
+          initialMode={kpiMode}
           onClose={() => setKpiOpen(false)}
           onDownload={exportKpi}
           onApply={(slice) => {

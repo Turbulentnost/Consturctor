@@ -436,7 +436,7 @@ export function MeetingEditorDialog({
       end,
       location: location.trim(),
       attendees: people,
-      send_invites: sendInvites && people.length > 0,
+      send_invites: sendInvites,
       planner_fio: plannerFio,
       planner_position: plannerPosition
     }

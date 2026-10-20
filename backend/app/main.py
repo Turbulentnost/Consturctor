@@ -88,18 +88,31 @@ async def lifespan(_app: FastAPI):
     scheduler_tasks: list[asyncio.Task] = []
     try:
         db_ready = True
-        try:
-            init_db()
-            logger.info("App Postgres schema ready")
-        except Exception:
-            if not settings.app_db_optional:
-                raise
-            db_ready = False
-            logger.warning(
-                "App Postgres unavailable — starting without it (APP_DB_OPTIONAL=1): %s",
-                settings.database_url.split("@")[-1],
-                exc_info=True,
-            )
+        db_error: Exception | None = None
+        for attempt in range(1, 21):
+            try:
+                init_db()
+                logger.info("App Postgres schema ready")
+                db_error = None
+                break
+            except Exception as exc:
+                db_error = exc
+                if settings.app_db_optional:
+                    db_ready = False
+                    logger.warning(
+                        "App Postgres unavailable — starting without it (APP_DB_OPTIONAL=1): %s",
+                        settings.database_url.split("@")[-1],
+                        exc_info=True,
+                    )
+                    break
+                logger.warning(
+                    "App Postgres not ready (attempt %s/20), retry in 3s",
+                    attempt,
+                    exc_info=attempt == 1 or attempt == 20,
+                )
+                time.sleep(3)
+        if db_error is not None and not settings.app_db_optional:
+            raise db_error
         from app.api.v1.notifications import board_live_subscriber, notification_scheduler
         from app.services.triggers.tick import tick_due_triggers
         from app.modules.chat.realtime import dispatch_event

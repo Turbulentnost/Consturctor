@@ -67,12 +67,43 @@ def test_copies_header_participants_agenda_and_leaves_tasks_to_the_register() ->
         "question": "Контроль исполнения поручений протокола ПСД_001_О_012",
         "responsible": "Сидорова Анна Ивановна",
     }
-    assert "decisions" not in args
+    assert args["decisions"] == [
+        {"text": "Утвердить бюджет", "due": "2026-09-30", "source_ref": SOURCE}
+    ]
     assert args["report_period_from"] == "2026-09-10"
     assert args["report_period_to"] == "2026-10-08"
     assert args["comment"] == "Подготовлен на основе протокола ПСД_001_О_012 от 2026-09-10"
     assert args["basis_ref_key"] == SOURCE
     assert "source_ref_key" not in args and "action" not in args
+
+
+def test_carried_decision_keeps_the_protocol_where_it_appeared() -> None:
+    older = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    previous = {
+        **PREVIOUS,
+        "form": {
+            **PREVIOUS["form"],
+            "decisions": [
+                {
+                    "text": "Утвердить бюджет",
+                    "since": "2026-07-29",
+                    "source_ref": older,
+                    "sent": True,
+                    "result": "Исполнено",
+                }
+            ],
+        },
+    }
+    args = mpw.next_protocol_args(previous, {"date": "2026-10-08"})
+    assert args["decisions"] == [
+        {
+            "text": "Утвердить бюджет",
+            "source_ref": older,
+            "since": "2026-07-29",
+            "sent": True,
+            "result": "Исполнено",
+        }
+    ]
 
 
 def test_explicit_arguments_override_the_copy() -> None:

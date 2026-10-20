@@ -75,6 +75,7 @@ export type UserPageKey =
   | 'assignments_registry'
   | 'subordinate_tasks'
   | 'agent_library'
+  | 'in_development'
   | 'task_create'
   | 'platform_task_create'
 
@@ -105,6 +106,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   assignments_registry: 'Реестр поручений',
   subordinate_tasks: 'Поставленные задачи подчиненным в 1С',
   agent_library: 'Библиотека агентов',
+  in_development: 'Закупки',
   task_create: 'Создание задачи',
   platform_task_create: 'Задача в платформе',
   kpi: 'KPI',
@@ -190,6 +192,10 @@ interface SidebarProps {
   /** Pinned extension tabs (inserted before «+ Расширения»). */
   pinnedExtensionNav?: SidebarNavItem[]
   navScope?: SidebarScope
+  /** Пока задано, ширина панели берётся отсюда и не пишется в настройки. */
+  collapsedOverride?: boolean
+  /** Вместо обычного сворачивания: родитель и доп. меню меняются местами. */
+  onCollapseToggle?: () => void
 }
 
 export function Sidebar({
@@ -204,12 +210,15 @@ export function Sidebar({
   onOpenThread,
   refreshAt = 0,
   pinnedExtensionNav = [],
-  navScope
+  navScope,
+  collapsedOverride,
+  onCollapseToggle
 }: SidebarProps): React.JSX.Element {
   const quickMode = !showAdminNav
-  const [collapsed, setCollapsedState] = useState(() =>
+  const [collapsedStored, setCollapsedState] = useState(() =>
     quickMode ? loadSidebarCollapsed(currentUserId, true) : false
   )
+  const collapsed = collapsedOverride ?? collapsedStored
   const setCollapsed = (value: boolean): void => {
     setCollapsedState(value)
     if (quickMode) saveSidebarCollapsed(currentUserId, value)
@@ -880,7 +889,7 @@ export function Sidebar({
               </span>
             {!collapsed && <span className="nav-label">Все вкладки</span>}
             {hiddenBadges > 0 ? <i className="nav-quick-dot" aria-label={`Новых: ${hiddenBadges}`} /> : null}
-          </button>
+            </button>
           <button
             type="button"
             className="nav-item nav-open-constructor"
@@ -1150,6 +1159,10 @@ export function Sidebar({
       <button
         className="collapse-btn"
         onClick={() => {
+          if (onCollapseToggle) {
+            onCollapseToggle()
+            return
+          }
           if (!collapsed) {
             setEditMode(false)
             setFolderEditor(null)

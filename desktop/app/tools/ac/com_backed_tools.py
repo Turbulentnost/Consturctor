@@ -179,6 +179,10 @@ class OutlookSaveMessageComTool(ComBackedTool):
                             "type": "boolean",
                             "description": "Staging .msg для OData-входящей (как agent-pochta)",
                         },
+                        "include_base64": {
+                            "type": "boolean",
+                            "description": "Вернуть .msg в base64, чтобы прикрепить к исходящей",
+                        },
                     },
                     "required": ["entry_id"],
                 },
@@ -443,6 +447,42 @@ class OutlookReadTasksComTool(ComBackedTool):
         )
 
 
+class OutlookSendOutgoingLetterComTool(ComBackedTool):
+    """COM: отправить письмо исходящей корреспонденции и вернуть .msg."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.send_outgoing_letter",
+                title="Отправить исходящее письмо",
+                description=(
+                    "Отправляет письмо исходящей корреспонденции через Outlook "
+                    "и возвращает файл .msg для прикрепления к документу 1С."
+                ),
+                side_effect_level=ToolSideEffectLevel.DANGEROUS,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=True,
+                timeout_seconds=120,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "description": "Email получателя"},
+                        "subject": {"type": "string", "description": "Тема письма"},
+                        "body": {"type": "string", "description": "Текст письма"},
+                        "fio": {"type": "string", "description": "ФИО отправителя"},
+                        "position": {"type": "string", "description": "Должность отправителя"},
+                        "from_email": {"type": "string", "description": "Почта отправителя"},
+                        "work_phone": {"type": "string", "description": "Рабочий телефон из 1С"},
+                        "mobile_phone": {"type": "string", "description": "Мобильный телефон из 1С"},
+                    },
+                    "required": ["to", "subject"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
 class EmailCreateDraftComTool(ComBackedTool):
     """COM-backed инструмент создания черновика письма через worker."""
 
@@ -499,6 +539,7 @@ def register_outlook_com_tools(
     registry.register(OutlookDisplayMessageComTool(write_worker))
     registry.register(OutlookCreateEventComTool(write_worker))
     registry.register(OutlookUpdateEventComTool(write_worker))
+    registry.register(OutlookSendOutgoingLetterComTool(write_worker))
     registry.register(OutlookReadTasksComTool(read_worker))
     registry.register(EmailCreateDraftComTool(write_worker))
     registry.register(EmailSendComTool(write_worker))

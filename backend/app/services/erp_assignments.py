@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.services.moscow_time import odata_moscow
+
 ASSIGNMENT_ENTITY = "Document_ТД_Поручения"
 ASSIGNMENT_LINES_ENTITY = "Document_ТД_Поручения_Поручения"
 ASSIGNMENT_LINES_NAV = "Поручения"
@@ -1156,7 +1158,7 @@ def build_create_body(
             if parsed is not None:
                 lines[0]["СрокИсполнения"] = _odata_datetime(parsed)
     body: dict[str, Any] = {
-        "Date": _odata_datetime(datetime.now()),
+        "Date": odata_moscow(),
         "ОЧем": topic,
         "Основание": str(args.get("basis") or args.get("Основание") or "Устное поручение"),
         "Основание_Type": "Edm.String",

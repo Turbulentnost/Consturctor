@@ -448,6 +448,32 @@
   gap: 10px;
 }
 
+.mail-dir-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mail-compose-btn {
+  flex: 0 0 auto;
+}
+
+.mail-compose-error,
+.mail-compose-notice {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.mail-compose-error {
+  color: #9b2c2c;
+}
+
+.mail-compose-notice {
+  color: #1d6b3a;
+}
+
 .mail-dir-tabs {
   display: inline-flex;
   gap: 4px;

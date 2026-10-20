@@ -1,7 +1,8 @@
 import { PAGE_LABELS, type PageKey } from '../components/Sidebar'
+import type { WorkplaceTabIntent } from './workplaceNav'
 
 export type AssistantAction =
-  | { type: 'navigate'; key: PageKey }
+  | { type: 'navigate'; key: PageKey; intent?: WorkplaceTabIntent }
   | { type: 'open_url'; url: string }
 
 export type AssistantReply = {
@@ -89,6 +90,11 @@ const GUIDES: PageGuide[] = [
     aliases: ['библиотека агентов', 'библиотека']
   },
   {
+    key: 'in_development',
+    about: 'Закупки',
+    aliases: ['закупки']
+  },
+  {
     key: 'ai_agents',
     about: 'ИИ-агенты: запуск и настройка.',
     aliases: ['ии-агент', 'ии агент']
@@ -165,6 +171,15 @@ export function replyToAssistant(message: string, pageKey: PageKey | null): Assi
   const folded = fold(text)
   if (!folded) return { text: 'Напишите вопрос или куда перейти.', actions: [], askAgent: false }
 
+  if (/^(привет|здравствуй|здравствуйте|добрый день|доброе утро|добрый вечер|хай|hello|hi)[.!?\s]*$/.test(folded)) {
+    const here = pageGuide(pageKey)
+    return {
+      text: `Здравствуйте. Сейчас открыто «${here.title}». ${here.about} Спросите про эту страницу или назовите раздел, который открыть.`,
+      actions: [],
+      askAgent: false
+    }
+  }
+
   const url = extractUrl(text, folded)
   const wantsMove = MOVE_RE.test(folded) || /(браузер|сайт)/.test(folded)
   if (url && (wantsMove || /^https?:/i.test(text.trim()))) {
@@ -220,7 +235,9 @@ export function agentPrompt(message: string, pageKey: PageKey | null): string {
   return [
     'Ответь кратко по-русски. Ты помощник внутри приложения «Оркестратор».',
     'Отвечай по текущей странице и по всему приложению.',
-    'Если сотруднику нужно открыть раздел, последней строкой напиши [[nav:КЛЮЧ]] и больше ничего.',
+    'Если сотруднику нужно открыть раздел, последней строкой напиши [[nav:КЛЮЧ]].',
+    'Если нужно сразу показать сводку KPI по людям одного подразделения, напиши [[nav:subordinate_tasks|kpi=people|unit=сектор ии]].',
+    'kpi=people — график «Люди», unit — кого оставить (сектор ии, название подразделения).',
     `Ключи: ${keys}.`,
     'Если нужно открыть сайт в браузере, последней строкой напиши [[url:https://адрес]].',
     'Маркер добавляй только когда сотрудник просит куда-то перейти.',
@@ -229,19 +246,52 @@ export function agentPrompt(message: string, pageKey: PageKey | null): string {
   ].join('\n')
 }
 
-const MARKER = /\[\[(nav|url):([^\]]+)\]\]/g
+const URL_MARKER = /\[\[url:([^\]]+)\]\]/gi
+const NAV_MARKER = /\[\[nav:?([a-z0-9_]+)((?:\|[^\]]*)*)\]\]/gi
+
+function chartMode(value: string): 'people' | 'groups' | 'all' | '' {
+  const text = fold(value)
+  if (text === 'people' || text === 'люди' || text === 'по людям') return 'people'
+  if (text === 'groups' || text === 'группы' || text === 'группа') return 'groups'
+  if (text === 'all' || text === 'общее' || text === 'общий') return 'all'
+  return ''
+}
+
+function navAction(key: string, extra: string): AssistantAction | null {
+  const guide = GUIDES.find((item) => item.key === key)
+  if (!guide) return null
+  let mode: 'people' | 'groups' | 'all' | '' = ''
+  let unit = ''
+  for (const part of extra.split('|').map((item) => item.trim()).filter(Boolean)) {
+    const eq = part.indexOf('=')
+    const name = fold(eq >= 0 ? part.slice(0, eq) : part)
+    const value = eq >= 0 ? part.slice(eq + 1).trim() : ''
+    if (name === 'kpi' || name === 'mode' || name === 'вид') mode = chartMode(value) || 'people'
+    else if (name === 'unit' || name === 'сектор' || name === 'подразделение') unit = value
+    else if (chartMode(name)) mode = chartMode(name)
+    else if (!value) unit = part
+  }
+  const openKpi = Boolean(mode || unit)
+  const page: PageKey = guide.key === 'kpi' && openKpi ? 'subordinate_tasks' : guide.key
+  if (!openKpi) return { type: 'navigate', key: page }
+  return {
+    type: 'navigate',
+    key: page,
+    intent: { subordinateKpi: { mode: mode || 'people', unit } }
+  }
+}
 
 export function takeMarkers(answer: string): { text: string; actions: AssistantAction[] } {
   const actions: AssistantAction[] = []
   const text = answer
-    .replace(MARKER, (_all, kind: string, value: string) => {
+    .replace(NAV_MARKER, (_all, key: string, extra: string) => {
+      const action = navAction(String(key || ''), String(extra || ''))
+      if (action) actions.push(action)
+      return ''
+    })
+    .replace(URL_MARKER, (_all, value: string) => {
       const raw = String(value || '').trim()
-      if (kind === 'nav') {
-        const guide = GUIDES.find((item) => item.key === raw)
-        if (guide) actions.push({ type: 'navigate', key: guide.key })
-      } else if (/^https?:\/\//i.test(normalizeUrl(raw))) {
-        actions.push({ type: 'open_url', url: normalizeUrl(raw) })
-      }
+      if (/^https?:\/\//i.test(normalizeUrl(raw))) actions.push({ type: 'open_url', url: normalizeUrl(raw) })
       return ''
     })
     .trim()

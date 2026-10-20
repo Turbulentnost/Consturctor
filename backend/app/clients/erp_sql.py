@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from collections.abc import Generator
@@ -198,11 +199,24 @@ def _login_timeout() -> int:
 _preferred_sql_server: str | None = None
 
 
+def _this_host_is(server: str) -> bool:
+    """True when ERP_SQL_SERVER is this computer. Shared memory does not walk DNS."""
+    short = socket.gethostname().split(".")[0].casefold()
+    name = (server or "").split(".")[0].casefold()
+    return bool(short and name == short)
+
+
 def _sql_server_candidates() -> list[str]:
-    """Keep ERP_SQL_SERVER from .env; retry with LAN IP if short name ii1 hangs on SSPI."""
+    """Local shared memory first: the name ii1 also resolves to WSL, Hyper-V and AdGuard.
+
+    ODBC waits out each of those addresses. An IP cannot replace the name: Windows
+    auth to 192.168.1.157 is rejected (error 18452). (local) keeps SSPI and skips DNS.
+    """
     primary = (settings.erp_sql_server or "ii1").strip()
     out: list[str] = []
-    if primary:
+    if primary and _this_host_is(primary):
+        out.append("(local)")
+    if primary and primary not in out:
         out.append(primary)
     if primary.casefold() == "ii1":
         out.append("192.168.1.157")

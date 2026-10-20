@@ -26,6 +26,8 @@ import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
+from app.services.moscow_time import moscow_day, odata_moscow
+
 from app.services.docflow_document_tasks import fio_matches
 from app.services.erp_assignments import (
     PROBE_MARK,
@@ -385,7 +387,7 @@ def build_protocol_create_body(
 
     meeting_day = _day_value(_first(args, "date", "meeting_date", "Дата", "ДатаСовещания"))
     if not meeting_day:
-        meeting_day = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        meeting_day = odata_moscow()
     day_only = meeting_day[:10] + "T00:00:00"
 
     # ----- people
@@ -551,6 +553,25 @@ def build_protocol_create_body(
         due = _day_value(_field_of(item, "due", "deadline", "ДатаОкончания"), end=True)
         if due:
             row["ДатаОкончания"] = due
+        origin = _field_of(item, "source_ref", "source_protocol", "ПротоколИсточник")
+        if _looks_like_guid(origin):
+            row["ПротоколИсточник_Key"] = origin
+        result = _field_of(item, "result", "РезультатРешения")
+        if result:
+            row["РезультатРешения"] = result
+        done = _day_value(_field_of(item, "done_date", "ДатаИсполнения"))
+        if done:
+            row["ДатаИсполнения"] = done
+        reason = _field_of(item, "cancel_reason", "ПричинаОтмены")
+        if reason:
+            row["ПричинаОтмены"] = reason
+        if isinstance(item, dict):
+            if item.get("sent") is True:
+                row["Отправлено"] = True
+            if item.get("canceled") is True:
+                row["Отменено"] = True
+            if item.get("has_artifact") is True:
+                row["НаличиеАртефакта"] = True
         decision_rows.append(row)
 
     # ----- tasks («Поставленные задачи»)
@@ -597,7 +618,7 @@ def build_protocol_create_body(
 
     body: dict[str, Any] = {
         "Date": meeting_day,
-        "ДатаСоздания": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "ДатаСоздания": odata_moscow(),
         "Posted": False,
         "DeletionMark": False,
         "Статус": _clean(_first(args, "status", "Статус")) or DRAFT_STATUS,
@@ -944,6 +965,9 @@ def read_protocol_form(
             "since": _iso_day(row.get("ДатаНачала")),
             "result": _clean(row.get("РезультатРешения")),
             "done_date": _iso_day(row.get("ДатаИсполнения")),
+            "source_ref": row.get("ПротоколИсточник_Key")
+            if _looks_like_guid(row.get("ПротоколИсточник_Key"))
+            else "",
             "sent": row.get("Отправлено") is True,
             "has_artifact": row.get("НаличиеАртефакта") is True,
             "canceled": row.get("Отменено") is True,
@@ -1233,7 +1257,7 @@ def add_protocol_tasks(args: dict[str, Any]) -> dict[str, Any]:
     by_id = {_clean(row.get("ИдентификаторЗадачи")).lower(): row for row in existing}
     theme = _clean(card.get("ТемаСовещания_Key")) or _EMPTY_GUID
     author = _clean(card.get("Руководитель_Key")) or _EMPTY_GUID
-    day_only = (_clean(card.get("Date"))[:10] or datetime.now().strftime("%Y-%m-%d")) + "T00:00:00"
+    day_only = (_clean(card.get("Date"))[:10] or moscow_day()) + "T00:00:00"
     next_point = max([_point(row.get("НомерПунктаПротокола"), 0) for row in existing], default=0) + 1
     added: list[dict[str, Any]] = []
     changed: list[dict[str, Any]] = []
@@ -1359,7 +1383,7 @@ def check_protocol_tasks(args: dict[str, Any]) -> dict[str, Any]:
     except OnecToolError as exc:
         raise ProtocolWriteError(f"Не прочитан регистр ТД_ЗадачиПротоколов: {exc}") from exc
     by_id = {_clean(row.get("ИдентификаторЗадачи")).lower(): row for row in existing}
-    today = datetime.now().strftime("%Y-%m-%dT00:00:00")
+    today = moscow_day() + "T00:00:00"
     marked: list[dict[str, Any]] = []
     skipped: list[str] = []
     errors: list[str] = []
@@ -1489,12 +1513,41 @@ def _basis_link(ref: Any) -> dict[str, str]:
     return {"ДокументОснование": "", "ДокументОснование_Type": _UNDEFINED_TYPE}
 
 
+def _carried_decisions(form: dict[str, Any], source_ref: str) -> list[dict[str, Any]]:
+    """Решения нового протокола, как заполнение на основании в форме 1С.
+
+    Текст и даты копируются. ПротоколИсточник остаётся тем протоколом, где решение
+    появилось; если ссылки ещё нет — это протокол-основание. Задачи в документ не копируются.
+    """
+    carried: list[dict[str, Any]] = []
+    for row in form.get("decisions") or []:
+        if not isinstance(row, dict):
+            continue
+        text = _clean(row.get("text"))
+        if not text:
+            continue
+        origin = _clean(row.get("source_ref"))
+        item: dict[str, Any] = {
+            "text": text,
+            "source_ref": origin if _looks_like_guid(origin) else source_ref,
+        }
+        for key in ("since", "due", "result", "done_date", "cancel_reason"):
+            value = _clean(row.get(key))
+            if value:
+                item[key] = value
+        for flag in ("sent", "canceled", "has_artifact"):
+            if row.get(flag) is True:
+                item[flag] = True
+        carried.append(item)
+    return carried
+
+
 def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     """Create-args for the next meeting built from read_protocol_form() of the previous one.
 
-    Header, attendees and agenda are copied; decisions stay with the old protocol.
-    basis_ref_key links ДокументОснование, so every task of the source shows on
-    «Задачи для контроля» — the same way the 1C form fills a protocol created on basis.
+    Header, attendees, agenda and decisions are copied the way the 1C form fills
+    a protocol created on basis. basis_ref_key links ДокументОснование, so every
+    task of the source shows on «Задачи для контроля» without a second copy.
     """
     form = previous.get("form") if isinstance(previous.get("form"), dict) else {}
     number = _clean(previous.get("number"))
@@ -1531,6 +1584,7 @@ def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> d
         "meeting_type": form.get("meeting_type"),
         "participants": list(form.get("participants") or []),
         "agenda": agenda,
+        "decisions": _carried_decisions(form, _clean(previous.get("ref_key"))),
         "report_period_from": prev_day or day,
         "report_period_to": day,
         "comment": basis,
@@ -1570,8 +1624,10 @@ def _next_protocol(
     result["control_tasks"] = sum(
         1 for task in previous.get("form", {}).get("tasks") or [] if isinstance(task, dict) and _clean(task.get("text"))
     )
+    result["carried_decisions"] = len(create_args.get("decisions") or [])
     result["summary"] = (
         f"{result.get('summary') or 'Создан протокол'}; на основании {result['source_number'] or source}, "
+        f"решения перенесены: {result['carried_decisions']}, "
         f"все задачи прошлого протокола на контроле: {result['control_tasks']}"
     )
     return result
@@ -1760,7 +1816,7 @@ def _edit_tasks(
     by_line = {str(row.get("LineNumber") or ""): row for row in existing}
     # Отправленная исполнителю задача уже живёт своей жизнью — её строку не меняем и не удаляем.
     locked = {line for line, row in by_line.items() if assigned and bool(row.get("Отправлена"))}
-    today = datetime.now().strftime("%Y-%m-%dT00:00:00")
+    today = moscow_day() + "T00:00:00"
     rows: list[dict[str, Any]] = []
     kept: set[str] = set()
     for item in items[:_MAX_ROWS]:
@@ -2003,17 +2059,17 @@ def probe_protocol_write(
     probe_args: dict[str, Any] = {
         "topic": _clean(args.get("topic")),
         "leader": leader,
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": moscow_day(),
         "time_start": "10:00",
         "time_end": "10:30",
         "participants": [leader] if leader else [],
         "agenda": [f"{mark}: тестовый вопрос повестки"],
-        "decisions": [{"text": f"{mark}: тестовое решение", "since": datetime.now().strftime("%Y-%m-%d")}],
+        "decisions": [{"text": f"{mark}: тестовое решение", "since": moscow_day()}],
         "tasks": [
             {
                 "text": f"{mark}: тестовая задача",
                 "executor": leader,
-                "due": datetime.now().strftime("%Y-%m-%d"),
+                "due": moscow_day(),
             }
         ],
         "comment": mark,
@@ -2048,7 +2104,7 @@ def probe_protocol_write(
             "agenda": [updated_question],
             "decisions": [
                 *probe_args["decisions"],
-                {"text": f"{mark}: второе решение", "since": datetime.now().strftime("%Y-%m-%d")},
+                {"text": f"{mark}: второе решение", "since": moscow_day()},
             ],
         }
         _update_protocol(update_args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref)

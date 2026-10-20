@@ -19,12 +19,14 @@ export function MailDetailPanel({
   mail,
   user,
   onPatchRow,
-  onAskOrchestrator
+  onAskOrchestrator,
+  onRegisterOutgoing
 }: {
   mail: SpecMailRow
   user: UserProfile
   onPatchRow?: (id: string, patch: Partial<SpecMailRow>) => void
   onAskOrchestrator?: (message: string) => void
+  onRegisterOutgoing?: (source: { to: string; subject: string; body: string; entryId: string }) => void
 }): React.JSX.Element {
   const loaded = useMailDetail(mail)
   const [detail, setDetail] = useState<OutlookMailDetail | null>(null)
@@ -210,15 +212,34 @@ export function MailDetailPanel({
               Непрочитано
             </button>
           </div>
-          <button
-            type="button"
-            className="spec-btn-launch spec-mail-incoming-btn"
-            disabled={Boolean(busy)}
-            title="Заполнить маршрут и создать входящую в 1С через OData (как agent-pochta)"
-            onClick={openCreateIncoming}
-          >
-            <Plus size={14} aria-hidden /> Зарегистрировать входящую
-          </button>
+          {mail.direction === 'sent' ? (
+            <button
+              type="button"
+              className="spec-btn-launch spec-mail-incoming-btn"
+              disabled={Boolean(busy) || !onRegisterOutgoing}
+              title="Открыть исходящую в 1С по этому письму. Письмо повторно не отправляется, текст берётся из письма и его можно поправить."
+              onClick={() =>
+                onRegisterOutgoing?.({
+                  to: mail.to || detail?.senderEmail || '',
+                  subject: decodeMimeHeader(detail?.subject || mail.subject || ''),
+                  body: (detail?.body || mail.body || mail.preview || mail.bodyPreview || '').trim(),
+                  entryId: hasOutlookEntryId(mail) ? mail.entryId || mail.id : ''
+                })
+              }
+            >
+              <Plus size={14} aria-hidden /> Зарегистрировать исходящую
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="spec-btn-launch spec-mail-incoming-btn"
+              disabled={Boolean(busy)}
+              title="Заполнить маршрут и создать входящую в 1С через OData (как agent-pochta)"
+              onClick={openCreateIncoming}
+            >
+              <Plus size={14} aria-hidden /> Зарегистрировать входящую
+            </button>
+          )}
         </footer>
       </div>
       <MailIncomingCreateDialog

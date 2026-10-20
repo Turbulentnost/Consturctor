@@ -71,8 +71,9 @@ import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { MeetingReportModal } from './MeetingReportModal'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
 import { MeetingEditorDialog } from './MeetingEditorDialog'
-import { MeetingPlannerPanel } from './MeetingPlannerPanel'
-import { isMeetingPlannerUser, PLANNER_AGENT_TITLE } from '../../workplace/meetingPlannerAgent'
+import { isMeetingPlannerUser } from '../../workplace/meetingPlannerAgent'
+import './meetingPlanner.css'
+import { MEETING_PLANNER_AGENT, launchPlatformAgent } from '../../workplace/workplaceNav'
 import { isIlchenkoAccount } from '../../workplace/boardReportReadiness'
 import { clearRequestedMeetingsDay, peekRequestedMeetingsDay } from '../../workplace/meetingsFocus'
 import { isSelfCalendarMeeting, ownMeetingsHidden, useShowOwnMeetings } from '../../workplace/ownMeetings'
@@ -1366,18 +1367,10 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   const [hiddenOwners, setHiddenOwners] = useState<string[]>([])
   const [quick, setQuick] = useState<MeetingQuickFilters>(EMPTY_MEETING_QUICK_FILTERS)
   const [syncedAt, setSyncedAt] = useState('')
-  const [plannerOpen, setPlannerOpen] = useState(false)
   const [showOwn, setShowOwn] = useShowOwnMeetings(fio)
   const [editor, setEditor] = useState<{ mode: 'create' | 'edit'; meeting?: MeetingEvent } | null>(null)
   const hideOwn = ownMeetingsHidden(user, showOwn)
   const canPlan = isMeetingPlannerUser(user)
-  const runs = useRuns()
-  const plannerState = useMemo(
-    () => Object.values(runs.entries).find((item) => !item.background && item.title === PLANNER_AGENT_TITLE)?.state,
-    [runs.entries]
-  )
-  const plannerWaiting = Boolean(plannerState?.pendingHitl || plannerState?.pendingQuestion)
-  const plannerRunning = Boolean(plannerState?.running) || plannerWaiting
 
   const owners = useMemo(
     () => meetingCalendarOwners(fio, tracked.people, tracked.order),
@@ -1455,12 +1448,12 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   /** Что вообще показываем: только календари с включённой галочкой. Плитки считаем от этого же. */
   const ownerScoped = useMemo(
     () =>
-      meetings.filter(
-        (item) =>
-          !isCanceledMeeting(item) &&
-          !(hideOwn && isSelfCalendarMeeting(item, fio)) &&
-          visibleOwners.some((person) => samePersonName(meetingOwnerName(item, selfLabel), person))
-      ),
+      meetings.filter((item) => {
+        if (isCanceledMeeting(item)) return false
+        const hers = isSelfCalendarMeeting(item, fio)
+        if (hers) return !hideOwn
+        return visibleOwners.some((person) => samePersonName(meetingOwnerName(item, selfLabel), person))
+      }),
     [meetings, visibleOwners, selfLabel, hideOwn]
   )
 
@@ -1611,18 +1604,10 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
           <button
             type="button"
             className="meetings-agent-btn"
-            onClick={() => setPlannerOpen(true)}
-            title={
-              plannerWaiting
-                ? 'Агент ждёт вашего решения'
-                : 'Планировщик совещаний по служебным запискам'
-            }
+            onClick={() => launchPlatformAgent(MEETING_PLANNER_AGENT.id, MEETING_PLANNER_AGENT.title)}
+            title={MEETING_PLANNER_AGENT.title}
           >
-            {plannerRunning ? (
-              <span className={`meetings-agent-btn-dot${plannerWaiting ? ' is-waiting' : ''}`} aria-hidden />
-            ) : (
-              <Bot size={14} aria-hidden />
-            )}
+            <Bot size={14} aria-hidden />
             Запустить ИИ-агента
           </button>
         ) : null
@@ -1763,13 +1748,6 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
         )
       }}
     />
-    {canPlan ? (
-      <MeetingPlannerPanel
-        open={plannerOpen}
-        onClose={() => setPlannerOpen(false)}
-        onMeetingCreated={refreshAfterPlanning}
-      />
-    ) : null}
     </>
   )
 }

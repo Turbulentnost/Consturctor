@@ -559,6 +559,12 @@ def drop_task_from_inbox_cache(*task_ids: str) -> None:
         except OSError as exc:
             logger.warning("dok_soap cache task drop failed: %s", exc)
     _drop_task_on_disk(wanted)
+    try:
+        from app.services.docflow_redis_cache import forget_cached_tasks
+
+        forget_cached_tasks(*task_ids)
+    except Exception as exc:  # noqa: BLE001 — список в Redis не должен срывать отметку
+        logger.warning("docflow redis task drop failed: %s", exc)
 
 
 def _with_cache_meta(payload: dict[str, Any], *, cached: bool, fetched_at: float) -> dict[str, Any]:

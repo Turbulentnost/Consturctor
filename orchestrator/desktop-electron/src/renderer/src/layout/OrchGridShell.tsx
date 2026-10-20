@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { PAGE_SEARCH_PLACEHOLDER, usePageSearch } from './pageSearchContext'
 import { Sidebar, type PageKey, type SidebarNavItem } from '../components/Sidebar'
 import { PAGE_LABELS } from '../components/Sidebar'
@@ -9,6 +9,13 @@ import { NavIcon } from './navIcons'
 import { TAB_REGISTRY, type WorkplaceTabKey } from './tabRegistry'
 import { userGivenName } from '../workplace/userContext'
 import type { GlobalSearchTarget } from './globalSearch'
+import {
+  PurchasesDock,
+  PurchasesDockProvider,
+  type PurchasesDockId
+} from '../extensions/inDevelopment/purchasesDock'
+import { DocflowDock, DocflowDockProvider } from '../tabs/grid/DocflowDock'
+import type { JournalId } from '../tabs/grid/docflowJournals'
 
 function todayGreeting(fio: string): string {
   const hour = new Date().getHours()
@@ -82,6 +89,16 @@ export function OrchGridShell({
   const pageSearch = usePageSearch()
   const searchPlaceholder =
     PAGE_SEARCH_PLACEHOLDER[activeKey] || 'Поиск на открытой странице…'
+  const purchasesDock = activeKey === 'in_development'
+  const docflowDock = activeKey === 'docflow'
+  const childDock = purchasesDock || docflowDock
+  const [childParentOpen, setChildParentOpen] = useState(false)
+  const [purchasesView, setPurchasesView] = useState<PurchasesDockId>('by_period')
+  const [docflowJournal, setDocflowJournal] = useState<JournalId>('correspondence')
+
+  useEffect(() => {
+    setChildParentOpen(false)
+  }, [activeKey])
 
   useEffect(() => {
     if (!searchTarget || searchTarget.pageKey !== activeKey) return
@@ -134,14 +151,32 @@ export function OrchGridShell({
       <div className="orch-grid-nav">
         <Sidebar
           active={activeKey}
-          light={lightSidebar || activeKey === 'today'}
+          light={lightSidebar}
           activeThreadId={activeThreadId}
           currentUserId={user.id || ''}
           onNavigate={onNavigate}
           onOpenThread={onOpenThread}
           refreshAt={chatRefreshAt}
           pinnedExtensionNav={pinnedExtensionNav}
+          collapsedOverride={childDock ? !childParentOpen : undefined}
+          onCollapseToggle={
+            childDock ? () => setChildParentOpen((open) => !open) : undefined
+          }
         />
+        {purchasesDock ? (
+          <PurchasesDock
+            labeled={!childParentOpen}
+            active={purchasesView}
+            onSelect={setPurchasesView}
+          />
+        ) : null}
+        {docflowDock ? (
+          <DocflowDock
+            labeled={!childParentOpen}
+            journal={docflowJournal}
+            onSelect={setDocflowJournal}
+          />
+        ) : null}
       </div>
 
       <div className="orch-grid-column">
@@ -204,7 +239,15 @@ export function OrchGridShell({
 
       {toast ? <div className="orch-grid-toast">{toast}</div> : null}
 
-      {children}
+      {purchasesDock ? (
+        <PurchasesDockProvider active={purchasesView}>{children}</PurchasesDockProvider>
+      ) : docflowDock ? (
+        <DocflowDockProvider journal={docflowJournal} setJournal={setDocflowJournal}>
+          {children}
+        </DocflowDockProvider>
+      ) : (
+        children
+      )}
       </div>
       </div>
     </div>

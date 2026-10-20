@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from app.services.moscow_time import moscow_now, odata_moscow
 from typing import Any
 
 from app.services.erp_assignments import (
@@ -159,16 +161,14 @@ def _guess_change(
         for key in sample:
             low = str(key).casefold()
             if "срок" in low:
-                return str(key), (datetime.now() + timedelta(days=14)).strftime(
-                    "%Y-%m-%dT00:00:00"
-                )
+                return str(key), (moscow_now() + timedelta(days=14)).strftime("%Y-%m-%dT00:00:00")
     return mark_field, f"{topic} OK"
 
 
 def _create_body(sample: dict[str, Any], mark_field: str, topic: str) -> dict[str, Any]:
     body: dict[str, Any] = {mark_field: topic, "DeletionMark": False, "Posted": False}
     if "Date" in sample:
-        body["Date"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        body["Date"] = odata_moscow()
     for key, value in sample.items():
         if not str(key).endswith("_Type"):
             continue
@@ -207,7 +207,7 @@ def _apply_error_hint(body: dict[str, Any], error: str) -> bool:
         if field.endswith("_Key"):
             body[field] = "00000000-0000-0000-0000-000000000000"
         elif "дат" in field.casefold() or field == "Date":
-            body[field] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            body[field] = odata_moscow()
         else:
             body[field] = ""
         changed = True

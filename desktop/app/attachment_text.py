@@ -263,6 +263,9 @@ def _read_doc_via_word(path: Path) -> str:
     if sys.platform != "win32":
         return ""
     try:
+        from app.tools.ac.workers.com_availability import ensure_pywin32_dll_path
+
+        ensure_pywin32_dll_path()
         import pythoncom
         import win32com.client
     except ImportError:

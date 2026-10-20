@@ -121,14 +121,19 @@ export async function loadMemoPage(
   if (pending) return pending
   const load = loadMemoPageUncached(user, opts)
     .then((page) => {
-      memoCache.set(key, page)
+      if (memoLoads.get(key) === load) memoCache.set(key, page)
       return page
     })
     .finally(() => {
-      memoLoads.delete(key)
+      if (memoLoads.get(key) === load) memoLoads.delete(key)
     })
   memoLoads.set(key, load)
   return load
+}
+
+export function forgetDocflowMemos(): void {
+  memoCache.clear()
+  memoLoads.clear()
 }
 
 async function loadMemoPageUncached(

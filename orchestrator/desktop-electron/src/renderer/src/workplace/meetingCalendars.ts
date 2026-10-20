@@ -91,10 +91,16 @@ export function meetingCalendarOwners(fio: string, tracked: string[], order: str
   return [...owners].sort((left, right) => rank(left) - rank(right))
 }
 
-/** Чей это календарь. Своя папка Outlook приходит без владельца («Календарь»). */
+/**
+ * Чей это календарь.
+ * Папка текущего профиля Outlook часто приходит с ownCalendar, но это не всегда
+ * вошедший в Оркестратор: у Ильченко профиль может быть чужим (Мангасарян).
+ * Подменяем подписью вошедшего только безымянную папку «Календарь».
+ */
 export function meetingOwnerName(meeting: MeetingEvent, selfLabel: string): string {
-  if (meeting.ownCalendar || isOutlookFolderOwner(meeting.owner)) return selfLabel
-  return meeting.owner.trim() || selfLabel
+  const owner = meeting.owner.trim()
+  if (owner && !isOutlookFolderOwner(owner)) return owner
+  return selfLabel
 }
 
 /** Фамилия человека встречается среди организатора или участников. */

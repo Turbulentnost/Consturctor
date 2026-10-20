@@ -12,11 +12,16 @@ Mirrors Документ.ТД_Протокол.Форма.ФормаСписка
 from __future__ import annotations
 
 import re
+import threading
+import time
 from datetime import date, timedelta
 from typing import Any
 from urllib.parse import quote
 
 PROTOCOL_ENTITY = "Document_ТД_Протокол"
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 # OData navigation / tabular sections (full paths, not the document header only).
 PROTOCOL_TABULAR_SECTIONS: tuple[tuple[str, str], ...] = (
@@ -198,6 +203,7 @@ _PROTOCOL_LIST_SELECT = ",".join(
         "Руководитель_Key",
         "Подготовил_Key",
         "Подразделение_Key",
+        "ТемаСовещания_Key",
         "ТемаСовещания/Description",
         "ПрисутствующиеНаСовещании/Участник_Key",
         "ПовесткаСовещания/Ответственный_Key",
@@ -257,6 +263,8 @@ def _fetch_protocol_rows(
         "entity": PROTOCOL_ENTITY,
         "path": path,
         "top": limit,
+        # Тема уже в $expand. Иначе _fetch_odata_list сходит в ТемаСовещания каждого протокола.
+        "resolve_navigation": False,
     }
     raw = _fetch_odata_list(fetch_args)
     rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
@@ -272,6 +280,7 @@ def _fetch_protocol_rows(
                     "entity": PROTOCOL_ENTITY,
                     "path": fallback_path,
                     "top": limit,
+                    "resolve_navigation": False,
                 }
             )
         except OnecToolError:
@@ -332,9 +341,54 @@ def _topic_from_row(row: dict[str, Any]) -> str:
         return str(theme.get("Description") or theme.get("Наименование") or "").strip()
     for key in ("ТемаСовещания", "ТемаСовещания_Name", "Description"):
         value = str(row.get(key) or "").strip()
-        if value and not value.endswith("_Key"):
+        if value and not value.endswith("_Key") and not _GUID_RE.match(value):
             return value
     return ""
+
+
+def _fill_missing_protocol_topics(rows: list[dict[str, Any]]) -> None:
+    """Добирает названия тем одним запросом, если $expand их не вложил."""
+    missing: list[tuple[dict[str, Any], str]] = []
+    for row in rows:
+        if _topic_from_row(row):
+            continue
+        key = str(row.get("ТемаСовещания_Key") or "").strip()
+        if _GUID_RE.match(key):
+            missing.append((row, key))
+    if not missing:
+        return
+    from app.services.onec_tools import OnecToolError, _odata_get
+
+    names: dict[str, str] = {}
+    keys = list(dict.fromkeys(key for _, key in missing))
+    for offset in range(0, len(keys), 25):
+        chunk = keys[offset : offset + 25]
+        filt = quote(" or ".join(f"Ref_Key eq guid'{key}'" for key in chunk), safe="=,'")
+        path = (
+            "Catalog_ТД_ТемыСовещаний?$format=json&$select=Ref_Key,Description"
+            f"&$filter={filt}"
+        )
+        try:
+            raw = _odata_get({"path": path})
+        except OnecToolError:
+            return
+        payload = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+        values = payload.get("value") if isinstance(payload, dict) else None
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            ref = str(item.get("Ref_Key") or "").strip()
+            title = str(item.get("Description") or "").strip()
+            if ref and title:
+                names[ref] = title
+    for row, key in missing:
+        title = names.get(key)
+        if not title:
+            continue
+        row["ТемаСовещания"] = {"Description": title}
+        row["ТемаСовещания_Name"] = title
 
 
 def normalize_protocol_row(row: dict[str, Any], *, kind: str) -> dict[str, Any]:
@@ -363,7 +417,106 @@ def normalize_protocol_row(row: dict[str, Any], *, kind: str) -> dict[str, Any]:
     }
 
 
+_PROTOCOL_LIST_CACHE_SEC = 60.0
+_protocol_list_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_protocol_list_inflight: dict[str, threading.Event] = {}
+_protocol_list_guard = threading.Lock()
+_PROTOCOL_LIST_CACHE_FIELDS = (
+    "meeting_kind",
+    "kind",
+    "date",
+    "date_from",
+    "date_to",
+    "number",
+    "Number",
+    "review_only",
+    "include_closed",
+    "max_results",
+    "limit",
+    "include_sections",
+    "with_sections",
+    "topic",
+    "psd_mark",
+    "psd_only",
+    "only_psd",
+)
+
+
+def _protocol_list_cache_key(args: dict[str, Any], access: Any | None) -> str:
+    fio = str(getattr(access, "fio", "") or "").casefold()
+    parts = [f"{key}={args.get(key)}" for key in _PROTOCOL_LIST_CACHE_FIELDS if key in args]
+    return fio + "|" + "|".join(parts)
+
+
+def _protocol_list_cached(key: str) -> dict[str, Any] | None:
+    hit = _protocol_list_cache.get(key)
+    if hit is None:
+        return None
+    stored_at, payload = hit
+    if time.monotonic() - stored_at > _PROTOCOL_LIST_CACHE_SEC:
+        _protocol_list_cache.pop(key, None)
+        return None
+    copied = dict(payload)
+    rows = copied.get("protocols")
+    if isinstance(rows, list):
+        copied["protocols"] = list(rows)
+    copied["cache"] = "protocol_list"
+    return copied
+
+
+def _protocol_list_begin(key: str) -> tuple[dict[str, Any] | None, bool, threading.Event]:
+    with _protocol_list_guard:
+        cached = _protocol_list_cached(key)
+        if cached is not None:
+            return cached, False, threading.Event()
+        event = _protocol_list_inflight.get(key)
+        if event is not None:
+            return None, False, event
+        event = threading.Event()
+        _protocol_list_inflight[key] = event
+        return None, True, event
+
+
+def _protocol_list_finish(key: str, result: dict[str, Any] | None) -> None:
+    with _protocol_list_guard:
+        if result is not None and "error" not in result:
+            _protocol_list_cache[key] = (time.monotonic(), result)
+        event = _protocol_list_inflight.pop(key, None)
+    if event is not None:
+        event.set()
+
+
 def list_meeting_protocols(
+    args: dict[str, Any],
+    *,
+    access: Any | None = None,
+) -> dict[str, Any]:
+    ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
+    if ref_key:
+        return _read_protocol_card(ref_key, args)
+    if _arg_flag(args.get("pair"), default=False):
+        return board_protocol_pair(args, access=access)
+
+    key = _protocol_list_cache_key(args, access)
+    cached, leader, event = _protocol_list_begin(key)
+    if cached is not None:
+        return cached
+    if not leader:
+        event.wait(120)
+        waited = _protocol_list_cached(key)
+        if waited is not None:
+            return waited
+        return _list_meeting_protocols_uncached(args, access=access)
+    try:
+        result = _list_meeting_protocols_uncached(args, access=access)
+    except Exception:
+        _protocol_list_finish(key, None)
+        raise
+    _protocol_list_finish(key, result)
+    return result
+
+
+def _list_meeting_protocols_uncached(
     args: dict[str, Any],
     *,
     access: Any | None = None,
@@ -423,6 +576,7 @@ def list_meeting_protocols(
             rows = filter_odata_result({"value": rows}, access, PROTOCOL_ENTITY).get("value") or []
         except OnecAccessDenied as exc:
             raise OnecToolError(str(exc)) from exc
+    _fill_missing_protocol_topics(rows)
     protocols = [normalize_protocol_row(row, kind=kind) for row in rows[:limit]]
     if include_sections:
         from app.services.onec_tools import _odata_get

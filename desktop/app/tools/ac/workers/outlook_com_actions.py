@@ -248,17 +248,44 @@ def _allow_programmatic_access() -> None:
                 winreg.SetValueEx(key, "ObjectModelGuard", 0, winreg.REG_DWORD, 2)
         except OSError as exc:
             _log_progress(f"step=outlook_guard_skip version={version}: {exc}")
-        try:
-            with winreg.CreateKey(
-                winreg.HKEY_CURRENT_USER,
-                rf"Software\Policies\Microsoft\Office\{version}\outlook\security",
-            ) as key:
-                winreg.SetValueEx(key, "AdminSecurityMode", 0, winreg.REG_DWORD, 3)
-                for name in prompts:
-                    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, 2)
-        except OSError as exc:
-            _log_progress(f"step=outlook_policy_skip version={version}: {exc}")
+        _remove_deny_policy(winreg, version, prompts)
     _log_progress("step=outlook_programmatic_access ok")
+
+
+def _remove_deny_policy(winreg: Any, version: str, prompts: tuple[str, ...]) -> None:
+    """Снять политику, которую писали версии 0.1.26–0.1.39.
+
+    В политике Outlook PromptOOM*=2 означает «автоматически запрещать», а не
+    «не спрашивать»: Outlook молча отказывал в адресах, отправке и адресной книге.
+    Удаляются только значения ровно в том виде, как их записывала программа.
+    """
+    path = rf"Software\Policies\Microsoft\Office\{version}\outlook\security"
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE)
+    except OSError:
+        return
+    with key:
+        try:
+            mode, _kind = winreg.QueryValueEx(key, "AdminSecurityMode")
+        except OSError:
+            return
+        if mode != 3:
+            return
+        ours = []
+        for name in prompts:
+            try:
+                value, _kind = winreg.QueryValueEx(key, name)
+            except OSError:
+                continue
+            if value != 2:
+                return
+            ours.append(name)
+        try:
+            for name in (*ours, "AdminSecurityMode"):
+                winreg.DeleteValue(key, name)
+            _log_progress(f"step=outlook_deny_policy_removed version={version}")
+        except OSError as exc:
+            _log_progress(f"step=outlook_deny_policy_keep version={version}: {exc}")
 
 
 def _drop_cached_outlook() -> None:
@@ -560,6 +587,32 @@ def _default_folder(namespace: Any, folder_id: int) -> Any:
     ) from last_exc
 
 
+def _calendar_read_targets(
+    calendar_owners: list[str],
+    people: list[str],
+    own_name: str,
+    *,
+    include_own: bool,
+) -> list[str]:
+    """Какие календари читать.
+
+    Явный список (у Ильченко это Амураль) не дополняем ящиком текущего профиля:
+    иначе на её компьютере открывается её календарь, хотя в панели стоит Амураль.
+    Свой ящик добавляется только по include_own. Если запрошенный человек и есть
+    текущий профиль (Ильченко на компьютере Мангасаряна открывает его календарь),
+    его папка читается в цикле ниже как локальная, без подмены имени.
+    """
+    targets = list(calendar_owners or people or [own_name or ""])
+    if (
+        include_own
+        and calendar_owners
+        and own_name
+        and not any(not person or _same_calendar_person(person, own_name) for person in targets)
+    ):
+        targets.append(own_name)
+    return targets
+
+
 def _same_calendar_person(left: str, right: str) -> bool:
     """ФИО из 1С и Display Name Outlook часто не совпадают буква в букву."""
     a = (left or "").strip().casefold()
@@ -656,19 +709,6 @@ def _resolve_person_calendar_folder(
     folder, status = _open_shared_calendar(namespace, person)
     if folder is not None:
         return folder, status
-    # Личный ящик в адресной книге часто не резолвится, а совещания руководителя
-    # уже лежат в открытом общем календаре «Совещания».
-    if str(status).startswith("unresolved"):
-        shared = _find_public_meeting_folders(outlook, namespace, own_name)
-        if shared:
-            _log_progress(
-                f"step=calendar_fallback_meetings person={person} folders={len(shared)}"
-            )
-            return shared[0][1], "meetings"
-        labels = [label for label, _folder, is_own in visible if not is_own]
-        _log_progress(
-            f"step=calendar_unresolved person={person} shared_labels={labels[:8]}"
-        )
     return None, status
 
 
@@ -708,6 +748,18 @@ def _iter_outlook_explorers(outlook: Any):
 
 def _folder_entry_id(folder: Any) -> str:
     return _safe_str(getattr(folder, "EntryID", "")).strip()
+
+
+def _folder_is_profile_calendar(namespace: Any, folder: Any) -> bool:
+    """Чужая папка совпала с календарём текущего профиля — это не тот ящик."""
+    wanted = _folder_entry_id(folder)
+    if not wanted:
+        return False
+    try:
+        own = _own_calendar_folder(namespace)
+    except Exception:
+        return False
+    return bool(own is not None and _folder_entry_id(own) == wanted)
 
 
 def _folder_label(folder: Any, fallback: str = "") -> str:
@@ -756,7 +808,6 @@ def _iter_visible_calendar_folders(
         add(_own_calendar_folder(namespace), own_label, True)
     except OutlookAccessError:
         pass
-
     try:
         seen_explorers = 0
         for explorer in _iter_outlook_explorers(outlook):
@@ -775,7 +826,7 @@ def _iter_visible_calendar_folders(
                         folder = nav.Folder
                     except Exception:
                         continue
-                    add(folder, _display_calendar_label(folder, group_name))
+                    add(folder, _folder_label(folder, group_name))
         if seen_explorers == 0:
             _log_progress("step=nav_calendars skipped: no explorer")
     except Exception as exc:
@@ -795,7 +846,7 @@ def _iter_visible_calendar_folders(
         try:
             for sub in folder.Folders:
                 if _is_appointment_folder(sub):
-                    extra.append((_display_calendar_label(sub, label), sub))
+                    extra.append((_folder_label(sub, label), sub))
         except Exception:
             continue
     for label, folder in extra:
@@ -1195,6 +1246,26 @@ def meeting_planner_line(fio: str, position: str) -> str:
     if not tail:
         return "запланировал(а)"
     return f"запланировал(а) {tail}"
+
+
+# Общий календарь совещаний: участник приглашения, но не строка в тексте встречи.
+MEETINGS_CALENDAR_EMAIL = "calendar@turbo-don.ru"
+MEETINGS_CALENDAR_ATTENDEE = f"Совещания <{MEETINGS_CALENDAR_EMAIL}>"
+
+
+def _is_meetings_calendar(value: str) -> bool:
+    return MEETINGS_CALENDAR_EMAIL.casefold() in (value or "").casefold()
+
+
+def _with_meetings_calendar(names: list[str]) -> list[str]:
+    """Добавить ящик «Совещания», если его ещё нет среди участников."""
+    if any(_is_meetings_calendar(name) for name in names):
+        return list(names)
+    return [*names, MEETINGS_CALENDAR_ATTENDEE]
+
+
+def _lines_without_meetings_calendar(lines: list[str]) -> list[str]:
+    return [line for line in lines if line and not _is_meetings_calendar(line)]
 
 
 def compose_participants_body(lines: list[str], planner: str, notes: str) -> str:
@@ -1764,7 +1835,6 @@ def read_calendar(input_data: dict) -> dict:
         seen_owners.add(name.casefold())
         calendar_owners.append(name)
     calendar_owner = bool(calendar_owners)
-    include_own = _truthy(input_data.get("include_own", True))
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -1891,8 +1961,6 @@ def read_calendar(input_data: dict) -> dict:
             folders = _iter_visible_calendar_folders(outlook, namespace, own_name)
             if not folders:
                 folders = [(own_name or "Календарь", _own_calendar_folder(namespace), True)]
-            if not include_own:
-                folders = [row for row in folders if not row[2]]
             _log_progress(f"step=visible_calendars count={len(folders)}")
             for label, folder, is_own in folders:
                 remaining_results = max_results - len(events)
@@ -1953,15 +2021,13 @@ def read_calendar(input_data: dict) -> dict:
                 "range_start": start_at.isoformat(),
                 "range_end": end_at.isoformat(),
             }
-        targets = list(calendar_owners or people or [own_name or ""])
-        if (
-            include_own
-            and calendar_owner
-            and not any(
-                not person or _same_calendar_person(person, own_name) for person in targets
-            )
-        ):
-            targets.insert(0, own_name or "")
+        include_own = _truthy(input_data.get("include_own"))
+        targets = _calendar_read_targets(
+            calendar_owners,
+            people,
+            own_name,
+            include_own=include_own,
+        )
         for person in targets:
             remaining_results = max_results - len(events)
             remaining_scan = max_scan_items - checked_count
@@ -1978,6 +2044,13 @@ def read_calendar(input_data: dict) -> dict:
                 folder, status = _resolve_person_calendar_folder(
                     outlook, namespace, person, own_name
                 )
+                if folder is not None and _folder_is_profile_calendar(namespace, folder):
+                    _log_progress(
+                        f"step=resolve_calendar_is_profile person={person} "
+                        "shared open returned the current profile"
+                    )
+                    folder = None
+                    status = "denied"
                 _log_progress(
                     f"step=resolve_calendar_done person={person} status={status} "
                     f"found={int(folder is not None)}"
@@ -2153,9 +2226,10 @@ def create_event(input_data: dict) -> dict:
                         pattern, start, end, kind, int(spec.get("day_of_month") or start.day)
                     )
             added = _attach_attendees(appt, attendees)
-            if attendees:
+            visible = _lines_without_meetings_calendar(_participant_lines(appt, attendees))
+            if visible:
                 spec["body"] = compose_participants_body(
-                    _participant_lines(appt, attendees),
+                    visible,
                     meeting_planner_line(spec.get("planner_fio") or "", spec.get("planner_position") or ""),
                     spec["body"],
                 )
@@ -2492,7 +2566,7 @@ def _meeting_specs(input_data: dict) -> list[dict]:
             end = start + timedelta(minutes=minutes)
         if end <= start:
             end = start + timedelta(minutes=DEFAULT_MEETING_MINUTES)
-        attendees = _people_from_input(row) or _people_from_input(input_data)
+        attendees = _with_meetings_calendar(_people_from_input(row) or _people_from_input(input_data))
         organizer = _organizer_from_input(row) or _organizer_from_input(input_data)
         send_raw = row.get("send_invites", input_data.get("send_invites"))
         if send_raw is None:
@@ -2625,6 +2699,183 @@ def _compute_free_slots(
                     )
         day += timedelta(days=1)
     return slots
+
+
+def _outgoing_letter_fields(input_data: dict) -> tuple[str, str, str]:
+    """Адрес, тема и текст исходящего. Пустой адрес и перенос строки в адресе — ошибка."""
+    to_addr = _safe_str(input_data.get("to") or "").strip()
+    subject = _safe_str(input_data.get("subject") or "").strip().replace("\r", " ").replace("\n", " ")
+    body = _safe_str(input_data.get("body") or "").strip()
+    if any(char in to_addr for char in "\r\n,;"):
+        raise OutlookAccessError("Укажите один email получателя")
+    domain = to_addr.split("@", 1)[-1] if "@" in to_addr else ""
+    if "@" not in to_addr or "." not in domain or " " in to_addr:
+        raise OutlookAccessError("Укажите email получателя")
+    if not subject:
+        raise OutlookAccessError("Укажите тему письма")
+    if not body:
+        raise OutlookAccessError("Укажите содержание письма")
+    return to_addr, subject, body
+
+
+def _find_sent_mail(namespace: Any, subject: str, to_addr: str) -> Any:
+    """Найти только что отправленное письмо в папке «Отправленные»."""
+    folder = namespace.GetDefaultFolder(SENT_FOLDER_ID)
+    subject_low = subject.casefold()
+    to_low = to_addr.casefold()
+    deadline = time.time() + 4
+    while time.time() < deadline:
+        items = folder.Items
+        items.Sort("[SentOn]", True)
+        item = items.GetFirst()
+        for _ in range(12):
+            if item is None:
+                break
+            try:
+                found_subject = _safe_str(getattr(item, "Subject", ""))
+                found_to = _safe_str(getattr(item, "To", ""))
+                if found_subject.casefold() == subject_low and to_low in found_to.casefold():
+                    return item
+            except Exception:  # noqa: BLE001
+                pass
+            item = items.GetNext()
+        time.sleep(0.4)
+    return None
+
+
+_LOGO_PATH = Path(__file__).resolve().parents[3] / "assets" / "turbulence_don_logo.png"
+_CID_PROPID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
+_COMPANY_LINES = (
+    "ГК «Турбулентность-ДОН»",
+    "Ростовская область, Мясниковский район",
+    "1-ый километр Новошахтинского шоссе, база «Спектр», стр. 6/8",
+)
+
+
+def _signature_lines(input_data: dict, from_email: str) -> list[str]:
+    """Тот же блок, что на бланке: сотрудник, адрес ГК, почта отправителя, телефоны."""
+    lines = ["С уважением,"]
+    for key in ("fio", "position"):
+        text = " ".join(_safe_str(input_data.get(key) or "").split())
+        if text:
+            lines.append(text)
+    lines.extend(_COMPANY_LINES)
+    email = " ".join(from_email.split())
+    if "@" in email:
+        lines.append(email)
+    work = " ".join(_safe_str(input_data.get("work_phone") or "").split())
+    mobile = " ".join(_safe_str(input_data.get("mobile_phone") or "").split())
+    if work:
+        lines.append(f"раб. тел: {work}")
+    if mobile:
+        lines.append(f"тел. моб.: {mobile}")
+    return lines
+
+
+def _mailbox_address(mail: Any) -> str:
+    try:
+        account = getattr(mail, "SendUsingAccount", None)
+        smtp = _safe_str(getattr(account, "SmtpAddress", "")) if account is not None else ""
+        if "@" in smtp:
+            return smtp
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _html_letter(text: str, *, logo_cid: str = "") -> str:
+    import html
+
+    parts = [
+        "<html><body style=\"font-family:'Times New Roman',serif;font-size:12pt\">"
+    ]
+    for line in text.splitlines():
+        parts.append(f"<p style=\"margin:0\">{html.escape(line) or '&nbsp;'}</p>")
+    if logo_cid:
+        parts.append(f"<p><img src=\"cid:{html.escape(logo_cid)}\" width=\"640\" alt=\"Турбулентность-ДОН\"></p>")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+def send_outgoing_letter(input_data: dict) -> dict:
+    """Отправить исходящее письмо из Outlook и вернуть его файл .msg.
+
+    Вызывается формой исходящей корреспонденции: адрес, тема и текст уже
+    подтверждены записью документа. Общая отправка email.send по-прежнему закрыта.
+    """
+    to_addr, subject, body = _outgoing_letter_fields(input_data)
+
+    def _write(win32com_client: Any) -> dict:
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = _mapi_namespace(outlook)
+        mail = outlook.CreateItem(0)
+        mail.To = to_addr
+        mail.Subject = subject
+        try:
+            mail.DeleteAfterSubmit = False
+        except Exception:  # noqa: BLE001
+            pass
+        from_email = _mailbox_address(mail) or _safe_str(input_data.get("from_email") or "").strip()
+        sign = _signature_lines(input_data, from_email)
+        plain = body.rstrip() + "\n\n" + "\n".join(sign)
+        try:
+            mail.BodyFormat = 2
+        except Exception:  # noqa: BLE001
+            pass
+        mail.Body = plain
+        html = _html_letter(plain, logo_cid="turbulence-logo" if _LOGO_PATH.is_file() else "")
+        if _LOGO_PATH.is_file():
+            try:
+                attachment = mail.Attachments.Add(str(_LOGO_PATH.resolve()))
+                attachment.PropertyAccessor.SetProperty(_CID_PROPID, "turbulence-logo")
+                mail.HTMLBody = html
+            except Exception:  # noqa: BLE001
+                mail.Body = plain
+        else:
+            mail.HTMLBody = html
+        # Учётная подпись Outlook иногда подменяет HTMLBody. Текст содержания должен остаться.
+        current = _safe_str(getattr(mail, "HTMLBody", ""))
+        marker = body.strip().splitlines()[0][:80]
+        if marker and marker not in current:
+            mail.Body = plain
+            mail.HTMLBody = html
+        try:
+            mail.Save()
+            mail.Send()
+        except Exception as exc:
+            raise OutlookAccessError(f"Outlook не отправил письмо: {exc}") from exc
+        sent = _find_sent_mail(namespace, subject, to_addr)
+        if sent is None:
+            raise OutlookAccessError(
+                "Письмо отправлено, но не найдено в «Отправленных», поэтому файл к документу не прикреплён"
+            )
+        base_dir = Path(tempfile.gettempdir()) / "Constructor" / "outlook" / "outgoing"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        target = base_dir / f"{_safe_mail_file_stem(subject, _safe_str(getattr(sent, 'EntryID', '')))}.msg"
+        try:
+            sent.SaveAs(str(target.resolve()), OL_SAVEAS_MSG)
+            raw = target.read_bytes()
+        except Exception as exc:
+            raise OutlookAccessError(f"Письмо отправлено, но не сохранилось файлом: {exc}") from exc
+        if not raw:
+            raise OutlookAccessError("Письмо отправлено, но файл .msg пустой")
+        if len(raw) > 12 * 1024 * 1024:
+            raise OutlookAccessError("Письмо отправлено, но файл .msg больше 12 МБ и не прикрепится")
+        import base64
+
+        return {
+            "ok": True,
+            "sent": True,
+            "to": to_addr,
+            "from_email": from_email,
+            "subject": subject,
+            "file_name": target.name,
+            "msg_filename": target.name,
+            "msg_base64": base64.b64encode(raw).decode("ascii"),
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка отправки исходящего письма")
 
 
 def send_mail_disabled(input_data: dict) -> dict:
@@ -3308,6 +3559,7 @@ def save_mail_message(input_data: dict) -> dict:
             "subject": subject,
             "source": "outlook_com",
         }
+        byte_path = target
         if _truthy(input_data.get("stage_for_incoming")):
             from app.tools.ac.workers.mail_incoming_onec import stage_incoming_msg_file
 
@@ -3317,13 +3569,15 @@ def save_mail_message(input_data: dict) -> dict:
                 file_name=target.name,
             )
             out["staged_path"] = str(staged)
+            byte_path = staged
+        if _truthy(input_data.get("include_base64")) or _truthy(input_data.get("stage_for_incoming")):
             try:
-                raw = staged.read_bytes()
+                raw = Path(byte_path).read_bytes()
                 if len(raw) <= 12 * 1024 * 1024:
                     import base64
 
                     out["msg_base64"] = base64.b64encode(raw).decode("ascii")
-                    out["msg_filename"] = staged.name
+                    out["msg_filename"] = Path(byte_path).name
             except OSError:
                 pass
         return out

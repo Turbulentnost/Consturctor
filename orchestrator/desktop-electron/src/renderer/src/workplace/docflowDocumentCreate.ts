@@ -1,5 +1,6 @@
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
+import { invokeLocalAcTool } from '../utils/localAcTool'
 import { onecGatewayInvokeArgs } from './userContext'
 
 const TOOL = 'onec.docflow_document_create'
@@ -51,6 +52,7 @@ export type DocflowKindSchema = {
   max_files?: number
   copy?: boolean
   basis_targets?: { id: DocflowKindId; title: string }[]
+  recipient_emails?: string[]
 }
 
 export type DocflowUploadFile = { name: string; size: number; base64: string }
@@ -89,9 +91,14 @@ export type DocflowPrefill = {
   copy: boolean
 }
 
+/** Уже отправленное письмо Outlook: зарегистрировать исходящую, не отправляя его ещё раз. */
+export type OutgoingMailSource = {
+  entryId: string
+}
+
 /** Что открыть в форме: новый документ (возможно, на основании другого) или уже записанный. */
 export type DocflowFormRequest =
-  | { mode: 'create'; kind: DocflowKindId; prefill?: DocflowPrefill }
+  | { mode: 'create'; kind: DocflowKindId; prefill?: DocflowPrefill; outgoingMail?: OutgoingMailSource }
   | { mode: 'edit'; kind: DocflowKindId; refKey: string }
 
 export type DocflowWriteResult =
@@ -154,6 +161,84 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
 }
 
+export type OutgoingSender = {
+  fio: string
+  position: string
+  from_email: string
+  work_phone: string
+  mobile_phone: string
+}
+
+/** Телефоны сотрудника из контактной информации 1С. */
+export async function loadOutgoingPhones(user: UserProfile | null): Promise<{ work_phone: string; mobile_phone: string }> {
+  const response = await api.invokeServerTool(TOOL, onecGatewayInvokeArgs(user, { action: 'signature', kind: 'outgoing' }), 60_000)
+  if (!response.ok) return { work_phone: '', mobile_phone: '' }
+  const payload = (response.result || {}) as Record<string, unknown>
+  return {
+    work_phone: String(payload.work_phone || '').trim(),
+    mobile_phone: String(payload.mobile_phone || '').trim()
+  }
+}
+
+/** Сохранить уже существующее письмо Outlook файлом .msg, без повторной отправки. */
+export async function saveOutlookMessageFile(
+  user: UserProfile | null,
+  entryId: string
+): Promise<{ ok: true; file: DocflowUploadFile } | { ok: false; error: string }> {
+  const response = await invokeLocalAcTool(
+    'outlook.save_message',
+    { entry_id: entryId, include_base64: true },
+    120_000,
+    user
+  )
+  if (!response.ok || !response.result) {
+    return { ok: false, error: response.error || 'Outlook не сохранил письмо' }
+  }
+  const base64 = String(response.result.msg_base64 || '').trim()
+  const name = String(response.result.file_name || response.result.msg_filename || 'Письмо.msg').trim() || 'Письмо.msg'
+  if (!base64) return { ok: false, error: 'Письмо не сохранилось файлом .msg' }
+  const size = Math.floor((base64.length * 3) / 4)
+  return {
+    ok: true,
+    file: { name: name.toLowerCase().endsWith('.msg') ? name : `${name}.msg`, size, base64 }
+  }
+}
+
+/** Отправить письмо исходящей через Outlook и получить его файл .msg. */
+export async function sendOutgoingLetter(
+  user: UserProfile | null,
+  letter: { to: string; subject: string; body: string; sender: OutgoingSender }
+): Promise<{ ok: true; file: DocflowUploadFile; fromEmail: string } | { ok: false; error: string }> {
+  const sender = letter.sender
+  const response = await invokeLocalAcTool(
+    'outlook.send_outgoing_letter',
+    {
+      to: letter.to.trim(),
+      subject: letter.subject.trim(),
+      body: letter.body.trim(),
+      fio: sender.fio,
+      position: sender.position,
+      from_email: sender.from_email,
+      work_phone: sender.work_phone,
+      mobile_phone: sender.mobile_phone
+    },
+    120_000,
+    user
+  )
+  if (!response.ok || !response.result) {
+    return { ok: false, error: response.error || 'Outlook не отправил письмо' }
+  }
+  const base64 = String(response.result.msg_base64 || '').trim()
+  const name = String(response.result.file_name || response.result.msg_filename || 'Письмо.msg').trim() || 'Письмо.msg'
+  if (!base64) return { ok: false, error: 'Письмо отправлено, но файл .msg не получен' }
+  const size = Math.floor((base64.length * 3) / 4)
+  return {
+    ok: true,
+    fromEmail: String(response.result.from_email || sender.from_email || '').trim(),
+    file: { name: name.toLowerCase().endsWith('.msg') ? name : `${name}.msg`, size, base64 }
+  }
+}
+
 export async function createDocflowDocument(
   user: UserProfile | null,
   kind: DocflowKindId,
@@ -161,7 +246,9 @@ export async function createDocflowDocument(
   tables: Record<string, Record<string, string>[]>,
   files: DocflowUploadFile[] = [],
   basis: DocflowPrefill['basis'] = null,
-  post = false
+  post = false,
+  letterhead = false,
+  sender: OutgoingSender | null = null
 ): Promise<DocflowCreateResult> {
   const response = await api.invokeServerTool(
     TOOL,
@@ -172,9 +259,11 @@ export async function createDocflowDocument(
       tables,
       ...(basis ? { basis } : {}),
       ...(post ? { post: true } : {}),
+      ...(letterhead ? { letterhead: true } : {}),
+      ...(sender ? { sender } : {}),
       ...(files.length ? { files: uploadPayload(files) } : {})
     }),
-    files.length ? 300_000 : 180_000
+    files.length || letterhead ? 300_000 : 180_000
   )
   if (!response.ok) return { ok: false, error: errorText(response, 'Не удалось создать документ в 1С') }
   const payload = (response.result || {}) as Record<string, unknown>
@@ -327,9 +416,12 @@ export function missingFields(fields: DocflowField[], values: Record<string, str
 }
 
 function todayInput(): string {
-  const now = new Date()
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date())
 }
 
 export function initialValues(schema: DocflowKindSchema, actorFio: string): Record<string, string> {

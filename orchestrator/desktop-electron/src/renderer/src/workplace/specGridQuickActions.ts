@@ -100,7 +100,7 @@ export function buildProcessesQuickActions(user: UserProfile | null = null): Spe
       label: 'Создать письмо',
       tone: 'orange',
       icon: 'mail',
-      run: () => void openOutlookCompose()
+      run: () => openWorkplaceTab('mail', { composeOutgoing: { token: Date.now() } })
     },
     {
       id: 'goto-1c',

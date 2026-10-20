@@ -29,7 +29,8 @@ if not exist ".env" (
   copy /Y .env.example .env >nul
 )
 
-if not defined API_HOST set "API_HOST=127.0.0.1"
-echo Starting orchestrator backend on %API_HOST%:%PORT% ...
+rem Do not force 127.0.0.1: that overrides backend\.env API_HOST and hides the
+rem gateway from other computers. On this server .env sets API_HOST=0.0.0.0.
+echo Starting orchestrator backend on port %PORT% (API_HOST from env or backend\.env) ...
 py -3.12 -m app.main
 if errorlevel 1 if not "%ORCH_IN_CURSOR%"=="1" pause

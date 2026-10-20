@@ -28,6 +28,12 @@ export const CREATE_TASK_CHANNEL_LABEL: Record<CreateTaskChannel, string> = {
   platform: 'В платформе'
 }
 
+/** Сводка KPI на вкладке задач подчинённых: вид графика и чьё подразделение оставить. */
+export type SubordinateKpiNav = {
+  mode: 'people' | 'groups' | 'all'
+  unit: string
+}
+
 /** Optional filter applied after App switches the workplace tab. */
 export type WorkplaceTabIntent = {
   taskFilter?: TaskTileFilter
@@ -35,6 +41,9 @@ export type WorkplaceTabIntent = {
   searchTarget?: GlobalSearchTarget
   /** Плитка реестра поручений: все, просроченные или подходящие ко сроку. */
   registryTile?: AssignmentRegistryTileId | 'all'
+  subordinateKpi?: SubordinateKpiNav
+  /** Открыть форму исходящей на вкладке писем. token отличает повторный клик. */
+  composeOutgoing?: { token: number }
 }
 
 export type OpenWorkplaceTabDetail = {

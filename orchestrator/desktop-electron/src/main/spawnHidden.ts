@@ -21,8 +21,17 @@ export function spawnHidden(
   } as SpawnOptions)
 }
 
+let cachedPythonExe = ''
+
 /** Путь к python.exe без запуска видимого py.exe (Windows launcher). */
 export function resolveWindowsPythonExe(preferred?: string): string {
+  if (!preferred && cachedPythonExe) return cachedPythonExe
+  const resolved = lookupWindowsPythonExe(preferred)
+  if (!preferred && resolved.toLowerCase().endsWith('.exe')) cachedPythonExe = resolved
+  return resolved
+}
+
+function lookupWindowsPythonExe(preferred?: string): string {
   const fromEnv =
     preferred ||
     process.env.ORCH_PYTHON ||

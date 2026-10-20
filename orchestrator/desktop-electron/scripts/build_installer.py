@@ -145,7 +145,7 @@ def set_env_key(env_path: Path, key: str, value: str) -> None:
 LAN_BACKEND = "http://192.168.1.157:7812"
 
 
-def prepare_env(backend_url: str) -> str:
+def prepare_env(backend_url: str, update_owner: str = "") -> str:
     env_path = DESKTOP_ROOT / ".env"
     if not env_path.is_file():
         example = DESKTOP_ROOT / ".env.example"
@@ -158,6 +158,10 @@ def prepare_env(backend_url: str) -> str:
     chosen = backend_url.strip().rstrip("/") or LAN_BACKEND
     set_env_key(env_path, "BACKEND_URL", chosen)
     print(f"backend url: {chosen}", flush=True)
+    owner = update_owner.strip()
+    if owner:
+        set_env_key(env_path, "UPDATE_GITHUB_OWNER", owner)
+        print(f"update owner: {owner}", flush=True)
     return chosen
 
 
@@ -284,17 +288,18 @@ def filtered_requirements() -> Path:
 
 
 def enable_embedded_python_site(python_dir: Path) -> None:
-    desktop_entry = "../desktop"
     for pth in python_dir.glob("python*._pth"):
         text = pth.read_text(encoding="utf-8", errors="replace")
         text = text.replace("#import site", "import site")
         lines = [line.rstrip("\r") for line in text.splitlines()]
-        normalized = [line.strip().replace("\\", "/") for line in lines]
-        if desktop_entry not in normalized:
+        for entry in ("../desktop", "../pybridge"):
+            normalized = [line.strip().replace("\\", "/") for line in lines]
+            if entry in normalized:
+                continue
             if "import site" in lines:
-                lines.insert(lines.index("import site"), desktop_entry)
+                lines.insert(lines.index("import site"), entry)
             else:
-                lines.append(desktop_entry)
+                lines.append(entry)
         pth.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -416,9 +421,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--download-node", action="store_true", help="Use nodejs.org zip instead of local Node")
     parser.add_argument("--skip-sdk-install", action="store_true", help="Do not run npm install in desktop/sdk-agent")
     parser.add_argument("--skip-browsers", action="store_true", help="Do not copy Playwright browser cache")
+    parser.add_argument("--update-owner", default="", help="GitHub owner whose releases the app updates from")
     args = parser.parse_args(argv)
 
-    backend_url = prepare_env(args.backend_url)
+    backend_url = prepare_env(args.backend_url, args.update_owner)
     prepare_sdk_agent(args.skip_sdk_install)
     prepare_agent_platform(args.skip_sdk_install)
     prepare_node(args.skip_node, download_node=args.download_node)

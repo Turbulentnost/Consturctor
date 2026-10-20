@@ -229,6 +229,42 @@ def test_create_attaches_files(fake: FakeClient) -> None:
     assert "Файлов прикреплено: 1" in result["summary"]
 
 
+def test_outgoing_letterhead_carries_email_and_text(fake: FakeClient, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    import base64
+    import io
+
+    from docx import Document
+
+    from app.services import outgoing_letterhead as letterhead
+
+    monkeypatch.setattr(letterhead, "_RECIPIENTS_PATH", tmp_path / "recipients.json")
+    message = "ТЕСТИРОВАНИЕ ИИ АГЕНТОВ И РАБОТЫ ДО В ОРКСТР"
+    values = {
+        **_outgoing_values(),
+        "Содержание": message,
+        "EmailПолучателяПисьма": "zhalibin.max@gmail.com",
+    }
+    result = dc.create_document(
+        "outgoing",
+        {"values": values, "letterhead": True},
+        actor_fio="Жалыбин Максим Дмитриевич",
+    )
+    assert result["attached"][0] == letterhead.LETTERHEAD_NAME
+    stored = fake.files[-1]
+    assert stored["Description"] == "Фирменный бланк"
+    assert stored["Расширение"] == "docx"
+    raw = base64.b64decode(stored["ФайлХранилище_Base64Data"])
+    document = Document(io.BytesIO(raw))
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "zhalibin.max@gmail.com" in text
+    assert message in text
+    assert "С уважением," in text
+    assert "Жалыбин Максим Дмитриевич" in text
+    assert "1-ый километр Новошахтинского шоссе, база «Спектр», стр. 6/8" in text
+    assert document.inline_shapes
+    assert "zhalibin.max@gmail.com" in letterhead.recipient_emails()
+
+
 def test_files_rejected_for_docflow_base(fake: FakeClient) -> None:
     import base64
 

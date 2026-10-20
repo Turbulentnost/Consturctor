@@ -20,8 +20,8 @@ engine = create_engine(
     pool_recycle=1800,
     pool_timeout=10,
     future=True,
-    # Without a DB the OS TCP timeout (~2 min) would stall every DB-backed request.
-    connect_args={"connect_timeout": 5} if settings.app_db_optional else {},
+    # Without a short timeout the OS waits ~2 min and every DB-backed request looks hung.
+    connect_args={"connect_timeout": 8},
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 

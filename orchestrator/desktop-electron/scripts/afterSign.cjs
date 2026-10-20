@@ -69,6 +69,7 @@ function skipBackend(rel) {
   if (norm === '.env.my' || norm.endsWith('/.env.my')) return false
   const name = norm.split('/').pop() || ''
   if (name.startsWith('tmp_') || name.startsWith('_tmp')) return false
+  if (name === '.env' || name === '.env.local' || name === '.env.my') return false
   return true
 }
 

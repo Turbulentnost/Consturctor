@@ -137,20 +137,22 @@ function decodeJwtPart(part: string): string {
   }
 }
 
-const RESTORE_DEADLINE_MS = 60_000
-const RESTORE_RETRY_MS = 2_000
+const RESTORE_DEADLINE_MS = 12_000
+const RESTORE_RETRY_MS = 1_500
 
 /** Only an explicit auth rejection ends the saved session; an unreachable backend is retried. */
 async function restoreProfile(cancelled: () => boolean): Promise<UserProfile | null> {
   const deadline = Date.now() + RESTORE_DEADLINE_MS
   while (!cancelled()) {
     try {
-      return await api.me(8_000)
+      return await api.me(4_000)
     } catch (error) {
       if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
         clearSession(true)
         return null
       }
+      // The server refused the connection: retrying for a minute only hides the login screen.
+      if (error instanceof ApiError && error.status === 0) return null
       if (Date.now() >= deadline) return null
       await new Promise((resolve) => window.setTimeout(resolve, RESTORE_RETRY_MS))
     }
@@ -872,7 +874,13 @@ function AppShell(): React.JSX.Element {
       case 'tasks':
         return <TasksGridTab user={activeUser} navTaskFilter={tabIntent?.taskFilter} />
       case 'mail':
-        return <MailGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return (
+          <MailGridTab
+            user={activeUser}
+            onAskOrchestrator={askOrchestratorFromTab}
+            navCompose={tabIntent?.composeOutgoing}
+          />
+        )
       case 'docflow':
         return <DocflowGridTab user={activeUser} />
       case 'task_create':
@@ -918,7 +926,8 @@ function AppShell(): React.JSX.Element {
                 },
                 onOpenPassport: (workflowId, title, tab) =>
                   setView({ kind: 'passport', workflowId, title, tab }),
-                registryTile: tabIntent?.registryTile
+                registryTile: tabIntent?.registryTile,
+                subordinateKpi: tabIntent?.subordinateKpi
               })}
             </>
           )
@@ -1064,7 +1073,7 @@ function AppShell(): React.JSX.Element {
               onUnreadChange={setUnread}
               onLogout={onLogout}
               showLogout={showLogout}
-              lightSidebar={workplaceShellKey === 'today'}
+              lightSidebar={false}
               activeThreadId=""
               chatRefreshAt={chatRefreshAt}
               onNavigate={(key) => {

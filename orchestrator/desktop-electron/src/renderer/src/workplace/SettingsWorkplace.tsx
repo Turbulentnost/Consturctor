@@ -27,10 +27,12 @@ import {
   Database,
   Plug,
   ShieldCheck,
+  Palette,
   SlidersHorizontal,
   UsersRound,
   type LucideIcon
 } from 'lucide-react'
+import { VisualSettings } from './VisualSettings'
 import { KpiPinSettings } from './KpiPinSettings'
 import { KpiProtectionSettings } from './KpiProtectionSettings'
 import { MyAgentsSection } from './MyAgentsSection'
@@ -38,6 +40,7 @@ import { OneCSessionProfileSection } from './OneCSessionProfileSection'
 
 type SettingsSection =
   | 'general'
+  | 'visual'
   | 'my_agents'
   | 'notifications'
   | 'access'
@@ -152,6 +155,7 @@ interface NotifyPrefs {
 
 const TABS: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: 'general', label: 'Общие', icon: SlidersHorizontal },
+  { id: 'visual', label: 'Визуал', icon: Palette },
   { id: 'my_agents', label: 'Мои агенты', icon: Bot },
   { id: 'notifications', label: 'Уведомления', icon: Bell },
   { id: 'access', label: 'Права доступа', icon: UsersRound },
@@ -589,6 +593,17 @@ export function SettingsWorkplace({
             </div>
           </section>
           <section className="set-card set-widgets-card">
+            <h2>Внешний вид вкладок</h2>
+            <p className="set-muted">
+              Превью вкладок без данных, видимость, порядок и цвет виджетов — в разделе «Визуал».
+            </p>
+            <div className="wp-actions">
+              <button className="btn-primary" type="button" onClick={() => setSection('visual')}>
+                Открыть визуал
+              </button>
+            </div>
+          </section>
+          <section className="set-card set-widgets-card">
             <h2>Виджеты вкладки «Сегодня»</h2>
             <p className="set-muted">Выберите, какие блоки показывать на главной рабочей вкладке.</p>
             <div className="set-widget-grid-9" role="group" aria-label="Видимость виджетов">
@@ -678,6 +693,8 @@ export function SettingsWorkplace({
           </div>
         </div>
       ) : null}
+
+      {section === 'visual' ? <VisualSettings user={user} /> : null}
 
       {section === 'my_agents' ? (
         <MyAgentsSection onOpen={onOpenAgent} onPassport={onOpenPassport} onHistory={onOpenHistory} />

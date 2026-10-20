@@ -2,11 +2,13 @@ import type { ReactNode } from 'react'
 import type { UserProfile } from '../api/types'
 import type { PageKey } from '../components/Sidebar'
 import type { PassportTab } from '../pages/AgentPassportPage'
+import { InDevelopmentTab } from './inDevelopment/InDevelopmentTab'
 import { AssignmentsRegistryGridTab } from '../tabs/grid/AssignmentsRegistryGridTab'
 import { AgentLibraryGridTab } from '../tabs/grid/AgentLibraryGridTab'
 import { ProjectsGridTab } from '../tabs/grid/ProjectsGridTab'
 import { SubordinateTasksGridTab } from '../tabs/grid/SubordinateTasksGridTab'
 import type { AssignmentRegistryTileId } from '../workplace/assignmentRegistryTypes'
+import type { SubordinateKpiNav } from '../workplace/workplaceNav'
 import type { ExtensionPositionFilter } from './extensionAudience'
 import {
   canUseAgentLibrary,
@@ -27,6 +29,7 @@ export type ExtensionTabContext = {
   onNavigate: (pageKey: PageKey) => void
   onOpenPassport: (workflowId: string, title: string, tab?: PassportTab) => void
   registryTile?: AssignmentRegistryTileId | 'all' | null
+  subordinateKpi?: SubordinateKpiNav | null
 }
 
 /**
@@ -88,7 +91,7 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
       'Ежедневный контроль загрузки и сроков подчинённых по общей базе 1С. Каскадную задачу видно по исполнителю, без дубля на рабочем столе руководителя. За период можно выгрузить сводку для KPI.',
     positionGroups: ['department_heads'],
     canAccess: canUseSubordinateTasks,
-    renderTab: ({ user }) => <SubordinateTasksGridTab user={user} />
+    renderTab: ({ user, subordinateKpi }) => <SubordinateTasksGridTab user={user} navKpi={subordinateKpi} />
   },
   {
     id: 'agent_library',
@@ -103,6 +106,17 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
     renderTab: ({ user, onOpenPassport }) => (
       <AgentLibraryGridTab user={user} onOpenPassport={onOpenPassport} />
     )
+  },
+  {
+    id: 'in_development',
+    pageKey: 'in_development',
+    navLabel: 'Закупки',
+    title: 'Закупки',
+    subtitle: 'Закупки',
+    description: 'Закупки',
+    positionGroups: ['all'],
+    canAccess: () => true,
+    renderTab: () => <InDevelopmentTab />
   }
 ]
 

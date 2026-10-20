@@ -69,7 +69,7 @@ interface OutlookMeetingRaw {
   importance?: number
 }
 
-const CACHE_KEY = 'orchOutlookMeetings:v8'
+const CACHE_KEY = 'orchOutlookMeetings:v9'
 const REQUEST_TIMEOUT_MS = 180_000
 
 function pad2(n: number): string {
@@ -183,18 +183,23 @@ export function isCanceledMeeting(meeting: Pick<MeetingEvent, 'subject'>): boole
   return /canceled|cancelled|отмен[её]н|отмена/i.test(meeting.subject || '')
 }
 
+function meetingOwnerRank(meeting: MeetingEvent): number {
+  const owner = (meeting.owner || '').trim()
+  if (owner && !isOutlookFolderOwner(owner)) return 2
+  if (owner) return 1
+  return 0
+}
+
 /** Outlook COM may return the same appointment twice (shared calendars / merged folders). */
 export function dedupeMeetingEvents(meetings: MeetingEvent[]): MeetingEvent[] {
-  const seen = new Set<string>()
-  const out: MeetingEvent[] = []
+  const byKey = new Map<string, MeetingEvent>()
   for (const meeting of meetings) {
     if (isCanceledMeeting(meeting)) continue
     const key = meetingDedupeKey(meeting)
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push(meeting)
+    const prev = byKey.get(key)
+    if (!prev || meetingOwnerRank(meeting) > meetingOwnerRank(prev)) byKey.set(key, meeting)
   }
-  return out
+  return [...byKey.values()]
 }
 
 function normalizeMeeting(raw: OutlookMeetingRaw, index: number): MeetingEvent {
@@ -354,7 +359,7 @@ function requestOutlookMeetings(range: {
       forUser: range.forUser,
       allVisible: range.allVisible,
       calendarOwners: range.calendarOwners,
-      includeOwn: range.includeOwn !== false
+      includeOwn: range.includeOwn
     })
   })
 }
@@ -375,21 +380,6 @@ export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()
     if (!start) return false
     return start.getFullYear() === y && start.getMonth() === m && start.getDate() === d
   }).length
-}
-
-/** Ключ тумблера «Показывать мои совещания» — тот же, что в ownMeetings.ts. */
-function showOwnStored(fio: string): boolean {
-  try {
-    return window.localStorage.getItem(`orch.meetings.show-own.v2:${fio.trim().toLowerCase()}`) === '1'
-  } catch {
-    return false
-  }
-}
-
-/** У Ильченко личный календарь читается только при включённом тумблере. Остальным — всегда. */
-function includeOwnCalendar(owner: string): boolean {
-  if (!sharedMeetingCalendarFor(owner)) return true
-  return showOwnStored(owner)
 }
 
 function calendarScope(owner: string): { baseCalendar: string; calendarOwners: string[]; askOwners: boolean } {
@@ -443,9 +433,11 @@ export async function ensureOutlookMeetings(
   const toKey = dayKey(addDays(win.to, -1))
   const today = dayKey(new Date())
   const owner = (options.owner || '').trim()
-  const includeOwn = options.includeOwn ?? includeOwnCalendar(owner)
   const { baseCalendar, calendarOwners, askOwners } = calendarScope(owner)
-  const cacheOwner = `${askOwners ? `${owner}@${calendarOwners.join('|')}` : owner}|own=${includeOwn ? 1 : 0}`
+  const includeOwn = Boolean(options.includeOwn)
+  const cacheOwner = askOwners
+    ? `${owner}@${calendarOwners.join('|')}${includeOwn ? '|own' : ''}`
+    : owner
 
   if (!options.force) {
     const cache = readCache()
@@ -478,8 +470,7 @@ export async function ensureOutlookMeetings(
           dateFrom: fromKey,
           dateTo: toKey,
           forUser: options.allVisible ? owner : undefined,
-          allVisible: Boolean(options.allVisible),
-          includeOwn
+          allVisible: Boolean(options.allVisible)
         }
   )
   if (!result.ok) return { ...result, cached: false }

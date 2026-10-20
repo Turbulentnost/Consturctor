@@ -416,7 +416,7 @@ async function invokeProtocolWrite(args: Record<string, unknown>, failMessage: s
   }
 }
 
-/** Черновик на основании протокола: шапка копируется, все задачи основания остаются на контроле. */
+/** Черновик на основании протокола: шапка и решения копируются, задачи основания остаются на контроле. */
 export async function createProtocolOnBasis(
   sourceRef: string,
   date: string,

@@ -14,6 +14,14 @@ import { decodeMimeHeader } from '../../utils/mimeHeader'
 import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { useWorkplacePeriod } from '../../workplace/workplacePeriod'
 import { MailDetailPanel } from './MailDetailPanel'
+import { DocflowCreateDialog } from './DocflowCreateDialog'
+import {
+  loadDocflowCreateSchema,
+  type DocflowFormRequest,
+  type DocflowKindSchema
+} from '../../workplace/docflowDocumentCreate'
+import type { WorkplaceTabIntent } from '../../workplace/workplaceNav'
+import { hasOutlookEntryId } from '../../utils/outlookMailActions'
 import { usePageSearch } from '../../layout/pageSearchContext'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 import {
@@ -50,12 +58,20 @@ function mailMatchesDirection(row: SpecMailRow, direction: MailDirectionTab): bo
   return row.direction !== 'sent'
 }
 
+function emailFromParty(value: string): string {
+  const text = value.trim()
+  const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+  return match ? match[0] : text
+}
+
 export function MailGridTab({
   user,
-  onAskOrchestrator
+  onAskOrchestrator,
+  navCompose
 }: {
   user: UserProfile
   onAskOrchestrator: (message: string, context: string) => void
+  navCompose?: WorkplaceTabIntent['composeOutgoing']
 }): React.JSX.Element {
   const userId = user.id || ''
   const data = useSpecV04Sources(user)
@@ -75,6 +91,11 @@ export function MailGridTab({
   const [folderEditor, setFolderEditor] = useState<FolderEditorState | null>(null)
   const [folderDraftName, setFolderDraftName] = useState('')
   const [folderDraftColor, setFolderDraftColor] = useState<MailFolderColor>('blue')
+  const [formRequest, setFormRequest] = useState<DocflowFormRequest | null>(null)
+  const [createSchemas, setCreateSchemas] = useState<DocflowKindSchema[]>([])
+  const [composeError, setComposeError] = useState('')
+  const [composeNotice, setComposeNotice] = useState('')
+  const seenCompose = useRef(0)
 
   useEffect(() => {
     setMailMeta(loadMailMeta(userId))
@@ -96,6 +117,59 @@ export function MailGridTab({
     },
     [userId]
   )
+
+  const openOutgoing = useCallback(
+    (source?: { to?: string; subject?: string; body?: string; entryId?: string; registerExisting?: boolean }) => {
+      setComposeError('')
+      setComposeNotice('')
+      const values: Record<string, string> = {}
+      const email = emailFromParty(source?.to || '')
+      if (email) values.EmailПолучателяПисьма = email
+      if ((source?.subject || '').trim()) values.ТемаСлужебнойЗаписки = source?.subject?.trim() || ''
+      if ((source?.body || '').trim()) values.Содержание = source?.body?.trim() || ''
+      const request: DocflowFormRequest = {
+        mode: 'create',
+        kind: 'outgoing',
+        ...(Object.keys(values).length
+          ? {
+              prefill: {
+                values,
+                keys: {},
+                tables: {},
+                basis: null,
+                label: source?.entryId ? 'Письмо Outlook' : '',
+                copy: false
+              }
+            }
+          : {}),
+        ...(source?.registerExisting || source?.entryId
+          ? { outgoingMail: { entryId: source?.entryId || '' } }
+          : {})
+      }
+      const apply = (schemas: DocflowKindSchema[]): void => {
+        setCreateSchemas(schemas)
+        if (schemas.some((item) => item.id === 'outgoing')) setFormRequest(request)
+        else setComposeError('Форма исходящей в 1С недоступна')
+      }
+      if (createSchemas.some((item) => item.id === 'outgoing')) {
+        setFormRequest(request)
+        return
+      }
+      void loadDocflowCreateSchema(user)
+        .then(apply)
+        .catch((err: unknown) =>
+          setComposeError(err instanceof Error ? err.message : 'Не удалось открыть исходящую')
+        )
+    },
+    [createSchemas, user]
+  )
+
+  useEffect(() => {
+    const token = navCompose?.token || 0
+    if (!token || token === seenCompose.current) return
+    seenCompose.current = token
+    openOutgoing()
+  }, [navCompose, openOutgoing])
 
   const mailRows = useMemo(
     () =>
@@ -274,6 +348,7 @@ export function MailGridTab({
   }, [contextMenu])
 
   return (
+    <>
     <StandardTabChrome
       tabId="mail"
       userId={userId}
@@ -320,6 +395,7 @@ export function MailGridTab({
         ),
         main: (
           <div className="spec-v04-table-wrap wp-card mail-grid-main">
+            <div className="mail-dir-bar">
             <div className="mail-dir-tabs" role="tablist" aria-label="Направление писем">
               <button
                 type="button"
@@ -340,6 +416,12 @@ export function MailGridTab({
                 Исходящие
               </button>
             </div>
+            <button type="button" className="spec-btn-launch mail-compose-btn" onClick={() => openOutgoing()}>
+              Создать письмо
+            </button>
+            </div>
+            {composeError ? <p className="mail-compose-error">{composeError}</p> : null}
+            {composeNotice ? <p className="mail-compose-notice">{composeNotice}</p> : null}
 
             <div className="mail-folder-chips" aria-label="Папки">
               <button
@@ -560,11 +642,29 @@ export function MailGridTab({
           </div>
         ),
         side: selected ? (
-          <MailDetailPanel mail={selected} user={user} onPatchRow={patchRow} onAskOrchestrator={ask} />
+          <MailDetailPanel
+            mail={selected}
+            user={user}
+            onPatchRow={patchRow}
+            onAskOrchestrator={ask}
+            onRegisterOutgoing={(source) => openOutgoing({ ...source, registerExisting: true })}
+          />
         ) : (
           <div className="wp-card spec-v04-muted">Выберите письмо</div>
         )
       }}
     />
+    <DocflowCreateDialog
+      user={user}
+      request={formRequest}
+      schemas={createSchemas}
+      onClose={() => setFormRequest(null)}
+      onRequest={setFormRequest}
+      onSaved={(message) => {
+        setComposeError('')
+        setComposeNotice(message)
+      }}
+    />
+    </>
   )
 }

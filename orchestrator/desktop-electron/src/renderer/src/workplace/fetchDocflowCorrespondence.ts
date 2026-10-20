@@ -278,12 +278,13 @@ export function loadDocflowCorrespondenceSession(
   if (pending) return pending
   const load = loadFromOneC(user, kind)
     .then((result) => {
+      if (sessionLoads.get(key) !== load) return result
       sessionLoads.delete(key)
       if (!result.error) sessionCache.set(key, result)
       return result
     })
     .catch((err: unknown) => {
-      sessionLoads.delete(key)
+      if (sessionLoads.get(key) === load) sessionLoads.delete(key)
       throw err
     })
   sessionLoads.set(key, load)
@@ -291,7 +292,9 @@ export function loadDocflowCorrespondenceSession(
 }
 
 export function forgetDocflowCorrespondenceSession(user: UserProfile | null, kind: CorrespondenceKind): void {
-  sessionCache.delete(cacheKey(user, kind))
+  const key = cacheKey(user, kind)
+  sessionCache.delete(key)
+  sessionLoads.delete(key)
 }
 
 const INCOMING_FILES_ENTITY = 'Catalog_ТД_ВходящаяКорреспонденцияПрисоединенныеФайлы'
@@ -498,7 +501,9 @@ const orderCache = new Map<string, { rows: OrderRow[]; error: string }>()
 const orderLoads = new Map<string, Promise<{ rows: OrderRow[]; error: string }>>()
 
 export function forgetDocflowOrdersSession(user: UserProfile | null): void {
-  orderCache.delete(cacheKey(user, 'orders'))
+  const key = cacheKey(user, 'orders')
+  orderCache.delete(key)
+  orderLoads.delete(key)
 }
 
 /** Приказы и распоряжения из документов 1С. Виды читаются по очереди, имена справочников — отдельными пачками. */
@@ -508,7 +513,8 @@ export function loadDocflowOrdersSession(user: UserProfile | null): Promise<{ ro
   if (cached) return Promise.resolve(cached)
   const pending = orderLoads.get(key)
   if (pending) return pending
-  const load = (async () => {
+  let load: Promise<{ rows: OrderRow[]; error: string }> = Promise.resolve({ rows: [], error: '' })
+  load = (async () => {
     const parts: { spec: (typeof ORDER_ENTITIES)[number]; rows: Record<string, unknown>[]; error: string }[] = []
     for (const spec of ORDER_ENTITIES) {
       const part = await loadOrderRaw(user, spec)
@@ -526,11 +532,11 @@ export function loadDocflowOrdersSession(user: UserProfile | null): Promise<{ ro
     const error = rows.length
       ? errors.join(' ')
       : errors.join(' ') || 'Не удалось прочитать приказы и распоряжения из 1С'
-    if (rows.length && !error) orderCache.set(key, { rows, error: '' })
+    if (orderLoads.get(key) === load && rows.length && !error) orderCache.set(key, { rows, error: '' })
     return { rows, error }
   })()
     .finally(() => {
-      orderLoads.delete(key)
+      if (orderLoads.get(key) === load) orderLoads.delete(key)
     })
   orderLoads.set(key, load)
   return load
@@ -559,14 +565,27 @@ export async function loadOrderBody(user: UserProfile | null, row: OrderRow): Pr
   return { ...row, content, fields }
 }
 
+/** Дата документа 1С: без пояса это уже московские часы, с Z — перевод в Москву. */
 export function formatCorrespondenceDate(raw: string): string {
   const text = (raw || '').trim()
   if (!text || text.startsWith('0001-01-01')) return '—'
+  const wall = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/)
+  const hasZone = /(?:Z|[+-]\d{2}:\d{2})$/.test(text)
+  if (wall && !hasZone) {
+    const [, year, month, day, hours, minutes] = wall
+    return `${day}.${month}.${year} ${hours && minutes ? `${hours}:${minutes}` : '00:00'}`
+  }
   const stamp = new Date(text)
   if (Number.isNaN(stamp.getTime())) return text.slice(0, 16).replace('T', ' ')
-  const day = String(stamp.getDate()).padStart(2, '0')
-  const month = String(stamp.getMonth() + 1).padStart(2, '0')
-  const hours = String(stamp.getHours()).padStart(2, '0')
-  const minutes = String(stamp.getMinutes()).padStart(2, '0')
-  return `${day}.${month}.${stamp.getFullYear()} ${hours}:${minutes}`
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(stamp)
+  const pick = (type: string): string => parts.find((part) => part.type === type)?.value || '00'
+  return `${pick('day')}.${pick('month')}.${pick('year')} ${pick('hour')}:${pick('minute')}`
 }
