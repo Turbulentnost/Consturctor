@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { ErrorToastProvider } from './components/ErrorToast'
 import { APP_TITLE, PAGE_LABELS, Sidebar, type PageKey, type SidebarNavItem } from './components/Sidebar'
 import { resetUiPrefsSync, startUiPrefsSync } from './components/uiPrefsSync'
 import { UserMenu } from './components/UserMenu'
@@ -247,6 +248,7 @@ function AppShell(): React.JSX.Element {
   const [unread, setUnread] = useState(0)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [toast, setToast] = useState('')
+  const [queuedExplorerPath, setQueuedExplorerPath] = useState('')
   /** JWT restored from localStorage but 1C password is only in memory after login form. */
   const [requireComLogin, setRequireComLogin] = useState(false)
   const kickedRef = useRef(false)
@@ -321,6 +323,49 @@ function AppShell(): React.JSX.Element {
       disposed = true
     }
   }, [])
+
+  const openingExplorerPath = useRef('')
+
+  useEffect(() => {
+    let alive = true
+    void window.api.peekPendingExplorerOpen?.().then((path) => {
+      if (alive && path) setQueuedExplorerPath(path)
+    })
+    const unsubscribe = window.api.onExplorerOpenPath?.((path) => {
+      if (path) setQueuedExplorerPath(path)
+    })
+    return () => {
+      alive = false
+      unsubscribe?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (booting || !queuedExplorerPath || !user || requireComLogin) return
+    if (openingExplorerPath.current === queuedExplorerPath) return
+    const path = queuedExplorerPath
+    openingExplorerPath.current = path
+    setQueuedExplorerPath('')
+    void (async () => {
+      try {
+        const found = await api.resolveExplorerPath(path)
+        if (!found.id) throw new Error('Файл не найден или к нему нет доступа')
+        await api.openExplorerFile(found)
+        flash(`Открыт «${found.name}»`)
+      } catch (err) {
+        const message =
+          err instanceof ApiError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : 'Не удалось открыть файл'
+        flash(message)
+      } finally {
+        if (openingExplorerPath.current === path) openingExplorerPath.current = ''
+        void window.api.clearPendingExplorerOpen?.(path)
+      }
+    })()
+  }, [booting, queuedExplorerPath, user, requireComLogin])
 
   useEffect(() => {
     if (!user || hasComPassword()) return
@@ -664,14 +709,18 @@ function AppShell(): React.JSX.Element {
 
   if (!user || requireComLogin) {
     return (
-      <LoginPage
-        onLoggedIn={onLoggedIn}
-        banner={
-          requireComLogin
-            ? 'Сеанс восстановлен по токену. Введите пароль 1С — без него erp_pm и COM недоступны.'
-            : undefined
-        }
-      />
+      <ErrorToastProvider>
+        <LoginPage
+          onLoggedIn={onLoggedIn}
+          banner={
+            queuedExplorerPath
+              ? 'Войдите своей учёткой. Файл откроется расшифрованным, если к нему есть доступ.'
+              : requireComLogin
+                ? 'Сеанс восстановлен по токену. Введите пароль 1С — без него erp_pm и COM недоступны.'
+                : undefined
+          }
+        />
+      </ErrorToastProvider>
     )
   }
 
@@ -892,7 +941,7 @@ function AppShell(): React.JSX.Element {
       case 'kpi':
         return <KpiGridTab user={activeUser} onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} onRunAgent={(workflowId, title, message) => { setLastTab('kpi'); setView({ kind: 'agentrun', workflowId, title, autoStart: true, initialMessage: message }) }} />
       case 'knowledge':
-        return <KnowledgeGridTab user={activeUser} />
+        return <KnowledgeGridTab />
       case 'history':
         return <HistoryGridTab onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
       case 'extensions':
@@ -1011,6 +1060,8 @@ function AppShell(): React.JSX.Element {
   const workplaceGrid = !isAdminMode && view.kind === 'tab' && isWorkplaceTabKey(view.key)
   const workplaceShellKey: WorkplaceTabKey | null =
     workplaceGrid && view.kind === 'tab' && isWorkplaceTabKey(view.key) ? view.key : null
+  const userChatThread = !isAdminMode && view.kind === 'chat' ? view.thread : null
+  const shellKey: WorkplaceTabKey | null = workplaceShellKey ?? (userChatThread ? 'today' : null)
   const content = isAdminMode ? renderAdminContent() : renderUserContent()
   const agentsStrip = isAdminMode ? null : (
     <ActiveAgentsStrip
@@ -1021,6 +1072,7 @@ function AppShell(): React.JSX.Element {
   )
 
   return (
+    <ErrorToastProvider>
     <ExtensionsProvider user={activeUser}>
       <GridDataRefreshProvider userId={activeUser.id}>
         <WorkplacePeriodProvider>
@@ -1036,32 +1088,37 @@ function AppShell(): React.JSX.Element {
           >
           <WithExtensionNav>
             {(pinnedExtensionNav) =>
-              workplaceShellKey ? (
+              shellKey ? (
           <div className="app-root orch-app-root">
-            <PageSearchProvider tabKey={workplaceShellKey}>
+            <PageSearchProvider tabKey={shellKey}>
             <OrchGridShell
-              activeKey={workplaceShellKey}
+              activeKey={shellKey}
               pinnedExtensionNav={pinnedExtensionNav}
+              subpage={Boolean(userChatThread)}
               gridClassName={
-                workplaceShellKey === 'today'
+                userChatThread
+                  ? 'orch-grid-chat'
+                  : shellKey === 'today'
                   ? 'orch-grid-today'
-                  : workplaceShellKey === 'kpi'
+                  : shellKey === 'kpi'
                     ? 'orch-grid-kpi'
-                    : workplaceShellKey === 'assignments_registry'
+                      : shellKey === 'assignments_registry'
                       ? 'orch-grid-registry'
-                      : workplaceShellKey === 'subordinate_tasks'
+                      : shellKey === 'subordinate_tasks'
                         ? 'orch-grid-subtasks'
-                      : workplaceShellKey === 'history'
+                      : shellKey === 'history'
                         ? 'orch-grid-history'
-                        : workplaceShellKey === 'extensions'
+                        : shellKey === 'extensions'
                           ? 'orch-grid-extensions'
-                          : workplaceShellKey === 'agent_library'
+                          : shellKey === 'agent_library'
                             ? 'orch-grid-agent-library'
-                            : workplaceShellKey === 'processes'
+                            : shellKey === 'processes'
                               ? 'orch-grid-processes'
-                              : workplaceShellKey === 'docflow' ||
-                                  workplaceShellKey === 'task_create' ||
-                                  workplaceShellKey === 'platform_task_create'
+                              : shellKey === 'knowledge'
+                                ? 'orch-grid-knowledge'
+                              : shellKey === 'docflow' ||
+                                  shellKey === 'task_create' ||
+                                  shellKey === 'platform_task_create'
                                 ? 'orch-grid-docflow'
                                 : ''
               }
@@ -1072,7 +1129,7 @@ function AppShell(): React.JSX.Element {
               onLogout={onLogout}
               showLogout={showLogout}
               lightSidebar={false}
-              activeThreadId=""
+              activeThreadId={userChatThread?.id ?? ''}
               chatRefreshAt={chatRefreshAt}
               onNavigate={(key) => {
                 setTabIntent(null)
@@ -1090,7 +1147,18 @@ function AppShell(): React.JSX.Element {
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
               topStrip={agentsStrip}
             >
-              {renderWorkplaceGridTab(workplaceShellKey)}
+              {userChatThread ? (
+                <div className="orch-chat-pane">
+                  <MessengerPage
+                    thread={userChatThread}
+                    me={activeUser}
+                    onThreadChange={(thread) => setView({ kind: 'chat', thread })}
+                    onOpenAgent={() => setView({ kind: 'tab', key: 'processes' })}
+                  />
+                </div>
+              ) : (
+                renderWorkplaceGridTab(shellKey)
+              )}
             </OrchGridShell>
             </PageSearchProvider>
             <ChatDock
@@ -1170,5 +1238,6 @@ function AppShell(): React.JSX.Element {
         </WorkplacePeriodProvider>
       </GridDataRefreshProvider>
     </ExtensionsProvider>
+    </ErrorToastProvider>
   )
 }

@@ -64,6 +64,7 @@ export const PAGE_SEARCH_PLACEHOLDER: Partial<Record<WorkplaceTabKey, string>> =
   meetings: 'Поиск совещаний…',
   decisions: 'Найти решение…',
   knowledge: 'Поиск по материалам…',
+  agent_files: 'Поиск по файлам агентов…',
   history: 'Поиск в истории…',
   extensions: 'Поиск расширений…',
   assignments_registry: 'Поиск в реестре поручений…',

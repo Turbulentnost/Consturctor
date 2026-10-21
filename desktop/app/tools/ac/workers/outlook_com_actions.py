@@ -384,6 +384,14 @@ def _run_com_read_locked(operation: Callable[[Any], dict], access_error_prefix: 
     )
 
 
+def _com_get(item: Any, name: str, default: Any = "") -> Any:
+    """Прочитать свойство COM. E_NOINTERFACE и guard Outlook не роняют весь список."""
+    try:
+        return getattr(item, name, default)
+    except Exception:
+        return default
+
+
 def _safe_str(value: Any) -> str:
     """Безопасно привести COM-значение к строке."""
     if value is None:
@@ -3206,14 +3214,21 @@ def _collect_mail_messages(
     results = []
     scanned_count = 0
     _log_progress(f"step=iterate_items start folder={folder_name}")
-    for message in messages:
+    # 32-bit Outlook 2013 не отдаёт IEnumVARIANT в 64-bit Python:
+    # ``for message in messages`` падает с E_NOINTERFACE ещё до первого письма.
+    for message in _iter_outlook_items(messages):
         scanned_count += 1
         if scanned_count > max_scan_items or len(results) >= max_results:
             break
 
-        subject = _decode_mime_header(getattr(message, "Subject", ""))
-        body = _safe_str(getattr(message, "Body", ""))
-        message_time = getattr(message, date_attr, None)
+        try:
+            subject = _decode_mime_header(_com_get(message, "Subject", ""))
+            message_time = _com_get(message, date_attr, None)
+        except Exception as exc:
+            _log_progress(f"step=skip_mail_item scanned={scanned_count}: {exc}")
+            continue
+        # Body на 32-bit Outlook часто отвечает E_NOINTERFACE. Письмо всё равно показываем.
+        body = _safe_str(_com_get(message, "Body", ""))
         if not _is_within_range(message_time, start_at, end_at):
             continue
         if not _matches_query(subject, body, query):
@@ -3227,7 +3242,7 @@ def _collect_mail_messages(
         # Same as calendar: keep Outlook wall-clock, do not leak a fake +00:00.
         timestamp = _iso_com_datetime(message_time)
         item = {
-            "entry_id": _safe_str(getattr(message, "EntryID", "")),
+            "entry_id": _safe_str(_com_get(message, "EntryID", "")),
             "subject": subject,
             "sender": sender or sent_representing,
             "sender_email": _read_sender_smtp(message),
@@ -3238,7 +3253,7 @@ def _collect_mail_messages(
             "direction": direction,
             "folder": folder_name,
             "body_preview": body[:BODY_PREVIEW_LIMIT],
-            "unread": bool(getattr(message, "UnRead", False)),
+            "unread": bool(_com_get(message, "UnRead", False)),
             "attachments": _mail_attachment_names(message),
             "datetime_sort": _datetime_sort_key(message_time),
         }

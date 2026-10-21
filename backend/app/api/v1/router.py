@@ -7,6 +7,7 @@ from app.api.v1 import (
     assignment_reviews,
     auth,
     calendar,
+    explorer,
     health,
     llm,
     notifications,
@@ -45,4 +46,5 @@ api_router.include_router(position_kpi_builds.router, prefix="/api/v1")
 api_router.include_router(workplace.router, prefix="/api/v1")
 api_router.include_router(user_ui.router, prefix="/api/v1")
 api_router.include_router(platform_tasks.router, prefix="/api/v1")
+api_router.include_router(explorer.router, prefix="/api/v1")
 api_router.include_router(chat_router, prefix="/api/v1")

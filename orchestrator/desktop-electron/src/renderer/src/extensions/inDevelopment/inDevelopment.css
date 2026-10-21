@@ -632,3 +632,52 @@
 .child-dock-item.is-active .child-dock-chevron {
   color: #8eb7ef;
 }
+
+.child-dock.child-dock--light {
+  background: #f4f4f4;
+  color: #171717;
+  box-shadow: none;
+  border-right: 1px solid #ececec;
+}
+
+.child-dock.child-dock--light .child-dock-head {
+  background: #fff;
+  border: 1px solid #e5e5e5;
+}
+
+.child-dock.child-dock--light .child-dock-mark {
+  background: #ececec;
+  color: #171717;
+}
+
+.child-dock.child-dock--light .child-dock-head-text strong {
+  color: #171717;
+}
+
+.child-dock.child-dock--light .child-dock-head-text small {
+  color: #8a8a8a;
+}
+
+.child-dock.child-dock--light .child-dock-item {
+  color: #222;
+  border-radius: 10px;
+}
+
+.child-dock.child-dock--light .child-dock-item:hover {
+  background: #e8e8e8;
+  color: #171717;
+}
+
+.child-dock.child-dock--light .child-dock-item.is-active {
+  background: #e4e4e4;
+  color: #171717;
+  font-weight: 600;
+}
+
+.child-dock.child-dock--light .child-dock-chevron {
+  color: #8a8a8a;
+}
+
+.child-dock.child-dock--light .child-dock-item.is-active .child-dock-chevron {
+  color: #171717;
+}

@@ -1,17 +1,121 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useReportError } from '../../components/ErrorToast'
 import type { UserProfile } from '../../api/types'
 import type { SpecMailRow } from '../../workplace/specV04DemoData'
 
-type TodayRow = { id: string; title: string; status: string; deadline?: string }
+type TodayRow = { id: string; title: string; status: string; deadline?: string; source?: string }
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import type { TodayPreparedDecisionRow } from '../../workplace/useTodayPreparedDecisions'
 import { useTodayPlanTimeline } from '../../workplace/useTodayPlanTimeline'
 import { userGivenName } from '../../workplace/userContext'
 import type { TodayPlanBlock } from './todayDemoData'
+import { KnowledgeAccessPrompt } from './KnowledgeAccessPrompt'
 
 const DAY_START = 8
 const DAY_END = 18
 const PX = 48
+/** Должен совпадать с animation-duration у .ht-wave i */
+const TILE_WAVE_MS = 1200
+const TILE_WAVE_STAGGER_MS = 160
+
+function tileWaveDelays(): string[] {
+  const elapsed = Date.now() % TILE_WAVE_MS
+  return [0, 1, 2].map((index) => `${-elapsed + index * TILE_WAVE_STAGGER_MS}ms`)
+}
+
+/** Три точки в одной фазе на всех плитках: задержка считается от общих часов, а не от момента появления плитки. */
+function TileWaveDots(): React.JSX.Element {
+  const [delays] = useState(tileWaveDelays)
+  return (
+    <span className="ht-wave" aria-label="Загрузка">
+      {delays.map((delay, index) => (
+        <i key={index} style={{ animationDelay: delay }} />
+      ))}
+    </span>
+  )
+}
+
+function TileArrow({ dir }: { dir: 'left' | 'right' }): React.JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+      <path
+        d={dir === 'left' ? 'M10 3.5 L5.5 8 L10 12.5' : 'M6 3.5 L10.5 8 L6 12.5'}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function TodayTilesStrip({ children, watch }: { children: ReactNode; watch: string }): React.JSX.Element {
+  const scroller = useRef<HTMLDivElement>(null)
+  const [edges, setEdges] = useState({ overflow: false, left: false, right: false })
+
+  const measure = useCallback(() => {
+    const el = scroller.current
+    if (!el) return
+    const max = el.scrollWidth - el.clientWidth
+    const overflow = max > 4
+    const left = overflow && el.scrollLeft > 4
+    const right = overflow && el.scrollLeft < max - 4
+    setEdges((prev) => (prev.overflow === overflow && prev.left === left && prev.right === right ? prev : { overflow, left, right }))
+  }, [])
+
+  useLayoutEffect(() => {
+    measure()
+    const el = scroller.current
+    if (!el) return
+    const onScroll = (): void => measure()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    const observer = new ResizeObserver(() => measure())
+    observer.observe(el)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      observer.disconnect()
+    }
+  }, [measure, watch])
+
+  const nudge = (dir: -1 | 1): void => {
+    const el = scroller.current
+    if (!el) return
+    const tile = el.querySelector<HTMLElement>('.ht-metric')
+    const step = (tile?.offsetWidth || 220) + 10
+    el.scrollBy({ left: dir * step, behavior: 'smooth' })
+  }
+
+  return (
+    <div className="ht-metrics-carousel">
+      {edges.overflow ? (
+        <button
+          type="button"
+          className="ht-metrics-arrow"
+          aria-label="Предыдущие плитки"
+          disabled={!edges.left}
+          onClick={() => nudge(-1)}
+        >
+          <TileArrow dir="left" />
+        </button>
+      ) : null}
+      <div className="ht-metrics" ref={scroller}>
+        {children}
+      </div>
+      {edges.overflow ? (
+        <button
+          type="button"
+          className="ht-metrics-arrow"
+          aria-label="Следующие плитки"
+          disabled={!edges.right}
+          onClick={() => nudge(1)}
+        >
+          <TileArrow dir="right" />
+        </button>
+      ) : null}
+    </div>
+  )
+}
 
 function fmtHour(hour: number): string {
   const h = Math.floor(hour)
@@ -101,6 +205,8 @@ export function HomeToday({
   assignments?: React.ReactNode
 }): React.JSX.Element {
   const [scale, setScale] = useState(false)
+  useReportError(mailError)
+  useReportError(tasksError)
   const plan = useTodayPlanTimeline(periodDay, { userId: user.id || '', fio: user.fio || '' })
   const now = new Date()
   const nowHour = now.getHours() + now.getMinutes() / 60
@@ -154,24 +260,25 @@ export function HomeToday({
       </header>
       <p className="ht-lede">{lede}</p>
 
-      <div className="ht-metrics">
+      <TodayTilesStrip watch={tiles.map((tile) => `${tile.id}:${tile.loading ? 1 : 0}`).join(',')}>
         {tiles.map((tile) => {
-              const active = focusIds.includes(tile.id) || (tile.id === 'onec' && focusIds.includes('onec-from-me'))
+          const active = focusIds.includes(tile.id) || (tile.id === 'onec' && focusIds.includes('onec-from-me'))
           return (
             <button
               key={tile.id}
               type="button"
-              className={`ht-metric ${active ? 'is-on' : ''} ${tile.value === '—' ? 'is-empty' : ''}`}
+              className={`ht-metric ${active ? 'is-on' : ''} ${!tile.loading && tile.value === '—' ? 'is-empty' : ''}`}
               title={tile.tooltip || tile.label}
+              aria-busy={tile.loading || undefined}
               onClick={() => onTile(tile.id)}
             >
-              <span className="ht-metric-value">{tile.value}</span>
+              <span className="ht-metric-value">{tile.loading ? <TileWaveDots /> : tile.value}</span>
               <span className="ht-metric-label">{tile.label}</span>
               <span className="ht-metric-hint">{active ? 'фильтр включён' : tile.hint}</span>
             </button>
           )
         })}
-      </div>
+      </TodayTilesStrip>
 
       {focusIds.length ? (
         <div className="ht-filter">
@@ -181,6 +288,8 @@ export function HomeToday({
           </button>
         </div>
       ) : null}
+
+      <KnowledgeAccessPrompt />
 
       <div className="ht-board">
         <div className="ht-stack">
@@ -216,8 +325,7 @@ export function HomeToday({
                 </button>
               </div>
               {mailLoading ? <p className="ht-note">Загружаем почту…</p> : null}
-              {mailError ? <p className="ht-note ht-error">{mailError}</p> : null}
-              {!mailLoading && !mailError && !mailRows.length ? <p className="ht-note">Писем за этот день нет</p> : null}
+              {!mailLoading && !mailRows.length ? <p className="ht-note">Писем за этот день нет</p> : null}
               <div className="ht-rows">
                 {mailRows.slice(0, 8).map((mail) => (
                   <button key={mail.id} type="button" className={`ht-mail ${mail.unread ? 'is-unread' : ''}`} onClick={onOpenMail}>
@@ -274,17 +382,19 @@ export function HomeToday({
           {!focusEvents && !focusMail ? (
             <section className="ht-card">
               <div className="ht-card-h">
-                <h2>Задачи 1С на сегодня</h2>
+                <h2>Задачи на сегодня</h2>
                 <span className="ht-quiet">{tasksLoading ? '…' : tasks.length}</span>
               </div>
-              {tasksError ? <p className="ht-note ht-error">{tasksError}</p> : null}
               {!tasksLoading && !tasks.length ? <p className="ht-note">Нет задач на этот день</p> : null}
               <div className="ht-rows">
                 {tasks.slice(0, 8).map((task) => (
                   <button key={task.id} type="button" className="ht-task" onClick={() => onOpenTask(task)}>
                     <span className="ht-main">
                       <span className="ht-title">{task.title}</span>
-                      <span className="ht-preview">1С · {task.deadline || 'без срока'}</span>
+                      <span className="ht-preview">
+                        {task.source || 'Задача'}
+                        {task.deadline && task.deadline !== '—' ? ` · ${task.deadline}` : ''}
+                      </span>
                     </span>
                     <span className={pillClass(task.status)}>{task.status}</span>
                   </button>

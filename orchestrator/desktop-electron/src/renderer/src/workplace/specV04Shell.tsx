@@ -18,6 +18,8 @@ export interface SpecSummaryTile {
   ring?: boolean
   /** Ключ иконки, если он отличается от id плитки (см. SpecTileIcon). */
   icon?: string
+  /** Источник плитки ещё не ответил — вместо числа показывается волна из точек. */
+  loading?: boolean
 }
 
 interface SpecV04ShellProps {

@@ -25,6 +25,7 @@ export type WorkplaceTabKey =
   | 'assignments_registry'
   | 'subordinate_tasks'
   | 'agent_library'
+  | 'agent_files'
   | 'in_development'
   | 'task_create'
   | 'platform_task_create'
@@ -95,8 +96,7 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   },
   knowledge: {
     title: PAGE_LABELS.knowledge,
-    subtitle: 'Регламенты, шаблоны, инструкции и связанные материалы',
-    headerActions: <SpecQuickLaunchButton />
+    subtitle: 'Ваши зашифрованные файлы и файлы, к которым вам выдали ключ'
   },
   extensions: {
     title: 'Расширения',
@@ -121,6 +121,10 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   agent_library: {
     title: 'Библиотека агентов',
     subtitle: 'Опубликованные ИИ-агенты всех сотрудников: добавьте к себе и откройте паспорт'
+  },
+  agent_files: {
+    title: 'Файлы агентов',
+    subtitle: 'Документы и регламенты, которые сформировали ваши агенты и запуски с этого аккаунта'
   },
   in_development: {
     title: 'Закупки',

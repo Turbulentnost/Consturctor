@@ -109,6 +109,37 @@ const api = {
   }): Promise<string[]> => ipcRenderer.invoke('dialog:openFile', options),
   openPath: (filePath: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('shell:openPath', filePath),
+  openExplorerFile: (opts: {
+    fileId: string
+    name: string
+    token?: string | null
+  }): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('explorer:open', opts),
+  peekPendingExplorerOpen: (): Promise<string> => ipcRenderer.invoke('explorer:peek-pending'),
+  clearPendingExplorerOpen: (filePath: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('explorer:clear-pending', filePath),
+  onExplorerOpenPath: (callback: (filePath: string) => void): (() => void) => {
+    const listener = (_event: unknown, filePath: string): void => {
+      callback(String(filePath || ''))
+    }
+    ipcRenderer.on('explorer:open-path', listener)
+    return () => {
+      ipcRenderer.removeListener('explorer:open-path', listener)
+    }
+  },
+  onExplorerSynced: (
+    callback: (payload: { fileId: string; name: string; ok: boolean; error?: string }) => void
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      payload: { fileId: string; name: string; ok: boolean; error?: string }
+    ): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('explorer:synced', listener)
+    return () => {
+      ipcRenderer.removeListener('explorer:synced', listener)
+    }
+  },
   focusOutlook: (): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('shell:focusOutlook'),
   launchTurboProject: (): Promise<{

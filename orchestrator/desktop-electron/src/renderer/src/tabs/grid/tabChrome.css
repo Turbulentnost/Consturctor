@@ -398,6 +398,19 @@
 .tab-chrome-shell[data-widget-id^='tile:'] .spec-v04-tile.is-active {
   transform: none;
   box-shadow: none;
+  color: #171717;
+}
+
+/* home-theme красит .is-active в белый текст под чёрный фон.
+   В полосе вкладок фон выбранной плитки светлый, поэтому текст остаётся тёмным. */
+.tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-label,
+.tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-value {
+  color: #171717;
+}
+
+.tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-hint,
+.tab-chrome-tiles-bar .spec-v04-tile.is-active .spec-v04-tile-note {
+  color: #6b6b6b;
 }
 
 .tab-chrome-shell[data-widget-id='tiles'] .spec-v04-tile-top,

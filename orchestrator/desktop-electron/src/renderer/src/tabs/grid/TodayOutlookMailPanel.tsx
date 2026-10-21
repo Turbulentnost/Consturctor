@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useReportError } from '../../components/ErrorToast'
 import {
   Forward,
   Mail,
@@ -202,6 +203,7 @@ export function TodayOutlookMailPanel({
   onFromMeChange?: (value: boolean) => void
   onPatchRow?: (id: string, patch: Partial<SpecMailRow>) => void
 }): React.JSX.Element {
+  useReportError(error)
   const expanded = useTodayWidgetExpanded()
   const requestExpand = useRequestTodayWidgetExpand()
   const directedRows = useMemo(
@@ -290,8 +292,8 @@ export function TodayOutlookMailPanel({
       if (error) {
         return (
           <tr>
-            <td colSpan={4} className="today-table-status today-table-error">
-              {error}
+            <td colSpan={4} className="today-table-status">
+              Не удалось загрузить письма
             </td>
           </tr>
         )

@@ -268,10 +268,14 @@ def _ask_and_wait(title: Any, items: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _ask(arguments: dict[str, Any]) -> dict[str, Any]:
+    if _headless():
+        return _HEADLESS_ANSWER
     return _ask_and_wait(arguments.get("title"), arguments.get("questions") or [])
 
 
 def _ask_choice(arguments: dict[str, Any]) -> dict[str, Any]:
+    if _headless():
+        return _HEADLESS_ANSWER
     kind = str(arguments.get("type") or "").strip().lower()
     if kind not in ("radio", "checkbox"):
         raise RuntimeError("type должен быть radio (один вариант) или checkbox (несколько)")
@@ -333,14 +337,32 @@ def _fail(request_id: Any, text: str, code: int = -32000) -> None:
     _send({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": text}})
 
 
+def _headless() -> bool:
+    return os.environ.get("TURBOTESTER_HEADLESS") == "1"
+
+
+_HEADLESS_ANSWER = {
+    "status": "answered",
+    "answers": [],
+    "next_step": (
+        "Человека рядом нет, спрашивать некого. "
+        "Если связь человека или отдела с документом не написана в самом тексте — рекомендацию не давай."
+    ),
+}
+
+
 def main() -> int:
-    try:
-        tools, specs = _load_tools()
-        _log(f"инструментов TurboTester: {len(tools)}")
-    except Exception as exc:  # noqa: BLE001
-        traceback.print_exc()
+    if _headless():
         tools, specs = [], {}
-        _log(f"каталог инструментов не загружен: {exc}")
+        _log("headless: каталог TurboTester не подключается, вопросов человеку нет")
+    else:
+        try:
+            tools, specs = _load_tools()
+            _log(f"инструментов TurboTester: {len(tools)}")
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            tools, specs = [], {}
+            _log(f"каталог инструментов не загружен: {exc}")
     tools = [*ASK_TOOLS, *tools]
 
     for raw in sys.stdin.buffer:

@@ -4,7 +4,7 @@
 #Requires -RunAsAdministrator
 $ErrorActionPreference = 'Stop'
 
-$Ips = @('192.168.2.229', '192.168.1.157')
+$Ips = @('192.168.2.229', '192.168.1.157', '192.168.1.198')
 foreach ($ip in $Ips) {
   $routes = @(Get-NetRoute -DestinationPrefix "$ip/32" -PolicyStore PersistentStore -ErrorAction SilentlyContinue)
   $routes += @(Get-NetRoute -DestinationPrefix "$ip/32" -ErrorAction SilentlyContinue)

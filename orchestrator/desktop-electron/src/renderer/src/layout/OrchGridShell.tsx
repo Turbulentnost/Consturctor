@@ -1,5 +1,6 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { PAGE_SEARCH_PLACEHOLDER, usePageSearch } from './pageSearchContext'
+import { MessengerDock } from '../components/MessengerDock'
 import { Sidebar, type PageKey, type SidebarNavItem } from '../components/Sidebar'
 import { PAGE_LABELS } from '../components/Sidebar'
 import type { ChatThread } from '../api/types'
@@ -93,12 +94,26 @@ export function OrchGridShell({
   const docflowDock = activeKey === 'docflow'
   const childDock = purchasesDock || docflowDock
   const [childParentOpen, setChildParentOpen] = useState(false)
+  const [messengerOpen, setMessengerOpen] = useState(() => Boolean(activeThreadId))
+  const threadWasOpen = useRef(false)
   const [purchasesView, setPurchasesView] = useState<PurchasesDockId>('by_period')
   const [docflowJournal, setDocflowJournal] = useState<JournalId>('correspondence')
 
   useEffect(() => {
     setChildParentOpen(false)
   }, [activeKey])
+
+  useEffect(() => {
+    if (activeThreadId) {
+      setMessengerOpen(true)
+      threadWasOpen.current = true
+      return
+    }
+    if (threadWasOpen.current) {
+      setMessengerOpen(false)
+      threadWasOpen.current = false
+    }
+  }, [activeThreadId])
 
   useEffect(() => {
     if (!searchTarget || searchTarget.pageKey !== activeKey) return
@@ -150,7 +165,7 @@ export function OrchGridShell({
     <div className="orch-grid-frame">
       <div className="orch-grid-nav">
         <Sidebar
-          active={activeKey}
+          active={activeThreadId ? null : activeKey}
           light={lightSidebar}
           activeThreadId={activeThreadId}
           currentUserId={user.id || ''}
@@ -158,10 +173,23 @@ export function OrchGridShell({
           onOpenThread={onOpenThread}
           refreshAt={chatRefreshAt}
           pinnedExtensionNav={pinnedExtensionNav}
-          collapsedOverride={childDock ? !childParentOpen : undefined}
+          hidePeers
+          collapsedOverride={childDock ? !childParentOpen : messengerOpen}
           onCollapseToggle={
-            childDock ? () => setChildParentOpen((open) => !open) : undefined
+            childDock
+              ? () => setChildParentOpen((open) => !open)
+              : () => setMessengerOpen((open) => !open)
           }
+        />
+        <MessengerDock
+          open={messengerOpen}
+          refreshAt={chatRefreshAt}
+          currentUserId={user.id || ''}
+          activeThreadId={activeThreadId}
+          onOpenThread={(thread) => {
+            setMessengerOpen(true)
+            onOpenThread(thread)
+          }}
         />
         {purchasesDock ? (
           <PurchasesDock
@@ -203,7 +231,7 @@ export function OrchGridShell({
 
           <div className="orch-grid-header-actions">{meta?.headerActions}</div>
 
-          {activeKey === 'kpi' ? null : (
+          {activeKey === 'kpi' || activeKey === 'knowledge' ? null : (
             <div className="orch-grid-search" role="search">
               <div className="global-search">
                 <span className="global-search-icon" aria-hidden />

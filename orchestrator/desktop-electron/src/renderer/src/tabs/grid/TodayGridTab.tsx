@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useReportError } from '../../components/ErrorToast'
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { OrchSlotTodayCanvas } from '../../layout/GridSlots'
@@ -22,7 +23,7 @@ import {
 } from '../../workplace/specV04Components'
 import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
-import { useTodayKpiData } from '../../workplace/useTodayKpiData'
+import { tasksMatchingTasksPage, useTodayKpiData } from '../../workplace/useTodayKpiData'
 import { formatProtocolDay, useBoardReportReadiness } from '../../workplace/boardReportReadiness'
 import { requestProtocolFocus } from '../../workplace/protocolFocus'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
@@ -37,13 +38,12 @@ import { sameDay } from '../../utils/calendar'
 import { useTodayPreparedDecisions } from '../../workplace/useTodayPreparedDecisions'
 import {
   formatSurnameInitials,
-  isDocflowFromMe,
   isDocflowToMe,
-  isTaskDueOnDay,
   isTurboTaskAsManager,
   isTurboTaskToMe,
   applyTodayKpiTileClick,
-  EMPTY_TODAY_KPI_TILE
+  EMPTY_TODAY_KPI_TILE,
+  type TaskSourceFilter
 } from '../../workplace/tileFilters'
 import {
   DOCFLOW_GROUP_ORDER,
@@ -65,8 +65,6 @@ import { TodayTaskDetailModal, type TodayTaskDetailRow } from './TodayTaskDetail
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
 import {
-  isPlatformTaskForDay,
-  isPlatformTaskFromMe,
   isPlatformTaskMine,
   needsPlatformReview
 } from '../../workplace/platformTasks'
@@ -207,6 +205,7 @@ function MiniTableCard({
   tableClassName?: string
 }): React.JSX.Element {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(closedGroups || []))
+  useReportError(error)
   const groups = useMemo(() => {
     if (!rowGroups) return []
     const out: { label: string; indexes: number[] }[] = []
@@ -305,9 +304,6 @@ function MiniTableCard({
       title={title}
       extra={headerAction ? <div className="today-mini-card-actions">{headerAction}</div> : undefined}
     >
-      {error && !loading ? (
-        <p className="today-table-status today-table-error today-table-banner">{error}</p>
-      ) : null}
       <div className="spec-v04-table-wrap today-table-scroll">
         <table className={['today-mini-table', tableClassName].filter(Boolean).join(' ')}>
           <thead>
@@ -448,7 +444,8 @@ export function TodayGridTab({
       {
         id: 'sd-board',
         label: 'Совет директоров',
-        value: board.loading ? '—' : board.readiness.total ? `${board.readiness.percent}%` : '—',
+        value: board.loading ? '' : board.readiness.total ? `${board.readiness.percent}%` : '—',
+        loading: board.loading,
         hint,
         tooltip: `Задачи на контроле: отчётность за 2 рабочих дня до совета директоров по ГК. ${protocol}. Выполнено ${board.readiness.done} из ${board.readiness.total}.`,
         tone: 'blue' as const,
@@ -502,24 +499,16 @@ export function TodayGridTab({
     )
   }, [projectAsManager, projectTasks.rows])
   const taskRows = useMemo(() => {
-    const platformRows = data.platformTasks.filter((row) => {
-      const task = row.platform
-      if (!task || !isPlatformTaskForDay(task, periodDay)) return false
-      // Приёмка — работа постановщика на сегодня, показываем в любом режиме.
-      if (needsPlatformReview(task)) return true
-      return onecFromMe ? isPlatformTaskFromMe(task) : isPlatformTaskMine(task)
-    })
-    const onecRows = data.erpTasks.filter((row) => {
-      if (closedTaskIds.has(row.id)) return false
-      if (onecFromMe) {
-        return isDocflowFromMe(row, erpFio) && isTaskDueOnDay(row, periodDay)
-      }
-      return isDocflowToMe(row)
-    })
-    // Раскладываем по видам задач: строки одного раздела должны идти подряд.
-    const all = [...platformRows, ...onecRows]
-    return DOCFLOW_GROUP_ORDER.flatMap((key) => all.filter((row) => todayGroupKey(row) === key))
-  }, [data.erpTasks, data.platformTasks, onecFromMe, erpFio, periodDay, closedTaskIds])
+    const source: TaskSourceFilter = onecFromMe
+      ? 'onec-from-me'
+      : kpiTiles.activeIds.includes('onec')
+        ? 'onec'
+        : 'all'
+    const rows = tasksMatchingTasksPage(data, periodDay, source).filter(
+      (row) => !closedTaskIds.has(row.id)
+    )
+    return DOCFLOW_GROUP_ORDER.flatMap((key) => rows.filter((row) => todayGroupKey(row) === key))
+  }, [data, periodDay, onecFromMe, kpiTiles.activeIds, closedTaskIds])
   const taskGroupLabels = useMemo(
     () => taskRows.map((row) => docflowGroupLabel(todayGroupKey(row))),
     [taskRows]

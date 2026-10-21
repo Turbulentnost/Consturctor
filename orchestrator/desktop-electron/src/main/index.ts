@@ -29,6 +29,14 @@ import {
 } from './comSessionSecret'
 import { launchTurboProject } from './turboProjectLauncher'
 import { launchConstructorApp } from './constructorLauncher'
+import { cleanupExplorerFiles, openExplorerFile } from './explorerFiles'
+import {
+  clearPendingExplorerOpen,
+  filePathFromArgv,
+  peekPendingExplorerOpen,
+  queueExplorerOpen,
+  registerExplorerContextMenu
+} from './explorerLaunch'
 
 interface RequestOptions {
   method?: string
@@ -1423,6 +1431,18 @@ function registerMainIpcHandlers(): void {
     const err = await shell.openPath(target)
     return err ? { ok: false, error: err } : { ok: true }
   })
+  ipcHandle(
+    'explorer:open',
+    (evt, opts: { fileId: string; name: string; token?: string | null }) =>
+      openExplorerFile(CONFIG.backendUrl, opts, (event) => {
+        if (!evt.sender.isDestroyed()) evt.sender.send('explorer:synced', event)
+      })
+  )
+  ipcHandle('explorer:peek-pending', () => peekPendingExplorerOpen())
+  ipcHandle('explorer:clear-pending', (_evt, filePath: string) => {
+    clearPendingExplorerOpen(typeof filePath === 'string' ? filePath : '')
+    return { ok: true }
+  })
   ipcHandle('fs:readLocalFilePreview', handleReadLocalFilePreview)
   ipcHandle('fs:copyLocalFile', handleCopyLocalFile)
   ipcHandle('updater:getStatus', () => getUpdateStatus())
@@ -1467,7 +1487,7 @@ function registerMainIpcHandlers(): void {
 // Register before app.whenReady and on every electron-vite main HMR reload (whenReady does not re-run).
 registerMainIpcHandlers()
 
-function createWindow(): void {
+async function createWindow(): Promise<void> {
   const mainWindow = new BrowserWindow({
     width: 1480,
     height: 940,
@@ -1493,7 +1513,14 @@ function createWindow(): void {
     })
   }
 
-  mainWindow.on('ready-to-show', () => mainWindow.show())
+  mainWindow.on('ready-to-show', () => {
+    if (!mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) mainWindow.show()
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!mainWindow.isDestroyed()) mainWindow.show()
+    const pending = peekPendingExplorerOpen()
+    if (pending && !mainWindow.isDestroyed()) mainWindow.webContents.send('explorer:open-path', pending)
+  })
   mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
     console.error(`Renderer failed to load: ${code} ${desc} ${url}`)
   })
@@ -1507,16 +1534,73 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  const devUrl = process.env['ELECTRON_RENDERER_URL'] || (await probeDevRenderer())
   if (devUrl) {
-    mainWindow.loadURL(devUrl)
+    await mainWindow.loadURL(devUrl)
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    const rendererFile = join(__dirname, '../renderer/index.html')
+    if (existsSync(rendererFile)) {
+      await mainWindow.loadFile(rendererFile)
+    } else {
+      await mainWindow.loadURL(
+        'data:text/html;charset=utf-8,' +
+          encodeURIComponent(
+            '<!doctype html><meta charset="utf-8"><title>Оркестратор</title><body style="margin:0;display:grid;place-items:center;height:100vh;background:#0d3b73;color:#fff;font:16px Segoe UI"><p>Не удалось открыть интерфейс Оркестратора. Запустите приложение и повторите «Открыть с помощью».</p></body>'
+          )
+      )
+    }
   }
 }
 
-app.whenReady().then(async () => {
+function takeDiskPendingOpen(): void {
+  const file = join(process.env.LOCALAPPDATA || '', 'Orchestrator', 'pending-open.txt')
+  if (!file || !existsSync(file)) return
+  try {
+    const text = readFileSync(file, 'utf8').trim()
+    unlinkSync(file)
+    if (text) queueExplorerOpen(text)
+  } catch {
+    /* файл откроет следующий запуск */
+  }
+}
+
+async function probeDevRenderer(): Promise<string> {
+  for (let port = 5173; port <= 5185; port += 1) {
+    const url = `http://127.0.0.1:${port}`
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(300) })
+      if (response.status < 500) return url
+    } catch {
+      /* этот порт не интерфейс */
+    }
+  }
+  return ''
+}
+
+const hasInstanceLock = app.requestSingleInstanceLock()
+if (!hasInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const opened = filePathFromArgv(argv)
+    if (opened) {
+      queueExplorerOpen(opened)
+      return
+    }
+    const win = BrowserWindow.getAllWindows().find((item) => !item.isDestroyed())
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  })
+
+  app.whenReady().then(async () => {
+  cleanupExplorerFiles()
   registerMainIpcHandlers()
+  registerExplorerContextMenu()
+  const initialOpen = filePathFromArgv(process.argv)
+  if (initialOpen) queueExplorerOpen(initialOpen)
+  takeDiskPendingOpen()
   // Окно входа не ждёт ни Python-помощника, ни проверки сервера.
   agentSidecar.warmup()
   createWindow()
@@ -1545,6 +1629,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', () => {
+  cleanupExplorerFiles()
   notifyGuard.stop()
   agentSidecar.stop()
   agentPlatform.stop()
@@ -1554,3 +1639,4 @@ app.on('before-quit', () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+}

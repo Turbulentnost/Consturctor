@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.clients.erp_sql import ErpOrgDept, ErpStaffAssignment
 from app.models.org import OrgMember, OrgPerson, OrgPosition, OrgUnit
+from app.models.user import AppUser
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +228,61 @@ def org_status(db: Session) -> dict[str, int | str]:
 
 def member_by_fio(db: Session, fio: str) -> OrgMember | None:
     return db.get(OrgMember, fio_key(fio))
+
+
+def people_in_department(db: Session, name: str) -> list[dict[str, str]]:
+    """Все сотрудники подразделения: оргструктура, учётные записи и штатное расписание 1С."""
+    title = " ".join((name or "").split())
+    key = fio_key(title)
+    if not key or is_liquidated(title):
+        return []
+    found: dict[str, dict[str, str]] = {}
+
+    def add(fio: str, user_id: str, position: str) -> None:
+        person = " ".join((fio or "").split())
+        marker = fio_key(person)
+        if not marker or is_liquidated(person) or is_liquidated(position):
+            return
+        current = found.get(marker)
+        if current is None:
+            found[marker] = {"id": (user_id or "").strip(), "fio": person, "position": (position or "").strip(), "department": title}
+            return
+        if user_id and not current["id"]:
+            current["id"] = user_id.strip()
+        if position and not current["position"]:
+            current["position"] = position.strip()
+
+    units = list(db.scalars(select(OrgUnit)).all())
+    root_ids = [unit.id for unit in units if fio_key(unit.name) == key]
+    children: dict[str, list[str]] = {}
+    for unit in units:
+        children.setdefault(unit.parent_id or "", []).append(unit.id)
+    unit_ids: set[str] = set()
+    stack = list(root_ids)
+    while stack:
+        current = stack.pop()
+        if current in unit_ids:
+            continue
+        unit_ids.add(current)
+        stack.extend(children.get(current, []))
+    member_filter = [func.lower(OrgMember.department) == key]
+    if unit_ids:
+        member_filter.append(OrgMember.unit_id.in_(unit_ids))
+    for member in db.scalars(select(OrgMember).where(or_(*member_filter))).all():
+        add(member.fio, member.user_id, member.position)
+    for user in db.scalars(select(AppUser).where(func.lower(AppUser.department) == key)).all():
+        add(user.fio, user.id, user.position)
+    for marker, person in list(found.items()):
+        if person["id"]:
+            continue
+        member = db.get(OrgMember, marker)
+        if member is not None and member.user_id:
+            person["id"] = member.user_id
+            continue
+        account = db.scalar(select(AppUser).where(func.lower(AppUser.fio) == person["fio"].lower()))
+        if account is not None:
+            person["id"] = account.id
+    return sorted(found.values(), key=lambda item: item["fio"].lower())
 
 
 def boss_keys(db: Session, fio: str) -> set[str]:

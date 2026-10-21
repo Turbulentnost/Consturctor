@@ -8,7 +8,10 @@ import {
   useState,
   type ReactNode
 } from 'react'
+import { useReportError } from '../components/ErrorToast'
 import { api } from '../api/client'
+import { userFacingOneCError } from './onecSessionHints'
+import { isTechnicalTurboMessage } from './turboSession'
 import type { UserProfile } from '../api/types'
 import { platformTaskToRow } from './platformTasks'
 import {
@@ -41,6 +44,29 @@ import {
 } from './orchestratorTaskSources'
 import { loadOrchestratorMail } from './mailProbe'
 import { useWorkplacePeriod } from './workplacePeriod'
+
+function SourceErrorToast({
+  erp,
+  turbo,
+  common,
+  platform,
+  mail
+}: {
+  erp: string
+  turbo: string
+  common: string
+  platform: string
+  mail: string
+}): null {
+  const turboText = isTechnicalTurboMessage(turbo) ? '' : turbo
+  const text = [erp, turboText, common, platform, mail]
+    .map((item) => userFacingOneCError(item))
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join('\n')
+  useReportError(text)
+  return null
+}
 import type { SpecV04SourcesState } from './useSpecV04Data'
 import { diffAndStoreOneCTaskSnapshot } from './onecTaskSnapshot'
 
@@ -142,6 +168,9 @@ export function SpecV04SourcesProvider({
   const [mailImapPrimary, setMailImapPrimary] = useState(false)
   const [mailImapStatus, setMailImapStatus] = useState('')
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
+  const [meetingsLoading, setMeetingsLoading] = useState(true)
+  const meetingsCountRef = useRef(0)
+  meetingsCountRef.current = meetings.length
   const [oneCAuthFailure, setOneCAuthFailure] = useState(false)
   const [newOneCTaskKeys, setNewOneCTaskKeys] = useState<ReadonlySet<string>>(() => new Set())
   const snapshotUserRef = useRef('')
@@ -302,8 +331,12 @@ export function SpecV04SourcesProvider({
   }, [user.id, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
 
   useEffect(() => {
-    if (!user.id) return
+    if (!user.id) {
+      setMeetingsLoading(false)
+      return
+    }
     let alive = true
+    if (meetingsCountRef.current === 0) setMeetingsLoading(true)
     const today = new Date()
     const force = outlookSync > 0 || meetingsGeneration.current !== generation
     meetingsGeneration.current = generation
@@ -313,6 +346,9 @@ export function SpecV04SourcesProvider({
       })
       .catch(() => {
         if (alive) setMeetings([])
+      })
+      .finally(() => {
+        if (alive) setMeetingsLoading(false)
       })
     return () => {
       alive = false
@@ -431,7 +467,7 @@ export function SpecV04SourcesProvider({
       meetingCount: meetings.length,
       meetingCountToday,
       meetings,
-      meetingsLoading: false,
+      meetingsLoading,
       sources: {
         erp: erpSource || ORCH_SOURCE_ID.erpPm,
         turbo: turboSource || ORCH_SOURCE_ID.turboProject,
@@ -476,6 +512,7 @@ export function SpecV04SourcesProvider({
       board.agents,
       allProcessRows,
       meetings,
+      meetingsLoading,
       meetingCountToday,
       erpSource,
       turboSource,
@@ -488,7 +525,18 @@ export function SpecV04SourcesProvider({
     ]
   )
 
-  return <SpecV04SourcesContext.Provider value={value}>{children}</SpecV04SourcesContext.Provider>
+  return (
+    <SpecV04SourcesContext.Provider value={value}>
+      <SourceErrorToast
+        erp={erpError}
+        turbo={turboTasksError}
+        common={error}
+        platform={platformError}
+        mail={[mailComError, mailImapError].filter(Boolean).join('\n')}
+      />
+      {children}
+    </SpecV04SourcesContext.Provider>
+  )
 }
 
 export function useSpecV04SourcesContext(): SpecV04SourcesState {

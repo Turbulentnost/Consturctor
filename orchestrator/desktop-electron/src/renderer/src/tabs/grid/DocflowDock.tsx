@@ -33,7 +33,11 @@ export function DocflowDock({
 }): React.JSX.Element {
   return (
     <aside
-      className={labeled ? 'child-dock child-dock--labeled child-dock--wide' : 'child-dock child-dock--wide'}
+      className={
+        labeled
+          ? 'child-dock child-dock--light child-dock--labeled child-dock--wide'
+          : 'child-dock child-dock--light child-dock--wide'
+      }
       aria-label="Журналы документооборота 1С"
     >
       <div className="child-dock-head">

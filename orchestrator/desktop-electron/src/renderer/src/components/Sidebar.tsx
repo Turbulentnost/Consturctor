@@ -15,10 +15,9 @@ import {
 } from 'lucide-react'
 import { AppUpdatePanel } from './AppUpdatePanel'
 import { GlobalSearchSuggest } from './GlobalSearchSuggest'
-import { api, parseChatMessage } from '../api/client'
-import { previewText } from '../api/chatCodec'
-import { loadUserAvatar } from '../api/avatars'
-import type { ChatMessage, ChatThread } from '../api/types'
+import { api } from '../api/client'
+import type { ChatThread } from '../api/types'
+import { personInitials, shortFio, threadPreview, useChatPeers } from './useChatPeers'
 import iconSearch from '../assets/search.png'
 import logoUrl from '../assets/logo.png'
 import { NavIcon } from '../layout/navIcons'
@@ -75,6 +74,7 @@ export type UserPageKey =
   | 'assignments_registry'
   | 'subordinate_tasks'
   | 'agent_library'
+  | 'agent_files'
   | 'in_development'
   | 'task_create'
   | 'platform_task_create'
@@ -106,6 +106,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   assignments_registry: 'Реестр поручений',
   subordinate_tasks: 'Поставленные задачи подчиненным в 1С',
   agent_library: 'Библиотека агентов',
+  agent_files: 'Файлы агентов',
   in_development: 'Закупки',
   task_create: 'Создание задачи',
   platform_task_create: 'Задача в платформе',
@@ -145,39 +146,6 @@ const USER_ITEMS: { key: PageKey; label: string }[] = [
 
 export type SidebarNavItem = { key: PageKey; label: string; extension?: boolean }
 
-function initials(fio: string): string {
-  const parts = (fio || '').replace(/\./g, ' ').split(/\s+/).filter(Boolean)
-  if (!parts.length) return '?'
-  if (parts.length === 1) return parts[0][0].toUpperCase()
-  return (parts[0][0] + parts[1][0]).toUpperCase()
-}
-
-function shortFio(fio: string): string {
-  const parts = (fio || '').replace(/\./g, ' ').split(/\s+/).filter(Boolean)
-  if (!parts.length) return ''
-  const rest = parts.slice(1).map((part) => `${part[0].toUpperCase()}.`)
-  return [parts[0], ...rest].join(' ')
-}
-
-function oneLine(text: string): string {
-  return (text || '').replace(/\s+/g, ' ').trim()
-}
-
-function lastMessagePreview(value: string | ChatMessage): string {
-  if (typeof value === 'string') return oneLine(previewText(value))
-  const text = oneLine(value.text)
-  if (text) return text
-  if (value.agent) return oneLine(`Агент: ${value.agent.title || 'ИИ-агент'}`)
-  const file = value.attachments[0]
-  return file ? oneLine(file.filename || 'Файл') : ''
-}
-
-function sameThread(peer: ChatThread, threadId: string, senderId = ''): boolean {
-  if (threadId && peer.id === threadId) return true
-  if (peer.kind === 'support' && (peer.id === 'support' || peer.id === threadId)) return true
-  return Boolean(peer.id.startsWith('dm:') && peer.peerId && (peer.peerId === senderId || peer.peerId === threadId))
-}
-
 interface SidebarProps {
   active: PageKey | null
   light?: boolean
@@ -196,6 +164,8 @@ interface SidebarProps {
   collapsedOverride?: boolean
   /** Вместо обычного сворачивания: родитель и доп. меню меняются местами. */
   onCollapseToggle?: () => void
+  /** Список собеседников вынесен в отдельную рейку. */
+  hidePeers?: boolean
 }
 
 export function Sidebar({
@@ -212,7 +182,8 @@ export function Sidebar({
   pinnedExtensionNav = [],
   navScope,
   collapsedOverride,
-  onCollapseToggle
+  onCollapseToggle,
+  hidePeers = false
 }: SidebarProps): React.JSX.Element {
   const quickMode = !showAdminNav
   const [collapsedStored, setCollapsedState] = useState(() =>
@@ -228,8 +199,7 @@ export function Sidebar({
   const [openingConstructor, setOpeningConstructor] = useState(false)
   const quickPickerRef = useRef<HTMLDivElement | null>(null)
   const quickToggleRef = useRef<HTMLButtonElement | null>(null)
-  const [peers, setPeers] = useState<ChatThread[]>([])
-  const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
+  const { peers: peoplePeers, avatars: peerAvatars, markRead } = useChatPeers(refreshAt, currentUserId, !hidePeers)
   const { newOneCTaskKeys } = useSpecV04SourcesContext()
   const navBadges: Partial<Record<PageKey, number>> = { tasks: newOneCTaskKeys.size }
   const items = useMemo((): SidebarNavItem[] => {
@@ -270,6 +240,7 @@ export function Sidebar({
   const quickKeys = useMemo(() => {
     const picked = new Set(normalizeQuickAccess(quickStored, availableNavKeys))
     for (const item of pinnedExtensionNav) picked.add(item.key)
+    picked.add('knowledge')
     return availableNavKeys.filter((key) => picked.has(key))
   }, [quickStored, availableNavKeys, pinnedExtensionNav])
   const quickItems = quickKeys.map((key) => itemByKey.get(key)).filter((item): item is SidebarNavItem => Boolean(item))
@@ -736,81 +707,6 @@ export function Sidebar({
     </div>
   )
 
-  useEffect(() => {
-    let alive = true
-    const load = async (): Promise<void> => {
-      try {
-        const loaded = await api.listChatThreads()
-        if (alive) setPeers(loaded)
-      } catch {
-        if (alive) setPeers([])
-      }
-    }
-    void load()
-    const timer = window.setInterval(() => {
-      void load()
-    }, 120_000)
-    return () => {
-      alive = false
-      window.clearInterval(timer)
-    }
-  }, [refreshAt])
-
-  useEffect(() => {
-    const unsubscribe = window.api.onChatEvent?.((payload) => {
-      const kind = String(payload.type || '')
-      if (kind === 'chat_receipt') {
-        const threadId = String(payload.thread_id ?? '')
-        const readerId = String(payload.reader_id ?? '')
-        if (!threadId || (currentUserId && readerId && readerId !== currentUserId)) return
-        setPeers((current) => current.map((peer) => (sameThread(peer, threadId) ? { ...peer, unread: 0 } : peer)))
-        return
-      }
-      if (kind !== 'chat_message') return
-      const parsed = parseChatMessage(payload.message)
-      const threadId = String(payload.thread_id ?? parsed?.id ?? '')
-      if (!threadId) return
-      setPeers((current) => {
-        const idx = current.findIndex((peer) => sameThread(peer, threadId, String(payload.sender_id ?? '')))
-        if (idx < 0) return current
-        const next = [...current]
-        next[idx] = {
-          ...next[idx],
-          preview: parsed ? lastMessagePreview(parsed) : lastMessagePreview(String(payload.message || '')),
-          unread: next[idx].unread + 1
-        }
-        return next
-      })
-    })
-    return () => unsubscribe?.()
-  }, [currentUserId])
-
-  const peoplePeers = peers.filter((peer) => peer.kind !== 'support')
-  const peerAvatarKey = peoplePeers
-    .map((peer) => `${peer.id}\u0000${peer.peerId || peer.id}\u0000${peer.avatarUrl || ''}`)
-    .join('\u0001')
-  useEffect(() => {
-    let alive = true
-    const entries = peerAvatarKey ? peerAvatarKey.split('\u0001') : []
-    void Promise.all(
-      entries.map(async (entry) => {
-        const [threadId, userId, avatarUrl] = entry.split('\u0000')
-        const url = await loadUserAvatar({ id: userId, avatarUrl })
-        return [threadId, url] as const
-      })
-    ).then((pairs) => {
-      if (!alive) return
-      const map: Record<string, string> = {}
-      for (const [id, url] of pairs) {
-        if (url) map[id] = url
-      }
-      setPeerAvatars(map)
-    })
-    return () => {
-      alive = false
-    }
-  }, [peerAvatarKey])
-
   function expandForSearch(): void {
     if (collapsed) setCollapsed(false)
   }
@@ -838,7 +734,11 @@ export function Sidebar({
   }
 
   return (
-    <aside className={['sidebar', collapsed ? 'collapsed' : '', light ? 'light' : ''].filter(Boolean).join(' ')}>
+    <aside
+      className={['sidebar', collapsed ? 'collapsed' : '', light ? 'light' : '', hidePeers ? 'sidebar-no-peers' : '']
+        .filter(Boolean)
+        .join(' ')}
+    >
       <div className="sidebar-brand">
         <img className="sidebar-logo" src={logoUrl} alt={APP_TITLE} />
         {!collapsed && showAdminNav ? (
@@ -1124,37 +1024,40 @@ export function Sidebar({
 
       <AppUpdatePanel collapsed={collapsed} />
 
-      <div className="sidebar-divider" />
-      <div className="sidebar-peers">
-        {peoplePeers.map((peer) => {
-          const isActive = peer.id === activeThreadId || (peer.peerId !== '' && peer.peerId === activeThreadId)
-          const preview = lastMessagePreview(peer.preview)
-          const unread = peer.unread > 0 && !isActive
-          return (
-            <button
-              key={peer.id}
-              className={isActive ? 'sidebar-peer active' : 'sidebar-peer'}
-              title={preview ? `${peer.title}\n${preview}` : peer.title}
-              onClick={() => {
-                if (collapsed) setCollapsed(false)
-                setPeers((current) => current.map((item) => (item.id === peer.id ? { ...item, unread: 0 } : item)))
-                onOpenThread({ ...peer, unread: 0 })
-              }}
-            >
-              <span className="sidebar-peer-avatar">
-                {peerAvatars[peer.id] ? <img src={peerAvatars[peer.id]} alt="" /> : initials(peer.title)}
-              </span>
-              {!collapsed && (
-                <span className="sidebar-peer-meta">
-                  <span className="sidebar-peer-name">{shortFio(peer.title)}</span>
-                  <span className="sidebar-peer-preview">{preview}</span>
-                </span>
-              )}
-              {unread && <i className="sidebar-peer-dot" aria-hidden />}
-            </button>
-          )
-        })}
-      </div>
+      {hidePeers ? null : (
+        <>
+          <div className="sidebar-divider" />
+          <div className="sidebar-peers">
+            {peoplePeers.map((peer) => {
+              const isActive = peer.id === activeThreadId || (peer.peerId !== '' && peer.peerId === activeThreadId)
+              const preview = threadPreview(peer.preview)
+              const unread = peer.unread > 0 && !isActive
+              return (
+                <button
+                  key={peer.id}
+                  className={isActive ? 'sidebar-peer active' : 'sidebar-peer'}
+                  title={preview ? `${peer.title}\n${preview}` : peer.title}
+                  onClick={() => {
+                    if (collapsed) setCollapsed(false)
+                    onOpenThread(markRead(peer))
+                  }}
+                >
+                  <span className="sidebar-peer-avatar">
+                    {peerAvatars[peer.id] ? <img src={peerAvatars[peer.id]} alt="" /> : personInitials(peer.title)}
+                  </span>
+                  {!collapsed && (
+                    <span className="sidebar-peer-meta">
+                      <span className="sidebar-peer-name">{shortFio(peer.title)}</span>
+                      <span className="sidebar-peer-preview">{preview}</span>
+                    </span>
+                  )}
+                  {unread && <i className="sidebar-peer-dot" aria-hidden />}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
 
       <button
         className="collapse-btn"

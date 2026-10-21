@@ -742,23 +742,26 @@ def search_user_directory(search: str | None = None, limit: int = 200) -> list[E
         _release_connection(conn)
 
 
-def list_departments(limit: int = 500) -> list[str]:
-    """Distinct department names from 1C catalog _Reference513."""
+def list_departments(limit: int | None = None) -> list[str]:
+    """Действующие подразделения из справочника 1С. Ликвидированные («(ликв.)») не возвращаем."""
     conn = _connect()
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
         cur.execute(
             """
-            SELECT DISTINCT TOP (?)
+            SELECT DISTINCT
                 LTRIM(RTRIM(d._Description)) AS Dept
             FROM dbo._Reference513 d WITH (NOLOCK)
             WHERE LTRIM(RTRIM(d._Description)) <> N''
+              AND LTRIM(RTRIM(d._Description)) NOT LIKE N'(ликв.)%'
+              AND LTRIM(RTRIM(d._Description)) NOT LIKE N'(ликв)%'
+              AND LTRIM(RTRIM(d._Description)) NOT LIKE N'[_]ликв%'
             ORDER BY Dept
-            """,
-            (limit,),
+            """
         )
-        return [(row.Dept or "").strip() for row in cur.fetchall() if (row.Dept or "").strip()]
+        names = [(row.Dept or "").strip() for row in cur.fetchall() if (row.Dept or "").strip()]
+        return names[:limit] if limit else names
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to list departments: {exc}") from exc
     finally:
@@ -923,6 +926,129 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
         raise ErpSqlError(f"Failed to load org structure: {exc}") from exc
     finally:
         _release_connection(conn)
+
+
+def staff_in_department(name: str) -> list[tuple[str, str]]:
+    """Все текущие сотрудники подразделения и вложенных в него, без ликвидированных."""
+    title = (name or "").strip()
+    if not title:
+        return []
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        cur.execute(
+            """
+            SELECT
+                CONVERT(varchar(64), d._IDRRef, 2) AS DeptId,
+                LTRIM(RTRIM(CAST(d._Description AS nvarchar(256)))) AS Dept,
+                CONVERT(varchar(64), d._ParentIDRRef, 2) AS ParentId,
+                LTRIM(RTRIM(CAST(hp._Description AS nvarchar(256)))) AS HeadFio
+            FROM dbo._Reference513 d WITH (NOLOCK)
+            LEFT JOIN dbo._Reference596 hp WITH (NOLOCK)
+                ON d._Fld14523RRef = hp._IDRRef
+            WHERE d._Marked = 0x00
+              AND LTRIM(RTRIM(d._Description)) <> N''
+            """
+        )
+        rows = [
+            (
+                (row.DeptId or "").strip().upper(),
+                (row.Dept or "").strip(),
+                (row.ParentId or "").strip().upper(),
+                (row.HeadFio or "").strip(),
+            )
+            for row in cur.fetchall()
+        ]
+        names = _department_tree_names(rows, title)
+        if not names:
+            names = {title}
+        placeholders = ",".join("?" for _ in names)
+        params = list(names) + list(names)
+        cur.execute(
+            f"""
+            ;WITH latest AS (
+                SELECT
+                    CAST(p._Description AS nvarchar(256)) AS Person,
+                    CAST(pos._Description AS nvarchar(256)) AS Position,
+                    LTRIM(RTRIM(CAST(hr._Description AS nvarchar(256)))) AS HrDept,
+                    LTRIM(RTRIM(CAST(folder._Description AS nvarchar(256)))) AS StaffFolder,
+                    LTRIM(RTRIM(CAST(s._Description AS nvarchar(256)))) AS StaffUnit,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY p._IDRRef
+                        ORDER BY t._Fld43774 DESC
+                    ) AS rn
+                FROM dbo._InfoRg43757 t WITH (NOLOCK)
+                INNER JOIN dbo._Reference596 p WITH (NOLOCK)
+                    ON t._Fld43761RRef = p._IDRRef
+                INNER JOIN dbo._Reference613X1 s WITH (NOLOCK)
+                    ON t._Fld43767RRef = s._IDRRef
+                LEFT JOIN dbo._Reference613X1 folder WITH (NOLOCK)
+                    ON s._ParentIDRRef = folder._IDRRef
+                LEFT JOIN dbo._Reference164 pos WITH (NOLOCK)
+                    ON t._Fld43766RRef = pos._IDRRef
+                LEFT JOIN dbo._Reference358 hr WITH (NOLOCK)
+                    ON t._Fld43765RRef = hr._IDRRef
+                WHERE t._Fld43775 >= '5999-01-01'
+                  AND t._Fld43774 > '2002-01-01'
+                  AND LTRIM(RTRIM(ISNULL(s._Description, N''))) <> N''
+            )
+            SELECT Person, Position, HrDept, StaffFolder, StaffUnit
+            FROM latest
+            WHERE rn = 1
+              AND LTRIM(RTRIM(ISNULL(Person, N''))) <> N''
+              AND (
+                    HrDept IN ({placeholders})
+                    OR StaffFolder IN ({placeholders})
+              )
+            """,
+            params,
+        )
+        people: dict[str, tuple[str, str]] = {}
+        for row in cur.fetchall():
+            fio = (row.Person or "").strip()
+            position = (row.Position or "").strip()
+            staff_unit = (row.StaffUnit or "").strip()
+            if not fio or _is_liquidated_label(fio) or _is_liquidated_label(position) or _is_liquidated_label(staff_unit):
+                continue
+            people.setdefault(fio.lower(), (fio, position))
+        for _dept_id, dept_name, _parent, head in rows:
+            if dept_name in names and head and not _is_liquidated_label(head):
+                people.setdefault(head.lower(), (head, "Руководитель"))
+        return [people[key] for key in sorted(people)]
+    except pyodbc.Error as exc:
+        raise ErpSqlError(f"Failed to list department staff: {exc}") from exc
+    finally:
+        _release_connection(conn)
+
+
+def _is_liquidated_label(value: str) -> bool:
+    text = (value or "").strip().lower()
+    return text.startswith("(ликв") or text.startswith("_ликв")
+
+
+def _department_tree_names(rows: list[tuple[str, str, str, str]], title: str) -> set[str]:
+    wanted = title.strip().lower()
+    by_id = {dept_id: (dept_name, parent_id) for dept_id, dept_name, parent_id, _head in rows if dept_id}
+    roots = [dept_id for dept_id, (dept_name, _parent) in by_id.items() if dept_name.lower() == wanted]
+    if not roots:
+        return set()
+    children: dict[str, list[str]] = {}
+    for dept_id, (_dept_name, parent_id) in by_id.items():
+        children.setdefault(parent_id, []).append(dept_id)
+    names: set[str] = set()
+    stack = list(roots)
+    seen: set[str] = set()
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        dept_name = by_id[current][0]
+        if not _is_liquidated_label(dept_name):
+            names.add(dept_name)
+        stack.extend(children.get(current, []))
+    return names
 
 
 def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], list[ErpSubordinate]]:

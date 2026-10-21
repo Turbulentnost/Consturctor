@@ -5,6 +5,7 @@ import type { PassportTab } from '../pages/AgentPassportPage'
 import { InDevelopmentTab } from './inDevelopment/InDevelopmentTab'
 import { AssignmentsRegistryGridTab } from '../tabs/grid/AssignmentsRegistryGridTab'
 import { AgentLibraryGridTab } from '../tabs/grid/AgentLibraryGridTab'
+import { AgentFilesGridTab } from '../tabs/grid/AgentFilesGridTab'
 import { ProjectsGridTab } from '../tabs/grid/ProjectsGridTab'
 import { SubordinateTasksGridTab } from '../tabs/grid/SubordinateTasksGridTab'
 import type { AssignmentRegistryTileId } from '../workplace/assignmentRegistryTypes'
@@ -106,6 +107,18 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
     renderTab: ({ user, onOpenPassport }) => (
       <AgentLibraryGridTab user={user} onOpenPassport={onOpenPassport} />
     )
+  },
+  {
+    id: 'agent_files',
+    pageKey: 'agent_files',
+    navLabel: 'Файлы агентов',
+    title: 'Файлы агентов',
+    subtitle: 'Документы и регламенты, которые сформировали ваши агенты и запуски с этого аккаунта',
+    description:
+      'Файлы, которые агент создал в запуске. Показываются только агенты этого пользователя и те запуски, которые начаты с его аккаунта.',
+    positionGroups: ['all'],
+    canAccess: () => true,
+    renderTab: ({ user }) => <AgentFilesGridTab user={user} />
   },
   {
     id: 'in_development',

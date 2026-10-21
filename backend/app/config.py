@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
     platform_task_storage_dir: Path = BACKEND_ROOT / "storage" / "platform_tasks"
     finance_storage_dir: Path = BACKEND_ROOT / "storage" / "finance"
+    # Общая папка проводника «База знаний»: файлы лежат зашифрованными, ключи — в Postgres.
+    explorer_root: Path = Path(r"\\192.168.1.198\Files\Электронный АРХИВ\Orchestrator")
+    explorer_max_upload_mb: int = 200
 
     # IMAP (server-side tools only; desktop never executes imap.*)
     imap_host: str = ""

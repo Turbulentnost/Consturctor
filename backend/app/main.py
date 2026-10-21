@@ -174,6 +174,19 @@ async def lifespan(_app: FastAPI):
                     logger.exception("Position KPI daily cache tick failed")
                 await asyncio.sleep(300)
 
+        async def access_advisor_scheduler() -> None:
+            from app.services.server_agents.access_advisor import FIRST_DELAY_S, INTERVAL_S, tick_access_advisor
+
+            await asyncio.sleep(FIRST_DELAY_S)
+            while True:
+                started = asyncio.get_running_loop().time()
+                try:
+                    await asyncio.to_thread(tick_access_advisor)
+                except Exception:
+                    logger.exception("Access advisor tick failed")
+                elapsed = asyncio.get_running_loop().time() - started
+                await asyncio.sleep(max(5, INTERVAL_S - elapsed))
+
         if db_ready:
             scheduler_tasks = [
                 asyncio.create_task(platform_task_scheduler()),
@@ -182,6 +195,7 @@ async def lifespan(_app: FastAPI):
                 asyncio.create_task(trigger_scheduler()),
                 asyncio.create_task(kpi_scheduler()),
                 asyncio.create_task(position_kpi_cache_scheduler()),
+                asyncio.create_task(access_advisor_scheduler()),
             ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")

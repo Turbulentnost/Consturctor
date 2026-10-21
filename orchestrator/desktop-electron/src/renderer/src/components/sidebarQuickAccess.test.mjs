@@ -28,8 +28,8 @@ function withStorage(run) {
   }
 }
 
-test('defaults to today, docflow, extensions and settings', () => {
-  assert.deepEqual(DEFAULT_QUICK_ACCESS, ['today', 'docflow', 'extensions', 'settings'])
+test('defaults to today, docflow, knowledge, extensions and settings', () => {
+  assert.deepEqual(DEFAULT_QUICK_ACCESS, ['today', 'docflow', 'knowledge', 'extensions', 'settings'])
   assert.deepEqual(normalizeQuickAccess(undefined, KEYS), ['today', 'docflow', 'extensions', 'settings'])
 })
 

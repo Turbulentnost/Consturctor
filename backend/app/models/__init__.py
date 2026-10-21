@@ -3,6 +3,8 @@ from app.models.user_ui_prefs import UserUiPrefs
 from app.models.agent_run import AgentRun
 from app.models.assignment_review import AssignmentReview, AssignmentReviewTask, AssignmentReviewVerdict
 from app.models.calendar_overlay import CalendarOverlay
+from app.models.explorer import ExplorerEntry, ExplorerFileKey, ExplorerKeyGrant
+from app.models.explorer_access import ExplorerAccessAgentState, ExplorerAccessSuggestion
 from app.models.notification import Notification
 from app.models.finance import FinanceImport, FinanceSalaryEntry, FinanceSalarySource
 from app.models.org import (
@@ -39,6 +41,11 @@ __all__ = [
     "AssignmentReviewTask",
     "AssignmentReviewVerdict",
     "CalendarOverlay",
+    "ExplorerEntry",
+    "ExplorerFileKey",
+    "ExplorerKeyGrant",
+    "ExplorerAccessSuggestion",
+    "ExplorerAccessAgentState",
     "Notification",
     "FinanceImport",
     "FinanceSalaryEntry",

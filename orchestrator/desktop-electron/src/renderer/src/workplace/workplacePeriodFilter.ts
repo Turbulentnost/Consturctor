@@ -33,6 +33,13 @@ export function deadlineInWorkplacePeriod(deadline: string | undefined, from: st
   return isDayKeyInWorkplacePeriod(dateLabelToDayKey(deadline), from, to)
 }
 
+/** Срок попадает в выбранный календарный день. Без даты задача не считается «на сегодня». */
+export function taskDueOnSelectedDay(deadline: string | undefined, day: Date): boolean {
+  const key = dateLabelToDayKey(deadline)
+  if (!key) return false
+  return key === dayKeyFromDate(day)
+}
+
 export function isoTimestampInWorkplacePeriod(iso: string | undefined, from: string, to: string): boolean {
   const text = String(iso || '').trim()
   if (!text) return true

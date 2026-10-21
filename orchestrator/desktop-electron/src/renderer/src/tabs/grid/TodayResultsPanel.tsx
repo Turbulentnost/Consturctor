@@ -1,5 +1,6 @@
 import { Download, Eye } from 'lucide-react'
 import { useState } from 'react'
+import { useReportError } from '../../components/ErrorToast'
 import { api } from '../../api/client'
 import { SpecPanel } from '../../workplace/specV04Components'
 import {
@@ -18,6 +19,7 @@ export function TodayResultsPanel({
   userId?: string
 }): React.JSX.Element {
   const { loading, error, items } = useTodayAgentResults(periodDay, userId)
+  useReportError(error)
   const rows = uniqueAgentResults(items)
   const [preview, setPreview] = useState<TodayAgentResultItem | null>(null)
   const [downloadingId, setDownloadingId] = useState('')
@@ -50,7 +52,7 @@ export function TodayResultsPanel({
       return <p className="today-table-status">Загружаем…</p>
     }
     if (error) {
-      return <p className="today-table-status today-table-error">{error}</p>
+      return <p className="today-table-status">Не удалось загрузить результаты</p>
     }
     if (!rows.length) {
       return <p className="today-table-status">Нет результатов агентов за выбранный день</p>

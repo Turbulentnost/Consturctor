@@ -68,6 +68,107 @@ import { formatGatewayToolError } from '../workplace/onecSessionHints'
 
 type Params = Record<string, string | number | boolean | undefined | null>
 
+export type ExplorerAccessMode = 'private' | 'users' | 'department' | 'all'
+export type ExplorerRight = 'read' | 'write'
+
+export type ExplorerAccessUser = {
+  id: string
+  fio: string
+  permission: ExplorerRight
+  department: string
+}
+
+export type ExplorerAccess = {
+  mode: ExplorerAccessMode
+  users: ExplorerAccessUser[]
+  departments: string[]
+  allPermission: ExplorerRight
+}
+
+export type ExplorerItem = {
+  id: string
+  kind: 'folder' | 'file'
+  name: string
+  parentId: string | null
+  ownerFio: string
+  isOwner: boolean
+  isVirtual: boolean
+  size: number
+  accessMode: ExplorerAccessMode | ''
+  createdAt: string
+  updatedAt: string
+}
+
+export type ExplorerListing = {
+  path: { id: string; name: string }[]
+  parentId: string | null
+  items: ExplorerItem[]
+}
+
+export type ExplorerAccessSuggestion = {
+  id: string
+  fileId: string
+  fileName: string
+  documentKind: string
+  kind: 'user' | 'department' | 'all' | 'private'
+  label: string
+  position: string
+  department: string
+  permission: 'read' | 'write' | ''
+  quote: string
+  reason: string
+}
+
+function parseExplorerItem(item: Record<string, unknown>): ExplorerItem {
+  const mode = String(item.access_mode || '')
+  return {
+    id: String(item.id || ''),
+    kind: item.kind === 'folder' ? 'folder' : 'file',
+    name: String(item.name || ''),
+    parentId: item.parent_id ? String(item.parent_id) : null,
+    ownerFio: String(item.owner_fio || ''),
+    isOwner: Boolean(item.is_owner),
+    isVirtual: Boolean(item.virtual),
+    size: Number(item.size || 0),
+    accessMode: (['private', 'users', 'department', 'all'].includes(mode) ? mode : '') as ExplorerItem['accessMode'],
+    createdAt: String(item.created_at || ''),
+    updatedAt: String(item.updated_at || '')
+  }
+}
+
+function parseRight(value: unknown, fallback: ExplorerRight = 'write'): ExplorerRight {
+  return value === 'read' || value === 'write' ? value : fallback
+}
+
+function parseExplorerAccess(data: Record<string, unknown>): ExplorerAccess {
+  const mode = String(data.mode || 'private')
+  return {
+    mode: (['private', 'users', 'department', 'all'].includes(mode) ? mode : 'private') as ExplorerAccessMode,
+    users: ((data.users as Record<string, unknown>[]) ?? []).map((u) => ({
+      id: String(u.id || ''),
+      fio: String(u.fio || ''),
+      permission: parseRight(u.permission, 'read'),
+      department: String(u.department || '')
+    })),
+    departments: ((data.departments as unknown[]) ?? []).map((d) => String(d)),
+    allPermission: parseRight(data.all_permission, 'write')
+  }
+}
+
+function accessPayload(access: ExplorerAccess): Record<string, unknown> {
+  return {
+    mode: access.mode,
+    users: access.users.map((user) => ({
+      id: user.id,
+      fio: user.fio,
+      permission: user.permission || 'read',
+      department: user.department || ''
+    })),
+    departments: access.departments,
+    all_permission: access.allPermission || 'read'
+  }
+}
+
 function optionalUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const text = value.trim()
@@ -2753,6 +2854,142 @@ export class ApiClient {
       'POST',
       `/api/v1/admin/finance/imports/${encodeURIComponent(importId)}/confirm`
     )
+  }
+
+  // ---------- Knowledge base explorer ----------
+  async listExplorerItems(folderId: string | null): Promise<ExplorerListing> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/explorer/items', {
+      params: folderId ? { folder_id: folderId } : undefined,
+      timeoutMs: 30_000
+    })
+    const path = Array.isArray(data.path) ? (data.path as Record<string, unknown>[]) : []
+    return {
+      path: path.map((p) => ({ id: String(p.id || ''), name: String(p.name || '') })),
+      parentId: data.parent_id ? String(data.parent_id) : null,
+      items: ((data.items as Record<string, unknown>[]) ?? []).map(parseExplorerItem)
+    }
+  }
+
+  async createExplorerFolder(name: string, parentId: string | null): Promise<ExplorerItem> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/explorer/folders', {
+      body: { name, parent_id: parentId }
+    })
+    return parseExplorerItem(data)
+  }
+
+  async createExplorerBlankFile(
+    name: string,
+    parentId: string | null,
+    access: ExplorerAccess
+  ): Promise<ExplorerItem> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/explorer/files/blank', {
+      body: { name, parent_id: parentId, access: accessPayload(access) },
+      timeoutMs: 60_000
+    })
+    return parseExplorerItem(data)
+  }
+
+  async uploadExplorerFile(
+    filePath: string,
+    name: string,
+    parentId: string | null,
+    access: ExplorerAccess
+  ): Promise<ExplorerItem> {
+    const res = await window.api.upload<Record<string, unknown>>({
+      endpoint: '/api/v1/explorer/files/upload',
+      filePath,
+      fieldName: 'file',
+      token: this.resolveToken(),
+      extraFields: { name, parent_id: parentId || '', access: JSON.stringify(accessPayload(access)) },
+      timeoutMs: 600_000
+    })
+    if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить файл', res.status)
+    return parseExplorerItem(res.data ?? {})
+  }
+
+  async getExplorerAccess(fileId: string): Promise<ExplorerAccess> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/explorer/files/${encodeURIComponent(fileId)}/access`
+    )
+    return parseExplorerAccess(data)
+  }
+
+  async updateExplorerAccess(fileId: string, access: ExplorerAccess): Promise<ExplorerItem> {
+    const data = await this.request<Record<string, unknown>>(
+      'PUT',
+      `/api/v1/explorer/files/${encodeURIComponent(fileId)}/access`,
+      { body: accessPayload(access) }
+    )
+    return parseExplorerItem(data)
+  }
+
+  async deleteExplorerItem(id: string): Promise<void> {
+    await this.request('DELETE', `/api/v1/explorer/items/${encodeURIComponent(id)}`)
+  }
+
+  async resolveExplorerPath(filePath: string): Promise<{ id: string; name: string }> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/explorer/open-path', {
+      body: { path: filePath }
+    })
+    return { id: String(data.id || ''), name: String(data.name || '') }
+  }
+
+  async openExplorerFile(item: { id: string; name: string }): Promise<void> {
+    const res = await window.api.openExplorerFile({
+      fileId: item.id,
+      name: item.name,
+      token: this.resolveToken()
+    })
+    if (!res.ok) throw new ApiError(res.error || 'Не удалось открыть файл')
+  }
+
+  async listDepartmentPeople(name: string): Promise<DirectoryUser[]> {
+    const data = await this.request<{ items?: Record<string, unknown>[] }>(
+      'GET',
+      '/api/v1/explorer/department-people',
+      { params: { name }, timeoutMs: 60_000 }
+    )
+    return (data.items ?? []).map((row) => ({
+      id: String(row.id || ''),
+      fio: String(row.fio || ''),
+      position: String(row.position || ''),
+      department: String(row.department || name),
+      activityStatus: 'online',
+      online: false,
+      isSupport: false,
+      avatarUrl: null
+    }))
+  }
+
+  async listDepartmentNames(): Promise<string[]> {
+    const data = await this.request<{ items?: unknown[] }>('GET', '/api/v1/auth/departments')
+    return (data.items ?? []).map((x) => String(x)).filter(Boolean)
+  }
+
+  async listExplorerAccessSuggestions(): Promise<ExplorerAccessSuggestion[]> {
+    const data = await this.request<{ items?: Record<string, unknown>[] }>('GET', '/api/v1/explorer/access-suggestions')
+    return (data.items ?? []).map((row) => ({
+      id: String(row.id || ''),
+      fileId: String(row.file_id || ''),
+      fileName: String(row.file_name || ''),
+      documentKind: String(row.document_kind || ''),
+      kind: (['user', 'department', 'all', 'private'].includes(String(row.kind))
+        ? String(row.kind)
+        : 'user') as ExplorerAccessSuggestion['kind'],
+      label: String(row.label || ''),
+      position: String(row.position || ''),
+      department: String(row.department || ''),
+      permission: row.permission === 'read' || row.permission === 'write' ? row.permission : '',
+      quote: String(row.quote || ''),
+      reason: String(row.reason || '')
+    }))
+  }
+
+  async decideExplorerAccessSuggestion(id: string, accept: boolean): Promise<void> {
+    await this.request('POST', `/api/v1/explorer/access-suggestions/${encodeURIComponent(id)}`, {
+      body: { accept }
+    })
   }
 
   async downloadAdminFinanceImport(

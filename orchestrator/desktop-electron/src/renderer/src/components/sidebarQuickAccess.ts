@@ -2,7 +2,7 @@ import { scheduleUiSync } from './uiPrefsSync'
 
 export const QUICK_ACCESS_STORAGE_KEY = 'orch-sidebar-quick-v1'
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = 'orch-sidebar-collapsed-v1'
-export const DEFAULT_QUICK_ACCESS = ['today', 'docflow', 'extensions', 'settings']
+export const DEFAULT_QUICK_ACCESS = ['today', 'docflow', 'knowledge', 'extensions', 'settings']
 
 function userSlot(userId: string): string {
   return userId.trim() || 'default'

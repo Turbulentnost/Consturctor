@@ -452,14 +452,8 @@ export function TasksGridTab({
           ),
           main: (
         <div className="spec-v04-table-wrap wp-card">
-          {soapBanner ? (
-            <p className="today-table-status today-table-error today-table-banner">{soapBanner}</p>
-          ) : null}
           {showOneCReconnect && taskRows.length ? (
             <OneCReconnectInline errorHint={reconnectHint} onOpen={() => setOnecDialogOpen(true)} />
-          ) : null}
-          {turboBanner ? (
-            <p className="today-table-status today-table-error today-table-banner">{turboBanner}</p>
           ) : null}
           {!soapBanner && !turboBanner && data.erpSecondaryHint ? (
             <p className="today-table-status today-table-banner">{data.erpSecondaryHint}</p>

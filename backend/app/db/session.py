@@ -31,6 +31,8 @@ def init_db() -> None:
     from app.models import agent_run as _agent_run  # noqa: F401
     from app.models import assignment_review as _assignment_review  # noqa: F401
     from app.models import calendar_overlay as _calendar_overlay  # noqa: F401
+    from app.models import explorer as _explorer  # noqa: F401
+    from app.models import explorer_access as _explorer_access  # noqa: F401
     from app.models import finance as _finance  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
     from app.models import org as _org  # noqa: F401
@@ -467,6 +469,47 @@ def _ensure_columns() -> None:
                 text(
                     "ALTER TABLE regulation_creation_drafts "
                     "ADD COLUMN interview_json JSON NOT NULL DEFAULT '{}'"
+                )
+            )
+        key_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'explorer_file_keys'
+                """
+            )
+        ).fetchall()
+        key_cols = {str(r[0]) for r in key_rows}
+        if key_cols and "read_key" not in key_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE explorer_file_keys "
+                    "ADD COLUMN read_key TEXT NOT NULL DEFAULT ''"
+                )
+            )
+        grant_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'explorer_key_grants'
+                """
+            )
+        ).fetchall()
+        grant_cols = {str(r[0]) for r in grant_rows}
+        if grant_cols and "permission" not in grant_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE explorer_key_grants "
+                    "ADD COLUMN permission VARCHAR(16) NOT NULL DEFAULT 'write'"
+                )
+            )
+        if grant_cols and "source_department" not in grant_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE explorer_key_grants "
+                    "ADD COLUMN source_department VARCHAR(512) NOT NULL DEFAULT ''"
                 )
             )
 
