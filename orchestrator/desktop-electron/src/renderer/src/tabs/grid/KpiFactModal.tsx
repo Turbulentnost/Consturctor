@@ -29,7 +29,7 @@ function yes(row: string[], columns: string[], name: string): boolean {
   return index >= 0 && (row[index] || '').trim().toLowerCase() === 'да'
 }
 
-/** Строка вошла в числитель факта. Остальные подсвечиваются. */
+/** Строка не красная: она в факте, либо срок ещё не наступил. */
 export function rowIncluded(columns: string[], rows: string[][], row: string[]): boolean {
   if (columns.includes('Возврат') && !columns.includes('Вовремя')) {
     return !yes(row, columns, 'Возврат')
@@ -51,11 +51,11 @@ export function rowIncluded(columns: string[], rows: string[][], row: string[]):
     }
     const kpi31 = period ? onTime / period : 1
     const kpi32 = active ? control / active : 1
-    if (kpi32 <= kpi31) return yes(row, columns, 'Активное') && yes(row, columns, 'Контроль')
-    return yes(row, columns, 'В периоде') && yes(row, columns, 'Вовремя')
+    if (kpi32 <= kpi31) return !yes(row, columns, 'Активное') || yes(row, columns, 'Контроль')
+    return !yes(row, columns, 'В периоде') || yes(row, columns, 'Вовремя')
   }
   if (columns.includes('Вовремя') && columns.includes('Срок наступил')) {
-    return yes(row, columns, 'Срок наступил') && yes(row, columns, 'Вовремя')
+    return !yes(row, columns, 'Срок наступил') || yes(row, columns, 'Вовремя')
   }
   if (columns.includes('Вовремя')) return yes(row, columns, 'Вовремя')
   return true
@@ -166,10 +166,7 @@ export function KpiFactModal({
                     </thead>
                     <tbody>
                       {detail.rows.map((row, index) => {
-                        const included =
-                          detail.included.length === detail.rows.length
-                            ? detail.included[index]
-                            : rowIncluded(detail.columns, detail.rows, row)
+                        const included = rowIncluded(detail.columns, detail.rows, row)
                         return (
                           <tr key={`${row[0] || 'row'}-${index}`} className={included ? undefined : 'is-miss'}>
                             {detail.columns.map((column, cell) => {

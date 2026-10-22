@@ -99,9 +99,10 @@ def find_tracker() -> Path | None:
         ]
     )
     local = Path(os.environ.get("LOCALAPPDATA") or "")
-    workspaces = local / "Constructor" / "agent_workspaces"
-    if workspaces.is_dir():
-        candidates.extend(path for path in workspaces.glob("*/ActionTracker.xlsx") if path.is_file())
+    for product in ("Constructor", "TurboTest"):
+        workspaces = local / product / "agent_workspaces"
+        if workspaces.is_dir():
+            candidates.extend(path for path in workspaces.rglob("ActionTracker.xlsx") if path.is_file())
     found = [path for path in candidates if path.is_file()]
     if not found:
         return None

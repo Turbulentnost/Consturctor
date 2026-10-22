@@ -242,6 +242,36 @@ def test_publish_rejects_bad_input() -> None:
         )
 
 
+def test_existing_tiles_skip_agent_launch() -> None:
+    db = _session()
+    auth = _auth()
+    db.add(
+        PositionKpiSubjectFact(
+            id="fact-1",
+            profile_id="p-assistant",
+            subject=subject_key(auth.fio),
+            subject_fio=auth.fio,
+            day=DAY,
+            period_from=date(2026, 10, 1),
+            period_to=date(2026, 10, 31),
+            payload={"tiles": [{"code": "m1", "fact": 75}]},
+            computed_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+
+    status = daily_run.today_status(db, auth, day=DAY)
+    assert status["status"] == "ready"
+    assert status["own_facts"] is True
+    claim = daily_run.claim(db, auth, "own", day=DAY)
+    assert claim["granted"] is False
+    assert claim["reason"] == "ready"
+    assert db.scalar(select(PositionKpiDailyRun).where(PositionKpiDailyRun.profile_id == "p-assistant")) is None
+
+    forced = daily_run.claim(db, auth, "own", retry_failed=True, day=DAY)
+    assert forced["granted"] is True
+
+
 def test_publish_tool_is_registered_for_the_launch_agent() -> None:
     from app.api.v1.tools import _SERVER_TOOLS
     from app.services.local_mcp import tool_contracts

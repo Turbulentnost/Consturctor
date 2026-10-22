@@ -139,7 +139,7 @@ def _read_sheet(sheet: Worksheet) -> dict[str, Any]:
 
 
 def included_flags(columns: list[str], rows: list[list[str]]) -> list[bool]:
-    """Строка вошла в факт. Остальные на экране розово-красные."""
+    """Строка не красная: она в факте, либо срок ещё не наступил."""
     index = {name: position for position, name in enumerate(columns)}
 
     def yes(row: list[str], name: str) -> bool:
@@ -162,10 +162,10 @@ def included_flags(columns: list[str], rows: list[list[str]]) -> list[bool]:
         kpi31 = on_time / period if period else 1.0
         kpi32 = control / active if active else 1.0
         if kpi32 <= kpi31:
-            return [yes(row, "Активное") and yes(row, "Контроль") for row in rows]
-        return [yes(row, "В периоде") and yes(row, "Вовремя") for row in rows]
+            return [(not yes(row, "Активное")) or yes(row, "Контроль") for row in rows]
+        return [(not yes(row, "В периоде")) or yes(row, "Вовремя") for row in rows]
     if "Вовремя" in index and "Срок наступил" in index:
-        return [yes(row, "Срок наступил") and yes(row, "Вовремя") for row in rows]
+        return [(not yes(row, "Срок наступил")) or yes(row, "Вовремя") for row in rows]
     if "Вовремя" in index:
         return [yes(row, "Вовремя") for row in rows]
     return [True for _row in rows]

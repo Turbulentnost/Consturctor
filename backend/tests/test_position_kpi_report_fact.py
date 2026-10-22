@@ -57,7 +57,7 @@ def test_included_flags_mark_rows_outside_the_fact() -> None:
     assert included_flags(
         ["Срок наступил", "Вовремя"],
         [["да", "да"], ["да", "нет"], ["нет", "нет"]],
-    ) == [True, False, False]
+    ) == [True, False, True]
     assert included_flags(["Возврат"], [["нет"], ["да"]]) == [True, False]
     assert included_flags(
         ["В периоде", "Вовремя", "Активное", "Контроль"],
@@ -66,7 +66,15 @@ def test_included_flags_mark_rows_outside_the_fact() -> None:
             ["да", "нет", "да", "нет"],
             ["нет", "нет", "да", "да"],
         ],
-    ) == [False, False, True]
+    ) == [True, False, True]
+    assert included_flags(
+        ["В периоде", "Вовремя", "Активное", "Контроль"],
+        [
+            ["да", "да", "нет", "нет"],
+            ["да", "нет", "нет", "нет"],
+            ["нет", "нет", "да", "да"],
+        ],
+    ) == [True, False, True]
 
 
 def test_find_report_matches_cover_fio(tmp_path: Path) -> None:
