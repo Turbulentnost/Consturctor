@@ -341,6 +341,20 @@ def test_run_generated_pair_reads_calculate_contract() -> None:
     assert report["score_pct"] == 90.0
     assert report["contrib_pct"] == 22.5
 
+    def load_data(fio: str, month: str | None) -> dict:
+        seen["data_fio"] = fio
+        seen["data_month"] = month
+        return {"fio": fio, "month": month, "meetings": [1]}
+
+    data_report = run_generated_pair(
+        SimpleNamespace(load_data=load_data, calculate=calculate),
+        ctx,
+        None,
+    )
+    assert seen["data_fio"] == "Карташова Анастасия Эдуардовна"
+    assert seen["data_month"] == "2026-10"
+    assert data_report["fact_pct"] == 80.0
+
     empty = run_generated_pair(
         SimpleNamespace(
             load_rows=lambda fio, month: {},

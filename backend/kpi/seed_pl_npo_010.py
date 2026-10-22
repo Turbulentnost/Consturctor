@@ -147,6 +147,7 @@ CATALOG: list[dict[str, Any]] = [
                             "legend": "Zвсего",
                             "filters": ["совет директоров", "СД", "ревизион", "РК"],
                             "folder": "Совещания",
+                            "module": "kpi.sources.sd_rk_packages",
                         },
                     },
                     {
@@ -169,6 +170,7 @@ CATALOG: list[dict[str, Any]] = [
                             "ready_field": "Date",
                             "ready_status": ["Закрыт", "НаИсполнении"],
                             "match": "previous_protocol_same_series",
+                            "module": "kpi.sources.sd_rk_packages",
                         },
                     },
                 ],
@@ -201,6 +203,7 @@ CATALOG: list[dict[str, Any]] = [
                             "var": "p_total",
                             "legend": "Pвсего",
                             "folder": "Совещания",
+                            "module": "kpi.sources.sd_rk_protocols",
                         },
                     },
                     {
@@ -217,6 +220,7 @@ CATALOG: list[dict[str, Any]] = [
                             "legend": "Pвовремя",
                             "deadline": "T+2d",
                             "entity": "Document_ТД_Протокол",
+                            "module": "kpi.sources.sd_rk_protocols",
                         },
                     },
                     {
@@ -229,6 +233,7 @@ CATALOG: list[dict[str, Any]] = [
                             "var": "p_on_time",
                             "legend": "Pвовремя",
                             "entity": "Document_ТД_Протокол",
+                            "module": "kpi.sources.sd_rk_protocols",
                         },
                     },
                 ],
@@ -298,6 +303,7 @@ CATALOG: list[dict[str, Any]] = [
                                 "status": "Статус",
                                 "evidence": "Ссылка на результат/документы",
                             },
+                            "module": "kpi.sources.sd_rk_instructions",
                         },
                     },
                     {
@@ -319,6 +325,7 @@ CATALOG: list[dict[str, Any]] = [
                             "entity": "Document_ТД_Поручения",
                             "deadline": "24h",
                             "control_window": "7d",
+                            "module": "kpi.sources.sd_rk_instructions",
                         },
                     },
                 ],
@@ -361,6 +368,7 @@ CATALOG: list[dict[str, Any]] = [
                             "entity": "Document_ТД_Протокол",
                             "returns_assumed_zero": True,
                             "author": "ilchenko",
+                            "module": "kpi.sources.sd_rk_quality",
                         },
                     },
                 ],
@@ -665,6 +673,7 @@ def _profile_for_position(db: Session, position: str) -> PositionKpiProfile | No
 def upsert_catalog(db: Session) -> list[str]:
     """Idempotent seed: четыре должности из ПЛ-НПО-010."""
     ids: list[str] = []
+    rebound_profiles: set[str] = set()
     keep_profile_ids = {str(item["id"]) for item in CATALOG}
     keep_metric_ids: set[str] = set()
     keep_source_ids: set[str] = set()
@@ -726,6 +735,13 @@ def upsert_catalog(db: Session) -> list[str]:
             for index, source in enumerate(metric["sources"], start=1):
                 source_id = f"{metric_id}-{source['role']}-{source['kind']}-{index}"
                 keep_source_ids.add(source_id)
+                extra_json = source.get("extra_json") or {}
+                existing = db.get(PositionKpiSource, source_id)
+                old_module = ""
+                if existing is not None and isinstance(existing.extra_json, dict):
+                    old_module = str(existing.extra_json.get("module") or "")
+                if old_module != str(extra_json.get("module") or ""):
+                    rebound_profiles.add(profile_id)
                 _upsert(
                     db,
                     PositionKpiSource,
@@ -736,7 +752,7 @@ def upsert_catalog(db: Session) -> list[str]:
                     title=source["title"],
                     detail=source["detail"],
                     update_rule=source["update_rule"],
-                    extra_json=source.get("extra_json") or {},
+                    extra_json=extra_json,
                 )
 
     for source in db.query(PositionKpiSource).all():
@@ -748,4 +764,9 @@ def upsert_catalog(db: Session) -> list[str]:
     for profile in db.query(PositionKpiProfile).all():
         if profile.id.startswith("plnpo010-") and profile.id not in keep_profile_ids:
             db.delete(profile)
+    if rebound_profiles:
+        from app.services.position_kpi.connect import invalidate_profile_cache
+
+        for profile_id in rebound_profiles:
+            invalidate_profile_cache(db, profile_id)
     return ids

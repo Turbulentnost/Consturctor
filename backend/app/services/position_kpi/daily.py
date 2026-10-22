@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import json
 import logging
 import re
 import threading
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.models.position_kpi import (
     PositionKpiDailyFact,
     PositionKpiMetric,
+    PositionKpiModule,
     PositionKpiProfile,
     PositionKpiSource,
     PositionKpiSubjectFact,
@@ -290,6 +292,18 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _profile_has_calculator(db: Session, profile_id: str) -> bool:
+    metric_ids = list(
+        db.scalars(select(PositionKpiMetric.id).where(PositionKpiMetric.profile_id == profile_id)).all()
+    )
+    if not metric_ids:
+        return False
+    by_metric: dict[str, list[PositionKpiSource]] = {}
+    for source in db.scalars(select(PositionKpiSource).where(PositionKpiSource.metric_id.in_(metric_ids))).all():
+        by_metric.setdefault(source.metric_id, []).append(source)
+    return any(_metric_module(rows) for rows in by_metric.values())
+
+
 def _metric_module(sources: list[PositionKpiSource]) -> str | None:
     for source in sources:
         if str(source.role or "") != "fact":
@@ -446,6 +460,19 @@ def _compute_tiles(db: Session, profile: PositionKpiProfile, ctx: SourceBundle) 
                 profile.id,
                 metric.code,
                 exc,
+            )
+            reason = " ".join(str(exc).split())[:240]
+            tiles.append(
+                _tile_from_report(
+                    metric,
+                    {
+                        "fact_pct": None,
+                        "score_pct": None,
+                        "contrib_pct": None,
+                        "module_error": True,
+                    },
+                    f"Модуль не посчитал: {reason}" if reason else "Модуль не посчитал.",
+                )
             )
             continue
         if not isinstance(report, dict):
@@ -713,6 +740,202 @@ def _cached_snapshot(
     return None
 
 
+def runner_cache_root() -> Path:
+    """Каталог, куда «Запуск модулей KPI» кладёт JSON расчёта: день / модуль / ФИО."""
+    return Path.home() / "Documents" / "kpi" / "cache"
+
+
+def _parse_runner_output(text: str) -> dict[str, Any]:
+    found: dict[str, str] = {}
+    for line in str(text or "").splitlines():
+        if ":" not in line:
+            continue
+        label, value = line.split(":", 1)
+        found[label.strip()] = value.strip()
+
+    def number(label: str) -> float | None:
+        raw = found.get(label, "").replace("%", "").replace(",", ".").strip()
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    fact = number("Факт")
+    if fact is None:
+        return {}
+    return {
+        "fact_pct": fact,
+        "score_pct": number("Выполнение"),
+        "contrib_pct": number("Вклад"),
+    }
+
+
+def tiles_from_runner_cache(
+    db: Session,
+    profile: PositionKpiProfile,
+    *,
+    fio: str,
+    as_of: date,
+    root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Плитки из уже посчитанного кэша агента. Экран KPI читает базу, а не эти файлы."""
+    person = str(fio or "").strip()
+    if not person:
+        return []
+    day_dir = (root or runner_cache_root()) / as_of.isoformat()
+    if not day_dir.is_dir():
+        return []
+    modules = list(
+        db.scalars(select(PositionKpiModule).where(PositionKpiModule.profile_id == profile.id)).all()
+    )
+    metrics = {
+        row.code: row
+        for row in db.scalars(
+            select(PositionKpiMetric).where(PositionKpiMetric.profile_id == profile.id)
+        ).all()
+    }
+    wanted = subject_key(person)
+    tiles: list[dict[str, Any]] = []
+    for module in modules:
+        stem = str(module.module_name or "").rsplit(".", 1)[-1].strip()
+        code = str(module.metric_code or "").strip()
+        metric = metrics.get(code)
+        folder = day_dir / stem
+        if not stem or metric is None or not folder.is_dir():
+            continue
+        match = next((path for path in folder.glob("*.json") if subject_key(path.stem) == wanted), None)
+        if match is None:
+            continue
+        try:
+            payload = json.loads(match.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            continue
+        if not isinstance(payload, dict) or str(payload.get("status") or "").strip().lower() != "ok":
+            continue
+        stored = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        parsed = _parse_runner_output(str(payload.get("output") or ""))
+        no_base = bool(stored.get("no_base")) or "нет базы" in str(payload.get("output") or "").casefold()
+        fact = stored.get("fact")
+        if fact is None:
+            fact = parsed.get("fact_pct")
+        if fact is None and not no_base:
+            continue
+        score = stored.get("score")
+        if score is None:
+            score = parsed.get("score_pct")
+        contrib = stored.get("contribution")
+        if contrib is None:
+            contrib = parsed.get("contrib_pct")
+        rows = stored.get("rows") if isinstance(stored.get("rows"), list) else []
+        evidence = "нет базы" if no_base and fact is None else f"факт {fact}%"
+        tiles.append(
+            _tile_from_report(
+                metric,
+                {
+                    "fact_pct": None if no_base and fact is None else fact,
+                    "score_pct": None if no_base and fact is None else score,
+                    "contrib_pct": None if no_base and fact is None else contrib,
+                    "rows": rows,
+                },
+                evidence,
+            )
+        )
+    tiles.sort(key=lambda tile: (metrics[tile["code"]].sort_order, tile["code"]))
+    return tiles
+
+
+def publish_subject_tiles(
+    db: Session,
+    profile: PositionKpiProfile,
+    *,
+    fio: str,
+    as_of: date,
+    date_from: date,
+    date_to: date,
+    tiles: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Личный снимок, который читает экран KPI."""
+    person = str(fio or "").strip()
+    computed_at = datetime.now(timezone.utc)
+    payload = _payload(
+        profile=profile,
+        as_of=as_of,
+        date_from=date_from,
+        date_to=date_to,
+        tiles=tiles,
+        computed_at=computed_at,
+    )
+    payload["subject"] = person
+    _store_subject(
+        db,
+        profile=profile,
+        subject=subject_key(person),
+        subject_fio=person,
+        as_of=as_of,
+        date_from=date_from,
+        date_to=date_to,
+        payload=payload,
+        computed_at=computed_at,
+    )
+    return {**payload, "cached": True, "stale": False}
+
+
+def read_today_position_kpi(
+    db: Session,
+    position: str,
+    *,
+    as_of: date | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    subject: str = "",
+    department: str | None = None,
+) -> dict[str, Any]:
+    """Сегодняшний снимок из кэша. Нет строки — плитки из кэша агента, иначе пустые, без расчёта."""
+    as_of = as_of or date.today()
+    profile = resolve_profile(db, position, as_of=as_of, department=department)
+    if profile is None:
+        raise PositionKpiNotFound(str(position or "").strip())
+    if date_from is None or date_to is None:
+        date_from, date_to = month_bounds(as_of.year, as_of.month)
+    cached = _cached_snapshot(
+        db,
+        profile=profile,
+        subject=subject_key(subject),
+        as_of=as_of,
+        date_from=date_from,
+        date_to=date_to,
+        allow_stale=False,
+    )
+    if cached is not None:
+        return cached
+    person = str(subject or "").strip()
+    if person:
+        imported = tiles_from_runner_cache(db, profile, fio=person, as_of=as_of)
+        if imported:
+            return publish_subject_tiles(
+                db,
+                profile,
+                fio=person,
+                as_of=as_of,
+                date_from=date_from,
+                date_to=date_to,
+                tiles=imported,
+            )
+    payload = _payload(
+        profile=profile,
+        as_of=as_of,
+        date_from=date_from,
+        date_to=date_to,
+        tiles=[],
+        computed_at=datetime.now(timezone.utc),
+    )
+    if str(subject or "").strip():
+        payload["subject"] = str(subject).strip()
+    return {**payload, "cached": False, "stale": False}
+
+
 def read_position_kpi_snapshot(
     db: Session,
     position: str,
@@ -793,7 +1016,7 @@ def get_or_compute_position_kpi(
             date_to=date_to,
             allow_stale=allow_stale,
         )
-        if cached is not None:
+        if cached is not None and (cached.get("tiles") or not _profile_has_calculator(db, profile.id)):
             return cached
 
     ctx = SourceBundle(
@@ -814,6 +1037,9 @@ def get_or_compute_position_kpi(
         tiles=tiles,
         computed_at=computed_at,
     )
+    failed_run = bool(tiles) and all((tile.get("detail") or {}).get("module_error") for tile in tiles)
+    if failed_run or (not tiles and _profile_has_calculator(db, profile.id)):
+        return {**payload, "cached": False, "stale": False}
     if key:
         payload["subject"] = str(subject or "").strip()
         _store_subject(

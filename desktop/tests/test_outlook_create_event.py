@@ -353,6 +353,22 @@ def test_event_involves_person_filters_attendees() -> None:
     assert not event_involves_person(event, "Жалыбин Максим Дмитриевич")
 
 
+def test_event_involves_person_by_location_when_attendees_empty() -> None:
+    event = {
+        "own_calendar": False,
+        "organizer": "",
+        "required_attendees": "",
+        "optional_attendees": "",
+        "subject": "Ежедневное совещание с директором по персоналу РК",
+        "location": "на уровне ПСД Амураль И.Б. в его кабинете",
+        "calendar_owner": "Совещания",
+    }
+    assert event_involves_person(event, "Амураль Игорь Борисович")
+    assert not event_involves_person(event, "Жалыбин Максим Дмитриевич")
+    cabinet = dict(event, location="в кабинете ПСД Амураль И.Б.")
+    assert event_involves_person(cabinet, "Амураль Игорь Борисович")
+
+
 def test_folder_matches_person_by_lastname() -> None:
     assert _folder_matches_person("Календарь — Жалыбин Максим", "Жалыбин Максим Дмитриевич")
     assert _folder_matches_person("Жалыбин Максим Дмитриевич", "Жалыбин М.Д.")

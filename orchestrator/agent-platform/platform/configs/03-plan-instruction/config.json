@@ -1,0 +1,14 @@
+{
+  "title": "Конфигурация 2",
+  "description": "Как конфигурация 1, но инструкцию агента пишет режим plan: по тексту пользователя Cursor SDK составляет план в markdown, план становится инструкцией и сразу выполняется. Каждый следующий запуск получает план и историю прошлого прогона: вызванные инструменты и их результаты.",
+  "model": "grok-4.7",
+  "model_params": [
+    { "id": "reasoning_effort", "value": "xhigh" },
+    { "id": "fast", "value": "true" }
+  ],
+  "tags": ["cursor-sdk", "plan", "mcp"],
+  "entry": ["node", "runner.mjs"],
+  "prompt_source": "instruction",
+  "attachments": true,
+  "plan_instruction": true
+}
