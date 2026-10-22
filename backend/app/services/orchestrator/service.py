@@ -25,6 +25,7 @@ from app.services.orchestrator.ilchenko import (
     ILCHENKO_SUMMARY,
     has_locked_position_kpi,
     ilchenko_tiles,
+    is_marina_tishchenko,
 )
 from app.services.orchestrator.prompts import build_calc_prompt, build_form_prompt
 from app.services.triggers.service import is_workflow_paused, workflow_is_deleted
@@ -133,6 +134,33 @@ def _seed_ilchenko(row: UserOrchestrator, briefs: list[dict[str, Any]], now: dat
     row.source_agent_ids = [str(item.get("id") or "") for item in briefs if item.get("id")]
     row.formed_at = now
     row.forming_at = None
+
+
+_ILCHENKO_TILE_IDS = ("package_on_time", "protocol_on_time", "instructions", "quality")
+
+
+def _has_ilchenko_tile_ids(row: UserOrchestrator | None) -> bool:
+    if row is None:
+        return False
+    ids = tuple(
+        str(item.get("id") or "")
+        for item in (row.tiles or [])
+        if isinstance(item, dict)
+    )
+    return ids == _ILCHENKO_TILE_IDS
+
+
+def _needs_ilchenko_seed(
+    *,
+    user_id: str,
+    fio: str,
+    position: str,
+    row: UserOrchestrator | None,
+) -> bool:
+    """Тищенко М.Н. получает плитки Ильченко даже если раньше лежал другой набор."""
+    if is_marina_tishchenko(user_id=user_id, fio=fio):
+        return not _has_ilchenko_tile_ids(row)
+    return has_locked_position_kpi(position=position) and (row is None or not (row.tiles or []))
 
 
 def normalize_formed_tiles(raw_tiles: list[Any], *, now: datetime | None = None) -> list[dict[str, Any]]:
@@ -317,15 +345,13 @@ def get_orchestrator(
         row = _get_row(db, user_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Orchestrator read failed user=%s: %s", user_id, exc)
-        if has_locked_position_kpi(position=position):
+        if _needs_ilchenko_seed(user_id=user_id, fio=fio, position=position, row=None):
             ephemeral = _new_row(user_id, locked=True)
             _seed_ilchenko(ephemeral, [], now)
             _refresh_facts(db, ephemeral, user_id=user_id, now=now, persist=False, force=True)
             return to_out(ephemeral, user_id=user_id, fio=fio, position=position, briefs=[], now=now)
         return to_out(None, user_id=user_id, fio=fio, position=position, briefs=[], now=now)
-    if has_locked_position_kpi(position=position) and (
-        row is None or not (row.tiles or [])
-    ):
+    if _needs_ilchenko_seed(user_id=user_id, fio=fio, position=position, row=row):
         try:
             if row is None:
                 row = _new_row(user_id, locked=True)
@@ -345,6 +371,13 @@ def get_orchestrator(
             _refresh_facts(db, ephemeral, user_id=user_id, now=now, persist=False, force=True)
             return to_out(ephemeral, user_id=user_id, fio=fio, position=position, briefs=briefs, now=now)
     _refresh_facts(db, row, user_id=user_id, now=now, persist=True)
+    if is_marina_tishchenko(user_id=user_id, fio=fio) and row is not None and not row.locked:
+        row.locked = True
+        try:
+            db.commit()
+            db.refresh(row)
+        except Exception:  # noqa: BLE001
+            db.rollback()
     return to_out(row, user_id=user_id, fio=fio, position=position, briefs=briefs, now=now)
 
 
@@ -364,13 +397,15 @@ def ensure_orchestrator(
     fio, position = _user_fio_position(db, user_id, fio, position)
     briefs = list_active_agent_briefs(db, user_id)
     row = _get_row(db, user_id)
-    locked_user = has_locked_position_kpi(position=position)
+    locked_user = has_locked_position_kpi(position=position) or is_marina_tishchenko(
+        user_id=user_id, fio=fio
+    )
     if row is None:
         row = _new_row(user_id, locked=locked_user)
         db.add(row)
     if locked_user:
         row.locked = True
-        if not (row.tiles or []):
+        if _needs_ilchenko_seed(user_id=user_id, fio=fio, position=position, row=row):
             _seed_ilchenko(row, briefs, now)
         if kind == "calc" and (row.tiles or []):
             _refresh_facts(db, row, user_id=user_id, now=now, persist=False, force=True)
@@ -418,7 +453,7 @@ def save_formed(
 ) -> OrchestratorOut:
     now = now or _now()
     fio, position = _user_fio_position(db, user_id, fio, position)
-    if has_locked_position_kpi(position=position):
+    if has_locked_position_kpi(position=position) or is_marina_tishchenko(user_id=user_id, fio=fio):
         raise OrchestratorError("Для этой должности набор KPI фиксирован", 409)
     briefs = list_active_agent_briefs(db, user_id)
     if not briefs:

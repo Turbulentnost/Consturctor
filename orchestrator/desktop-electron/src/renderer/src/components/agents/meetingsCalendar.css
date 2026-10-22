@@ -22,9 +22,15 @@
   min-width: max-content;
 }
 
-.mcal-head {
+.mcal-sticky-head {
   position: sticky;
   top: 0;
+  z-index: 4;
+  background: #fff;
+}
+
+.mcal-head {
+  position: static;
   z-index: 3;
   gap: 2px;
   padding-right: 2px;
@@ -96,6 +102,87 @@
 .mcal-day-v-corner.is-today .mcal-head-date {
   background: #2f6bd8;
   color: #fff;
+}
+
+.mcal-allday {
+  display: flex;
+  min-width: max-content;
+  gap: 2px;
+  padding-right: 2px;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+  background: #fff;
+}
+
+.mcal-allday-gutter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 4px 3px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: right;
+  color: #6b7380;
+}
+
+.mcal-allday-col,
+.mcal-day-allday-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px 3px 4px;
+  box-sizing: border-box;
+}
+
+.mcal-allday-col {
+  flex: 1 0 124px;
+  min-width: 124px;
+}
+
+.mcal-day-allday-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 4px;
+  border-left: 1px solid rgba(16, 20, 26, 0.08);
+}
+
+.mcal-allday-chip {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 2px 6px 2px 8px;
+  border: 1px solid;
+  border-left-width: 6px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcal-allday-chip-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcal-allday-chip.is-selected {
+  box-shadow: 0 0 0 2px rgba(16, 20, 26, 0.35);
+}
+
+.mcal-month-allday {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #17325f;
 }
 
 .mcal-head-count {
@@ -174,11 +261,23 @@
   justify-content: flex-start;
   gap: 2px;
   overflow: hidden;
-  padding: 4px 6px;
+  padding: 4px 6px 4px 14px;
   border: 1px solid;
-  border-left-width: 3px;
+  border-left-width: 0;
   border-radius: 6px;
   cursor: pointer;
+}
+
+/* Высота полосы совпадает с высотой блока, а высота блока — с длительностью. */
+.mcal-event-duration {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  width: 8px;
+  border-radius: 6px 0 0 6px;
+  pointer-events: none;
 }
 
 .mcal-event.is-selected {
@@ -187,7 +286,7 @@
 
 /* Этот блок выиграл приоритет и остаётся видимым в пересечении. */
 .mcal-event.is-top {
-  border-left-width: 5px;
+  border-left-width: 0;
   box-shadow: 0 1px 5px rgba(16, 20, 26, 0.2);
 }
 
@@ -509,31 +608,95 @@
   color: #5c6b7a;
 }
 
-.mcal-print-edit {
+.mcal-print-stage {
   display: flex;
   flex: 1;
-  gap: 8px;
+  align-items: stretch;
+  gap: 12px;
   min-width: 0;
+  min-height: 0;
+}
+
+.mcal-print-stage.has-edit .mcal-print-preview {
+  justify-content: stretch;
+  align-items: stretch;
+  padding: 0;
+}
+
+.mcal-print-backdrop.is-landscape .mcal-print-stage.has-edit .mcp-fit,
+.mcal-print-backdrop.is-portrait .mcal-print-stage.has-edit .mcp-fit {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: auto;
+}
+
+.mcal-print-edit {
+  display: flex;
+  flex: 0 0 min(380px, 34vw);
+  flex-direction: column;
+  gap: 10px;
+  align-self: stretch;
+  max-height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding: 14px;
+  border: 1px solid var(--edit-border, #c9d3de);
+  border-radius: 12px;
+  background: #fff;
+  color: #10141a;
+}
+
+.mcal-print-edit-title {
+  margin: 0;
+  flex: none;
+  font-size: 14px;
+  font-weight: 700;
+  color: inherit;
 }
 
 .mcal-print-edit label {
   display: flex;
-  flex: 1;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
+  min-height: 0;
   font-size: 11px;
-  color: #5c6b7a;
+  font-weight: 600;
+  color: inherit;
 }
 
-.mcal-print-edit input {
-  height: 28px;
+.mcal-print-edit textarea {
+  box-sizing: border-box;
+  width: 100%;
   min-width: 0;
-  padding: 0 8px;
-  border: 1px solid #c9d3de;
+  min-height: 36px;
+  max-height: 28%;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  resize: none;
+  border: 1px solid var(--edit-border, #c9d3de);
   border-radius: 6px;
-  color: #10141a;
+  background: rgba(255, 255, 255, 0.82);
+  color: inherit;
+  font: inherit;
   font-size: 13px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mcal-print-edit label.is-people {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.mcal-print-edit label.is-people textarea {
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 72px;
 }
 
 .mcal-print-actions {
@@ -867,10 +1030,50 @@
   line-height: 10px;
 }
 
-/* Вертикальный A4: рамка совещания на всю свободную высоту и ширину колонки. */
+/* Вертикальный A4: заливка только на длительность встречи, промежутки остаются пустыми. */
 .mcal-print-backdrop.is-portrait .mcp-time,
 .mcal-print-backdrop.is-portrait .mcp-fill {
-  height: 100% !important;
+  height: auto;
+}
+
+.mcp-allday-label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 4px 3px 6px;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: right;
+  color: #5c6b7a;
+}
+
+.mcp-allday-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 4px;
+  align-items: stretch;
+  min-width: 0;
+  padding: 3px 4px 4px;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.1);
+  border-left: 1px solid rgba(16, 20, 26, 0.08);
+}
+
+.mcp-allday-chip {
+  min-width: 0;
+  padding: 2px 8px;
+  overflow: hidden;
+  border: 1px solid;
+  border-left-width: 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
 }
 
 .mcp-room {
@@ -977,11 +1180,23 @@
     max-height: none !important;
     aspect-ratio: auto !important;
     box-shadow: none !important;
+    background: #fff !important;
   }
 
   .mcal-print-toolbar,
+  .mcal-print-edit,
   .mcp-range {
     display: none !important;
+  }
+
+  .mcal-print-stage,
+  .mcal-print-stage.has-edit .mcal-print-preview {
+    display: flex;
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    justify-content: center;
   }
 
   .mcal-event.is-selected {

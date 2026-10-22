@@ -1202,6 +1202,7 @@ input {
 .content:has(.page-with-footer) {
   overflow: hidden;
 }
+.content-inner:has(.set-body-visual),
 .content-inner:has(.page-with-footer),
 .content-inner:has(.files-page),
 .content-inner:has(.agents-page),
@@ -14876,6 +14877,10 @@ button.spec-v04-tile {
   overflow: auto;
   padding-bottom: 12px;
 }
+.set-page:has(.set-body-visual) {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
 .set-tabs {
   display: flex;
   gap: 4px;
@@ -14938,6 +14943,16 @@ button.spec-v04-tile {
   flex-direction: column;
   gap: 14px;
   padding-bottom: 8px;
+}
+.set-body-visual {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.set-visual-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .set-general-grid {
   display: grid;
@@ -15045,18 +15060,130 @@ button.spec-v04-tile {
   border-color: #1565c0;
   color: #fff;
 }
+.set-visual-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  min-height: 0;
+}
+.set-visual-tiles,
+.set-visual-filters {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px dashed rgba(13, 59, 115, 0.3);
+  background-color: transparent;
+}
+.set-visual-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 148px), 1fr));
+  gap: 6px;
+  min-height: 48px;
+  padding: 6px;
+  border-radius: 12px;
+  background-color: #e7eef8;
+  border: 1px solid rgba(13, 59, 115, 0.4);
+}
+.set-visual-inactive {
+  flex-shrink: 0;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(13, 59, 115, 0.25);
+}
+.set-visual-inactive-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #5b6573;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.set-visual-presence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.set-visual-filters {
+  background: #f8f5ec;
+}
+.set-visual-tiles span {
+  position: relative;
+  cursor: grab;
+  min-height: 52px;
+  padding: 16px 6px 6px;
+  border: 1px solid rgba(13, 59, 115, 0.28);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.45);
+  text-align: center;
+  line-height: 1.15;
+  white-space: normal;
+}
+.set-visual-tiles span.is-empty {
+  background: transparent;
+  cursor: default;
+}
+.set-visual-tiles span,
+.set-visual-filters span {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5b6573;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.set-visual-filters span {
+  min-height: 26px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.8);
+}
+.set-visual-tile-trash {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 2;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: #fff;
+  color: #c62828;
+  box-shadow: 0 1px 3px rgba(13, 59, 115, 0.2);
+  cursor: pointer;
+}
+.set-visual-tile-trash:hover {
+  background: #fdecea;
+}
 .set-visual-preview {
   display: grid;
-  gap: 6px;
-  height: 280px;
-  margin: 0 0 14px;
-  padding: 8px;
+  flex: 1 1 auto;
+  gap: 0;
+  width: 100%;
+  margin: 0;
+  padding: 6px;
+  min-height: 0;
   border-radius: 12px;
-  background:
-    linear-gradient(rgba(13, 59, 115, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(13, 59, 115, 0.05) 1px, transparent 1px),
-    #f4f7fb;
-  background-size: 100% 100%;
+  background-color: #f4f7fb;
+  background-image:
+    linear-gradient(rgba(13, 59, 115, 0.16) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(13, 59, 115, 0.16) 1px, transparent 1px);
+  background-size:
+    calc((100% - 12px) / var(--visual-cols, 16))
+    calc((100% - 12px) / var(--visual-rows, 12));
+  background-position: 6px 6px;
+  touch-action: none;
 }
 .set-visual-preview--tiles {
   height: auto;
@@ -15064,20 +15191,99 @@ button.spec-v04-tile {
   grid-template-rows: auto;
 }
 .set-visual-block {
+  opacity: 0.5;
+  position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
-  padding: 6px;
+  gap: 2px;
+  min-height: 0;
+  padding: 4px;
   border: 1px dashed rgba(21, 101, 192, 0.45);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.85);
   color: #0d3b73;
   font-size: 12px;
-  font-weight: 700;
   text-align: center;
-  cursor: pointer;
+  cursor: grab;
   overflow: hidden;
+  touch-action: none;
+}
+.set-visual-block:active {
+  cursor: grabbing;
+}
+.set-visual-block.is-editing {
+  opacity: 1;
+  z-index: 2;
+  border-style: solid;
+  border-color: #1565c0;
+  box-shadow: 0 0 0 3px rgba(21, 101, 192, 0.28);
+  background: rgba(227, 240, 255, 0.96);
+}
+.set-visual-trash {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: #fff;
+  color: #c62828;
+  box-shadow: 0 1px 4px rgba(13, 59, 115, 0.18);
+  cursor: pointer;
+}
+.set-visual-trash:hover {
+  background: #fdecea;
+}
+.set-visual-pin {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: #fff;
+  color: #8aa0b8;
+  box-shadow: 0 1px 4px rgba(13, 59, 115, 0.18);
+  cursor: pointer;
+}
+.set-visual-pin.is-locked {
+  color: #1565c0;
+  background: rgba(21, 101, 192, 0.12);
+}
+.set-visual-pin:hover {
+  background: #e8f1fb;
+}
+.set-visual-block strong {
+  font-weight: 700;
+}
+.set-visual-block em {
+  font-style: normal;
+  font-size: 10px;
+  color: #5b6573;
+}
+.set-visual-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 50%, rgba(13, 59, 115, 0.55) 50%, rgba(13, 59, 115, 0.55) 62%, transparent 62%),
+    linear-gradient(135deg, transparent 72%, rgba(13, 59, 115, 0.55) 72%, rgba(13, 59, 115, 0.55) 84%, transparent 84%);
 }
 .set-visual-rows {
   display: flex;
@@ -16076,6 +16282,10 @@ button.spec-v04-tile {
   bottom: 0;
   padding-top: 8px;
   background: #fff;
+}
+.meeting-editor-delete {
+  margin-right: auto;
+  color: #c62828;
 }
 
 .meeting-editor-toggles,

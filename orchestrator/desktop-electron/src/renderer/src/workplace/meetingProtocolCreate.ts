@@ -37,7 +37,11 @@ export type ProtocolTaskDraft = {
   due: string
   priority: string
   note: string
+  /** Имена файлов этой задачи. Сами байты уходят отдельным списком и пишутся в файлы протокола. */
+  fileNames?: string[]
 }
+
+export type ProtocolUploadFile = { name: string; base64: string }
 
 export type ProtocolCreateDraft = {
   topic: string
@@ -176,7 +180,8 @@ export type OnecProtocolForm = {
     participants: string[]
     agenda: { question: string; responsible: string }[]
     decisions: { text: string; due: string; since: string }[]
-    tasks: { text: string; executor: string; due: string; priority: string; note: string; item?: string }[]
+    tasks: { text: string; executor: string; due: string; priority: string; note: string; item?: string; fileNames?: string[] }[]
+    files?: { id: string; name: string; extension: string; size: string }[]
     control_tasks: ProtocolControlTask[]
     comment: string
   }
@@ -349,7 +354,11 @@ export function draftFromOnecForm(card: OnecProtocolForm): ProtocolCreateDraft {
 
 type WriteArgs = { ok: true; args: Record<string, unknown> } | { ok: false; error: string }
 
-function buildWriteArgs(draft: ProtocolCreateDraft, meeting: MeetingEvent): WriteArgs {
+function buildWriteArgs(
+  draft: ProtocolCreateDraft,
+  meeting: MeetingEvent,
+  uploads: ProtocolUploadFile[] = []
+): WriteArgs {
   const topic = draft.topic.trim()
   const date = draft.date.trim()
   if (!topic) return { ok: false, error: 'Укажите тему совещания' }
@@ -367,7 +376,8 @@ function buildWriteArgs(draft: ProtocolCreateDraft, meeting: MeetingEvent): Writ
       executor: row.executor.trim(),
       due: row.due.trim(),
       priority: row.priority.trim(),
-      note: row.note.trim()
+      note: row.note.trim(),
+      files: (row.fileNames || []).map((name) => name.trim()).filter(Boolean)
     }))
     .filter((row) => row.text)
 
@@ -385,6 +395,7 @@ function buildWriteArgs(draft: ProtocolCreateDraft, meeting: MeetingEvent): Writ
     tasks,
     comment
   }
+  if (uploads.length) args.files = uploads.map((file) => ({ name: file.name, base64: file.base64 }))
   if (draft.themeKey.trim()) args.theme_key = draft.themeKey.trim()
   if (draft.timeStart.trim()) args.time_start = draft.timeStart.trim()
   if (draft.timeEnd.trim()) args.time_end = draft.timeEnd.trim()
@@ -454,9 +465,10 @@ export async function createMeetingProtocolOnBasis(
 
 export async function createProtocolInOneC(
   draft: ProtocolCreateDraft,
-  meeting: MeetingEvent
+  meeting: MeetingEvent,
+  uploads: ProtocolUploadFile[] = []
 ): Promise<ProtocolCreateResult> {
-  const built = buildWriteArgs(draft, meeting)
+  const built = buildWriteArgs(draft, meeting, uploads)
   if (!built.ok) return { ok: false, error: built.error }
   return invokeProtocolWrite({ action: 'create', ...built.args }, 'Не удалось создать протокол в 1С')
 }
@@ -464,11 +476,12 @@ export async function createProtocolInOneC(
 export async function updateProtocolInOneC(
   draft: ProtocolCreateDraft,
   refKey: string,
-  meeting: MeetingEvent
+  meeting: MeetingEvent,
+  uploads: ProtocolUploadFile[] = []
 ): Promise<ProtocolCreateResult> {
   const key = refKey.trim()
   if (!key) return { ok: false, error: 'Нет ссылки на протокол в 1С' }
-  const built = buildWriteArgs(draft, meeting)
+  const built = buildWriteArgs(draft, meeting, uploads)
   if (!built.ok) return { ok: false, error: built.error }
   forgetProtocolForm(key)
   return invokeProtocolWrite({ action: 'update', ref_key: key, ...built.args }, 'Не удалось сохранить протокол в 1С')

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
+import { isPsdAssistant } from '../orchestrator/kpi'
 import { onecGatewayInvokeArgs } from './userContext'
 
 export type BoardReportTask = {
@@ -33,7 +34,7 @@ const EMPTY: BoardReportReadiness = {
 }
 
 export function isIlchenkoAccount(user: UserProfile | null): boolean {
-  return (user?.fio || '').toLowerCase().includes('ильченко')
+  return isPsdAssistant(user?.id || '', user?.fio || '')
 }
 
 function str(value: unknown): string {

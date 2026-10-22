@@ -16,6 +16,11 @@ import {
 } from '../extensions/inDevelopment/purchasesDock'
 import { DocflowDock, DocflowDockProvider } from '../tabs/grid/DocflowDock'
 import type { JournalId } from '../tabs/grid/docflowJournals'
+import {
+  ExternalOrderDock,
+  ExternalOrderDockProvider,
+  type ExternalOrderDockId
+} from '../extensions/externalOrder/externalOrderDock'
 
 function todayGreeting(fio: string): string {
   const hour = new Date().getHours()
@@ -43,6 +48,10 @@ interface OrchGridShellProps {
   isRunLive?: (workflowId: string, runId?: string) => boolean
   canSwitchAdminView?: boolean
   onSwitchAdminView?: (mode: 'admin' | 'user') => void
+  menuVariant?: 'default' | 'admin'
+  showAdminNav?: boolean
+  adminPageKeys?: PageKey[]
+  adminTitle?: string
   toast?: ReactNode
   gridClassName?: string
   /** Hide workplace title/search — used for agent run/history overlays. */
@@ -73,6 +82,10 @@ export function OrchGridShell({
   isRunLive,
   canSwitchAdminView = false,
   onSwitchAdminView,
+  menuVariant = 'default',
+  showAdminNav = false,
+  adminPageKeys = [],
+  adminTitle,
   toast,
   gridClassName = '',
   subpage = false,
@@ -91,10 +104,12 @@ export function OrchGridShell({
     PAGE_SEARCH_PLACEHOLDER[activeKey] || 'Поиск на открытой странице…'
   const purchasesDock = activeKey === 'in_development'
   const docflowDock = activeKey === 'docflow'
-  const childDock = purchasesDock || docflowDock
+  const externalOrderDock = activeKey === 'external_order'
+  const childDock = purchasesDock || docflowDock || externalOrderDock
   const [childParentOpen, setChildParentOpen] = useState(false)
   const [purchasesView, setPurchasesView] = useState<PurchasesDockId>('by_period')
   const [docflowJournal, setDocflowJournal] = useState<JournalId>('correspondence')
+  const [externalOrderView, setExternalOrderView] = useState<ExternalOrderDockId>('desk')
 
   useEffect(() => {
     setChildParentOpen(false)
@@ -152,6 +167,9 @@ export function OrchGridShell({
         <Sidebar
           active={activeKey}
           light={lightSidebar}
+          showAdminNav={showAdminNav}
+          adminPageKeys={adminPageKeys}
+          adminTitle={adminTitle}
           activeThreadId={activeThreadId}
           currentUserId={user.id || ''}
           onNavigate={onNavigate}
@@ -175,6 +193,13 @@ export function OrchGridShell({
             labeled={!childParentOpen}
             journal={docflowJournal}
             onSelect={setDocflowJournal}
+          />
+        ) : null}
+        {externalOrderDock ? (
+          <ExternalOrderDock
+            labeled={!childParentOpen}
+            active={externalOrderView}
+            onSelect={setExternalOrderView}
           />
         ) : null}
       </div>
@@ -234,6 +259,7 @@ export function OrchGridShell({
           onOpenSettings={onOpenSettings}
           canSwitchAdminView={canSwitchAdminView}
           onSwitchAdminView={onSwitchAdminView}
+          variant={menuVariant}
         />
       </div>
 
@@ -245,6 +271,8 @@ export function OrchGridShell({
         <DocflowDockProvider journal={docflowJournal} setJournal={setDocflowJournal}>
           {children}
         </DocflowDockProvider>
+      ) : externalOrderDock ? (
+        <ExternalOrderDockProvider active={externalOrderView}>{children}</ExternalOrderDockProvider>
       ) : (
         children
       )}

@@ -753,3 +753,32 @@ def test_add_tasks_appends_to_register_and_edits_unsent(monkeypatch):
     assert result["changed"][0]["id"] == OPEN_ID
     assert any("отправлена" in error for error in result["errors"])
     assert result["unresolved"] == ["исполнитель задачи «Неизвестный»"]
+
+
+def test_create_attaches_protocol_files(monkeypatch):
+    monkeypatch.setattr(
+        mpw,
+        "build_protocol_create_body",
+        lambda *args, **kwargs: (
+            {"Статус": "Подготовлен", "ТемаСовещания_Key": "", mpw.TASKS_PART: []},
+            {"unresolved": []},
+        ),
+    )
+    monkeypatch.setattr(
+        mpw,
+        "_odata_post",
+        lambda args: {"data": {"Ref_Key": PROTOCOL_KEY, "Number": "ДР-1"}},
+    )
+    monkeypatch.setattr(mpw, "sync_task_register", lambda *args, **kwargs: {"written": 0, "errors": []})
+    seen: list[str] = []
+    monkeypatch.setattr(
+        mpw,
+        "_remember_files",
+        lambda ref_key, args, actor_fio="": seen.append(ref_key) or ". Файлов прикреплено: 1",
+    )
+    result = mpw.handle_protocol_write(
+        {"action": "create", "files": [{"name": "Макет.pdf", "base64": "YQ=="}]},
+        actor_fio="Жалыбин Максим Дмитриевич",
+    )
+    assert seen == [PROTOCOL_KEY]
+    assert "Файлов прикреплено: 1" in result["summary"]

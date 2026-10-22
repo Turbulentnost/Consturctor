@@ -66,6 +66,14 @@ import {
   type ToolStatus,
   type SupportTicketItem
 } from './types'
+import type {
+  ExternalOnecSearch,
+  ExternalOrder,
+  ExternalOrderMatrix,
+  ExternalOrderReview,
+  ExternalOrderBrief,
+  ExternalOrderMeta
+} from '../extensions/externalOrder/externalOrderTypes'
 import { decodeAgentMessage, previewText } from './chatCodec'
 import { loadSession } from '../store/session'
 import { formatGatewayToolError } from '../workplace/onecSessionHints'
@@ -2434,6 +2442,248 @@ export class ApiClient {
       { timeoutMs: 30_000 }
     )
     return Array.isArray(data.reviews) ? data.reviews : []
+  }
+
+  async externalOrderMeta(asRole = ''): Promise<ExternalOrderMeta> {
+    return this.request('GET', '/api/v1/external-orders/meta', {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async externalOrders(asRole = ''): Promise<ExternalOrderBrief[]> {
+    const data = await this.request<{ orders?: ExternalOrderBrief[] }>('GET', '/api/v1/external-orders', {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+    return Array.isArray(data.orders) ? data.orders : []
+  }
+
+  async externalOrder(id: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('GET', `/api/v1/external-orders/${encodeURIComponent(id)}`, {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async createExternalOrder(
+    body: { customer: string; product: string },
+    asRole = ''
+  ): Promise<ExternalOrder> {
+    return this.request('POST', '/api/v1/external-orders', {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async patchExternalOrder(id: string, body: unknown, asRole = ''): Promise<ExternalOrder> {
+    return this.request('PATCH', `/api/v1/external-orders/${encodeURIComponent(id)}`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async transitionExternalOrder(id: string, target: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/transition`, {
+      body: { target },
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async confirmExternalCheck(id: string, checkId: string, evidence: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/checks/${encodeURIComponent(checkId)}/confirm`,
+      { body: { evidence }, params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async addExternalRisk(
+    id: string,
+    body: { title: string; impact: string; measure: string; source: string },
+    asRole = ''
+  ): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/risks`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async closeExternalDiff(id: string, diffId: string, note: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/diffs/${encodeURIComponent(diffId)}/close`,
+      { body: { note }, params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async decideExternalOrder(
+    id: string,
+    body: {
+      decision: string
+      protocol: string
+      base_version: string
+      baseline_id?: string
+      allowed_stage: string
+      conditions: string
+    },
+    asRole = ''
+  ): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/decisions`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async acceptExternalFinding(id: string, findingId: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/findings/${encodeURIComponent(findingId)}/accept`,
+      { params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async externalOrderMatrix(orderId = ''): Promise<ExternalOrderMatrix> {
+    return this.request('GET', '/api/v1/external-orders/matrix', {
+      params: orderId ? { order_id: orderId } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async linkExternalStrategy(id: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/strategy`, {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 90_000
+    })
+  }
+
+  async externalOrderReview(id: string, asRole = ''): Promise<ExternalOrderReview> {
+    return this.request('GET', `/api/v1/external-orders/${encodeURIComponent(id)}/review`, {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async recentExternalOnec(): Promise<ExternalOnecSearch> {
+    return this.request('GET', '/api/v1/external-orders/onec/recent', { timeoutMs: 90_000 })
+  }
+
+  async importExternalTkp(refKey: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', '/api/v1/external-orders/onec/import-tkp', {
+      body: { ref_key: refKey },
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 60_000
+    })
+  }
+
+  async importExternalOnec(refKey: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', '/api/v1/external-orders/onec/import', {
+      body: { ref_key: refKey },
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 45_000
+    })
+  }
+
+  async searchExternalOnec(query = '', counterparty = ''): Promise<ExternalOnecSearch> {
+    return this.request('GET', '/api/v1/external-orders/onec', {
+      params: {
+        ...(query ? { q: query } : {}),
+        ...(counterparty ? { counterparty } : {})
+      },
+      timeoutMs: 45_000
+    })
+  }
+
+  async linkExternalOrder(id: string, refKey: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/onec`, {
+      body: { ref_key: refKey },
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 45_000
+    })
+  }
+
+  async refreshExternalPayment(id: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/onec/refresh`, {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 45_000
+    })
+  }
+
+  async uploadExternalFile(
+    id: string,
+    body: { kind: string; filename: string; content_base64: string },
+    asRole = ''
+  ): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/files`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 60_000
+    })
+  }
+
+  async approveExternalFile(id: string, documentId: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/files/${encodeURIComponent(documentId)}/approve`,
+      { params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async deleteExternalFile(id: string, documentId: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'DELETE',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/files/${encodeURIComponent(documentId)}`,
+      { params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async createExternalBaseline(id: string, body: Record<string, string>, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/baselines`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async buildExternalPlan(id: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/plan`, {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async approveExternalPlan(id: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/plan/approve`, {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async publishExternalPlan(id: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/plan/publish`, {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 20_000
+    })
+  }
+
+  async closeExternalConditions(id: string, decisionId: string, documentId: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/decisions/${encodeURIComponent(decisionId)}/close-conditions`,
+      { body: { document_id: documentId }, params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async externalOrderAgent(): Promise<{ workflow_id: string; title: string }> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/external-orders/agent', {
+      timeoutMs: 20_000
+    })
+    return { workflow_id: String(data.workflow_id || ''), title: String(data.title || '') }
   }
 
   async getAssignmentReview(refKey: string): Promise<Record<string, unknown> | null> {

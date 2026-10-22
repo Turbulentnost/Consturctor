@@ -242,6 +242,137 @@
   color: #1565c0;
 }
 
+.docflow-requests {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.docflow-requests .docflow-kind {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.docflow-requests .docflow-kind-btn {
+  flex: 0 1 auto;
+  padding: 7px 12px;
+  border-radius: 10px;
+}
+
+.docflow-requests .docflow-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.docflow-requests .docflow-table th,
+.docflow-requests .docflow-table td {
+  padding: 8px 12px;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(16, 32, 51, 0.08);
+  max-width: 220px;
+}
+
+.docflow-requests .docflow-table thead th {
+  white-space: normal;
+  background: #f3f6fb;
+  box-shadow: inset 0 -1px 0 rgba(16, 32, 51, 0.14);
+}
+
+.docflow-requests .docflow-sort-btn > span {
+  overflow: visible;
+  text-overflow: unset;
+  white-space: normal;
+}
+
+.docflow-requests .docflow-table td.is-wide {
+  max-width: 320px;
+  white-space: normal;
+}
+
+.docflow-requests .docflow-table tbody tr {
+  cursor: pointer;
+}
+
+.docflow-requests .docflow-table tbody tr:nth-child(even) {
+  background: #fafbfd;
+}
+
+.docflow-requests .docflow-table tbody tr:hover {
+  background: #f3f7fd;
+}
+
+.docflow-requests .docflow-table tbody tr.is-selected,
+.docflow-requests .docflow-table tbody tr.is-selected:hover {
+  background: #e7f0fc;
+}
+
+.docflow-req-status {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef2f6;
+  color: #3d4d63;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.docflow-req-status.is-work {
+  background: #fff4d6;
+  color: #8a5a00;
+}
+
+.docflow-req-status.is-done {
+  background: #e5f6ea;
+  color: #1d6b34;
+}
+
+.docflow-req-status.is-stop {
+  background: #fde8e8;
+  color: #9b1c1c;
+}
+
+.docflow-request-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px 0;
+}
+
+.docflow-request-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.docflow-request-actions .docflow-open-form {
+  margin: 0;
+}
+
+.docflow-request-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.docflow-table td.docflow-check {
+  text-align: center;
+}
+
+.docflow-table td.docflow-check input {
+  pointer-events: none;
+}
+
 .docflow-table-card {
   flex: 1 1 auto;
   min-height: 0;

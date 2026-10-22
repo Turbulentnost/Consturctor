@@ -5,12 +5,18 @@ from typing import Any
 
 from app.services import agent_kpi
 
+ILCHENKO_LOGIN_ID = "A2DCC949FEDEC70D40318ABA83C618F4"
+TISHCHENKO_USER_ID = "BD0A93075DA6962342D8FDA0B89FB13B"
 ILCHENKO_USER_IDS = frozenset(
     {
-        "A2DCC949FEDEC70D40318ABA83C618F4",
+        ILCHENKO_LOGIN_ID,
         "E11C4E11K00000000000000000000001",
     }
 )
+# Тищенко М.Н. на той же должности: те же функции, что у помощника ПСД.
+PSD_ASSISTANT_USER_IDS = ILCHENKO_USER_IDS | frozenset({TISHCHENKO_USER_ID})
+_PSD_ASSISTANT_FIO = ("ильченко",)
+_MARINA_TISHCHENKO = ("тищенко", "марина", "николаевна")
 
 DAY_SECONDS = 24 * 3600
 SIX_HOURS_SECONDS = 6 * 3600
@@ -23,10 +29,21 @@ ILCHENKO_SUMMARY = (
 )
 
 
-def is_ilchenko(*, user_id: str = "", fio: str = "") -> bool:
-    if (user_id or "").strip() in ILCHENKO_USER_IDS:
+def is_marina_tishchenko(*, user_id: str = "", fio: str = "") -> bool:
+    """Только Марина Николаевна. Другие Тищенко сюда не входят."""
+    if (user_id or "").strip() == TISHCHENKO_USER_ID:
         return True
-    return "ильченко" in (fio or "").casefold()
+    folded = (fio or "").casefold().replace("ё", "е")
+    return all(part in folded for part in _MARINA_TISHCHENKO)
+
+
+def is_ilchenko(*, user_id: str = "", fio: str = "") -> bool:
+    if (user_id or "").strip() in PSD_ASSISTANT_USER_IDS:
+        return True
+    if is_marina_tishchenko(fio=fio):
+        return True
+    folded = (fio or "").casefold().replace("ё", "е")
+    return any(mark in folded for mark in _PSD_ASSISTANT_FIO)
 
 
 def _norm_position(value: str) -> str:

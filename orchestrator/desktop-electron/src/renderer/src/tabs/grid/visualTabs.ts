@@ -8,7 +8,9 @@ import {
   DEFAULT_PROCESS_LAYOUT,
   DEFAULT_STANDARD_LAYOUT,
   DEFAULT_WIDE_MAIN_LAYOUT,
-  tabChromeGridDimensions
+  scaleLayoutItems,
+  tabChromeGridDimensions,
+  tabChromeLayoutMigration
 } from './tabLayouts'
 import type { TabChromeMeta, TabChromePersist } from './useTabChromeLayout'
 
@@ -56,6 +58,20 @@ export function visualTabById(tabId: string): VisualTab | undefined {
   return VISUAL_TABS.find((tab) => tab.id === tabId)
 }
 
+/** Названия плиток как на рабочей вкладке. Пустой список — полосы плиток нет. */
+export const VISUAL_TAB_TILES: Record<string, string[]> = {
+  tasks: ['Все задачи', 'Задачи из 1С', '1С от меня', 'Платформа', 'Turbo мне', 'Turbo РП', 'Регламентные', 'Просроченные'],
+  mail: ['Входящие', 'Исходящие', 'Высокий приоритет', 'Проектные'],
+  meetings: ['Совещания за период', 'Сегодня', 'Прошло', 'Дальше'],
+  decisions: ['Ожидают меня', 'На рассмотрении', 'Подтверждено сегодня', 'Возвращено'],
+  kpi: ['Выполнение задач', 'SLA', 'Загрузка', 'Эффективность ИИ', 'Доля автоматизации', 'Качество'],
+  processes: ['Регламентные процессы', 'Задачи из 1С', 'Проекты', 'Письма', 'Совещания'],
+  projects: ['Активные проекты', 'Открытые задачи', 'С риском', 'Выполнено (выбранный)', 'Загрузка'],
+  knowledge: ['Документов (агенты)', 'Регламенты', 'Шаблоны', 'Статьи', 'Обновлено'],
+  assignments_registry: ['Все', 'Просроченные', 'Подходит срок', 'В работе', 'Выполненные'],
+  history: ['События за период', 'Действия сотрудника', 'Действия ИИ', 'Ошибки / возвраты', 'Подтверждённые решения']
+}
+
 export function visualWidgetLabel(tab: VisualTab, id: string): string {
   return tab.labels[id] || TAB_WIDGET_LABELS[id] || id
 }
@@ -63,10 +79,10 @@ export function visualWidgetLabel(tab: VisualTab, id: string): string {
 /** Ключ хранения совпадает с рабочими вкладками, чтобы превью и вкладка делили одну раскладку. */
 export function visualStorageKey(tabId: string, userId: string): string {
   const uid = userId.trim() || 'default'
-  if (tabId === 'assignments_registry') return `orch-tab-chrome-v11:assignments_registry-v2:${uid}`
-  if (tabId === 'agent_library') return `orch-tab-chrome-v11:agent_library-v1:${uid}`
+  if (tabId === 'assignments_registry') return `orch-tab-chrome-v11:assignments_registry-v3:${uid}`
+  if (tabId === 'agent_library') return `orch-tab-chrome-v11:agent_library-v2:${uid}`
   if (tabId === 'meetings') return `orch-tab-chrome-v11:meetings-v3:${uid}`
-  if (tabId === 'kpi') return `orch-tab-chrome-v11:kpi-v4:${uid}`
+  if (tabId === 'kpi') return `orch-tab-chrome-v11:kpi-v5:${uid}`
   return `orch-tab-chrome-v11:${tabId}:${uid}`
 }
 
@@ -84,10 +100,22 @@ export function readVisualDraft(tab: VisualTab, userId: string): VisualDraft {
   const meta = defaultMeta(ids)
   const layout = tab.defaults.map((item) => ({ ...item }))
   try {
-    const raw = localStorage.getItem(visualStorageKey(tab.id, userId))
+    const uid = userId.trim() || 'default'
+    let raw = localStorage.getItem(visualStorageKey(tab.id, userId))
+    let legacyScale: { sx: number; sy: number } | null = null
+    if (!raw) {
+      const migration = tabChromeLayoutMigration(tab.id)
+      if (migration) {
+        raw = localStorage.getItem(`orch-tab-chrome-v11:${migration.legacySuffix}:${uid}`)
+        legacyScale = migration
+      }
+    }
     if (!raw) return { layout, meta }
     const parsed = JSON.parse(raw) as Partial<TabChromePersist>
-    const saved = new Map((parsed.layout || []).map((item) => [item.i, item]))
+    const storedLayout = legacyScale
+      ? scaleLayoutItems(parsed.layout || [], legacyScale.sx, legacyScale.sy)
+      : parsed.layout || []
+    const saved = new Map(storedLayout.map((item) => [item.i, item]))
     const { cols, maxRows } = tabChromeGridDimensions(tab.id)
     for (const item of layout) {
       const found = saved.get(item.i)

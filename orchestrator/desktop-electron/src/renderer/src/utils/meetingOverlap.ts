@@ -1,4 +1,4 @@
-import { meetingInstanceKey, parseMeetingTime, type MeetingEvent } from './outlookMeetings'
+import { isAllDayMeeting, meetingInstanceKey, parseMeetingTime, type MeetingEvent } from './outlookMeetings'
 
 /** Очень короткая или «нулевая» встреча всё равно должна быть видна в сетке. */
 const MIN_MINUTES = 15
@@ -103,6 +103,7 @@ export function isTopSpan(span: MeetingSpan, spans: MeetingSpan[]): boolean {
 export function overlappingMeetingKeys(meetings: MeetingEvent[]): Set<string> {
   const byDay = new Map<number, MeetingSpan[]>()
   for (const meeting of meetings) {
+    if (isAllDayMeeting(meeting)) continue
     const start = parseMeetingTime(meeting.start)
     const span = meetingSpan(meeting)
     if (!start || !span) continue

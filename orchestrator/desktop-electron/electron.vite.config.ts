@@ -43,6 +43,9 @@ export default defineConfig({
         input: { index: resolve(__dirname, 'src/renderer/index.html') }
       }
     },
-    plugins: [react()]
+    plugins: [react()],
+    optimizeDeps: {
+      needsInterop: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime']
+    }
   }
 })

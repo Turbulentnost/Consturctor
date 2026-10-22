@@ -1036,6 +1036,7 @@ def read_protocol_form(
             _register_task_view(row, person_fio) for row in control_rows if _clean(row.get("Задача"))
         ],
         "comment": _clean(card.get("Комментарий")),
+        "files": _protocol_files(ref_key),
     }
     if base_ref and session:
         _mark_control_from_docflow(form["control_tasks"], session, base_ref)
@@ -1438,6 +1439,93 @@ def check_protocol_tasks(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+PROTOCOL_FILES_ENTITY = "Catalog_ТД_ПротоколПрисоединенныеФайлы"
+
+
+def _protocol_files(ref_key: str) -> list[dict[str, str]]:
+    """Присоединённые файлы протокола — их же потом прикрепляют к задачам."""
+    if not _looks_like_guid(ref_key):
+        return []
+    try:
+        rows = _rows(
+            _odata_get(
+                {
+                    "entity": PROTOCOL_FILES_ENTITY,
+                    "filter": f"ВладелецФайла_Key eq guid'{ref_key}' and DeletionMark eq false",
+                    "select": "Ref_Key,Description,Расширение,Размер",
+                    "top": 50,
+                }
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    files: list[dict[str, str]] = []
+    for row in rows:
+        key = _clean(row.get("Ref_Key"))
+        if not _looks_like_guid(key):
+            continue
+        name = _clean(row.get("Description"))
+        extension = _clean(row.get("Расширение"))
+        files.append(
+            {
+                "id": key,
+                "name": f"{name}.{extension}" if name and extension and not name.casefold().endswith(f".{extension.casefold()}") else name or extension,
+                "extension": extension,
+                "size": _clean(row.get("Размер")),
+            }
+        )
+    return files
+
+
+def _remember_files(ref_key: str, args: dict[str, Any], *, actor_fio: str) -> str:
+    """Кладёт файлы формы в справочник присоединённых файлов протокола."""
+    from app.config import settings
+    from app.services.docflow_document_create import (
+        USERS,
+        DocumentCreateError,
+        _ODataClient,
+        _decode_files,
+        _post_file,
+        _resolve_ref,
+        files_summary,
+    )
+    from app.services.onec_tools import _odata_auth
+
+    if not _looks_like_guid(ref_key):
+        return ""
+    try:
+        files = _decode_files(args.get("files"))
+    except DocumentCreateError as exc:
+        return f"; {exc}"
+    if not files:
+        return ""
+    base = (settings.odata_base_url or "").strip()
+    auth = _odata_auth({})
+    if not base or not auth:
+        return "; файлы не прикреплены: OData ERP не настроена"
+    client = _ODataClient(base, auth, label="ERP", validate=True)
+    try:
+        author_key = _resolve_ref(client, USERS, actor_fio, "Автор") if actor_fio else ""
+    except DocumentCreateError:
+        author_key = ""
+    attached: list[str] = []
+    failed: list[dict[str, str]] = []
+    for name, content in files:
+        try:
+            _post_file(
+                client,
+                PROTOCOL_FILES_ENTITY,
+                ref_key,
+                name,
+                content,
+                author_key=author_key,
+            )
+            attached.append(name)
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"name": name, "error": str(exc)[:300]})
+    return files_summary({"attached": attached, "failed": failed})
+
+
 def handle_protocol_write(
     args: dict[str, Any],
     *,
@@ -1479,6 +1567,7 @@ def handle_protocol_write(
             "проверь по календарю"
         )
     summary += _register_note(register)
+    summary += _remember_files(ref_key, args, actor_fio=actor_fio)
     return {
         "summary": summary,
         "entity": PROTOCOL_ENTITY,
@@ -1666,6 +1755,7 @@ def _update_protocol(
     if meta["unresolved"]:
         summary += f"; не сопоставлено: {len(meta['unresolved'])}"
     summary += _register_note(register)
+    summary += _remember_files(ref_key, args, actor_fio=actor_fio)
     return {
         "task_register": register,
         "summary": summary,

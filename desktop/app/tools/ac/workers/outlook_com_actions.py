@@ -2392,6 +2392,217 @@ def update_event(input_data: dict) -> dict:
     return _run_com_read(_write, "Ошибка изменения встречи в Outlook Calendar")
 
 
+_OL_MEETING = 1
+_OL_MEETING_CANCELED = 5
+_OL_APPT_MASTER = 1
+
+
+def delete_event(input_data: dict) -> dict:
+    """Удалить встречу Outlook по EntryID. Повтор — только этот экземпляр, не всю серию.
+
+    Если это совещание организатора и send_cancellation не выключен, участникам уходит отмена.
+    """
+    entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+    if not entry_id:
+        raise OutlookComError("Нужен entry_id встречи для удаления")
+    store_id = _safe_str(input_data.get("store_id") or "").strip()
+    start = _coerce_datetime(input_data.get("start"))
+    send_cancellation = _truthy(input_data.get("send_cancellation", True))
+
+    def _write(win32com_client: Any) -> dict:
+        _log_progress("step=delete_event dispatch_outlook start")
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = _mapi_namespace(outlook)
+        try:
+            appt = (
+                namespace.GetItemFromID(entry_id, store_id)
+                if store_id
+                else namespace.GetItemFromID(entry_id)
+            )
+        except Exception as exc:
+            raise OutlookComError(f"Встреча не найдена в Outlook: {exc}") from exc
+        if appt is None:
+            raise OutlookComError("Встреча не найдена в Outlook")
+        target = _single_occurrence(appt, start)
+        subject = _safe_str(getattr(target, "Subject", "") or "")
+        try:
+            status = int(getattr(target, "MeetingStatus", 0) or 0)
+        except Exception:
+            status = 0
+        parent = getattr(target, "Parent", None)
+        slot_start = _naive_datetime(getattr(target, "Start", None)) or start
+        cancellation_sent = False
+        if send_cancellation and status == _OL_MEETING:
+            try:
+                target.MeetingStatus = _OL_MEETING_CANCELED
+                target.Send()
+                cancellation_sent = True
+                _log_progress("step=delete_event cancellation sent")
+            except Exception as exc:
+                _log_progress(f"step=delete_event cancellation failed: {exc}")
+        # Send() только рассылает отмену и оставляет встречу в календаре.
+        _remove_from_calendar(
+            namespace,
+            target,
+            entry_id,
+            store_id,
+            start,
+            occurrence=target is not appt,
+        )
+        _delete_same_slot(parent, subject, slot_start)
+        _log_progress("step=delete_event ok")
+        _ = outlook
+        return {
+            "ok": True,
+            "deleted": True,
+            "entry_id": entry_id,
+            "subject": subject,
+            "cancellation_sent": cancellation_sent,
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка удаления встречи в Outlook Calendar")
+
+
+def _single_occurrence(appt: Any, start: datetime | None) -> Any:
+    """Мастер серии не удаляем целиком: берём повтор на время этой карточки."""
+    try:
+        state = int(getattr(appt, "RecurrenceState", 0) or 0)
+    except Exception:
+        state = 0
+    if state != _OL_APPT_MASTER or start is None:
+        return appt
+    try:
+        pattern = appt.GetRecurrencePattern()
+    except Exception as exc:
+        raise OutlookComError("Outlook не открыл повтор серии, серию целиком не удаляю") from exc
+    last_error: Exception | None = None
+    probes = (start, start.replace(second=0, microsecond=0))
+    for probe in probes:
+        try:
+            return pattern.GetOccurrence(probe)
+        except Exception as exc:
+            last_error = exc
+    raise OutlookComError("Outlook не открыл этот повтор серии, серию целиком не удаляю") from last_error
+
+
+def _already_gone(exc: Exception) -> bool:
+    text = str(exc).casefold()
+    return any(
+        mark in text
+        for mark in (
+            "not found",
+            "не найден",
+            "moved or deleted",
+            "has been moved",
+            "0x8004010f",
+            "mapi_e_not_found",
+        )
+    )
+
+
+def _remove_from_calendar(
+    namespace: Any,
+    appt: Any,
+    entry_id: str,
+    store_id: str,
+    start: datetime | None,
+    *,
+    occurrence: bool,
+) -> None:
+    """Убрать встречу из календаря. После отмены объект COM часто уже недействителен."""
+    try:
+        appt.Delete()
+        _log_progress("step=delete_event removed")
+        return
+    except Exception as exc:
+        if _already_gone(exc):
+            _log_progress("step=delete_event already gone")
+            return
+        _log_progress(f"step=delete_event delete retry: {exc}")
+    try:
+        again = (
+            namespace.GetItemFromID(entry_id, store_id)
+            if store_id
+            else namespace.GetItemFromID(entry_id)
+        )
+    except Exception as exc:
+        if _already_gone(exc):
+            _log_progress("step=delete_event already gone")
+            return
+        raise OutlookComError(f"Outlook не удалил совещание: {exc}") from exc
+    if again is None:
+        return
+    if occurrence:
+        again = _single_occurrence(again, start)
+    try:
+        again.Delete()
+        _log_progress("step=delete_event removed")
+    except Exception as exc:
+        if _already_gone(exc):
+            _log_progress("step=delete_event already gone")
+            return
+        raise OutlookComError(f"Outlook не удалил совещание: {exc}") from exc
+
+
+def _naive_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    return None
+
+
+def _subject_is_same_meeting(item_subject: str, subject: str) -> bool:
+    left = item_subject.strip().casefold()
+    right = subject.strip().casefold()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    prefixes = ("отменено:", "отмена:", "canceled:", "cancelled:")
+    for prefix in prefixes:
+        if left.startswith(prefix) and left[len(prefix) :].strip() == right:
+            return True
+        if right.startswith(prefix) and right[len(prefix) :].strip() == left:
+            return True
+    return False
+
+
+def _delete_same_slot(folder: Any, subject: str, start: datetime | None) -> None:
+    """Удалить копию, которую Send() оставил в календаре под той же темой и временем.
+
+    После отмены EntryID часто меняется, а тема получает префикс «Отменено:».
+    """
+    if folder is None or start is None or not subject.strip():
+        return
+    try:
+        items = folder.Items
+        items.Sort("[Start]")
+        items.IncludeRecurrences = True
+    except Exception as exc:
+        _log_progress(f"step=delete_event slot scan skipped: {exc}")
+        return
+    window_start = start - timedelta(minutes=2)
+    window_end = start + timedelta(minutes=2)
+    restricted, restricted_ok = _restrict_calendar_items(items, window_start, window_end)
+    scan = restricted if restricted_ok else items
+    matched: list[Any] = []
+    for item in _iter_outlook_items(scan):
+        item_start = _naive_datetime(getattr(item, "Start", None))
+        if item_start is None or abs((item_start - start).total_seconds()) > 90:
+            continue
+        item_subject = _safe_str(getattr(item, "Subject", "") or "")
+        if _subject_is_same_meeting(item_subject, subject):
+            matched.append(item)
+    for item in matched:
+        try:
+            item.Delete()
+            _log_progress("step=delete_event slot removed")
+        except Exception as exc:
+            if _already_gone(exc):
+                continue
+            raise OutlookComError(f"Outlook не удалил совещание: {exc}") from exc
+
+
 def _dispatch_outlook(win32com_client: Any) -> Any:
     """Держать один Outlook.Application на сессию, не поднимать новый процесс на запрос."""
     global _cached_outlook
@@ -2647,6 +2858,9 @@ def _compute_free_slots(
     """Рабочие окна без занятых встреч Outlook — свободные ячейки календаря."""
     busy: list[tuple[datetime, datetime]] = []
     for event in events:
+        # Напоминание «на весь день» не занимает рабочие часы.
+        if _truthy(event.get("all_day")):
+            continue
         start = _coerce_datetime(event.get("start"))
         end = _coerce_datetime(event.get("end"))
         if start is None:
@@ -3169,6 +3383,10 @@ def _collect_calendar_events(
             importance = int(getattr(event, "Importance", 1) or 0)
         except Exception:
             importance = 1
+        try:
+            all_day = bool(getattr(event, "AllDayEvent", False))
+        except Exception:
+            all_day = False
         events.append(
             {
                 "entry_id": entry_id,
@@ -3177,6 +3395,7 @@ def _collect_calendar_events(
                 "end": _iso_com_datetime(event_end),
                 "location": location,
                 "importance": importance,
+                "all_day": all_day,
                 "calendar_owner": calendar_owner,
                 "own_calendar": bool(own_calendar),
                 "organizer": _read_guarded_property(event, PR_SENT_REPRESENTING_NAME_W),

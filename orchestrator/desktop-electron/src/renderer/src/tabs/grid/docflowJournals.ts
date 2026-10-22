@@ -7,6 +7,7 @@ import {
   Truck,
   Wallet,
   Mail,
+  Wrench,
   type LucideIcon
 } from 'lucide-react'
 
@@ -19,6 +20,7 @@ export type JournalId =
   | 'protocols'
   | 'payments'
   | 'forwarding'
+  | 'requests'
 
 export const DOCFLOW_JOURNALS: { id: JournalId; title: string; hint: string; icon: LucideIcon; tone: string }[] = [
   { id: 'correspondence', title: 'Корреспонденция', hint: 'Входящие и исходящие письма', icon: Mail, tone: 'blue' },
@@ -46,5 +48,12 @@ export const DOCFLOW_JOURNALS: { id: JournalId; title: string; hint: string; ico
     hint: 'Доставка, груз и ответственные',
     icon: Truck,
     tone: 'blue'
+  },
+  {
+    id: 'requests',
+    title: 'Заявки в службы',
+    hint: '1С, IT, эксплуатация, номенклатура, рынок и PR',
+    icon: Wrench,
+    tone: 'orange'
   }
 ]

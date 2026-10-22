@@ -30,6 +30,7 @@ def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import agent_run as _agent_run  # noqa: F401
     from app.models import assignment_review as _assignment_review  # noqa: F401
+    from app.models import external_order as _external_order  # noqa: F401
     from app.models import calendar_overlay as _calendar_overlay  # noqa: F401
     from app.models import finance as _finance  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
@@ -469,6 +470,50 @@ def _ensure_columns() -> None:
                     "ADD COLUMN interview_json JSON NOT NULL DEFAULT '{}'"
                 )
             )
+        _ensure_external_order_columns(conn)
+
+
+def _ensure_external_order_columns(conn) -> None:
+    columns = {
+        "external_order_documents": (
+            ("file_name", "VARCHAR(512) NOT NULL DEFAULT ''"),
+            ("stored_path", "VARCHAR(1024) NOT NULL DEFAULT ''"),
+            ("mime", "VARCHAR(128) NOT NULL DEFAULT ''"),
+            ("sha256", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("owner_role", "VARCHAR(32) NOT NULL DEFAULT ''"),
+            ("approved", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ),
+        "external_order_checks": (
+            ("due_at", "TIMESTAMPTZ NULL"),
+            ("blocking", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ),
+        "external_order_findings": (
+            ("location", "TEXT NOT NULL DEFAULT ''"),
+            ("document_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ),
+        "external_order_audit": (
+            ("before_value", "TEXT NOT NULL DEFAULT ''"),
+            ("after_value", "TEXT NOT NULL DEFAULT ''"),
+        ),
+        "external_order_decisions": (("baseline_id", "VARCHAR(64) NOT NULL DEFAULT ''"),),
+    }
+    for table, fields in columns.items():
+        rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = :table
+                """
+            ),
+            {"table": table},
+        ).fetchall()
+        existing = {str(row[0]) for row in rows}
+        if not existing:
+            continue
+        for name, ddl in fields:
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
 
 
 def get_db() -> Generator[Session, None, None]:

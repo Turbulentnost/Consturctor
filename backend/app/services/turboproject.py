@@ -1428,7 +1428,7 @@ def tasks_for_people(args: dict[str, Any] | None = None) -> dict[str, Any]:
             "source": "turboproject",
             "mode": "assignee_tasks",
         }
-    limit_projects = _int_filter(payload, "limit_projects", 8, 8)
+    limit_projects = _int_filter(payload, "limit_projects", 24, 40)
     token, creds = _login_for_args(payload)
     summary = _get_index_files(token, creds=creds)
     items = summary.get("items") or []

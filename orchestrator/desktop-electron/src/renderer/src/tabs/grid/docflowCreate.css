@@ -378,6 +378,13 @@
   white-space: nowrap;
 }
 
+.df1c-task-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
 .df1c-btn--tiny {
   height: 28px;
   padding: 0 10px;
@@ -888,4 +895,12 @@
   .df1c-row {
     grid-template-columns: 130px minmax(0, 1fr);
   }
+}
+
+.df1c-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  color: #243044;
 }

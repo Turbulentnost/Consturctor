@@ -2,21 +2,36 @@ import type { LayoutItem } from 'react-grid-layout/legacy'
 
 export const TAB_CHROME_COLS = 16
 export const TAB_CHROME_MAX_ROWS = 12
-/** KPI body widgets — same 8×6 snap as вкладка «Сегодня». */
-export const KPI_TAB_GRID_COLS = 8
-export const KPI_TAB_GRID_ROWS = 6
-/** Реестр поручений: рабочее поле 8×6 (col×row). */
-export const REGISTRY_TAB_GRID_COLS = 8
-export const REGISTRY_TAB_GRID_ROWS = 6
-/** Библиотека агентов: 8×8, низ 2×8 — «Мои агенты». */
-export const AGENT_LIBRARY_TAB_GRID_COLS = 8
-export const AGENT_LIBRARY_TAB_GRID_ROWS = 8
+/** Все вкладки, включая KPI, реестр и «Сегодня», стоят на одной сетке 16×12. */
+export const KPI_TAB_GRID_COLS = TAB_CHROME_COLS
+export const KPI_TAB_GRID_ROWS = TAB_CHROME_MAX_ROWS
+export const REGISTRY_TAB_GRID_COLS = TAB_CHROME_COLS
+export const REGISTRY_TAB_GRID_ROWS = TAB_CHROME_MAX_ROWS
+export const AGENT_LIBRARY_TAB_GRID_COLS = TAB_CHROME_COLS
+export const AGENT_LIBRARY_TAB_GRID_ROWS = TAB_CHROME_MAX_ROWS
 
-export function tabChromeGridDimensions(tabId: string): { cols: number; maxRows: number } {
-  if (tabId === 'kpi') return { cols: KPI_TAB_GRID_COLS, maxRows: KPI_TAB_GRID_ROWS }
-  if (tabId === 'assignments_registry') return { cols: REGISTRY_TAB_GRID_COLS, maxRows: REGISTRY_TAB_GRID_ROWS }
-  if (tabId === 'agent_library') return { cols: AGENT_LIBRARY_TAB_GRID_COLS, maxRows: AGENT_LIBRARY_TAB_GRID_ROWS }
+export function tabChromeGridDimensions(_tabId: string): { cols: number; maxRows: number } {
   return { cols: TAB_CHROME_COLS, maxRows: TAB_CHROME_MAX_ROWS }
+}
+
+/** Старые ключи вкладок, которые жили на сетке меньше 16×12. Координаты умножаются при чтении. */
+export function tabChromeLayoutMigration(
+  tabId: string
+): { legacySuffix: string; sx: number; sy: number } | null {
+  if (tabId === 'kpi') return { legacySuffix: 'kpi-v4', sx: 2, sy: 2 }
+  if (tabId === 'assignments_registry') return { legacySuffix: 'assignments_registry-v2', sx: 2, sy: 2 }
+  if (tabId === 'agent_library') return { legacySuffix: 'agent_library-v1', sx: 2, sy: 1.5 }
+  return null
+}
+
+export function scaleLayoutItems(items: LayoutItem[], sx: number, sy: number): LayoutItem[] {
+  return items.map((item) => ({
+    ...item,
+    x: Math.round((item.x ?? 0) * sx),
+    y: Math.round((item.y ?? 0) * sy),
+    w: Math.max(1, Math.round((item.w ?? 1) * sx)),
+    h: Math.max(1, Math.round((item.h ?? 1) * sy))
+  }))
 }
 
 export function tabUsesSnapGrid(tabId: string): boolean {
@@ -41,55 +56,55 @@ export const DEFAULT_WIDE_MAIN_LAYOUT: LayoutItem[] = [
   { i: 'main', x: 0, y: 0, w: 16, h: 12, minW: 8, minH: 4, maxW: 16, maxH: 12 }
 ]
 
-/** 8×8: каталог 8×6, добавленные 8×2. */
+/** 16×12: каталог 16×9, добавленные 16×3. */
 export const DEFAULT_AGENT_LIBRARY_LAYOUT: LayoutItem[] = [
   {
     i: 'main',
     x: 0,
     y: 0,
-    w: AGENT_LIBRARY_TAB_GRID_COLS,
-    h: 6,
-    minW: 4,
-    minH: 3,
-    maxW: AGENT_LIBRARY_TAB_GRID_COLS,
-    maxH: AGENT_LIBRARY_TAB_GRID_ROWS
+    w: 16,
+    h: 9,
+    minW: 8,
+    minH: 4,
+    maxW: 16,
+    maxH: 12
   },
   {
     i: 'botA',
     x: 0,
-    y: 6,
-    w: AGENT_LIBRARY_TAB_GRID_COLS,
-    h: 2,
-    minW: 4,
+    y: 9,
+    w: 16,
+    h: 3,
+    minW: 8,
     minH: 2,
-    maxW: AGENT_LIBRARY_TAB_GRID_COLS,
-    maxH: 4
+    maxW: 16,
+    maxH: 6
   }
 ]
 
-/** 8×6: таблица 6×6, карточка поручения 2×6. */
+/** 16×12: таблица 12×12, карточка поручения 4×12. */
 export const DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT: LayoutItem[] = [
   {
     i: 'main',
     x: 0,
     y: 0,
-    w: 6,
-    h: 6,
-    minW: 4,
-    minH: 4,
-    maxW: REGISTRY_TAB_GRID_COLS,
-    maxH: REGISTRY_TAB_GRID_ROWS
+    w: 12,
+    h: 12,
+    minW: 8,
+    minH: 6,
+    maxW: 16,
+    maxH: 12
   },
   {
     i: 'side',
-    x: 6,
+    x: 12,
     y: 0,
-    w: 2,
-    h: 6,
-    minW: 2,
-    minH: 4,
-    maxW: REGISTRY_TAB_GRID_COLS,
-    maxH: REGISTRY_TAB_GRID_ROWS
+    w: 4,
+    h: 12,
+    minW: 3,
+    minH: 6,
+    maxW: 16,
+    maxH: 12
   }
 ]
 
@@ -100,9 +115,9 @@ export const DEFAULT_PROCESS_LAYOUT: LayoutItem[] = [
   { i: 'botB', x: 8, y: 7, w: 8, h: 5, minW: 4, minH: 2, maxW: 16, maxH: 6 }
 ]
 
-/** KPI: таблица на всю ширину под двумя фиксированными рядами плиток. */
+/** KPI: таблица на всю сетку 16×12 под двумя фиксированными рядами плиток. */
 export const DEFAULT_KPI_LAYOUT: LayoutItem[] = [
-  { i: 'main', x: 0, y: 0, w: 8, h: 6, minW: 4, minH: 2, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS }
+  { i: 'main', x: 0, y: 0, w: 16, h: 12, minW: 8, minH: 4, maxW: 16, maxH: 12 }
 ]
 
 export const DEFAULT_DECISIONS_LAYOUT: LayoutItem[] = [

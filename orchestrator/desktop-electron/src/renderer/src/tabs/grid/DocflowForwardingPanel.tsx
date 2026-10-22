@@ -441,10 +441,10 @@ export function DocflowForwardingPanel({
   }
 
   useEffect(() => {
-    // Фильтр оставил мало строк и прокрутки нет — догружаем следующие страницы сами.
+    if (!hasMore || loading || error) return
     const node = scrollRef.current
-    if (!node || !hasMore || loading || error) return
-    if (node.scrollHeight <= node.clientHeight + 8) void fetchPage(nextSkip, false)
+    const short = !visible.length || !node || node.scrollHeight <= node.clientHeight + 8
+    if (short) void fetchPage(nextSkip, false)
   }, [visible.length, hasMore, loading, error, nextSkip, fetchPage])
 
   const openCard = (row: ForwardingRow): void => {
@@ -570,9 +570,15 @@ export function DocflowForwardingPanel({
             </button>
           </p>
         ) : null}
-        {!loading && !error && !visible.length ? (
+        {!error && !visible.length ? (
           <p className="docflow-status">
-            {rows.length ? 'Под выбранные фильтры поручений нет' : 'Нет поручений экспедитору за выбранный период'}
+            {hasMore || loading
+              ? rows.length
+                ? 'Ищем поручение в журнале…'
+                : 'Загружаем поручения из 1С…'
+              : rows.length
+                ? 'Под выбранные фильтры поручений нет'
+                : 'Нет поручений экспедитору за выбранный период'}
           </p>
         ) : null}
         <div className="docflow-table-scroll" ref={scrollRef} onScroll={onScroll}>

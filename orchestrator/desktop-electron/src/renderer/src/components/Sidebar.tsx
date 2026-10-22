@@ -76,6 +76,7 @@ export type UserPageKey =
   | 'subordinate_tasks'
   | 'agent_library'
   | 'in_development'
+  | 'external_order'
   | 'task_create'
   | 'platform_task_create'
 
@@ -107,6 +108,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   subordinate_tasks: 'Поставленные задачи подчиненным в 1С',
   agent_library: 'Библиотека агентов',
   in_development: 'Закупки',
+  external_order: 'Внешний заказ',
   task_create: 'Создание задачи',
   platform_task_create: 'Задача в платформе',
   kpi: 'KPI',
@@ -214,7 +216,8 @@ export function Sidebar({
   collapsedOverride,
   onCollapseToggle
 }: SidebarProps): React.JSX.Element {
-  const quickMode = !showAdminNav
+  const productAdmin = showAdminNav && adminPageKeys.includes('overview')
+  const quickMode = !showAdminNav || productAdmin
   const [collapsedStored, setCollapsedState] = useState(() =>
     quickMode ? loadSidebarCollapsed(currentUserId, true) : false
   )
@@ -233,22 +236,31 @@ export function Sidebar({
   const { newOneCTaskKeys } = useSpecV04SourcesContext()
   const navBadges: Partial<Record<PageKey, number>> = { tasks: newOneCTaskKeys.size }
   const items = useMemo((): SidebarNavItem[] => {
-    if (showAdminNav) {
-      const allowed = new Set(adminPageKeys)
-      return ADMIN_ITEMS.filter((item) => allowed.has(item.key))
-    }
     const pinnedKeys = new Set(pinnedExtensionNav.map((item) => item.key))
     const core = USER_ITEMS.filter((item) => item.key !== 'extensions' && !pinnedKeys.has(item.key))
     const settings = USER_ITEMS.find((item) => item.key === 'settings')
     const extensionsHub = USER_ITEMS.find((item) => item.key === 'extensions')
-    return [
+    const userMenu: SidebarNavItem[] = [
       ...core.filter((item) => item.key !== 'settings'),
       ...pinnedExtensionNav,
       ...(extensionsHub ? [extensionsHub] : []),
       ...(settings ? [settings] : [])
     ]
-  }, [showAdminNav, adminPageKeys, pinnedExtensionNav])
-  const effectiveNavScope: SidebarScope = navScope ?? (showAdminNav ? 'admin:default' : 'user')
+    if (showAdminNav && !productAdmin) {
+      const allowed = new Set(adminPageKeys)
+      return ADMIN_ITEMS.filter((item) => allowed.has(item.key))
+    }
+    if (!showAdminNav) return userMenu
+    const present = new Set(userMenu.map((item) => item.key))
+    const shell = new Set<PageKey>(['overview', 'launch_calendar', 'ai_agents', 'knowledge_base'])
+    const tools = ADMIN_ITEMS.filter(
+      (item) => adminPageKeys.includes(item.key) && !present.has(item.key) && !shell.has(item.key)
+    )
+    return [...userMenu, ...tools]
+  }, [showAdminNav, productAdmin, adminPageKeys, pinnedExtensionNav])
+  const effectiveNavScope: SidebarScope = productAdmin
+    ? 'user'
+    : (navScope ?? (showAdminNav ? 'admin:default' : 'user'))
   const availableNavKeys = useMemo(() => items.map((item) => item.key), [items])
   const availableNavKey = availableNavKeys.join('\u0001')
   const [navLayout, setNavLayout] = useState<SidebarLayout>(() =>
@@ -841,13 +853,13 @@ export function Sidebar({
     <aside className={['sidebar', collapsed ? 'collapsed' : '', light ? 'light' : ''].filter(Boolean).join(' ')}>
       <div className="sidebar-brand">
         <img className="sidebar-logo" src={logoUrl} alt={APP_TITLE} />
-        {!collapsed && showAdminNav ? (
+        {!collapsed && showAdminNav && !productAdmin ? (
           <div className="sidebar-brand-text">
             <div className="sidebar-title">{APP_TITLE}</div>
             <div className="sidebar-subtitle">{adminTitle}</div>
           </div>
         ) : null}
-        {!collapsed && !showAdminNav ? (
+        {!collapsed && (!showAdminNav || productAdmin) ? (
           <div className="sidebar-title">
             <strong>Оркестратор</strong>
             <span>должности</span>
@@ -1058,15 +1070,15 @@ export function Sidebar({
                   <button type="button" onClick={() => setFolderEditor(null)} aria-label="Отменить переименование">
                     <X size={15} aria-hidden />
                   </button>
-                </div>
-              ) : (
+            </div>
+          ) : (
                 <div className="nav-folder-row" data-nav-node={nodeId}>
-                  <button
+            <button
                     type="button"
                     className="nav-folder-toggle"
                     aria-expanded={collapsed ? undefined : folder.expanded}
                     title={folder.name}
-                    onClick={() => {
+              onClick={() => {
                       if (collapsed) setCollapsed(false)
                       else persistNavLayout(toggleSidebarFolder(navLayout, folder.id))
                     }}
@@ -1094,14 +1106,14 @@ export function Sidebar({
                         aria-label={`Удалить папку «${folder.name}»`}
                       >
                         <Trash2 size={13} aria-hidden />
-                      </button>
+            </button>
                       <span className="nav-folder-grip" {...dragHandleProps(nodeId, folder.name)}>
                         <GripVertical size={15} strokeWidth={2} aria-hidden />
                       </span>
                     </span>
                   ) : null}
-                </div>
-              )}
+        </div>
+      )}
               {!collapsed && folder.expanded ? (
                 <div className="nav-folder-children">
                   {folder.tabKeys.map((key) => {

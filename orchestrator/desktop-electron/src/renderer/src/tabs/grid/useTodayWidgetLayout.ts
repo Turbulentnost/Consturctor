@@ -3,12 +3,13 @@ import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
 import { scheduleUiSync } from '../../components/uiPrefsSync'
 import { resolveLayoutOverlaps } from './gridReflow'
 
-export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v6'
+export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v7'
+const TODAY_LAYOUT_LEGACY_KEY = 'orch-today-layout-v6'
 
-export const TODAY_GRID_COLS = 8
-export const TODAY_GRID_MAX_ROWS = 6
+export const TODAY_GRID_COLS = 16
+export const TODAY_GRID_MAX_ROWS = 12
 /** Saved layout may use extra rows while editing (scroll); clamp must not squash back to viewport rows. */
-export const TODAY_GRID_LAYOUT_MAX_ROWS = 12
+export const TODAY_GRID_LAYOUT_MAX_ROWS = 24
 export const TODAY_GRID_MARGIN: [number, number] = [5, 5]
 /** Floor row height when the canvas slot is tight (6×44 + margins ≈ 289px). */
 export const TODAY_MIN_ROW_HEIGHT = 44
@@ -71,20 +72,20 @@ export type TodayWidgetLayoutPersist = {
 }
 
 /**
- * 8×6 — как эталон «Сегодня»:
- * ряд 1: план (6) + задачи 1С (2);
- * ряд 2: письма Outlook (4) + результаты агентов (4);
- * ряд 3: события (4) + решения (4).
- * Проектные задачи в корзине, открываются из «Редактировать виджеты».
+ * 16×12 — общая сетка вкладок:
+ * ряд 1: план (12) + задачи 1С (4);
+ * ряд 2: письма Outlook (8) + результаты агентов (8);
+ * ряд 3: события (8) + решения (8).
+ * Проектные задачи ниже сетки, открываются из «Редактировать виджеты».
  */
 export const DEFAULT_TODAY_WIDGET_LAYOUT: LayoutItem[] = [
-  { i: 'plan', x: 0, y: 0, w: 6, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'onec', x: 6, y: 0, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'outlook', x: 0, y: 2, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'results', x: 4, y: 2, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'events', x: 0, y: 4, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'decisions', x: 4, y: 4, w: 4, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'projects', x: 0, y: 6, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 }
+  { i: 'plan', x: 0, y: 0, w: 12, h: 4, minW: 4, minH: 2, maxW: 16, maxH: 12 },
+  { i: 'onec', x: 12, y: 0, w: 4, h: 4, minW: 3, minH: 2, maxW: 16, maxH: 12 },
+  { i: 'outlook', x: 0, y: 4, w: 8, h: 4, minW: 4, minH: 2, maxW: 16, maxH: 12 },
+  { i: 'results', x: 8, y: 4, w: 8, h: 4, minW: 4, minH: 2, maxW: 16, maxH: 12 },
+  { i: 'events', x: 0, y: 8, w: 8, h: 4, minW: 4, minH: 2, maxW: 16, maxH: 12 },
+  { i: 'decisions', x: 8, y: 8, w: 8, h: 4, minW: 4, minH: 2, maxW: 16, maxH: 12 },
+  { i: 'projects', x: 0, y: 12, w: 4, h: 4, minW: 3, minH: 2, maxW: 16, maxH: 12 }
 ]
 
 export const DEFAULT_TODAY_WIDGET_VISIBLE: Partial<Record<TodayWidgetId, boolean>> = {
@@ -159,7 +160,17 @@ function sanitizeLayout(raw: Layout | LayoutItem[] | undefined): LayoutItem[] {
 
 /** One-time repair when loading corrupted saves. */
 function sanitizeLayoutFromStorage(raw: Layout | LayoutItem[] | undefined): LayoutItem[] {
-  return resolveLayoutOverlaps(mergeLayout(raw), TODAY_GRID_COLS, TODAY_GRID_MAX_ROWS)
+  return resolveLayoutOverlaps(mergeLayout(raw), TODAY_GRID_COLS, TODAY_GRID_LAYOUT_MAX_ROWS)
+}
+
+function scaleLegacyTodayLayout(items: LayoutItem[]): LayoutItem[] {
+  return items.map((item) => ({
+    ...item,
+    x: Math.round((item.x ?? 0) * 2),
+    y: Math.round((item.y ?? 0) * 2),
+    w: Math.max(1, Math.round((item.w ?? 1) * 2)),
+    h: Math.max(1, Math.round((item.h ?? 1) * 2))
+  }))
 }
 
 function sanitizeLocked(raw: Partial<Record<string, boolean>> | undefined): Partial<Record<TodayWidgetId, boolean>> {
@@ -195,11 +206,16 @@ function sanitizeColorMap(
 
 function readPersist(userId: string): TodayWidgetLayoutPersist {
   try {
-    const raw = localStorage.getItem(storageKeyForUser(userId))
+    const current = localStorage.getItem(storageKeyForUser(userId))
+    const legacy = current
+      ? null
+      : localStorage.getItem(`${TODAY_LAYOUT_LEGACY_KEY}:${userId.trim() || 'default'}`)
+    const raw = current || legacy
     if (!raw) {
       return { layout: cloneDefaultLayout(), locked: {}, visible: { ...DEFAULT_TODAY_WIDGET_VISIBLE }, color: {} }
     }
     const parsed = JSON.parse(raw) as TodayWidgetLayoutPersist
+    if (!current && Array.isArray(parsed.layout)) parsed.layout = scaleLegacyTodayLayout(parsed.layout)
     return {
       layout: sanitizeLayoutFromStorage(parsed.layout),
       locked: sanitizeLocked(parsed.locked),
@@ -273,6 +289,27 @@ export function writeTodayWidgetVisibilitySettings(
 ): void {
   const state = readPersist(userId)
   writePersist(userId, { ...state, visible: partialFromVisibilityRecord(visibility) })
+}
+
+export function readTodayWidgetLayoutSettings(userId: string): LayoutItem[] {
+  return readPersist(userId).layout.map((item) => ({ ...item }))
+}
+
+export function writeTodayWidgetLayoutSettings(userId: string, layout: LayoutItem[]): void {
+  const state = readPersist(userId)
+  writePersist(userId, { ...state, layout: sanitizeLayout(layout) })
+}
+
+export function readTodayWidgetLockSettings(userId: string): Partial<Record<TodayWidgetId, boolean>> {
+  return { ...readPersist(userId).locked }
+}
+
+export function writeTodayWidgetLockSettings(
+  userId: string,
+  locked: Partial<Record<TodayWidgetId, boolean>>
+): void {
+  const state = readPersist(userId)
+  writePersist(userId, { ...state, locked })
 }
 
 export const TODAY_WIDGET_VISIBILITY_EVENT = 'orchestrator:today-widgets-changed'

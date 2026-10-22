@@ -16,6 +16,14 @@ export type DocflowKindId =
   | 'order'
   | 'directive'
   | 'incentive'
+  | 'service_1c'
+  | 'service_it'
+  | 'service_exploitation'
+  | 'service_development'
+  | 'service_nomenclature'
+  | 'service_market'
+  | 'service_pr'
+  | 'service_aho'
 
 export type DocflowFieldType = 'text' | 'textarea' | 'date' | 'number' | 'ref' | 'enum' | 'bool'
 
@@ -31,6 +39,8 @@ export type DocflowField = {
   hint?: string
   side?: 'left' | 'right' | 'wide'
   options?: DocflowFieldOption[]
+  /** Показывать поле, только если подпись вида заявки содержит одну из этих строк. */
+  for_kinds?: string[]
 }
 
 export type DocflowTable = {
@@ -74,6 +84,7 @@ export type DocflowCard = {
   deleted: boolean
   editable: boolean
   readonlyReason: string
+  editWarning: string
   values: Record<string, string>
   keys: Record<string, string>
   tables: Record<string, DocflowTableRow[]>
@@ -327,6 +338,7 @@ export async function readDocflowDocument(
     deleted: Boolean(p.deleted),
     editable: Boolean(p.editable),
     readonlyReason: String(p.readonly_reason || ''),
+    editWarning: String(p.edit_warning || ''),
     values: textMap(p.values),
     keys: textMap(p.keys),
     tables: tableMap(p.tables),

@@ -5,6 +5,7 @@ from app.api.v1 import (
     admin_finance,
     agents,
     assignment_reviews,
+    external_orders,
     auth,
     calendar,
     health,
@@ -33,6 +34,7 @@ api_router.include_router(llm.router, prefix="/api/v1")
 api_router.include_router(regulations.router, prefix="/api/v1")
 api_router.include_router(agents.router, prefix="/api/v1")
 api_router.include_router(assignment_reviews.router, prefix="/api/v1")
+api_router.include_router(external_orders.router, prefix="/api/v1")
 api_router.include_router(regulation_creation.router, prefix="/api/v1")
 api_router.include_router(workflows.router, prefix="/api/v1")
 api_router.include_router(tools.router, prefix="/api/v1")

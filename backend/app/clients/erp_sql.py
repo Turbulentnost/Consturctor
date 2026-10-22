@@ -818,7 +818,11 @@ def _append_missing_heads(
         )
     extra: list[ErpSubordinate] = []
     for head in missing:
-        position, department = found.get(head, ("", ""))
+        # Нет открытого назначения — руководитель уже уволен или переведён.
+        hit = found.get(head)
+        if not hit:
+            continue
+        position, department = hit
         if not department:
             department = next((d.name for d in departments if d.head_fio == head), "")
         extra.append(ErpSubordinate(fio=head, position=position, department=department))

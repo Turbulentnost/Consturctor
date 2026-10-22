@@ -1,5 +1,6 @@
 @echo off
 cd /d "%~dp0"
+for /f "delims=" %%I in ('powershell -NoProfile -Command "(Resolve-Path -LiteralPath '%~dp0').ProviderPath"') do cd /d "%%I"
 powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0..\..\scripts\patch_orchestrator_roaming_local.ps1" >nul 2>&1
 set "BACKEND_URL=http://127.0.0.1:7812"
 set "VITE_BACKEND_URL=%BACKEND_URL%"

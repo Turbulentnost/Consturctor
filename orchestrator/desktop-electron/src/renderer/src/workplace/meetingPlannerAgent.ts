@@ -1,6 +1,6 @@
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
-import { ILCHENKO_USER_IDS } from '../orchestrator/kpi'
+import { isPsdAssistant } from '../orchestrator/kpi'
 import { adoptAgentFromLibrary, fetchAgentLibrary } from './agentLibraryApi'
 
 export const PLANNER_SOURCE_WORKFLOW_ID = '678eb16e-7421-48e9-a487-5c1138bb31e4'
@@ -31,8 +31,7 @@ export interface MemoRequest {
 
 /** Агент только у помощника ПСД: он создаёт совещания от служебного ящика. */
 export function isMeetingPlannerUser(user: Pick<UserProfile, 'id' | 'fio'>): boolean {
-  if (ILCHENKO_USER_IDS.has((user.id || '').trim())) return true
-  return (user.fio || '').toLowerCase().includes('ильченко')
+  return isPsdAssistant(user.id, user.fio)
 }
 
 /** Своя копия по названию → уже добавленная из библиотеки → добавить из каталога. */

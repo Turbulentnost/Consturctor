@@ -798,7 +798,14 @@ def list_subordinate_tasks(
     try:
         manager, departments, people = erp_sql.load_subordinate_org(actor_fio)
     except ErpSqlError as exc:
-        raise ErpTaskError(str(exc)) from exc
+        # SQL недоступен — отдаём ту же заглушку с причиной, а не ошибку 500.
+        result = stub_subordinate_tasks(
+            auth_args or {},
+            actor_fio=actor_fio,
+            actor_user_id=actor_id,
+        )
+        result["docflow_warning"] = f"База erp_pm не ответила: {exc}"
+        return result
     if not manager.fio:
         manager = ErpUserProfile(fio=actor_fio)
     erp_since = earliest_task_date()
@@ -989,6 +996,12 @@ def stub_subordinate_tasks(
     if token:
         fio, user_id = actor_from_jwt(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
     fio = fio or "Пользователь"
+    # Заглушка — это не пустой список, а отсутствие SQL до erp_pm. Называем причину,
+    # чтобы экран не показывал «нет связи» без объяснения.
+    warning = (
+        "Нет SQL-подключения к базе erp_pm: задачи подчинённых читаются только из неё. "
+        "На сервере backend нужен доступ к ERP_SQL_SERVER (ii1) или ODBC-драйвер SQL Server."
+    )
     return {
         "summary": f"stub: задачи подчинённых ({fio})",
         "manager": {
@@ -1004,7 +1017,7 @@ def stub_subordinate_tasks(
         "erp_since": "",
         "tree": [],
         "source": "stub",
-        "docflow_warning": "",
+        "docflow_warning": warning,
     }
 
 

@@ -22,8 +22,9 @@ function normSearch(value: string): string {
   return (value || '').trim().toLowerCase().replace(/ё/g, 'е')
 }
 
-/** В каталоге библиотеки остаются только агенты Ильченко. */
+/** В каталоге библиотеки остаются агенты Ильченко и агент внешнего заказа из ТЗ. */
 function isIlchenkoLibraryAgent(entry: AgentLibraryEntry): boolean {
+  if (/внешнего заказа/i.test(entry.title || '')) return true
   return /ильченко/i.test(`${entry.ownerFio || ''} ${entry.author || ''}`)
 }
 

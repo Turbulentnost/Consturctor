@@ -374,7 +374,9 @@ def _raw_tools() -> list[dict[str, Any]]:
             "name": "onec.docflow_document_create",
             "description": (
                 "Документ журнала «Документооборот» в 1С: incoming, outgoing, memo, assignment, payment, "
-                "forwarding, order, directive — ERP; incentive — база ДО под учёткой сеанса. "
+                "forwarding, order, directive, service_1c, service_it, service_exploitation, "
+                "service_development, service_nomenclature, service_market, service_pr, service_aho — ERP; "
+                "incentive — база ДО под учёткой сеанса. "
                 "action=schema — поля формы, списки, виды «на основании»; action=lookup + kind + catalog + query — "
                 "поиск в справочнике формы; action=create + kind + values {поле: значение} (+ tables, files, "
                 "basis {kind, ref_key}, post=true — провести) — черновик, либо проведённый документ ERP; "
@@ -394,7 +396,9 @@ def _raw_tools() -> list[dict[str, Any]]:
                     ),
                     "kind": _prop(
                         "string",
-                        "incoming | outgoing | memo | assignment | payment | forwarding | order | directive | incentive",
+                        "incoming | outgoing | memo | assignment | payment | forwarding | order | directive | "
+                        "incentive | service_1c | service_it | service_exploitation | "
+                        "service_development | service_nomenclature | service_market | service_pr | service_aho",
                     ),
                     "ref_key": _prop("string", "Ref_Key документа (read / update / attach / basis)"),
                     "target": _prop("string", "Вид создаваемого документа (action=basis)"),
@@ -942,10 +946,10 @@ def _turboproject_advanced_tools() -> list[dict[str, Any]]:
         (
             "turboproject.tasks_for_people",
             "Задачи TurboProject, назначенные переданным сотрудникам. "
-            "Берёт до 8 проектов, где эти люди есть в карточке, и оставляет их задачи.",
+            "Берёт до 40 проектов, где эти люди есть в карточке, и оставляет их задачи.",
             {
                 "fios": _prop("array", "ФИО сотрудников, чьи задачи нужны"),
-                "limit_projects": _prop("integer", "Сколько проектов открыть, не больше 8"),
+                "limit_projects": _prop("integer", "Сколько проектов открыть, не больше 40"),
             },
             ["fios"],
         ),
@@ -1302,6 +1306,30 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("agent.schedule.cancel", "Отменить ранее созданный триггер agent.schedule по trigger_id.", {
             "trigger_id": _prop("string", "id триггера из ответа agent.schedule"),
         }, ["trigger_id"]),
+        (
+            "external_order.case",
+            "Дело внешнего заказа. action=read — карточка, чек-листы, сверка и блокировки. "
+            "action=propose — записать черновики выводов и расхождений со ссылкой на документ и место в нём; "
+            "фактом они не становятся. action=draft_1c — подготовить текст записки или поручения, "
+            "без записи в 1С. Запись в 1С — только onec.docflow_document_create, человек подтверждает.",
+            {
+                "action": _prop("string", "read | propose | draft_1c", default="read"),
+                "order_id": _prop("string", "id карточки внешнего заказа"),
+                "findings": _prop(
+                    "array",
+                    "Черновики: {field, value, source_ref, location, confidence, owner_role}. "
+                    "location — абзац, страница или ячейка; без него вывод не сохранится.",
+                ),
+                "diffs": _prop(
+                    "array",
+                    "Черновики сверки: {code, left_value, right_value, note}",
+                ),
+                "kind": _prop("string", "Для draft_1c: memo или assignment"),
+                "title": _prop("string", "Заголовок черновика для 1С"),
+                "text": _prop("string", "Текст черновика для 1С"),
+            },
+            ["action", "order_id"],
+        ),
     ]
     server_tools = {
         "users.current",
@@ -1310,6 +1338,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         "notify.send",
         "chat.send_direct",
         "data.process",
+        "external_order.case",
     }
     tools: list[dict[str, Any]] = []
     for item in items:
@@ -1617,6 +1646,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         "none",
     ),
     "chat.send_direct": ("constructor", "chat_message", "notify", ["text"], ["sent"], "none"),
+    "external_order.case": (
+        "constructor",
+        "external_order",
+        ("read", "create"),
+        ["action", "order_id"],
+        ["id", "code", "blocks", "note"],
+        "none",
+    ),
     "agent.schedule": ("constructor", "trigger", "create", [], ["trigger_id"], "none"),
     "agent.schedule.cancel": ("constructor", "trigger", "delete", ["trigger_id"], [], "none"),
 }

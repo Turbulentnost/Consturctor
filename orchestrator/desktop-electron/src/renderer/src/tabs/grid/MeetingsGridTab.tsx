@@ -70,7 +70,7 @@ import { usePageSearch } from '../../layout/pageSearchContext'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { MeetingReportModal } from './MeetingReportModal'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
-import { MeetingEditorDialog } from './MeetingEditorDialog'
+import { confirmDeleteMeeting, deleteOutlookMeeting, MeetingEditorDialog } from './MeetingEditorDialog'
 import { isMeetingPlannerUser } from '../../workplace/meetingPlannerAgent'
 import './meetingPlanner.css'
 import { MEETING_PLANNER_AGENT, launchPlatformAgent } from '../../workplace/workplaceNav'
@@ -202,13 +202,15 @@ function MeetingDetailCard({
   userId,
   actorFio,
   protocol,
-  onEdit
+  onEdit,
+  onDelete
 }: {
   meeting: MeetingEvent
   userId: string
   actorFio: string
   protocol?: ProtocolMark
   onEdit?: (meeting: MeetingEvent) => void
+  onDelete?: (meeting: MeetingEvent) => void
 }): React.JSX.Element {
   const runs = useRuns()
   const { record, runEntry, rememberStart, patchRecord, forgetRecord } = useMeetingProtocol(meeting, userId)
@@ -946,6 +948,11 @@ function MeetingDetailCard({
           {onEdit && !showReview ? (
             <button type="button" className="cal-btn" onClick={() => onEdit(meeting)}>
               Изменить встречу
+            </button>
+          ) : null}
+          {onDelete && !showReview ? (
+            <button type="button" className="cal-btn is-danger" onClick={() => onDelete(meeting)} disabled={busy}>
+              Удалить совещание
             </button>
           ) : null}
           {hasProtocol ? (
@@ -1726,6 +1733,19 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
                 actorFio={fio}
                 protocol={protocolMarks.get(meetingInstanceKey(selected))}
                 onEdit={(item) => setEditor({ mode: 'edit', meeting: item })}
+                onDelete={(item) => {
+                  const mark = protocolMarks.get(meetingInstanceKey(item))
+                  if (!confirmDeleteMeeting(item, Boolean(mark))) return
+                  void deleteOutlookMeeting(item).then((message) => {
+                    if (message) {
+                      window.alert(message)
+                      return
+                    }
+                    setPicked(null)
+                    void load(true)
+                    refreshAfterPlanning()
+                  })
+                }}
               />
             </MeetingPopover>
           ) : null}

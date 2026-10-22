@@ -14,6 +14,26 @@ export const ILCHENKO_USER_IDS = new Set([
   'E11C4E11K00000000000000000000001'
 ])
 
+/** Ильченко и Тищенко М.Н.: одна должность и одни функции помощника ПСД. */
+export const PSD_ASSISTANT_USER_IDS = new Set([
+  ...ILCHENKO_USER_IDS,
+  'BD0A93075DA6962342D8FDA0B89FB13B'
+])
+
+const PSD_ASSISTANT_FIO = ['ильченко']
+
+function isMarinaTishchenko(fio: string): boolean {
+  const name = fio.toLowerCase().replace(/ё/g, 'е')
+  return name.includes('тищенко') && name.includes('марина') && name.includes('николаевна')
+}
+
+export function isPsdAssistant(userId = '', fio = ''): boolean {
+  if (PSD_ASSISTANT_USER_IDS.has((userId || '').trim())) return true
+  if (isMarinaTishchenko(fio || '')) return true
+  const name = (fio || '').toLowerCase().replace(/ё/g, 'е')
+  return PSD_ASSISTANT_FIO.some((mark) => name.includes(mark))
+}
+
 export interface KpiRow {
   number: number
   name: string
@@ -31,8 +51,7 @@ const KPI = [
 ] as const
 
 export function hasPositionKpi(userId = '', fio = ''): boolean {
-  if (ILCHENKO_USER_IDS.has((userId || '').trim())) return true
-  return (fio || '').toLowerCase().includes('ильченко')
+  return isPsdAssistant(userId, fio)
 }
 
 function lockedTile(args: {

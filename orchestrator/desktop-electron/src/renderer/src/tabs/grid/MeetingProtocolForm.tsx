@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Lock, Plus, Trash2, X } from 'lucide-react'
+import { Check, Lock, Paperclip, Plus, Trash2, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { meetingInstanceKey, type MeetingEvent } from '../../utils/outlookMeetings'
 import {
@@ -22,13 +22,14 @@ import {
   type ProtocolTaskDraft,
   type ThemeHint
 } from '../../workplace/meetingProtocolCreate'
+import { readUploadFile, type DocflowUploadFile } from '../../workplace/docflowDocumentCreate'
 import { FioCombobox } from './FioCombobox'
 import './docflowCreate.css'
 
 const ALL_EMPLOYEES_LIMIT = 20000
 const MEETING_TYPES = ['Отчетное', 'Внеплановое', 'Селекторное']
 
-type ProtocolFormTab = 'main' | 'attendees' | 'agenda' | 'tasks' | 'control' | 'decisions'
+type ProtocolFormTab = 'main' | 'attendees' | 'agenda' | 'tasks' | 'control' | 'decisions' | 'files'
 type Pending = 'save' | 'save-close' | null
 
 function GrowText({
@@ -142,6 +143,9 @@ export function MeetingProtocolForm({
   const [fioHints, setFioHints] = useState<string[]>([])
   const [themes, setThemes] = useState<ThemeHint[]>([])
   const [rooms, setRooms] = useState<MeetingRoom[]>([])
+  const [uploads, setUploads] = useState<DocflowUploadFile[]>([])
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const taskFileKey = useRef('')
   const readOnly = isEdit && card !== null && !card.editable
   const meetingRef = useRef(meeting)
   meetingRef.current = meeting
@@ -159,6 +163,7 @@ export function MeetingProtocolForm({
     setSavedNumber('')
     setSealed(false)
     setThemes([])
+    setUploads([])
     setCard(null)
     setLoadError('')
     if (!isEdit) {
@@ -257,8 +262,8 @@ export function MeetingProtocolForm({
     setBusy(true)
     try {
       const result = persistKey
-        ? await updateProtocolInOneC(draft, persistKey, meeting)
-        : await createProtocolInOneC(draft, meeting)
+        ? await updateProtocolInOneC(draft, persistKey, meeting, uploads)
+        : await createProtocolInOneC(draft, meeting, uploads)
       if (!result.ok) {
         setPending(null)
         setError(result.error || 'Не удалось записать протокол')
@@ -275,6 +280,7 @@ export function MeetingProtocolForm({
       const unresolved = merged.unresolved?.length
         ? ` Не сопоставлено с 1С: ${merged.unresolved.join('; ')}.`
         : ''
+      setUploads([])
       setNotice((merged.summary || `Записан протокол ${merged.number || ''}`).trim() + unresolved)
       setPending(null)
       onCreated(merged)
@@ -309,6 +315,32 @@ export function MeetingProtocolForm({
   }
   const updateTask = (key: string, partial: Partial<ProtocolTaskDraft>): void => {
     patch({ tasks: draft.tasks.map((item) => (item.key === key ? { ...item, ...partial } : item)) })
+  }
+  const savedFiles = card?.form.files || []
+  const addProtocolFiles = async (list: FileList | File[], taskKey = ''): Promise<void> => {
+    const problems: string[] = []
+    const accepted: DocflowUploadFile[] = []
+    for (const file of Array.from(list)) {
+      if (file.size > 20 * 1024 * 1024) problems.push(`«${file.name}» больше 20 МБ`)
+      else if (!file.size) problems.push(`«${file.name}» пустой`)
+      else {
+        try {
+          accepted.push(await readUploadFile(file))
+        } catch (err) {
+          problems.push(err instanceof Error ? err.message : `«${file.name}» не прочитан`)
+        }
+      }
+    }
+    setUploads((current) => {
+      const names = new Set(current.map((file) => file.name))
+      return [...current, ...accepted.filter((file) => !names.has(file.name))].slice(0, 10)
+    })
+    if (taskKey && accepted.length) {
+      const currentNames = draft.tasks.find((item) => item.key === taskKey)?.fileNames || []
+      updateTask(taskKey, { fileNames: [...new Set([...currentNames, ...accepted.map((file) => file.name)])] })
+    }
+    setError(problems.join('; '))
+    if (!taskKey && accepted.length) setTab('files')
   }
   const updateDecision = (key: string, partial: Partial<ProtocolDecisionDraft>): void => {
     patch({ decisions: draft.decisions.map((item) => (item.key === key ? { ...item, ...partial } : item)) })
@@ -352,6 +384,7 @@ export function MeetingProtocolForm({
               ['attendees', `Присутствующие${attendeeCount ? ` (${attendeeCount})` : ''}`],
               ['agenda', `Повестка${agendaCount ? ` (${agendaCount})` : ''}`],
               ['tasks', `Задачи${taskCount ? ` (${taskCount})` : ''}`],
+              ['files', `Файлы${savedFiles.length + uploads.length ? ` (${savedFiles.length + uploads.length})` : ''}`],
               ['control', `Контроль${controlTasks.length ? ` (${controlTasks.length})` : ''}`],
               ['decisions', `Решения${decisionCount ? ` (${decisionCount})` : ''}`]
             ] as const
@@ -654,6 +687,7 @@ export function MeetingProtocolForm({
                           <th className="df1c-col-date">Срок</th>
                           <th className="df1c-col-enum">Приоритет</th>
                           <th className="df1c-col-note">Примечание</th>
+                          <th className="df1c-col-ref">Файл</th>
                           {readOnly ? null : <th className="df1c-col-delete" />}
                         </tr>
                       </thead>
@@ -686,6 +720,28 @@ export function MeetingProtocolForm({
                             </td>
                             <td className="df1c-col-note">
                               <GrowText readOnly={readOnly} value={row.note} onChange={(note) => updateTask(row.key, { note })} />
+                            </td>
+                            <td className="df1c-col-ref">
+                              <div className="df1c-task-files">
+                                {(row.fileNames || []).map((name) => (
+                                  <span key={name} className="df1c-file-name" title={name}>
+                                    {name}
+                                  </span>
+                                ))}
+                                {readOnly ? null : (
+                                  <button
+                                    type="button"
+                                    className="df1c-btn df1c-btn--tiny"
+                                    title="Файл запишется в протокол — его можно прикрепить к этой задаче"
+                                    onClick={() => {
+                                      taskFileKey.current = row.key
+                                      fileRef.current?.click()
+                                    }}
+                                  >
+                                    <Paperclip size={13} aria-hidden /> Файл
+                                  </button>
+                                )}
+                              </div>
                             </td>
                             {readOnly ? null : (
                               <td className="df1c-col-delete">
@@ -828,7 +884,80 @@ export function MeetingProtocolForm({
                   )}
                 </section>
               ) : null}
+
+              {tab === 'files' ? (
+                <section className="df1c-files">
+                  {readOnly ? null : (
+                    <button
+                      type="button"
+                      className="df1c-drop"
+                      onClick={() => {
+                        taskFileKey.current = ''
+                        fileRef.current?.click()
+                      }}
+                    >
+                      <Paperclip size={22} aria-hidden />
+                      <strong>Добавьте файл протокола</strong>
+                      <span>До 10 файлов, каждый до 20 МБ. Файл останется на протоколе, и его можно прикрепить к задаче.</span>
+                    </button>
+                  )}
+                  {savedFiles.length ? (
+                    <>
+                      <h3 className="df1c-files-head">В 1С</h3>
+                      <ul className="df1c-file-list">
+                        {savedFiles.map((file) => (
+                          <li key={file.id}>
+                            <span className="df1c-file-name">{file.name || '—'}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                  {uploads.length ? (
+                    <>
+                      <h3 className="df1c-files-head">Новые — запишутся вместе с протоколом</h3>
+                      <ul className="df1c-file-list">
+                        {uploads.map((file) => (
+                          <li key={file.name}>
+                            <span className="df1c-file-name">{file.name}</span>
+                            {readOnly ? null : (
+                              <button
+                                type="button"
+                                className="df1c-icon-btn"
+                                title="Убрать файл"
+                                onClick={() => {
+                                  setUploads((current) => current.filter((item) => item.name !== file.name))
+                                  patch({
+                                    tasks: draft.tasks.map((task) => ({
+                                      ...task,
+                                      fileNames: (task.fileNames || []).filter((name) => name !== file.name)
+                                    }))
+                                  })
+                                }}
+                              >
+                                <Trash2 size={14} aria-hidden />
+                              </button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                  {!savedFiles.length && !uploads.length ? <p className="df1c-muted">Файлов пока нет.</p> : null}
+                </section>
+              ) : null}
             </fieldset>
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(event) => {
+                if (event.target.files?.length) void addProtocolFiles(event.target.files, taskFileKey.current)
+                taskFileKey.current = ''
+                event.target.value = ''
+              }}
+            />
           </div>
         )}
       </div>

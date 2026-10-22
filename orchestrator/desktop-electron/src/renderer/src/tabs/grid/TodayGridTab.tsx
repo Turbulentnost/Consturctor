@@ -29,7 +29,7 @@ import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecS
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import { erpActorFio } from '../../workplace/userContext'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
-import { isCanceledMeeting, parseMeetingTime } from '../../utils/outlookMeetings'
+import { allDayCovers, isAllDayMeeting, isCanceledMeeting, parseMeetingTime } from '../../utils/outlookMeetings'
 import { isIlchenkoAccount } from '../../workplace/boardReportReadiness'
 import { isSelfCalendarMeeting, ownMeetingsHidden, useShowOwnMeetings } from '../../workplace/ownMeetings'
 import { sameDay } from '../../utils/calendar'
@@ -528,14 +528,21 @@ export function TodayGridTab({
       .filter((meeting) => {
         if (isCanceledMeeting(meeting)) return false
         if (hideOwnToday && isSelfCalendarMeeting(meeting, erpFio)) return false
+        if (isAllDayMeeting(meeting)) return allDayCovers(meeting, periodDay)
         const start = parseMeetingTime(meeting.start)
         return start ? sameDay(start, periodDay) : false
       })
-      .sort((left, right) => left.start.localeCompare(right.start))
+      .sort((left, right) => {
+        const leftAll = isAllDayMeeting(left) ? 0 : 1
+        const rightAll = isAllDayMeeting(right) ? 0 : 1
+        if (leftAll !== rightAll) return leftAll - rightAll
+        return left.start.localeCompare(right.start)
+      })
       .map((meeting) => {
         const start = parseMeetingTime(meeting.start)
-        const time =
-          start != null
+        const time = isAllDayMeeting(meeting)
+          ? 'весь день'
+          : start != null
             ? `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`
             : meeting.start
         const attendees = (meeting.attendees || '').split(/[,;]/).map((part) => part.trim()).filter(Boolean)

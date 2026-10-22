@@ -4,6 +4,7 @@ from app.tools.ac.workers.base import BaseWorker
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
 from app.tools.ac.workers.outlook_com_actions import (
     create_event,
+    delete_event,
     display_mail_message,
     fetch_mail_message,
     mark_mail_read,
@@ -158,6 +159,16 @@ class OutlookComWorker(BaseWorker):
             if not self.allow_direct_com_calls:
                 return self._direct_com_disabled_result(task)
             output_data = update_event(task.input_data)
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=True,
+                output_data=output_data,
+            )
+
+        if task.tool_name == "outlook.delete_event":
+            if not self.allow_direct_com_calls:
+                return self._direct_com_disabled_result(task)
+            output_data = delete_event(task.input_data)
             return WorkerResult(
                 task_id=task.task_id,
                 ok=True,

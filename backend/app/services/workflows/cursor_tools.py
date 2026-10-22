@@ -646,6 +646,22 @@ def invoke_creation_tool(
         return _invoke_chat_send_direct(args)
     if tool in {"data.process", "data.process_dataset"}:
         return _invoke_data_process(args)
+    if tool == "external_order.case":
+        from app.services.external_orders import invoke_tool as invoke_external_order
+
+        ctx = current_tool_context()
+        fio = ""
+        if ctx is not None:
+            from app.db.session import SessionLocal
+            from app.models.user import AppUser
+
+            db = SessionLocal()
+            try:
+                user = db.get(AppUser, ctx[1])
+                fio = user.fio if user is not None else ""
+            finally:
+                db.close()
+        return invoke_external_order(args, fio=fio)
     if tool in {"audio.transcribe", "transcribe"}:
         return _invoke_audio_transcribe(args)
     if tool == "audio.speakers":

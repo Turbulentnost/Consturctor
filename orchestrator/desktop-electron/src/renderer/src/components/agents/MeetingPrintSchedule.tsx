@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { meetingInstanceKey, parseMeetingTime, type MeetingEvent } from '../../utils/outlookMeetings'
 import { DAYS_SHORT, isoWeekday, MONTHS_GEN } from '../../utils/calendar'
-import { calendarPalette } from '../../workplace/meetingCalendars'
+import { calendarPalette, type CalendarPalette } from '../../workplace/meetingCalendars'
 
 /** Окно как на дневной сетке: 7:00–20:00. */
 const FROM_HOUR = 7
@@ -137,7 +137,7 @@ export function PrintSchedule({
   onSelect,
   onRange
 }: {
-  days: { day: Date; items: MeetingEvent[] }[]
+  days: { day: Date; items: MeetingEvent[]; allDay?: MeetingEvent[] }[]
   tool: PrintTool
   sheet: PrintSheet
   selectedKey: string | null
@@ -151,6 +151,7 @@ export function PrintSchedule({
   const dragRef = useRef<Drag | null>(null)
   const single = days.length === 1
   const day = single ? days[0].day : null
+  const showAllDay = days.some((group) => (group.allDay?.length ?? 0) > 0)
 
   useLayoutEffect(() => {
     const node = boardRef.current
@@ -194,6 +195,33 @@ export function PrintSchedule({
             </div>
           </div>
         ))}
+        {showAllDay ? (
+          <>
+            <div className="mcp-allday-label">Весь день</div>
+            {days.map((group) => (
+              <div key={`allday-${group.day.toISOString()}`} className="mcp-allday-col">
+                {(group.allDay ?? []).map((meeting) => {
+                  const colors = calendarPalette(colorIndex(meetingInstanceKey(meeting)))
+                  return (
+                    <div
+                      key={meetingInstanceKey(meeting)}
+                      className="mcp-allday-chip"
+                      title={meeting.subject}
+                      style={{
+                        background: colors.fill,
+                        borderColor: colors.border,
+                        color: colors.text,
+                        borderLeftColor: colors.dot
+                      }}
+                    >
+                      {meeting.subject.trim() || 'Без темы'}
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
+          </>
+        ) : null}
       </div>
       <div className="mcal-day-v-body mcp-body">
         <div className="mcal-gutter" aria-hidden>
@@ -213,7 +241,6 @@ export function PrintSchedule({
             day={group.day}
             items={group.items}
             columns={columnTracks(group.items, colWidth)}
-            sheet={sheet}
             tool={tool}
             drag={drag}
             selectedKey={selectedKey}
@@ -258,7 +285,6 @@ function DayColumn({
   day,
   items,
   columns,
-  sheet,
   tool,
   drag,
   selectedKey,
@@ -270,7 +296,6 @@ function DayColumn({
   day: Date
   items: MeetingEvent[]
   columns: string
-  sheet: PrintSheet
   tool: PrintTool
   drag: Drag | null
   selectedKey: string | null
@@ -283,7 +308,7 @@ function DayColumn({
   const [colHeight, setColHeight] = useState(0)
   const { blocks } = blocksOf(items)
   const pxPerMin = colHeight > 0 ? colHeight / SPAN_MINUTES : 0
-  const bands = layoutBands(blocks, pxPerMin, sheet === 'portrait')
+  const bands = layoutBands(blocks, pxPerMin)
   const range = drag && drag.day.getTime() === day.getTime() ? ordered(drag) : null
 
   useLayoutEffect(() => {
@@ -431,28 +456,20 @@ function nextStart(sorted: PrintBlock[], index: number): number {
 }
 
 /**
- * Одиночный короткий слот по-прежнему растягивает текст в свободное место.
- * Несколько коротких подряд делят место до следующего совещания поровну,
- * чтобы у каждого хватило высоты хотя бы на строку. На следующее не заходят.
+ * Короткий слот может чуть подрасти, чтобы влезла строка, но не дальше следующего
+ * совещания. Свободные промежутки и хвост дня остаются пустыми.
  */
-function layoutBands(blocks: PrintBlock[], pxPerMin: number, fillSheet: boolean): Map<string, Band> {
+function layoutBands(blocks: PrintBlock[], pxPerMin: number): Map<string, Band> {
   const sorted = [...blocks].sort((left, right) => left.from - right.from || right.to - left.to)
   const readableMin = pxPerMin > 0 ? clamp(44 / pxPerMin, 20, 75) : 44
   const maxBandMin = pxPerMin > 0 ? clamp(72 / pxPerMin, readableMin, 100) : 72
   const bands = new Map<string, Band>()
-  if (fillSheet) {
-    sorted.forEach((block, itemIndex) => {
-      const limit = itemIndex + 1 < sorted.length ? nextStart(sorted, itemIndex) : TO_HOUR * 60
-      bands.set(block.key, soloBand(block, limit, true))
-    })
-    return bands
-  }
   let index = 0
   while (index < sorted.length) {
     const block = sorted[index]
     const duration = block.to - block.from
     if (duration >= readableMin) {
-      bands.set(block.key, soloBand(block, nextStart(sorted, index), false))
+      bands.set(block.key, soloBand(block, nextStart(sorted, index)))
       index += 1
       continue
     }
@@ -467,7 +484,7 @@ function layoutBands(blocks: PrintBlock[], pxPerMin: number, fillSheet: boolean)
       index += 1
     }
     if (cluster.length === 1) {
-      bands.set(block.key, soloBand(block, nextStart(sorted, index - 1), false))
+      bands.set(block.key, soloBand(block, nextStart(sorted, index - 1)))
       continue
     }
     const first = cluster[0]
@@ -488,9 +505,9 @@ function layoutBands(blocks: PrintBlock[], pxPerMin: number, fillSheet: boolean)
   return bands
 }
 
-function soloBand(block: PrintBlock, limit: number, fillSheet: boolean): Band {
+function soloBand(block: PrintBlock, limit: number): Band {
   const duration = block.to - block.from
-  const grow = fillSheet ? Math.max(duration, limit - block.from) : duration < 90 ? 90 : duration
+  const grow = duration < 45 ? 45 : duration
   const textTo = Math.min(Math.max(block.to, block.from + grow), limit, TO_HOUR * 60)
   return { from: block.from, to: Math.max(block.to, textTo), textTo }
 }
@@ -528,6 +545,11 @@ function colorIndex(key: string): number {
   let hash = 0
   for (const char of key) hash = (hash * 33 + char.charCodeAt(0)) >>> 0
   return hash
+}
+
+/** Тот же цвет, что у блока этого совещания на листе. */
+export function meetingPrintPalette(key: string): CalendarPalette {
+  return calendarPalette(colorIndex(key))
 }
 
 export function printStamp(day: Date, minutes: number): string {

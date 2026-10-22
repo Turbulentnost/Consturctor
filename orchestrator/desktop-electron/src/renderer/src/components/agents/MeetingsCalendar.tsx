@@ -11,6 +11,8 @@ import {
   type CalendarView
 } from '../../utils/calendar'
 import {
+  allDayCovers,
+  isAllDayMeeting,
   isOutlookFolderOwner,
   meetingInstanceKey,
   parseMeetingTime,
@@ -20,6 +22,7 @@ import {
   PRINT_DAY_END,
   PRINT_DAY_START,
   PRINT_SNAP,
+  meetingPrintPalette,
   PrintSchedule,
   printStamp,
   type PrintSheet,
@@ -122,6 +125,8 @@ type LaneBlock = {
 type DayLane = {
   day: Date
   blocks: LaneBlock[]
+  /** Напоминания Outlook «на весь день» — отдельная строка над сеткой часов. */
+  allDay: MeetingEvent[]
 }
 
 type ConflictPick = { day: Date; segment: ConflictSegment }
@@ -166,8 +171,12 @@ function buildLanes(
   groupOf?: (meeting: MeetingEvent) => string
 ): DayLane[] {
   return days.map((day) => {
+    const allDay = meetings
+      .filter((meeting) => isAllDayMeeting(meeting) && allDayCovers(meeting, day))
+      .sort((left, right) => left.subject.localeCompare(right.subject, 'ru'))
     const spans: MeetingSpan[] = []
     for (const meeting of meetings) {
+      if (isAllDayMeeting(meeting)) continue
       const start = parseMeetingTime(meeting.start)
       if (!start || !sameDay(start, day)) continue
       const span = meetingSpan(meeting, priorityOf?.(meeting) ?? 0)
@@ -195,6 +204,7 @@ function buildLanes(
 
     return {
       day,
+      allDay,
       blocks: spans.map((span) => ({
         span,
         ...(marks.get(meetingInstanceKey(span.meeting)) || { parts: [], top: true })
@@ -305,7 +315,7 @@ export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Elemen
     setConflict(null)
   }, [view, anchor, meetings])
 
-  const total = lanes.reduce((sum, lane) => sum + lane.blocks.length, 0)
+  const total = lanes.reduce((sum, lane) => sum + lane.blocks.length + lane.allDay.length, 0)
 
   // Печать совпадает с открытым режимом: день, семь дней недели или выбранный месяц.
   const printDays = useMemo(() => {
@@ -313,11 +323,14 @@ export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Elemen
       view === 'month' ? lanes.filter((lane) => lane.day.getMonth() === anchor.getMonth()) : lanes
     const groups = visible.map((lane) => ({
       day: lane.day,
-      items: lane.blocks.map((block) => block.span.meeting)
+      items: lane.blocks.map((block) => block.span.meeting),
+      allDay: lane.allDay
     }))
     // Месяц — только дни с совещаниями, иначе колонок слишком много.
     // День и неделя оставляют пустые дни: в них можно вставить совещание.
-    return view === 'month' ? groups.filter((group) => group.items.length > 0) : groups
+    return view === 'month'
+      ? groups.filter((group) => group.items.length > 0 || group.allDay.length > 0)
+      : groups
   }, [lanes, view, anchor])
 
   return (
@@ -466,22 +479,40 @@ function WeekGrid({
     return y
   }
 
+  const showAllDay = lanes.some((lane) => lane.allDay.length > 0)
   return (
     <div className="cal-scroll mcal-scroll" ref={scrollRef}>
-      <div className="mcal-head" ref={headRef}>
-        <div className="mcal-gutter-cell" />
-        {lanes.map((lane) => {
-          const today = sameDay(lane.day, now)
-          return (
-            <div key={lane.day.toISOString()} className={`mcal-head-day${today ? ' is-today' : ''}`}>
-              <span className="mcal-head-dow">{DAYS_SHORT[isoWeekday(lane.day)]}</span>
-              <span className="mcal-head-date">{lane.day.getDate()}</span>
-              {lane.blocks.length ? (
-                <span className="mcal-head-count">{lane.blocks.length}</span>
-              ) : null}
-            </div>
-          )
-        })}
+      <div className="mcal-sticky-head" ref={headRef}>
+        <div className="mcal-head">
+          <div className="mcal-gutter-cell" />
+          {lanes.map((lane) => {
+            const today = sameDay(lane.day, now)
+            const count = lane.blocks.length + lane.allDay.length
+            return (
+              <div key={lane.day.toISOString()} className={`mcal-head-day${today ? ' is-today' : ''}`}>
+                <span className="mcal-head-dow">{DAYS_SHORT[isoWeekday(lane.day)]}</span>
+                <span className="mcal-head-date">{lane.day.getDate()}</span>
+                {count ? <span className="mcal-head-count">{count}</span> : null}
+              </div>
+            )
+          })}
+        </div>
+        {showAllDay ? (
+          <div className="mcal-allday">
+            <div className="mcal-gutter-cell mcal-allday-gutter">Весь день</div>
+            {lanes.map((lane) => (
+              <div key={lane.day.toISOString()} className="mcal-allday-col">
+                <WeekAllDay
+                  meetings={lane.allDay}
+                  selectedId={selectedId}
+                  eventPalette={eventPalette}
+                  protocolMarks={protocolMarks}
+                  onClick={onSelect}
+                />
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="mcal-body" style={{ height }}>
           <div className="mcal-gutter">
@@ -570,9 +601,13 @@ function DayStrip({
       const blocks = row.key
         ? lane.blocks.filter((block) => rowKeyOf?.(block.span.meeting) === row.key)
         : lane.blocks
-      return { row, subLanes: packSubLanes(blocks) }
+      const allDay = row.key
+        ? lane.allDay.filter((meeting) => rowKeyOf?.(meeting) === row.key)
+        : lane.allDay
+      return { row, subLanes: packSubLanes(blocks), allDay }
     }
   )
+  const showAllDay = board.some((column) => column.allDay.length > 0)
 
   return (
     <div className="cal-scroll mcal-scroll" ref={scrollRef}>
@@ -592,6 +627,25 @@ function DayStrip({
               <span className="mcal-day-label">{row.label}</span>
             </div>
           ))}
+          {showAllDay ? (
+            <>
+              <div className="mcal-allday-gutter">Весь день</div>
+              {board.map(({ row, allDay }) => (
+                <div key={`allday-${row.key || 'self'}`} className="mcal-day-allday-col">
+                  {allDay.map((meeting) => (
+                    <AllDayChip
+                      key={meetingInstanceKey(meeting)}
+                      meeting={meeting}
+                      selected={selectedId === meetingInstanceKey(meeting)}
+                      palette={eventPalette?.(meeting) || row.palette}
+                      protocolNumber={protocolMarks?.get(meetingInstanceKey(meeting))?.number}
+                      onClick={onSelect}
+                    />
+                  ))}
+                </div>
+              ))}
+            </>
+          ) : null}
         </div>
         <div className="mcal-day-v-body" style={{ height }}>
           <div className="mcal-gutter">
@@ -691,7 +745,11 @@ function MonthGrid({
             const inMonth = lane.day.getMonth() === anchor.getMonth()
             const today = sameDay(lane.day, now)
             const top = lane.blocks.filter((block) => block.span.priority === topPriority)
-            const palette = top[0] ? eventPalette?.(top[0].span.meeting) : undefined
+            const palette = top[0]
+              ? eventPalette?.(top[0].span.meeting)
+              : lane.allDay[0]
+                ? eventPalette?.(lane.allDay[0])
+                : undefined
             return (
               <div
                 key={lane.day.toISOString()}
@@ -717,12 +775,112 @@ function MonthGrid({
                     {top.length}
                   </span>
                 ) : null}
+                {lane.allDay.slice(0, 2).map((meeting) => (
+                  <span
+                    key={meetingInstanceKey(meeting)}
+                    className="mcal-month-allday"
+                    title={`${meeting.subject} · весь день`}
+                  >
+                    {meeting.subject}
+                  </span>
+                ))}
+                {lane.allDay.length > 2 ? (
+                  <span className="mcal-month-allday">+{lane.allDay.length - 2}</span>
+                ) : null}
               </div>
             )
           })}
         </div>
       </div>
     </div>
+  )
+}
+
+function WeekAllDay({
+  meetings,
+  selectedId,
+  eventPalette,
+  protocolMarks,
+  onClick
+}: {
+  meetings: MeetingEvent[]
+  selectedId?: string
+  eventPalette?: (meeting: MeetingEvent) => CalendarPalette
+  protocolMarks?: ReadonlyMap<string, { number: string }>
+  onClick: (meeting: MeetingEvent, anchor: DOMRect) => void
+}): React.JSX.Element | null {
+  const first = meetings[0]
+  if (!first) return null
+  if (meetings.length === 1) {
+    return (
+      <AllDayChip
+        meeting={first}
+        selected={selectedId === meetingInstanceKey(first)}
+        palette={eventPalette?.(first)}
+        protocolNumber={protocolMarks?.get(meetingInstanceKey(first))?.number}
+        onClick={onClick}
+      />
+    )
+  }
+  const colors = eventPalette?.(first) || calendarPalette(0)
+  const extra = meetings.length - 1
+  const title = meetings.map((meeting) => meeting.subject).filter(Boolean).join('\n')
+  return (
+    <button
+      type="button"
+      className="mcal-allday-chip"
+      style={{
+        background: colors.fill,
+        borderColor: colors.border,
+        color: colors.text,
+        borderLeftColor: colors.dot
+      }}
+      title={title}
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick(first, event.currentTarget.getBoundingClientRect())
+      }}
+    >
+      <span className="mcal-allday-chip-text">Встреча и ещё {extra}</span>
+    </button>
+  )
+}
+
+function AllDayChip({
+  meeting,
+  selected,
+  palette,
+  protocolNumber,
+  onClick
+}: {
+  meeting: MeetingEvent
+  selected?: boolean
+  palette?: CalendarPalette
+  protocolNumber?: string
+  onClick: (meeting: MeetingEvent, anchor: DOMRect) => void
+}): React.JSX.Element {
+  const colors = palette || calendarPalette(0)
+  return (
+    <button
+      type="button"
+      data-meeting-key={meetingInstanceKey(meeting)}
+      className={['mcal-allday-chip', selected ? 'is-selected' : '', protocolNumber != null ? 'has-protocol' : '']
+        .filter(Boolean)
+        .join(' ')}
+      style={{
+        background: colors.fill,
+        borderColor: colors.border,
+        color: colors.text,
+        borderLeftColor: colors.dot
+      }}
+      title={protocolNumber ? `${meeting.subject}\nПротокол ${protocolNumber}` : meeting.subject}
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick(meeting, event.currentTarget.getBoundingClientRect())
+      }}
+    >
+      <span className="mcal-allday-chip-text">{meeting.subject}</span>
+    </button>
   )
 }
 
@@ -793,7 +951,6 @@ function MeetingBlock({
         height,
         background: colors.fill,
         borderColor: colors.border,
-        borderLeftColor: colors.dot,
         color: colors.text,
         // Приоритет календаря решает, чей блок останется сверху в наложении.
         zIndex: 4 + Math.max(0, 40 - span.priority * 2)
@@ -810,6 +967,7 @@ function MeetingBlock({
         onClick(span.meeting, event.currentTarget.getBoundingClientRect())
       }}
     >
+      <span className="mcal-event-duration" style={{ background: colors.dot }} aria-hidden />
       {/* maxHeight — гарантия от обрезанной пополам строки, line-clamp добавляет многоточие. */}
       <span className="mcal-event-title" style={{ maxHeight: lines * TITLE_LINE_H }}>
         <span className="mcal-event-title-text" style={{ WebkitLineClamp: lines }}>
@@ -925,11 +1083,13 @@ function MeetingDetails({
 }): React.JSX.Element {
   const start = parseMeetingTime(meeting.start)
   const end = parseMeetingTime(meeting.end)
-  const when = start
-    ? `${start.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}, ${timeLabel(start)}${
-        end ? `–${timeLabel(end)}` : ''
-      }`
-    : ''
+  const when = !start
+    ? ''
+    : isAllDayMeeting(meeting)
+      ? `${start.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}, весь день`
+      : `${start.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}, ${timeLabel(start)}${
+          end ? `–${timeLabel(end)}` : ''
+        }`
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-card is-resizable meeting-details" onClick={(event) => event.stopPropagation()}>
@@ -951,7 +1111,90 @@ function MeetingDetails({
   )
 }
 
-type PrintDay = { day: Date; items: MeetingEvent[] }
+type PrintDay = { day: Date; items: MeetingEvent[]; allDay: MeetingEvent[] }
+
+function FitField({
+  label,
+  value,
+  placeholder,
+  room,
+  inputRef,
+  onChange
+}: {
+  label: string
+  value: string
+  placeholder?: string
+  room?: 'people'
+  inputRef?: React.RefObject<HTMLTextAreaElement | null>
+  onChange: (value: string) => void
+}): React.JSX.Element {
+  const ownRef = useRef<HTMLTextAreaElement>(null)
+  const ref = inputRef ?? ownRef
+  useLayoutEffect(() => {
+    const node = ref.current
+    const panel = node?.closest<HTMLElement>('.mcal-print-edit')
+    if (!node || !panel) return
+    node.style.height = '0px'
+    const share = room === 'people' ? 0.5 : 0.22
+    const cap = Math.max(64, Math.floor(panel.clientHeight * share))
+    node.style.height = `${Math.min(node.scrollHeight, cap)}px`
+  }, [value, room, ref])
+  return (
+    <label className={room === 'people' ? 'is-people' : undefined}>
+      {label}
+      <textarea
+        ref={ref}
+        rows={1}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  )
+}
+
+function PrintMeetingFields({
+  meeting,
+  subjectRef,
+  onChange
+}: {
+  meeting: MeetingEvent
+  subjectRef: React.RefObject<HTMLTextAreaElement | null>
+  onChange: (partial: Partial<MeetingEvent>) => void
+}): React.JSX.Element {
+  const colors = meetingPrintPalette(meetingInstanceKey(meeting))
+  return (
+    <aside
+      className="mcal-print-edit"
+      style={{
+        background: colors.fill,
+        borderColor: colors.border,
+        color: colors.text,
+        ['--edit-border' as string]: colors.border
+      }}
+    >
+      <p className="mcal-print-edit-title">Совещание</p>
+      <FitField
+        label="Тема"
+        value={meeting.subject}
+        inputRef={subjectRef}
+        onChange={(subject) => onChange({ subject })}
+      />
+      <FitField
+        label="Место"
+        value={meeting.location}
+        onChange={(location) => onChange({ location })}
+      />
+      <FitField
+        label="Участники"
+        value={meeting.attendees}
+        placeholder="через запятую"
+        room="people"
+        onChange={(attendees) => onChange({ attendees })}
+      />
+    </aside>
+  )
+}
 
 /** Срезает выделенный интервал: начало сдвигается, хвост укорачивается, дырка делит блок надвое. */
 function cutPrintMeeting(item: MeetingEvent, day: Date, from: number, to: number): MeetingEvent[] {
@@ -985,7 +1228,7 @@ function MeetingPrintDialog({
   const [tool, setTool] = useState<PrintTool>(null)
   const [sheet, setSheet] = useState<PrintSheet>('landscape')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const subjectRef = useRef<HTMLInputElement>(null)
+  const subjectRef = useRef<HTMLTextAreaElement>(null)
   const focusSubject = useRef(false)
 
   const selected = selectedKey
@@ -1073,38 +1316,15 @@ function MeetingPrintDialog({
             <Trash2 size={14} aria-hidden /> Удалить
           </button>
         </div>
-        {selected && tool !== 'delete' ? (
-          <div className="mcal-print-edit">
-            <label>
-              Тема
-              <input
-                ref={subjectRef}
-                value={selected.subject}
-                onChange={(event) => patchSelected({ subject: event.target.value })}
-              />
-            </label>
-            <label>
-              Место
-              <input value={selected.location} onChange={(event) => patchSelected({ location: event.target.value })} />
-            </label>
-            <label>
-              Участники
-              <input
-                value={selected.attendees}
-                placeholder="через запятую"
-                onChange={(event) => patchSelected({ attendees: event.target.value })}
-              />
-            </label>
-          </div>
-        ) : (
-          <p className="mcal-print-hint">
-            {tool === 'insert'
-              ? 'Зажмите на графике и протяните интервал — совещание встанет на это время'
-              : tool === 'delete'
-                ? 'Протяните по совещанию: задетая часть уйдёт, целиком — совещание исчезнет'
+        <p className="mcal-print-hint">
+          {tool === 'insert'
+            ? 'Зажмите на графике и протяните интервал — совещание встанет на это время'
+            : tool === 'delete'
+              ? 'Протяните по совещанию: задетая часть уйдёт, целиком — совещание исчезнет'
+              : selected
+                ? 'Поля выбранного совещания — справа от листа'
                 : 'Выберите совещание, чтобы указать тему, место и участников'}
-          </p>
-        )}
+        </p>
         <div className="mcal-print-orient" role="group" aria-label="Расположение листа A4">
           <button
             type="button"
@@ -1130,21 +1350,44 @@ function MeetingPrintDialog({
           </button>
         </div>
       </div>
-      <div className="mcal-print-preview">
-        <div className="mcp-fit">
-          {draft.length ? (
-            <PrintSchedule
-              days={draft}
-              tool={tool}
-              sheet={sheet}
-              selectedKey={selectedKey}
-              onSelect={setSelectedKey}
-              onRange={applyRange}
-            />
-          ) : (
-            <p className="mcal-print-empty">В этом периоде нет совещаний</p>
-          )}
+      <div className={`mcal-print-stage${selected && tool !== 'delete' ? ' has-edit' : ''}`}>
+        <div
+          className="mcal-print-preview"
+          onClick={(event) => {
+            const target = event.target as HTMLElement
+            if (target.closest('.mcp-row, .mcp-allday-chip, button, input, textarea')) return
+            setSelectedKey(null)
+          }}
+        >
+          <div
+            className="mcp-fit"
+            style={
+              selected && tool !== 'delete'
+                ? { background: meetingPrintPalette(meetingInstanceKey(selected)).fill }
+                : undefined
+            }
+          >
+            {draft.length ? (
+              <PrintSchedule
+                days={draft}
+                tool={tool}
+                sheet={sheet}
+                selectedKey={selectedKey}
+                onSelect={setSelectedKey}
+                onRange={applyRange}
+              />
+            ) : (
+              <p className="mcal-print-empty">В этом периоде нет совещаний</p>
+            )}
+          </div>
         </div>
+        {selected && tool !== 'delete' ? (
+          <PrintMeetingFields
+            meeting={selected}
+            subjectRef={subjectRef}
+            onChange={patchSelected}
+          />
+        ) : null}
       </div>
     </div>,
     document.body

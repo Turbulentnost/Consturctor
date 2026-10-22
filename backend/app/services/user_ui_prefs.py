@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.user_ui_prefs import UserUiPrefs
+from app.services.orchestrator.ilchenko import ILCHENKO_LOGIN_ID, TISHCHENKO_USER_ID
 
 SECTIONS = ("sidebar", "today")
 MAX_BYTES = 200_000
+_VIEW_MARK = "psd_view_source"
 
 
 class UserUiPrefsError(Exception):
@@ -42,7 +44,31 @@ def merge_sections(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
     return merged
 
 
+def _clone_ilchenko_view(db: Session, user_id: str) -> None:
+    """Один раз скопировать меню и плитки «Сегодня» Ильченко Тищенко М.Н."""
+    if user_id != TISHCHENKO_USER_ID:
+        return
+    row = db.get(UserUiPrefs, user_id)
+    body = row.body if row is not None and isinstance(row.body, dict) else {}
+    if body.get(_VIEW_MARK) == ILCHENKO_LOGIN_ID:
+        return
+    source = db.get(UserUiPrefs, ILCHENKO_LOGIN_ID)
+    source_body = source.body if source is not None and isinstance(source.body, dict) else {}
+    if not any(isinstance(source_body.get(key), dict) for key in SECTIONS):
+        return
+    cloned = dict(source_body)
+    cloned[_VIEW_MARK] = ILCHENKO_LOGIN_ID
+    if row is None:
+        row = UserUiPrefs(user_id=user_id, body=cloned)
+        db.add(row)
+    else:
+        row.body = cloned
+        flag_modified(row, "body")
+    db.commit()
+
+
 def read_prefs(db: Session, *, user_id: str) -> dict[str, Any]:
+    _clone_ilchenko_view(db, user_id)
     row = db.get(UserUiPrefs, user_id)
     body = row.body if row is not None and isinstance(row.body, dict) else {}
     return {key: body[key] for key in SECTIONS if isinstance(body.get(key), dict)}

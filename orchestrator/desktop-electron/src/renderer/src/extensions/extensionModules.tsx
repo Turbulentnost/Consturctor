@@ -3,6 +3,7 @@ import type { UserProfile } from '../api/types'
 import type { PageKey } from '../components/Sidebar'
 import type { PassportTab } from '../pages/AgentPassportPage'
 import { InDevelopmentTab } from './inDevelopment/InDevelopmentTab'
+import { ExternalOrderTab } from './externalOrder/ExternalOrderTab'
 import { AssignmentsRegistryGridTab } from '../tabs/grid/AssignmentsRegistryGridTab'
 import { AgentLibraryGridTab } from '../tabs/grid/AgentLibraryGridTab'
 import { ProjectsGridTab } from '../tabs/grid/ProjectsGridTab'
@@ -117,6 +118,18 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
     positionGroups: ['all'],
     canAccess: () => true,
     renderTab: () => <InDevelopmentTab />
+  },
+  {
+    id: 'external_order',
+    pageKey: 'external_order',
+    navLabel: 'Внешний заказ',
+    title: 'Внешний заказ',
+    subtitle: 'Карточка, сверка, чек-листы и решение Комитета',
+    description:
+      'Электронное дело внешнего несерийного заказа: стадии, сверка ТКП и договора, чек-листы и протокол Комитета. Агент готовит черновики, решение остаётся за человеком.',
+    positionGroups: ['all'],
+    canAccess: () => true,
+    renderTab: ({ user, onRunAgent }) => <ExternalOrderTab user={user} onRunAgent={onRunAgent} />
   }
 ]
 

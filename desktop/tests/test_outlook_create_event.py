@@ -631,6 +631,43 @@ def test_calendar_iterates_without_count() -> None:
     assert items.count_calls == 0
 
 
+def test_calendar_reads_all_day_flag() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _collect_calendar_events
+
+    start = datetime(2026, 10, 21, 0, 0, 0)
+    event = _Event(start, "Встречи на весь день")
+    event.End = datetime(2026, 10, 22, 0, 0, 0)
+    event.AllDayEvent = True
+    events, scanned = _collect_calendar_events(
+        _CountHangItems([event]),
+        datetime(2026, 10, 21),
+        datetime(2026, 10, 22),
+        10,
+        20,
+    )
+    assert scanned == 1
+    assert events[0]["all_day"] is True
+    assert events[0]["subject"] == "Встречи на весь день"
+
+
+def test_free_slots_ignore_all_day_reminders() -> None:
+    start = datetime(2026, 10, 21, 0, 0, 0)
+    end = datetime(2026, 10, 22, 0, 0, 0)
+    slots = _compute_free_slots(
+        [
+            {
+                "start": "2026-10-21 00:00:00",
+                "end": "2026-10-22 00:00:00",
+                "all_day": True,
+            }
+        ],
+        start,
+        end,
+    )
+    assert slots[0]["start"].startswith("2026-10-21T09:00")
+    assert slots[-1]["end"].startswith("2026-10-21T18:00")
+
+
 def test_calendar_body_is_opt_in() -> None:
     from app.tools.ac.workers.outlook_com_actions import _collect_calendar_events
 

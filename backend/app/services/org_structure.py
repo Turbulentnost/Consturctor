@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.clients.erp_sql import ErpOrgDept, ErpStaffAssignment
 from app.models.org import OrgMember, OrgPerson, OrgPosition, OrgUnit
+from app.services.profile_overrides import lookup_profile_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,26 @@ def build_members(
                 position_id="",
                 person_id="",
             )
+    _apply_position_overrides(members)
     return list(members.values())
+
+
+def _apply_position_overrides(members: dict[str, MemberRow]) -> None:
+    """Должность из локального оверрайда не затирается следующей выгрузкой из 1С."""
+    known_ids = {row.position: row.position_id for row in members.values() if row.position_id}
+    for key, row in list(members.items()):
+        _, forced = lookup_profile_overrides(row.fio)
+        if not forced or forced == row.position:
+            continue
+        members[key] = MemberRow(
+            fio=row.fio,
+            user_id=row.user_id,
+            position=forced,
+            unit_id=row.unit_id,
+            department=row.department,
+            position_id=known_ids.get(forced) or row.position_id,
+            person_id=row.person_id,
+        )
 
 
 def sync_org_structure(db: Session) -> dict[str, int | str]:

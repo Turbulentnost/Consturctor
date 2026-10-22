@@ -53,6 +53,9 @@ from app.services.docflow_forwarding import (
     handle_docflow_forwarding as _docflow_forwarding,
     handle_docflow_forwarding_card as _docflow_forwarding_card,
 )
+from app.services.docflow_service_requests import (
+    handle_docflow_service_requests as _docflow_service_requests,
+)
 from app.services.docflow_incentive_orders import (
     handle_docflow_incentive_order_card as _docflow_incentive_order_card,
     handle_docflow_incentive_orders as _docflow_incentive_orders,
@@ -225,6 +228,7 @@ ONEC_TOOLS = frozenset(
         "onec.docflow_payment_request_card",
         "onec.docflow_forwarding",
         "onec.docflow_forwarding_card",
+        "onec.docflow_service_requests",
         "onec.docflow_incentive_orders",
         "onec.docflow_incentive_order_card",
         "onec.meeting_protocols",
@@ -1711,6 +1715,7 @@ STUB_HANDLERS = {
     "onec.docflow_payment_request_card": _docflow_payment_request_card,
     "onec.docflow_forwarding": _docflow_forwarding,
     "onec.docflow_forwarding_card": _docflow_forwarding_card,
+    "onec.docflow_service_requests": _docflow_service_requests,
     "onec.docflow_incentive_orders": _docflow_incentive_orders,
     "onec.docflow_incentive_order_card": _docflow_incentive_order_card,
     "onec.meeting_protocols": _stub_meeting_protocols,
@@ -1751,6 +1756,7 @@ REAL_HANDLERS = {
     "onec.docflow_payment_request_card": _docflow_payment_request_card,
     "onec.docflow_forwarding": _docflow_forwarding,
     "onec.docflow_forwarding_card": _docflow_forwarding_card,
+    "onec.docflow_service_requests": _docflow_service_requests,
     "onec.docflow_incentive_orders": _docflow_incentive_orders,
     "onec.docflow_incentive_order_card": _docflow_incentive_order_card,
     "onec.meeting_protocols": _list_meeting_protocols,

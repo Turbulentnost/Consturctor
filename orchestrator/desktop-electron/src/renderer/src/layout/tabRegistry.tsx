@@ -26,6 +26,7 @@ export type WorkplaceTabKey =
   | 'subordinate_tasks'
   | 'agent_library'
   | 'in_development'
+  | 'external_order'
   | 'task_create'
   | 'platform_task_create'
 
@@ -125,5 +126,9 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   in_development: {
     title: 'Закупки',
     subtitle: 'Закупки'
+  },
+  external_order: {
+    title: 'Внешний заказ',
+    subtitle: 'Карточка, сверка, чек-листы и решение Комитета'
   }
 }

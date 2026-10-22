@@ -92,7 +92,7 @@ _TEXT_PROPS = frozenset(
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _EMPTY_DATE = "0001-01-01"
 # Журнал депремирования ведёт помощник председателя — ей нужен весь список, остальные видят своё.
-_FULL_ACCESS = ("ильченко", "ilchenko")
+_FULL_ACCESS = ("ильченко", "ilchenko", "тищенко марина николаевна")
 _OWN_FIELDS = ("task_author", "author", "responsible")
 _PERIOD_LIMIT = 2000
 _DEFAULT_PAGE = 40
@@ -238,7 +238,9 @@ def _sees_everything(args: dict[str, Any]) -> bool:
     who = " ".join(
         str(args.get(field) or "") for field in ("fio", "session_login", "erp_login", "username")
     ).casefold()
-    return any(mark in who for mark in _FULL_ACCESS)
+    if any(mark in who for mark in _FULL_ACCESS):
+        return True
+    return all(part in who for part in ("тищенко", "марина", "николаевна"))
 
 
 def _viewer_names(args: dict[str, Any]) -> set[str]:

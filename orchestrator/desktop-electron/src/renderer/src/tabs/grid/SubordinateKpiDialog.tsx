@@ -10,6 +10,8 @@ export type KpiTask = {
   dueAt: string
   createdAt: string
   completedAt: string
+  source?: string
+  origin?: string
 }
 
 export type KpiSlice = {
@@ -23,7 +25,9 @@ type Preset = 'week' | 'month' | 'quarter' | 'custom'
 type HoverKind = 'posted' | 'done' | 'due' | ''
 type ChartMode = 'all' | 'groups' | 'people'
 type KpiView = 'summary' | 'load'
+type LoadView = 'tasks' | 'origin'
 type LoadKind = 'open' | 'overdue' | 'ontime' | 'late'
+type SourceKind = 'erp' | 'docflow' | 'turboproject' | 'other'
 
 type PlotTask = {
   key: string
@@ -37,6 +41,8 @@ type PlotTask = {
   open: boolean
   overdue: boolean
   late: boolean
+  source: string
+  origin: string
 }
 
 type LineSeries = {
@@ -169,7 +175,9 @@ function plotTask(row: KpiTask, index: number, today: string): PlotTask {
     knownEnd: Boolean(completed),
     open: !row.done,
     overdue: isOverdue(row),
-    late: row.late
+    late: row.late,
+    source: row.source || '',
+    origin: row.origin || ''
   }
 }
 
@@ -206,6 +214,25 @@ const LOAD_KIND: { key: LoadKind; label: string; color: string }[] = [
 function loadKind(task: PlotTask): LoadKind {
   if (!task.done) return task.overdue ? 'overdue' : 'open'
   return taskWasLate(task) ? 'late' : 'ontime'
+}
+
+const SOURCE_KIND: { key: SourceKind; label: string; color: string }[] = [
+  { key: 'erp', label: '1С ERP', color: '#f5c518' },
+  { key: 'docflow', label: 'Документооборот', color: '#e3a008' },
+  { key: 'turboproject', label: 'Турбопроект', color: '#6A9AD4' },
+  { key: 'other', label: 'Другое', color: '#607d8b' }
+]
+
+function sourceKind(source: string): SourceKind {
+  if (source === 'turboproject') return 'turboproject'
+  if (source.startsWith('документооборот')) return 'docflow'
+  if (source === 'erp_pm') return 'erp'
+  return 'other'
+}
+
+function sourceCaption(task: PlotTask): string {
+  const label = SOURCE_KIND.find((item) => item.key === sourceKind(task.source))?.label || 'Другое'
+  return task.origin ? `${label} · ${task.origin}` : label
 }
 
 function hitsPeriod(row: KpiTask, from: string, to: string): boolean {
@@ -475,6 +502,7 @@ function OccupancyBoard({
 }): React.JSX.Element {
   const boardRef = useRef<HTMLDivElement>(null)
   const [focusFio, setFocusFio] = useState('')
+  const [loadView, setLoadView] = useState<LoadView>('tasks')
   const [tip, setTip] = useState<{ x: number; y: number; lines: string[]; left: boolean } | null>(null)
   const rows = useMemo(() => {
     return staff
@@ -483,7 +511,10 @@ function OccupancyBoard({
         const parts = Object.fromEntries(
           LOAD_KIND.map((item) => [item.key, mine.filter((task) => loadKind(task) === item.key)])
         ) as Record<LoadKind, PlotTask[]>
-        return { fio, parts, total: mine.length }
+        const sources = Object.fromEntries(
+          SOURCE_KIND.map((item) => [item.key, mine.filter((task) => sourceKind(task.source) === item.key)])
+        ) as Record<SourceKind, PlotTask[]>
+        return { fio, parts, sources, total: mine.length }
       })
       .sort((left, right) => right.total - left.total || left.fio.localeCompare(right.fio, 'ru'))
   }, [staff, tasks])
@@ -524,37 +555,59 @@ function OccupancyBoard({
   )
   const maxDays = Math.max(1, ...shownTasks.map((task) => daysLeft(task) ?? 0))
 
-  function ratioLines(row: (typeof rows)[number]): string[] {
+  function originLines(row: (typeof rows)[number]): string[] {
     const lines = [`${surname(row.fio)} · ${row.total}`]
-    for (const item of LOAD_KIND) {
-      const count = row.parts[item.key].length
-      if (count === 0) continue
-      lines.push(`${item.label} — ${count} (${percentOf(count, row.total)})`)
+    for (const item of SOURCE_KIND) {
+      const list = row.sources[item.key]
+      if (list.length === 0) continue
+      lines.push(`${item.label} — ${list.length} (${percentOf(list.length, row.total)})`)
+      for (const task of list.slice(0, 4)) lines.push(cut(task.title, 48))
+      if (list.length > 4) lines.push(`ещё ${list.length - 4}`)
     }
     return lines
   }
 
   return (
     <div className="sub-kpi-load" ref={boardRef} onMouseLeave={() => setTip(null)}>
-      <section className="sub-kpi-load-pane" aria-label="Количество задач">
-        <h3>Задачи по сотрудникам</h3>
+      <div className="sub-tasks-presets sub-kpi-chart-modes" role="group" aria-label="Вид гистограммы">
+        {(
+          [
+            ['tasks', 'Задачи'],
+            ['origin', 'Источник']
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={`sub-tasks-preset${loadView === id ? ' is-active' : ''}`}
+            aria-pressed={loadView === id}
+            onClick={() => setLoadView(id)}
+          >
+            {label}
+          </button>
+        ))}
         {focusFio ? (
           <button type="button" className="sub-kpi-load-clear" onClick={() => setFocusFio('')}>
             Все сотрудники
           </button>
         ) : null}
+      </div>
+      {loadView === 'origin' ? (
+      <section className="sub-kpi-load-pane" aria-label="Источник задач">
+        <h3>Источник</h3>
         {shown.map((row) => (
           <div
             key={row.fio}
             className="sub-kpi-bar-row"
-            onMouseEnter={(event) => showTip(event, ratioLines(row))}
+            onMouseEnter={(event) => showTip(event, originLines(row))}
           >
             <button type="button" title={row.fio} onClick={() => toggleFocus(row.fio)}>
               {surname(row.fio)}
             </button>
             <div className="sub-kpi-bar-track" aria-label={`${row.fio}: ${row.total}`}>
-              {LOAD_KIND.map((item) => {
-                const count = row.parts[item.key].length
+              {row.total === 0 ? <span className="sub-kpi-load-scale">задач нет</span> : null}
+              {SOURCE_KIND.map((item) => {
+                const count = row.sources[item.key].length
                 if (count === 0) return null
                 return (
                   <button
@@ -563,6 +616,11 @@ function OccupancyBoard({
                     style={{ width: `${(count / max) * 100}%`, background: item.color }}
                     aria-label={`${surname(row.fio)}, ${item.label}: ${count}`}
                     onClick={() => toggleFocus(row.fio)}
+                    onMouseEnter={(event) => {
+                      event.stopPropagation()
+                      const titles = row.sources[item.key].slice(0, 6).map((task) => cut(task.title, 48))
+                      showTip(event, [`${surname(row.fio)} · ${item.label} · ${count}`, ...titles])
+                    }}
                   />
                 )
               })}
@@ -572,7 +630,7 @@ function OccupancyBoard({
         ))}
         <p className="sub-kpi-load-scale">0 — {max}</p>
         <div className="sub-kpi-load-legend">
-          {LOAD_KIND.map((item) => (
+          {SOURCE_KIND.map((item) => (
             <span key={item.key}>
               <i style={{ background: item.color }} />
               {item.label}
@@ -580,51 +638,62 @@ function OccupancyBoard({
           ))}
         </div>
       </section>
-      <section className="sub-kpi-load-pane" aria-label="Срок задач">
-        <h3>Осталось до срока</h3>
+      ) : (
+      <section className="sub-kpi-load-pane" aria-label="Задачи">
         {shownTasks.length === 0 ? (
           <p className="sub-kpi-note">В этом периоде задач нет.</p>
         ) : (
           <>
-            <p className="sub-kpi-load-scale">Длина полосы — сколько дней ещё осталось до срока.</p>
+            <div className="sub-kpi-load-legend">
+              {SOURCE_KIND.filter((item) => item.key !== 'other').map((item) => (
+                <span key={item.key}>
+                  <i style={{ background: item.color }} />
+                  {item.label}
+                </span>
+              ))}
+            </div>
             {shown
               .filter((row) => row.total > 0)
               .map((row) => (
-                <div key={row.fio}>
-                  {focusFio ? null : (
-                    <button type="button" className="sub-kpi-gantt-person" onClick={() => toggleFocus(row.fio)}>
-                      {surname(row.fio)}
-                    </button>
-                  )}
+                <div key={row.fio} className="sub-kpi-person-block" data-fio={row.fio}>
+                  <button type="button" className="sub-kpi-gantt-person" onClick={() => toggleFocus(row.fio)}>
+                    {surname(row.fio)} · {row.total}
+                  </button>
                   {row.parts.open
                     .concat(row.parts.overdue, row.parts.ontime, row.parts.late)
                     .map((task) => {
                       const left = daysLeft(task)
-                      const kind = LOAD_KIND.find((item) => item.key === loadKind(task))
+                      const kindKey = loadKind(task)
+                      const source = SOURCE_KIND.find((item) => item.key === sourceKind(task.source))
                       const dueText = task.due ? `${formatDay(task.due)}.${parseStamp(task.due)?.getFullYear() ?? ''}` : 'нет срока'
-                      const width = left && left > 0 ? (left / maxDays) * 100 : 0
+                      const width =
+                        left == null
+                          ? 0
+                          : !task.open
+                            ? 36
+                            : task.overdue || left === 0
+                              ? 100
+                              : Math.max(14, (left / maxDays) * 100)
+                      const label =
+                        left == null ? 'нет срока' : !task.open ? (kindKey === 'late' ? 'с опозданием' : 'исполнено') : task.overdue ? 'просрочена' : left === 0 ? 'сегодня' : `${left} дн.`
                       return (
                         <div key={task.key} className="sub-kpi-gantt-row">
-                          <span title={task.title}>{cut(task.title, 22)}</span>
+                          <span title={task.title}>{task.title}</span>
                           <div className="sub-kpi-gantt-lane">
-                            {left == null ? (
-                              <span className="sub-kpi-load-scale">нет срока</span>
-                            ) : width > 0 ? (
+                            {width > 0 ? (
                               <div className="sub-kpi-gantt-window" style={{ width: `${width}%` }}>
                                 <button
                                   type="button"
-                                  style={{ width: '100%', background: kind?.color || DUE }}
+                                  style={{ width: '100%', background: source?.color || '#607d8b' }}
                                   aria-label={task.title}
                                   onMouseEnter={(event) =>
-                                    showTip(event, [task.title, `срок ${dueText}`, `осталось ${left} дн.`])
+                                    showTip(event, [task.title, sourceCaption(task), `срок ${dueText}`, label])
                                   }
                                 />
                               </div>
                             ) : null}
                           </div>
-                          <strong title={left == null ? 'Нет срока' : task.open ? `Осталось ${left} дн. до ${dueText}` : 'Исполнено'}>
-                            {left == null ? '—' : `${left} дн.`}
-                          </strong>
+                          <strong title={label}>{label}</strong>
                         </div>
                       )
                     })}
@@ -633,6 +702,7 @@ function OccupancyBoard({
           </>
         )}
       </section>
+      )}
       {tip ? (
         <div className={`sub-kpi-load-tip${tip.left ? ' is-left' : ''}`} style={{ left: tip.x, top: tip.y }}>
           {tip.lines.map((line, index) => (
@@ -676,6 +746,7 @@ export function SubordinateKpiDialog({
   const [from, setFrom] = useState(dateFrom)
   const [to, setTo] = useState(dateTo)
   const [checked, setChecked] = useState<Set<string>>(() => new Set(people))
+  const knownPeople = useRef(new Set(people))
   const [hoverDay, setHoverDay] = useState('')
   const [hoverKind, setHoverKind] = useState<HoverKind>('')
   const [hoverKey, setHoverKey] = useState('')
@@ -699,6 +770,17 @@ export function SubordinateKpiDialog({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  useEffect(() => {
+    const added = people.filter((fio) => fio && !knownPeople.current.has(fio))
+    for (const fio of people) knownPeople.current.add(fio)
+    if (!added.length) return
+    setChecked((current) => {
+      const next = new Set(current)
+      for (const fio of added) next.add(fio)
+      return next
+    })
+  }, [people])
 
   const staff = useMemo(() => {
     const names = [...people]
@@ -916,7 +998,7 @@ export function SubordinateKpiDialog({
             <h2 id="sub-kpi-title">Сводка KPI</h2>
             <p>
               {view === 'load'
-                ? 'Слева — соотношение задач. Справа — сколько дней осталось до срока. Нажатие на сотрудника оставляет только его.'
+                ? '«Задачи» — имя каждой задачи и сколько дней до срока. «Источник» — доля 1С, документооборота и Турбопроекта. Нажатие на сотрудника оставляет только его.'
                 : 'Наведите на точку — задачи появятся над графиком. Нажмите — линия от постановки до выполнения.'}
             </p>
           </div>

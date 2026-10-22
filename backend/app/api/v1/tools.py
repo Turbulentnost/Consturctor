@@ -84,6 +84,7 @@ _SERVER_TOOLS = (
     | _AUDIO_TOOLS
     | _KPI_TOOLS
     | MEETING_PLANNER_TOOLS
+    | frozenset({"external_order.case"})
 )
 
 
@@ -147,6 +148,10 @@ def _dispatch_server_tool(
             result = _invoke_audio_tool(tool_name, arguments, auth)
         elif tool_name in _KPI_TOOLS:
             result = _invoke_kpi_tool(arguments, auth)
+        elif tool_name == "external_order.case":
+            from app.services.external_orders import invoke_tool as invoke_external_order
+
+            result = invoke_external_order(arguments, fio=auth.fio or "")
         elif tool_name in MEETING_PLANNER_TOOLS:
             if tool_name in MEETING_PLANNER_WRITE_TOOLS:
                 _require_meeting_planner_writer(auth)
@@ -240,6 +245,7 @@ _READ_COALESCE = _SLOW_TOOLS | _BULK_TOOLS | frozenset(
         "onec.docflow_payment_request_card",
         "onec.docflow_forwarding",
         "onec.docflow_forwarding_card",
+        "onec.docflow_service_requests",
         "onec.docflow_incentive_orders",
         "onec.docflow_incentive_order_card",
         "onec.erp_assignments",

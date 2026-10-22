@@ -1,10 +1,9 @@
 """Карточка уже записанного документа: открыть, изменить, «Создать на основании», файлы.
 
-Изменяется только черновик (не проведён). Запись проведённого документа через
-OData перепроводит его, а у документов ТД проведение запускает согласование —
-такие правки делают в самой 1С. Меняются только реквизиты, которые человек
-тронул в форме (changed): неизменённые ссылки не пересобираются по
-наименованию и не могут «уехать» на однофамильца.
+Проведённые заявки в службы можно править: запись снимает проведение и проводит
+снова, маршрут согласования может запуститься заново. Остальные проведённые
+документы по-прежнему меняются только в 1С. Меняются только реквизиты, которые
+человек тронул в форме (changed).
 """
 
 from __future__ import annotations
@@ -32,6 +31,7 @@ from app.services.docflow_document_create import (
     _table_rows,
     _web_url,
     attach_files,
+    REQUEST_KINDS,
     edit_fields,
     ensure_probe,
     files_summary,
@@ -51,6 +51,14 @@ THEME_KEY = {
     "payment": "НазначениеПлатежа",
     "forwarding": "ОсобыеУсловияПеревозкиОписание",
     "incentive": "Заголовок",
+    "service_1c": "Содержание",
+    "service_it": "Содержание",
+    "service_exploitation": "Содержание",
+    "service_development": "Содержание",
+    "service_nomenclature": "Содержание",
+    "service_market": "Наименование",
+    "service_pr": "Содержание",
+    "service_aho": "Содержание",
 }
 TEXT_KEY = {
     "incoming": "Содержание",
@@ -59,6 +67,14 @@ TEXT_KEY = {
     "order": "Содержание",
     "directive": "Содержание",
     "incentive": "Содержание",
+    "service_1c": "Содержание",
+    "service_it": "Содержание",
+    "service_exploitation": "Содержание",
+    "service_development": "Содержание",
+    "service_nomenclature": "Содержание",
+    "service_market": "ОписаниеПроблемы",
+    "service_pr": "Содержание",
+    "service_aho": "Содержание",
 }
 
 
@@ -227,10 +243,11 @@ def read_document(kind_id: str, ref_key: str, args: dict[str, Any]) -> dict[str,
         tables[table["key"]] = out_rows
     posted = bool(row.get("Posted"))
     deleted = bool(row.get("DeletionMark"))
+    repost = posted and kind_id in REQUEST_KINDS and not deleted
     reason = ""
     if deleted:
         reason = "Документ помечен на удаление — изменить его можно только в 1С."
-    elif posted:
+    elif posted and not repost:
         reason = (
             "Документ проведён. Изменение проведённого документа перепроводит его и может запустить "
             "согласование, поэтому правки — в 1С. Здесь доступны «Создать на основании», копия и файлы."
@@ -245,8 +262,13 @@ def read_document(kind_id: str, ref_key: str, args: dict[str, Any]) -> dict[str,
         "status": str(row.get("Статус") or row.get("ТД_Статус") or ""),
         "posted": posted,
         "deleted": deleted,
-        "editable": not posted and not deleted,
+        "editable": repost or (not posted and not deleted),
         "readonly_reason": reason,
+        "edit_warning": (
+            "Документ проведён. Запись снимет проведение и проведёт его снова — согласование может запуститься заново."
+            if repost
+            else ""
+        ),
         "values": values,
         "keys": keys,
         "tables": tables,
@@ -330,7 +352,8 @@ def update_document(kind_id: str, ref_key: str, args: dict[str, Any], *, actor_f
     kind, client, row = _load(kind_id, ref_key, args)
     if row.get("DeletionMark"):
         raise DocumentCreateError("Документ помечен на удаление — изменить его можно только в 1С")
-    if row.get("Posted"):
+    repost = bool(row.get("Posted")) and kind_id in REQUEST_KINDS
+    if row.get("Posted") and not repost:
         raise DocumentCreateError(
             "Документ проведён — изменить его можно только в 1С: запись перепроведёт документ "
             "и может запустить согласование"
@@ -341,9 +364,13 @@ def update_document(kind_id: str, ref_key: str, args: dict[str, Any], *, actor_f
     body: dict[str, Any] = {}
     properties: list[tuple[str, Any, dict[str, Any]]] = []
     missing: list[str] = []
+    lookup = dict(values)
+    if not lookup.get("ВидЗаявки_Key"):
+        lookup["ВидЗаявки_Key"] = row.get("ВидЗаявки_Key")
+    kind_label = dc._selected_kind_label(kind, lookup)
     for field in edit_fields(kind):
         key = field["key"]
-        if key not in changed:
+        if key not in changed or not dc._field_applies(field, kind_label):
             continue
         raw = values.get(key)
         if not str(raw if raw is not None else "").strip():
@@ -373,15 +400,28 @@ def update_document(kind_id: str, ref_key: str, args: dict[str, Any], *, actor_f
         body["ФормаОплатыНаличная"] = body["ФормаОплатыЗаявки"] == "Наличная"
     if not body and not files:
         return {"ok": True, "summary": "Изменений нет", "ref_key": ref_key, "number": row.get("Number", "")}
-    if body:
-        client.patch(kind["entity"], ref_key, body)
+    if body and repost:
+        client.patch(kind["entity"], ref_key, {"Posted": False})
+    try:
+        if body:
+            client.patch(kind["entity"], ref_key, body)
+    finally:
+        if body and repost:
+            client.patch(kind["entity"], ref_key, {"Posted": True})
     file_result: dict[str, Any] = {"attached": [], "failed": []}
     if files:
         file_result = attach_files(kind_id, ref_key, files, args=args, actor_fio=actor_fio)
     label = _doc_label(kind_id, row)
     return {
         "ok": True,
-        "summary": (f"{label}: изменения записаны в 1С" if body else label) + files_summary(file_result),
+        "summary": (
+            f"{label}: изменения записаны, документ перепроведён в 1С"
+            if body and repost
+            else f"{label}: изменения записаны в 1С"
+            if body
+            else label
+        )
+        + files_summary(file_result),
         "kind": kind_id,
         "ref_key": ref_key,
         "number": _number_of(row),

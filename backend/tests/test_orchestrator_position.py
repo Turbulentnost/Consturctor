@@ -102,6 +102,11 @@ def _sample_tiles() -> list[dict]:
 def test_is_ilchenko_by_id_and_fio() -> None:
     assert is_ilchenko(user_id="A2DCC949FEDEC70D40318ABA83C618F4")
     assert is_ilchenko(fio="Ильченко Екатерина Александровна")
+    assert is_ilchenko(user_id="BD0A93075DA6962342D8FDA0B89FB13B")
+    assert is_ilchenko(fio="Тищенко Марина Николаевна")
+    assert is_ilchenko(fio="Марина Николаевна Тищенко")
+    assert not is_ilchenko(fio="Тищенко Марина Сергеевна")
+    assert not is_ilchenko(fio="Тищенко М.Н.")
     assert not is_ilchenko(user_id="other", fio="Анна Де Армас")
     assert has_locked_position_kpi(position=PSD_POSITION_NAME)
     assert has_locked_position_kpi(position="  помощник  председателя совета директоров  ")
@@ -334,6 +339,63 @@ def test_dispatch_due_orchestrator_pushes_desktop_command(monkeypatch) -> None:
     assert pushed[0][0] == user_id
     assert pushed[0][1]["type"] == "calc_orchestrator"
     assert pushed[0][1]["tile_ids"] == ["tile_1"]
+
+
+def test_tishchenko_gets_ilchenko_tiles_instead_of_her_old_board() -> None:
+    from app.models.orchestrator import UserOrchestrator
+
+    db = _session()
+    user_id = "BD0A93075DA6962342D8FDA0B89FB13B"
+    now = datetime.now(timezone.utc)
+    _user(db, user_id, "Тищенко Марина Николаевна", position="Руководитель инспекционной группы")
+    db.add(
+        UserOrchestrator(
+            id="orch-tish",
+            user_id=user_id,
+            status="ready",
+            locked=False,
+            tiles=_sample_tiles(),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db.commit()
+    out = get_orchestrator(
+        db,
+        user_id=user_id,
+        fio="Тищенко Марина Николаевна",
+        position="Руководитель инспекционной группы",
+    )
+    assert [tile.id for tile in out.tiles] == [
+        "package_on_time",
+        "protocol_on_time",
+        "instructions",
+        "quality",
+    ]
+    assert out.locked is True
+
+    other_id = "other-tishchenko"
+    _user(db, other_id, "Тищенко Марина Сергеевна", position="Сборщик-упаковщик")
+    db.add(
+        UserOrchestrator(
+            id="orch-other",
+            user_id=other_id,
+            status="ready",
+            locked=False,
+            tiles=_sample_tiles(),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db.commit()
+    other = get_orchestrator(
+        db,
+        user_id=other_id,
+        fio="Тищенко Марина Сергеевна",
+        position="Сборщик-упаковщик",
+    )
+    assert [tile.id for tile in other.tiles] == ["tile_1", "tile_2", "tile_3"]
+    assert other.locked is False
 
 
 def test_orch_calc_task_id_stable() -> None:

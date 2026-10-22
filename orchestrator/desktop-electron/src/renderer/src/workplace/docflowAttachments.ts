@@ -17,7 +17,15 @@ export const ATTACHED_FILES = {
   order: 'Catalog_ТД_ПриказПрисоединенныеФайлы',
   directive: 'Catalog_ТД_РаспоряжениеПрисоединенныеФайлы',
   payment: 'Catalog_ЗаявкаНаРасходованиеДенежныхСредствПрисоединенныеФайлы',
-  forwarding: 'Catalog_ПоручениеЭкспедиторуПрисоединенныеФайлы'
+  forwarding: 'Catalog_ПоручениеЭкспедиторуПрисоединенныеФайлы',
+  service_1c: 'Catalog_ТД_ЗаявкаВСлужбуСопровожденияПрисоединенныеФайлы',
+  service_it: 'Catalog_ТД_ЗаявкаВСлужбуСопровожденияПрисоединенныеФайлы',
+  service_exploitation: 'Catalog_ТД_ЗаявкаВ_АХОПрисоединенныеФайлы',
+  service_development: 'Catalog_ТД_ЗаявкаВСлужбуРазвитияПрисоединенныеФайлы',
+  service_nomenclature: 'Catalog_ТД_ЗаявкаНаСозданиеНоменклатурыПрисоединенныеФайлы',
+  service_market: 'Catalog_ТД_ЗаявкаОПотребностиРынкаПрисоединенныеФайлы',
+  service_pr: 'Catalog_ТД_ЗаявкаВСекторРекламыИPRПрисоединенныеФайлы',
+  service_aho: 'Catalog_ТД_ЗаявкаВ_АХОПрисоединенныеФайлы'
 } as const
 
 function rowsFromResult(result: unknown): Record<string, unknown>[] {

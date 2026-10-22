@@ -19,7 +19,9 @@ import {
   REGISTRY_TAB_GRID_ROWS,
   TAB_CHROME_COLS,
   TAB_CHROME_MAX_ROWS,
+  scaleLayoutItems,
   tabChromeGridDimensions,
+  tabChromeLayoutMigration,
   tabUsesSnapGrid
 } from './tabLayouts'
 
@@ -123,17 +125,17 @@ export type TabChromePersist = {
 function storageKey(tabId: string, userId: string): string {
   const uid = userId.trim() || 'default'
   if (tabId === 'assignments_registry') {
-    return `${TAB_CHROME_STORAGE_KEY}:assignments_registry-v2:${uid}`
+    return `${TAB_CHROME_STORAGE_KEY}:assignments_registry-v3:${uid}`
   }
   if (tabId === 'agent_library') {
-    return `${TAB_CHROME_STORAGE_KEY}:agent_library-v1:${uid}`
+    return `${TAB_CHROME_STORAGE_KEY}:agent_library-v2:${uid}`
   }
   if (tabId === 'meetings') {
     // v3 — правая карточка уехала во всплывающее окно, сетка заняла её место.
     return `${TAB_CHROME_STORAGE_KEY}:meetings-v3:${uid}`
   }
   if (tabId === 'kpi') {
-    return `${TAB_CHROME_STORAGE_KEY}:kpi-v4:${uid}`
+    return `${TAB_CHROME_STORAGE_KEY}:kpi-v5:${uid}`
   }
   return `${TAB_CHROME_STORAGE_KEY}:${tabId}:${uid}`
 }
@@ -305,11 +307,23 @@ function kpiEnsureAllWidgetsVisible(
   return next
 }
 
+function readStoredChrome(tabId: string, userId: string): TabChromePersist | null {
+  const uid = userId.trim() || 'default'
+  const current = localStorage.getItem(storageKey(tabId, userId))
+  if (current) return JSON.parse(current) as TabChromePersist
+  const migration = tabChromeLayoutMigration(tabId)
+  if (!migration) return null
+  const legacy = localStorage.getItem(`${TAB_CHROME_STORAGE_KEY}:${migration.legacySuffix}:${uid}`)
+  if (!legacy) return null
+  const parsed = JSON.parse(legacy) as TabChromePersist
+  return { ...parsed, layout: scaleLayoutItems(parsed.layout || [], migration.sx, migration.sy) }
+}
+
 function readPersist(tabId: string, userId: string, defaults: LayoutItem[], ids: string[]): TabChromePersist {
   const grid = tabChromeGridDimensions(tabId)
   try {
-    const raw = localStorage.getItem(storageKey(tabId, userId))
-    if (!raw) {
+    const parsed = readStoredChrome(tabId, userId)
+    if (!parsed) {
       return {
         layout: defaults.map((item) => ({ ...item })),
         meta:
@@ -318,7 +332,6 @@ function readPersist(tabId: string, userId: string, defaults: LayoutItem[], ids:
             : defaultMeta(ids)
       }
     }
-    const parsed = JSON.parse(raw) as TabChromePersist
     const meta = sanitizeMeta(parsed.meta, ids)
     return {
       layout: sanitizeLayoutFromStorage(parsed.layout, defaults, grid),

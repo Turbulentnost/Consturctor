@@ -426,6 +426,42 @@ class OutlookUpdateEventComTool(ComBackedTool):
         )
 
 
+class OutlookDeleteEventComTool(ComBackedTool):
+    """COM-backed удаление встречи Outlook по EntryID (форма совещаний в Orchestrator)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент удаления встречи Outlook."""
+        super().__init__(
+            ToolDefinition(
+                name="outlook.delete_event",
+                title="Удалить встречу в Outlook",
+                description=(
+                    "Удаляет встречу Outlook по entry_id. Повторяющееся совещание снимает "
+                    "только этот повтор. Организатор может отправить участникам отмену."
+                ),
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string", "description": "EntryID встречи Outlook"},
+                        "store_id": {"type": "string", "description": "StoreID, если встреча в общем календаре"},
+                        "start": {"type": "string", "description": "Начало этого повтора, ISO datetime"},
+                        "send_cancellation": {
+                            "type": "boolean",
+                            "description": "Отправить отмену участникам, если это совещание организатора",
+                        },
+                    },
+                    "required": ["entry_id"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
 class OutlookReadTasksComTool(ComBackedTool):
     """COM-backed инструмент чтения задач Outlook через worker."""
 
@@ -539,6 +575,7 @@ def register_outlook_com_tools(
     registry.register(OutlookDisplayMessageComTool(write_worker))
     registry.register(OutlookCreateEventComTool(write_worker))
     registry.register(OutlookUpdateEventComTool(write_worker))
+    registry.register(OutlookDeleteEventComTool(write_worker))
     registry.register(OutlookSendOutgoingLetterComTool(write_worker))
     registry.register(OutlookReadTasksComTool(read_worker))
     registry.register(EmailCreateDraftComTool(write_worker))

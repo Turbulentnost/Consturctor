@@ -182,6 +182,14 @@ function isWorkplaceTabKey(key: PageKey): key is WorkplaceTabKey {
   return (WORKPLACE_TAB_KEYS as PageKey[]).includes(key)
 }
 
+/** Пустые служебные экраны админки → те же вкладки, что у пользователя. */
+const ADMIN_PRODUCT_PAGE: Partial<Record<PageKey, PageKey>> = {
+  overview: 'today',
+  launch_calendar: 'meetings',
+  ai_agents: 'agent_library',
+  knowledge_base: 'knowledge'
+}
+
 function windowTitle(view: View, signedIn: boolean): string {
   if (!signedIn) return APP_TITLE
   if (view.kind === 'tab') return `${PAGE_LABELS[view.key]} — ${APP_TITLE}`
@@ -456,6 +464,16 @@ function AppShell(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    if (adminViewMode !== 'admin' || view.kind !== 'tab') return
+    const panel = resolveAdminPanel(user)
+    if (!panel || panel.key === 'finance') return
+    const next = ADMIN_PRODUCT_PAGE[view.key]
+    if (!next || next === view.key) return
+    setLastTab(next)
+    setView({ kind: 'tab', key: next })
+  }, [adminViewMode, view, user])
+
+  useEffect(() => {
     const onOpenTab = (event: Event): void => {
       const detail = (event as CustomEvent<{ key?: string; intent?: WorkplaceTabIntent }>).detail || {}
       const key = String(detail.key || '')
@@ -621,7 +639,14 @@ function AppShell(): React.JSX.Element {
     const panel = resolveAdminPanel(user)
     const nextMode = mode === 'admin' && panel ? 'admin' : 'user'
     setAdminViewMode(nextMode)
-    const key: PageKey = nextMode === 'admin' ? panel!.defaultTab : 'today'
+    if (nextMode === 'admin' && panel?.key === 'finance') {
+      setLastTab(panel.defaultTab)
+      setView({ kind: 'tab', key: panel.defaultTab })
+      return
+    }
+    if (view.kind === 'tab' && (isWorkplaceTabKey(view.key) || view.key === 'settings')) return
+    const key: PageKey =
+      view.kind === 'tab' ? (ADMIN_PRODUCT_PAGE[view.key] ?? 'today') : 'today'
     setLastTab(key)
     setView({ kind: 'tab', key })
   }
@@ -1010,11 +1035,22 @@ function AppShell(): React.JSX.Element {
     return renderUserFullscreen()
   }
 
-  const workplaceGrid = !isAdminMode && view.kind === 'tab' && isWorkplaceTabKey(view.key)
-  const workplaceShellKey: WorkplaceTabKey | null =
-    workplaceGrid && view.kind === 'tab' && isWorkplaceTabKey(view.key) ? view.key : null
-  const content = isAdminMode ? renderAdminContent() : renderUserContent()
-  const agentsStrip = isAdminMode ? null : (
+  const adminProductKey =
+    isAdminMode && activeAdminPanel?.key !== 'finance' && view.kind === 'tab'
+      ? ADMIN_PRODUCT_PAGE[view.key]
+      : undefined
+  const surfaceKey: PageKey | null =
+    view.kind === 'tab' ? (adminProductKey ?? view.key) : null
+  const workplaceGrid = surfaceKey !== null && isWorkplaceTabKey(surfaceKey)
+  const workplaceShellKey: WorkplaceTabKey | null = workplaceGrid && surfaceKey && isWorkplaceTabKey(surfaceKey) ? surfaceKey : null
+  const adminShell =
+    isAdminMode &&
+    view.kind === 'tab' &&
+    !adminProductKey &&
+    !isWorkplaceTabKey(view.key) &&
+    view.key !== 'settings'
+  const content = adminShell ? renderAdminContent() : renderUserContent()
+  const agentsStrip = adminShell ? null : (
     <ActiveAgentsStrip
       onOpenRun={(workflowId, title) =>
         setView({ kind: 'agentrun', workflowId, title: title || 'ИИ-агент', autoStart: false })
@@ -1089,6 +1125,10 @@ function AppShell(): React.JSX.Element {
               isRunLive={() => true}
               canSwitchAdminView={Boolean(activeAdminPanel)}
               onSwitchAdminView={switchAdminView}
+              menuVariant={isAdminMode ? 'admin' : 'default'}
+              showAdminNav={isAdminMode && activeAdminPanel?.key !== 'finance'}
+              adminPageKeys={activeAdminPanel?.pages}
+              adminTitle={activeAdminPanel?.title}
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
               topStrip={agentsStrip}
             >
@@ -1119,8 +1159,15 @@ function AppShell(): React.JSX.Element {
               activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
               currentUserId={activeUser.id || ''}
               onNavigate={(key) => {
-                if (isAdminMode && !activeAdminPanel?.pages.includes(key)) return
-                if (!isAdminMode && !isWorkplaceTabKey(key) && key !== 'settings') return
+                const adminTool =
+                  isAdminMode &&
+                  Boolean(activeAdminPanel?.pages.includes(key)) &&
+                  (key === 'users' || key.startsWith('finance_'))
+                if (isAdminMode && activeAdminPanel?.key === 'finance') {
+                  if (!activeAdminPanel.pages.includes(key)) return
+                } else if (!isWorkplaceTabKey(key) && key !== 'settings' && !adminTool) {
+                  return
+                }
                 setTabIntent(null)
                 setLastTab(key)
                 setView({ kind: 'tab', key })
@@ -1128,7 +1175,7 @@ function AppShell(): React.JSX.Element {
               onOpenThread={openChat}
               refreshAt={chatRefreshAt}
             />
-            <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
+            <main className={adminShell ? 'content' : 'content orch-legacy-fullpage'}>
               {agentsStrip}
               <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
                 <div className="app-page-header">

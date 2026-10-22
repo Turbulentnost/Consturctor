@@ -48,6 +48,13 @@
 .meeting-report-toolbar-actions .cal-btn.primary:disabled:hover {
   background: #1565c0;
 }
+.meeting-protocol-actions .cal-btn.is-danger {
+  color: #c62828;
+  border-color: rgba(198, 40, 40, 0.35);
+}
+.meeting-protocol-actions .cal-btn.is-danger:hover {
+  background: #fdecea;
+}
 
 .meeting-protocol-file-row {
   align-items: center;

@@ -53,6 +53,8 @@ export interface MeetingEvent {
   ownCalendar?: boolean
   /** Importance из Outlook: 0 — низкая, 1 — обычная, 2 — высокая. */
   importance?: number
+  /** Outlook AllDayEvent: напоминание на весь день, не слот в сетке часов. */
+  allDay?: boolean
 }
 
 interface OutlookMeetingRaw {
@@ -67,6 +69,7 @@ interface OutlookMeetingRaw {
   required_attendees?: string
   optional_attendees?: string
   importance?: number
+  all_day?: boolean
 }
 
 const CACHE_KEY = 'orchOutlookMeetings:v9'
@@ -217,8 +220,35 @@ function normalizeMeeting(raw: OutlookMeetingRaw, index: number): MeetingEvent {
     attendees,
     owner: (raw.calendar_owner || '').trim(),
     ownCalendar: Boolean(raw.own_calendar) || isOutlookFolderOwner(raw.calendar_owner),
-    importance: Number.isFinite(Number(raw.importance)) ? Number(raw.importance) : 1
+    importance: Number.isFinite(Number(raw.importance)) ? Number(raw.importance) : 1,
+    allDay: Boolean(raw.all_day)
   }
+}
+
+/**
+ * Встреча на весь день: флаг Outlook или полночь–полночь длительностью от 20 часов.
+ * Такие записи — напоминания, их не ставят в сетку часов.
+ */
+export function isAllDayMeeting(meeting: MeetingEvent): boolean {
+  if (meeting.allDay) return true
+  const start = parseMeetingTime(meeting.start)
+  const end = parseMeetingTime(meeting.end)
+  if (!start || !end) return false
+  if (start.getHours() !== 0 || start.getMinutes() !== 0) return false
+  return end.getTime() - start.getTime() >= 20 * 60 * 60 * 1000
+}
+
+/** День попадает в интервал встречи на весь день. Конец Outlook — полночь следующего дня, не включая его. */
+export function allDayCovers(meeting: MeetingEvent, day: Date): boolean {
+  const start = parseMeetingTime(meeting.start)
+  if (!start) return false
+  const end = parseMeetingTime(meeting.end)
+  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate())
+  const next = new Date(dayStart)
+  next.setDate(next.getDate() + 1)
+  const from = start.getTime()
+  const to = end ? end.getTime() : from + 24 * 60 * 60 * 1000
+  return from < next.getTime() && to > dayStart.getTime()
 }
 
 /** The date window (local) that a given calendar view/anchor needs to render. */
@@ -283,14 +313,23 @@ function writeCache(cache: MeetingCache): void {
 }
 
 /** Users whose meetings come from someone else's shared Outlook calendar instead of their own. */
-const SHARED_MEETING_CALENDARS: { surname: string; calendarOwner: string }[] = [
-  { surname: 'ильченко', calendarOwner: 'Амураль Игорь Борисович' }
-]
+const SHARED_MEETING_OWNER = 'Амураль Игорь Борисович'
+
+function foldMeetingFio(value: string): string {
+  return value.toLocaleLowerCase('ru').replace(/ё/g, 'е')
+}
+
+function isMarinaTishchenko(fio: string): boolean {
+  const name = foldMeetingFio(fio)
+  return name.includes('тищенко') && name.includes('марина') && name.includes('николаевна')
+}
 
 export function sharedMeetingCalendarFor(fio: string | undefined): string {
-  const surname = String(fio || '').trim().split(/\s+/)[0]?.toLocaleLowerCase('ru') || ''
-  if (!surname) return ''
-  return SHARED_MEETING_CALENDARS.find((item) => item.surname === surname)?.calendarOwner || ''
+  const folded = foldMeetingFio(String(fio || '').trim())
+  if (!folded) return ''
+  const surname = folded.split(/\s+/)[0] || ''
+  if (surname === 'ильченко' || isMarinaTishchenko(folded)) return SHARED_MEETING_OWNER
+  return ''
 }
 
 type CalendarRequestResult = {
@@ -376,6 +415,7 @@ export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()
   const d = anchor.getDate()
   return meetings.filter((item) => {
     if (isCanceledMeeting(item)) return false
+    if (isAllDayMeeting(item)) return allDayCovers(item, anchor)
     const start = parseMeetingTime(item.start)
     if (!start) return false
     return start.getFullYear() === y && start.getMonth() === m && start.getDate() === d

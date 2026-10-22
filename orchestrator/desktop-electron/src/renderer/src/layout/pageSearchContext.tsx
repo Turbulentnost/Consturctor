@@ -69,5 +69,6 @@ export const PAGE_SEARCH_PLACEHOLDER: Partial<Record<WorkplaceTabKey, string>> =
   assignments_registry: 'Поиск в реестре поручений…',
   subordinate_tasks: 'Поиск по задачам подчинённых…',
   agent_library: 'Поиск агентов…',
+  external_order: 'Поиск по внешним заказам…',
   kpi: 'Поиск на странице KPI…'
 }

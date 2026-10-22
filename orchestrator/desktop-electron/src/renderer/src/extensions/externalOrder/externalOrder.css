@@ -1,0 +1,930 @@
+.eo-page {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 16px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-sizing: border-box;
+  background: transparent;
+  color: #102033;
+}
+
+.eo-switch {
+  display: flex;
+  flex-flow: row wrap;
+  gap: 6px;
+  width: 100%;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid rgba(13, 59, 115, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(16, 32, 51, 0.05);
+}
+
+.eo-switch button,
+.eo-actions button,
+.eo-back,
+.eo-chip-btn {
+  border: 1px solid #d5e2f2;
+  background: #fff;
+  color: #1d3b64;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.eo-switch button {
+  white-space: nowrap;
+}
+
+.eo-switch button.is-active,
+.eo-actions button.is-primary,
+.eo-chip-btn.is-active {
+  background: #0d3b73;
+  color: #fff;
+  border-color: #0d3b73;
+}
+
+.eo-windows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.eo-window {
+  background: #fff;
+  border: 1px solid rgba(13, 59, 115, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(16, 32, 51, 0.05);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.eo-window-main,
+.eo-window-work {
+  grid-column: 1 / -1;
+}
+
+.eo-window h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #102033;
+}
+
+.eo-window-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.eo-window .eo-form {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+.eo-window input,
+.eo-window select {
+  border: 1px solid rgba(13, 59, 115, 0.14);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  color: #102033;
+  background: #fff;
+}
+
+.eo-btn {
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  background: #fff;
+  color: #0d3b73;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.eo-btn.is-primary {
+  background: #0d3b73;
+  color: #fff;
+  border-color: #0d3b73;
+}
+
+.eo-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.eo-table-row.is-selected td {
+  background: rgba(21, 101, 192, 0.08);
+}
+
+.eo-board {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.eo-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.eo-head h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.eo-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.eo-points button {
+  border-radius: 999px;
+}
+
+.eo-points button.is-active {
+  background: #1565c0;
+  color: #fff;
+  border-color: #1565c0;
+}
+
+.eo-hero {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.2fr) minmax(0, 2fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.eo-hero-copy,
+.eo-stat,
+.eo-flow-step,
+.eo-duty,
+.eo-order,
+.eo-panel,
+.eo-form,
+.eo-card section {
+  background: #fff;
+  border: 1px solid #e3ebf5;
+  border-radius: 16px;
+  padding: 14px 16px;
+}
+
+.eo-hero-copy h2,
+.eo-card h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+}
+
+.eo-muted {
+  color: #5d7290;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.eo-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.eo-stat strong {
+  display: block;
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.eo-stat span {
+  color: #5d7290;
+  font-size: 13px;
+}
+
+.eo-flow {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.eo-flow-step {
+  min-height: 84px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.eo-flow-step b {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.eo-flow-step em {
+  font-style: normal;
+  color: #1565c0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.eo-split {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.eo-duties,
+.eo-integrations,
+.eo-orders,
+.eo-progress {
+  display: grid;
+  gap: 10px;
+}
+
+.eo-duties {
+  grid-template-columns: 1fr 1fr;
+}
+
+.eo-duty h3,
+.eo-panel h3,
+.eo-form h3,
+.eo-card h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.eo-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.eo-tag {
+  border-radius: 999px;
+  background: #e8f1fc;
+  color: #1d3b64;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.eo-tag.is-stop {
+  background: #fff1f1;
+  color: #9b2335;
+}
+
+.eo-integrations {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.eo-orders {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.eo-order {
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 118px;
+}
+
+.eo-order:hover,
+.eo-row:hover {
+  border-color: #1565c0;
+}
+
+.eo-order strong {
+  font-size: 15px;
+}
+
+.eo-error {
+  background: #fff4f4;
+  color: #9b2335;
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+
+.eo-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.eo-blocks p,
+.eo-note {
+  margin: 0;
+  background: #fff8e8;
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+.eo-list {
+  display: contents;
+}
+
+.eo-row {
+  text-align: left;
+  border: 1px solid #d5e2f2;
+  background: #fff;
+  border-radius: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.eo-row strong,
+.eo-file strong {
+  display: block;
+}
+
+.eo-form,
+.eo-card section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eo-form input,
+.eo-form select,
+.eo-form textarea,
+.eo-card input,
+.eo-card select,
+.eo-card textarea {
+  border: 1px solid #d5e2f2;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  background: #fff;
+  color: inherit;
+}
+
+.eo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.eo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.eo-card .eo-actions button,
+.eo-card .eo-form > button,
+.eo-card .eo-check button,
+.eo-card p > button {
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  background: #fff;
+  color: #0d3b73;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.eo-card .eo-actions button.is-primary,
+.eo-card .eo-form > button.is-primary,
+.eo-card .eo-check button.is-primary,
+.eo-card p > button.is-primary {
+  background: #0d3b73;
+  color: #fff;
+  border-color: #0d3b73;
+}
+
+.eo-card .eo-back {
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  background: #fff;
+  color: #0d3b73;
+  padding: 0 12px;
+}
+
+.eo-line {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: auto;
+}
+
+.eo-line li {
+  flex: 1 0 108px;
+  padding: 8px 10px;
+  border: 1px solid rgba(13, 59, 115, 0.1);
+  border-radius: 12px;
+  background: #fff;
+  color: #8aa0b8;
+}
+
+.eo-line li b,
+.eo-line li small {
+  display: block;
+}
+
+.eo-line li small {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.eo-line li.is-done {
+  color: #5d7290;
+  background: #f4f7fb;
+}
+
+.eo-line li.is-now {
+  background: #0d3b73;
+  border-color: #0d3b73;
+  color: #fff;
+}
+
+.eo-pages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.eo-pages button {
+  min-height: 64px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 59, 115, 0.08);
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 32, 51, 0.05);
+  text-align: left;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #102033;
+  font-weight: 700;
+}
+
+.eo-pages button small {
+  display: block;
+  margin-top: 2px;
+  font-weight: 500;
+  color: #5d7290;
+  font-size: 12px;
+}
+
+.eo-pages button.is-active {
+  background: #0d3b73;
+  color: #fff;
+  border-color: #0d3b73;
+}
+
+.eo-pages button.is-active small {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.eo-now {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.3fr) minmax(240px, 1fr);
+  gap: 12px;
+}
+
+.eo-now-main,
+.eo-now-side {
+  background: #fff;
+  border: 1px solid rgba(13, 59, 115, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(16, 32, 51, 0.05);
+  padding: 16px;
+}
+
+.eo-now-kicker {
+  margin: 0;
+  color: #5d7290;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.eo-now-main h3 {
+  margin: 6px 0;
+  font-size: 28px;
+}
+
+.eo-now-side > button {
+  height: 32px;
+  margin-top: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  background: #fff;
+  color: #0d3b73;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.eo-wide {
+  grid-column: 1 / -1;
+}
+
+.eo-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  background: #fff;
+  border: 1px solid #e3ebf5;
+  border-radius: 16px;
+  padding: 14px 16px;
+}
+
+.eo-progress {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.eo-meter {
+  background: #fff;
+  border: 1px solid #e3ebf5;
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.eo-meter b {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.eo-bar {
+  height: 8px;
+  border-radius: 99px;
+  background: #e7eef8;
+  overflow: hidden;
+}
+
+.eo-bar span {
+  display: block;
+  height: 100%;
+  background: #1565c0;
+}
+
+.eo-meter small {
+  color: #5d7290;
+}
+
+.eo-checks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.eo-check {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #eef3f9;
+}
+
+.eo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: #fff;
+}
+
+.eo-table th,
+.eo-table td {
+  border-bottom: 1px solid #e3ebf5;
+  text-align: left;
+  padding: 8px;
+  vertical-align: top;
+}
+
+.eo-table th {
+  color: #5d7290;
+  font-weight: 600;
+}
+
+.eo-tkp-scroll {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.eo-table.eo-tkp {
+  width: max-content;
+  min-width: 100%;
+  font-size: 12px;
+}
+
+.eo-table.eo-tkp th,
+.eo-table.eo-tkp td {
+  white-space: nowrap;
+}
+
+.eo-table.eo-tkp th:last-child,
+.eo-table.eo-tkp td:last-child {
+  position: sticky;
+  right: 0;
+  background: #fff;
+  box-shadow: -1px 0 0 rgba(16, 20, 26, 0.08);
+}
+
+.eo-table.eo-tkp td.eo-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.eo-table-row {
+  cursor: pointer;
+}
+
+.eo-table-row:hover td {
+  background: #f3f7fc;
+}
+
+.eo-path {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.eo-path li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+  max-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid #d5e2f2;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.eo-path .is-done {
+  border-color: #9dccb0;
+}
+
+.eo-path .is-current {
+  border-color: #e2b15a;
+  background: #fff8e8;
+}
+
+.eo-path .is-waiting,
+.eo-path .is-skip {
+  color: #7b8da3;
+}
+
+.eo-agent-log {
+  margin: 8px 0 0;
+  padding: 12px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  background: #f7f9fc;
+  border-radius: 10px;
+  font: 13px/1.45 ui-monospace, Consolas, monospace;
+}
+
+.eo-file {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #eef3f9;
+}
+
+.eo-empty {
+  border: 1px dashed #c5d4e8;
+  border-radius: 14px;
+  padding: 18px;
+  background: #fff;
+  color: #5d7290;
+}
+
+.eo-card section.eo-journal {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 59, 115, 0.08);
+  box-shadow: 0 1px 3px rgba(16, 32, 51, 0.05);
+}
+
+.eo-journal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.08);
+}
+
+.eo-journal-bar h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.eo-kind-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(16, 20, 26, 0.06);
+}
+
+.eo-kind-tabs button {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #5d7290;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.eo-kind-tabs button.is-active {
+  background: #fff;
+  color: #102033;
+  box-shadow: 0 1px 3px rgba(16, 20, 26, 0.12);
+}
+
+.eo-journal-bar > button,
+.eo-journal-actions button,
+.eo-journal-form > button,
+.eo-journal-table button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  background: #fff;
+  color: #0d3b73;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.eo-journal-bar > button.is-primary,
+.eo-journal-form > button.is-primary {
+  background: #0d3b73;
+  border-color: #0d3b73;
+  color: #fff;
+}
+
+.eo-journal-scroll {
+  overflow: auto;
+}
+
+.eo-journal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.eo-journal-table th,
+.eo-journal-table td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(16, 20, 26, 0.08);
+}
+
+.eo-journal-table th:not(:last-child),
+.eo-journal-table td:not(:last-child) {
+  border-right: 1px solid rgba(16, 20, 26, 0.08);
+}
+
+.eo-journal-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #fff;
+  color: #5d7290;
+  font-weight: 600;
+  box-shadow: 0 1px 0 rgba(16, 20, 26, 0.08);
+}
+
+.eo-journal-table tbody tr:hover td {
+  background: #f6f8fb;
+}
+
+.eo-journal-table small {
+  color: #5d7290;
+}
+
+.eo-journal-empty {
+  color: #5d7290;
+  padding: 16px 12px !important;
+}
+
+.eo-journal-empty:hover {
+  background: transparent;
+}
+
+.eo-status {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(16, 20, 26, 0.06);
+  color: #5d7290;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.eo-status.is-ok {
+  background: rgba(46, 125, 50, 0.12);
+  color: #2e7d32;
+}
+
+.eo-journal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.eo-journal-note {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(16, 20, 26, 0.08);
+  color: #5d7290;
+  font-size: 12px;
+}
+
+.eo-journal-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid rgba(16, 20, 26, 0.08);
+  background: #f7f9fc;
+}
+
+.eo-journal-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #5d7290;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.eo-journal-form > button {
+  align-self: end;
+}
+
+.eo-card input.eo-file-input {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .eo-hero,
+  .eo-split,
+  .eo-card,
+  .eo-stats,
+  .eo-integrations,
+  .eo-duties,
+  .eo-progress,
+  .eo-flow,
+  .eo-checks {
+    grid-template-columns: 1fr;
+  }
+}

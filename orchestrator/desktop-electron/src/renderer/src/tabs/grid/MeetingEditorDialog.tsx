@@ -6,6 +6,36 @@ import { parseMeetingTime, type MeetingEvent } from '../../utils/outlookMeetings
 import { invokeLocalAcTool } from '../../utils/localAcTool'
 import { api } from '../../api/client'
 
+export function meetingCanBeDeleted(meeting: MeetingEvent | null | undefined): boolean {
+  const id = meeting?.id || ''
+  return Boolean(id) && !id.startsWith('meeting-')
+}
+
+export function confirmDeleteMeeting(meeting: MeetingEvent, keepProtocol = false): boolean {
+  const title = meeting.subject.trim() || 'Совещание'
+  const lines = [
+    `Удалить «${title}»?`,
+    meeting.attendees.trim()
+      ? 'Оно пропадёт из Outlook, участникам уйдёт отмена.'
+      : 'Оно пропадёт из Outlook.'
+  ]
+  if (keepProtocol) lines.push('Протокол в 1С не удаляется.')
+  return window.confirm(lines.join('\n'))
+}
+
+export async function deleteOutlookMeeting(meeting: MeetingEvent): Promise<string> {
+  if (!meetingCanBeDeleted(meeting)) {
+    return 'У встречи нет идентификатора Outlook — обновите календарь и откройте её снова'
+  }
+  const result = await invokeLocalAcTool('outlook.delete_event', {
+    entry_id: meeting.id,
+    start: meeting.start,
+    send_cancellation: Boolean(meeting.attendees.trim())
+  })
+  if (!result.ok) return result.error || 'Outlook не удалил совещание'
+  return ''
+}
+
 /** Поля формы совещания по образцу Outlook: тема, место, время, участники, приглашения, текст. */
 
 const DAY_FROM = 7 * 60
@@ -265,6 +295,7 @@ export function MeetingEditorDialog({
   const [body, setBody] = useState('')
   const [bodyTouched, setBodyTouched] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState('')
   const boardRef = useRef<HTMLDivElement>(null)
   const attendeeRef = useRef<HTMLTextAreaElement>(null)
@@ -473,6 +504,23 @@ export function MeetingEditorDialog({
     onClose()
   }
 
+  async function remove(): Promise<void> {
+    if (mode !== 'edit' || !meeting) return
+    if (!confirmDeleteMeeting(meeting)) return
+    setDeleting(true)
+    setBusy(true)
+    setError('')
+    const message = await deleteOutlookMeeting(meeting)
+    setBusy(false)
+    setDeleting(false)
+    if (message) {
+      setError(message)
+      return
+    }
+    onSaved()
+    onClose()
+  }
+
   const hours = Array.from({ length: (DAY_TO - DAY_FROM) / 60 + 1 }, (_, index) => DAY_FROM / 60 + index)
 
   return createPortal(
@@ -622,6 +670,11 @@ export function MeetingEditorDialog({
         {error ? <p className="meeting-editor-error">{error}</p> : null}
 
         <footer className="meeting-editor-actions">
+          {mode === 'edit' ? (
+            <button type="button" className="btn-light meeting-editor-delete" onClick={() => void remove()} disabled={busy}>
+              {deleting ? 'Удаляем…' : 'Удалить'}
+            </button>
+          ) : null}
           <button type="button" className="btn-light" onClick={onClose} disabled={busy}>
             Отмена
           </button>

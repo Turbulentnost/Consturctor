@@ -345,6 +345,10 @@ def test_incentive_properties_go_to_additional_props(fake: FakeClient) -> None:
 
 def test_schema_lists_all_kinds(fake: FakeClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dc, "_incoming_options", lambda: {"departments": [{"value": "1", "label": "УД"}]})
+    monkeypatch.setattr(
+        "app.services.docflow_service_requests.kind_options",
+        lambda service: [{"value": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "label": service}],
+    )
     result = dc.schema()
     ids = {kind["id"] for kind in result["kinds"]}
     assert ids == set(dc.KINDS)
@@ -421,6 +425,95 @@ def test_update_clears_optional_and_keeps_required(fake: FakeClient) -> None:
             {"action": "update", "kind": "outgoing", "ref_key": DOC, "values": {}, "changed": ["ТемаСлужебнойЗаписки"]},
             actor_fio="Жалыбин Максим Дмитриевич",
         )
+
+
+def test_methodical_material_text_is_stored_as_note(fake: FakeClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import docflow_service_requests as sr
+
+    method = "970c0c51-9646-11ed-931d-6cb31113810c"
+    other = "970c0c4e-9646-11ed-931d-6cb31113810c"
+    monkeypatch.setattr(
+        "app.services.docflow_service_requests.kind_options",
+        lambda service: [
+            {"value": method, "label": "Подготовка методических материалов"},
+            {"value": other, "label": "Прочее"},
+        ],
+    )
+    fake.catalogs[sr.KIND_CATALOG] = [
+        {
+            "Ref_Key": method,
+            "Description": "Подготовка методических материалов",
+            "Подразделение_Key": sr.DEVELOPMENT_DEPARTMENT,
+        }
+    ]
+    body = dc.build_body(
+        "service_development",
+        {
+            "ВидЗаявки_Key": method,
+            "Организация_Key": ORG,
+            "Подразделение_Key": "77777777-7777-7777-7777-777777777777",
+            "Примечание": "Макет урока",
+            "ТелефонОбратнойСвязи": "101",
+        },
+        client=fake,
+        actor_fio="Жалыбин Максим Дмитриевич",
+        sample={},
+    )
+    assert body["Примечание"] == "Макет урока"
+    assert "Содержание" not in body
+    with pytest.raises(dc.DocumentCreateError, match="Содержание"):
+        dc.build_body(
+            "service_development",
+            {
+                "ВидЗаявки_Key": other,
+                "Организация_Key": ORG,
+                "Подразделение_Key": "77777777-7777-7777-7777-777777777777",
+                "ТелефонОбратнойСвязи": "101",
+            },
+            client=fake,
+            actor_fio="Жалыбин Максим Дмитриевич",
+            sample={},
+        )
+
+
+def test_posted_request_is_unposted_rewritten_and_posted(fake: FakeClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import docflow_document_edit as edit
+
+    monkeypatch.setattr(edit, "ensure_probe", lambda *args, **kwargs: None)
+    method = "970c0c51-9646-11ed-931d-6cb31113810c"
+    monkeypatch.setattr(
+        "app.services.docflow_service_requests.kind_options",
+        lambda service: [{"value": method, "label": "Подготовка методических материалов"}],
+    )
+    calls: list[dict[str, Any]] = []
+    original = fake.patch
+
+    def patch(entity: str, ref_key: str, body: dict[str, Any]) -> None:
+        calls.append(dict(body))
+        original(entity, ref_key, body)
+
+    fake.patch = patch
+    fake.stored[DOC] = {
+        "Ref_Key": DOC,
+        "Number": "000001074",
+        "Date": "2026-10-01T00:00:00",
+        "Posted": True,
+        "ВидЗаявки_Key": method,
+        "Примечание": "старое",
+    }
+    result = edit.update_document(
+        "service_development",
+        DOC,
+        {"values": {"Примечание": "Макет урока"}, "changed": ["Примечание"]},
+        actor_fio="Жалыбин Максим Дмитриевич",
+    )
+    assert "перепроведён" in result["summary"]
+    assert calls[0] == {"Posted": False}
+    assert calls[1]["Примечание"] == "Макет урока"
+    assert calls[2] == {"Posted": True}
+    read = edit.read_document("service_development", DOC, {})
+    assert read["editable"] is True
+    assert read["edit_warning"]
 
 
 def test_posted_document_is_read_only_but_takes_files(fake: FakeClient) -> None:
