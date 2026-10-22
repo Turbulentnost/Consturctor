@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -45,13 +46,39 @@ class ReportFactMissing(Exception):
         super().__init__(message)
 
 
-def load_metric_fact(fio: str, month: str, metric_name: str, root: Path | None = None) -> dict[str, Any]:
-    path = find_report(fio, month, root)
-    if path is None:
-        raise ReportFactMissing("Отчёт за этот месяц ещё не собран")
+def stored_report_content(db: Any, fio: str, month: str) -> bytes | None:
+    """Книга ИЦПП из базы за этот месяц. Агент кладёт её туда, не на диск."""
+    token = str(month or "").strip()
+    person = fold(fio)
+    if not person or not _MONTH.fullmatch(token):
+        return None
+    year, mon = (int(part) for part in token.split("-"))
+    from calendar import monthrange
+
+    from sqlalchemy import select
+
+    from app.models.position_kpi import PositionKpiDailyReport
+
+    start = date(year, mon, 1)
+    end = date(year, mon, monthrange(year, mon)[1])
+    rows = db.scalars(
+        select(PositionKpiDailyReport)
+        .where(PositionKpiDailyReport.day >= start, PositionKpiDailyReport.day <= end)
+        .order_by(PositionKpiDailyReport.day.desc())
+    ).all()
+    for row in rows:
+        if fold(row.subject_fio) != person:
+            continue
+        content = bytes(row.content or b"")
+        if content:
+            return content
+    return None
+
+
+def load_metric_fact_content(content: bytes, metric_name: str) -> dict[str, Any]:
     from openpyxl import load_workbook
 
-    book = load_workbook(path, data_only=True)
+    book = load_workbook(BytesIO(content), data_only=True)
     try:
         found = breakdown_for_metric(book, metric_name)
     finally:
@@ -59,6 +86,13 @@ def load_metric_fact(fio: str, month: str, metric_name: str, root: Path | None =
     if found is None:
         raise ReportFactMissing("В отчёте нет листа этого показателя")
     return found
+
+
+def load_metric_fact(fio: str, month: str, metric_name: str, root: Path | None = None) -> dict[str, Any]:
+    path = find_report(fio, month, root)
+    if path is None:
+        raise ReportFactMissing("Отчёт за этот месяц ещё не собран")
+    return load_metric_fact_content(path.read_bytes(), metric_name)
 
 
 def breakdown_for_metric(book: Workbook, metric_name: str) -> dict[str, Any] | None:

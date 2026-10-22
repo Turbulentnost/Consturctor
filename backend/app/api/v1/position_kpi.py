@@ -34,7 +34,12 @@ from app.services.position_kpi.daily_run import DailyRunError, claim, own_report
 from app.services.position_kpi import pin as kpi_pin
 from app.services.position_kpi import protection as kpi_protection
 from app.services.position_kpi.explain import PositionKpiMetricNotFound, explain_metric
-from app.services.position_kpi.report_fact import ReportFactMissing, load_metric_fact
+from app.services.position_kpi.report_fact import (
+    ReportFactMissing,
+    load_metric_fact,
+    load_metric_fact_content,
+    stored_report_content,
+)
 from app.services.position_kpi.salary import SalaryLookupError
 from app.services.position_kpi.sources import SOURCES, catalog, validate_spec
 from app.services.position_kpi.sources import load as load_source
@@ -485,6 +490,9 @@ def read_metric_fact(
     if len(period) >= 7:
         period = period[:7]
     try:
+        content = stored_report_content(db, fio, period)
+        if content is not None:
+            return load_metric_fact_content(content, metric.name)
         return load_metric_fact(fio, period, metric.name)
     except ReportFactMissing as exc:
         raise HTTPException(status_code=404, detail=exc.message) from None
