@@ -8,6 +8,7 @@ import {
   isPlatformTaskMine,
   needsPlatformReview,
   PLATFORM_PRIORITY_LABEL,
+  PLATFORM_RECURRENCE_LABEL,
   type PlatformTask
 } from '../../workplace/platformTasks'
 import './platformTasks.css'
@@ -125,6 +126,21 @@ export function PlatformTaskDetail({
           <div>
             <dt>Возвратов на доработку</dt>
             <dd>{task.reworkCount}</dd>
+          </div>
+        ) : null}
+        {task.recurrence ? (
+          <div>
+            <dt>Периодичность</dt>
+            <dd>
+              {PLATFORM_RECURRENCE_LABEL[task.recurrence]}
+              {task.recurrenceUntil ? ` до ${formatPlatformDateTime(task.recurrenceUntil)}` : ''}
+            </dd>
+          </div>
+        ) : null}
+        {task.basis ? (
+          <div>
+            <dt>Основание</dt>
+            <dd className="ptask-basis">{task.basis}</dd>
           </div>
         ) : null}
         {task.statusComment ? (

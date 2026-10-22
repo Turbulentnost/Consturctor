@@ -546,6 +546,44 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             ["user_id", "title"],
         ),
     ),
+    (
+        "news.publish",
+        (
+            "Новость-карточка на вкладке «Сегодня» у выбранных сотрудников. Видна до show_until, "
+            "потом пропадает сама. Получатели — ФИО или отделы; всем сразу — только администратор. Сервер."
+        ),
+        _schema(
+            {
+                "title": _prop("string", "Заголовок карточки"),
+                "body": _prop("string", "Текст новости, до 4000 символов"),
+                "show_until": _prop("string", "До какой даты и времени показывать, ISO 8601"),
+                "recipients": _prop("array", "ФИО получателей", items={"type": "string"}),
+                "departments": _prop("array", "Отделы целиком, как в оргструктуре", items={"type": "string"}),
+                "everyone": _prop("boolean", "Показать всем сотрудникам"),
+                "image": _prop("string", "Фото карточки: ссылка http(s) или путь \\\\сервер\\... Пусто — карточка без фото"),
+            },
+            ["title", "show_until"],
+        ),
+    ),
+    (
+        "platform.create_task",
+        (
+            "Поставить задачу сотруднику в платформе Оркестратора (не в 1С). Можно сделать периодической "
+            "и указать основание: документ, приказ, протокол. Руководителям задачи ставить нельзя. Сервер."
+        ),
+        _schema(
+            {
+                "assignee_fio": _prop("string", "ФИО исполнителя из оргструктуры"),
+                "description": _prop("string", "Что сделать и какой результат нужен"),
+                "due_at": _prop("string", "Срок первой задачи, ISO 8601"),
+                "priority": _prop("string", "high | normal | low"),
+                "basis": _prop("string", "Основание задачи"),
+                "recurrence": _prop("string", "Пусто — разовая; daily | weekly | monthly | quarterly | yearly"),
+                "recurrence_until": _prop("string", "До какой даты повторять, ISO 8601. Пусто — без конца"),
+            },
+            ["assignee_fio", "description", "due_at"],
+        ),
+    ),
 ]
 
 

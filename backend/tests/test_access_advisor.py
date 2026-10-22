@@ -65,7 +65,41 @@ def test_inflected_name_is_explicit():
     assert not person_mentioned(PERSON["fio"], "Обновить регламент внедрения.", "регламент.txt")
 
 
-def test_explicit_person_and_department_pass_and_guess_does_not():
+def test_initials_and_position_link_the_person():
+    khozuyan = {
+        "user_id": "u9",
+        "fio": "Хозуян Иван Владимирович",
+        "position": "Главный конструктор",
+        "department": "СКТБ",
+    }
+    text = "Разработал Главный конструктор И.В. Хозуян"
+    assert person_mentioned(khozuyan["fio"], text, "И-08-212.pdf")
+    drafts = judge_suggestions(
+        [_doc(text=text, name="И-08-212.pdf")],
+        {
+            "files": [
+                {
+                    "file_id": "f1",
+                    "document_kind": "инструкция",
+                    "suggestions": [
+                        {
+                            "kind": "user",
+                            "position": "Главный конструктор",
+                            "permission": "read",
+                            "quote": "Разработал Главный конструктор И.В. Хозуян",
+                        }
+                    ],
+                }
+            ]
+        },
+        lambda fio: None,
+        lambda _name: "",
+        lambda phrase: [khozuyan] if "конструктор" in phrase.lower() else [],
+    )
+    assert [(item.grantee_label, item.position) for item in drafts] == [
+        ("Хозуян Иван Владимирович", "Главный конструктор")
+    ]
+    assert "разработчик" in drafts[0].reason
     drafts = judge_suggestions(
         [_doc()],
         {
@@ -172,6 +206,25 @@ def test_open_for_everyone_needs_a_quote_from_the_file():
     assert [item.kind for item in drafts] == ["all"]
 
 
+def test_pdf_text_is_extracted():
+    import pymupdf
+    from pathlib import Path
+
+    font = next(
+        (path for path in (r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\calibri.ttf") if Path(path).is_file()),
+        "",
+    )
+    if not font:
+        pytest.skip("нет шрифта с кириллицей")
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_font(fontname="body", fontfile=font)
+    page.insert_text((72, 72), "Служба развития согласует документ", fontname="body", fontsize=12)
+    data = document.tobytes()
+    document.close()
+    assert "Служба развития" in extract_text("оценка.pdf", data)
+
+
 def test_docx_text_is_extracted():
     xml = ElementTree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}document")
     node = ElementTree.SubElement(xml, "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
@@ -197,6 +250,7 @@ def db(tmp_path, monkeypatch):
             explorer_models.ExplorerEntry.__table__,
             explorer_models.ExplorerFileKey.__table__,
             explorer_models.ExplorerKeyGrant.__table__,
+            explorer_models.ExplorerHistoryRepo.__table__,
             user_models.AppUser.__table__,
         ],
     )

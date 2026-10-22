@@ -119,6 +119,21 @@ export type ExplorerAccessSuggestion = {
   reason: string
 }
 
+export type TodayNews = {
+  id: string
+  title: string
+  body: string
+  kind: 'info' | 'process_change'
+  author: string
+  fileId: string
+  fileName: string
+  taskIds: string[]
+  /** Путь на бэкенде; пусто — карточка без фото. */
+  imageUrl: string
+  showUntil: string
+  createdAt: string
+}
+
 function parseExplorerItem(item: Record<string, unknown>): ExplorerItem {
   const mode = String(item.access_mode || '')
   return {
@@ -2315,6 +2330,9 @@ export class ApiClient {
     description: string
     priority: string
     due_at: string
+    basis?: string
+    recurrence?: string
+    recurrence_until?: string
   }): Promise<import('../workplace/platformTasks').PlatformTask> {
     const data = await this.request<Record<string, unknown>>('POST', '/api/v1/platform-tasks', { body })
     const { parsePlatformTask } = await import('../workplace/platformTasks')
@@ -2990,6 +3008,27 @@ export class ApiClient {
     await this.request('POST', `/api/v1/explorer/access-suggestions/${encodeURIComponent(id)}`, {
       body: { accept }
     })
+  }
+
+  async listTodayNews(): Promise<TodayNews[]> {
+    const data = await this.request<{ items?: Record<string, unknown>[] }>('GET', '/api/v1/today/news')
+    return (data.items ?? []).map((row) => ({
+      id: String(row.id || ''),
+      title: String(row.title || ''),
+      body: String(row.body || ''),
+      kind: row.kind === 'process_change' ? 'process_change' : 'info',
+      author: String(row.author || ''),
+      fileId: String(row.file_id || ''),
+      fileName: String(row.file_name || ''),
+      taskIds: Array.isArray(row.task_ids) ? row.task_ids.map(String) : [],
+      imageUrl: String(row.image_url || ''),
+      showUntil: String(row.show_until || ''),
+      createdAt: String(row.created_at || '')
+    }))
+  }
+
+  async dismissTodayNews(id: string): Promise<void> {
+    await this.request('POST', `/api/v1/today/news/${encodeURIComponent(id)}/dismiss`)
   }
 
   async downloadAdminFinanceImport(

@@ -39,6 +39,7 @@ def init_db() -> None:
     from app.models import orchestrator as _orchestrator  # noqa: F401
     from app.models import platform_task as _platform_task  # noqa: F401
     from app.models import regulation as _regulation  # noqa: F401
+    from app.models import today_news as _today_news  # noqa: F401
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401
     from app.models import user_ui_prefs as _user_ui_prefs  # noqa: F401
@@ -294,6 +295,35 @@ def _ensure_columns() -> None:
             conn.execute(
                 text("ALTER TABLE platform_tasks ADD COLUMN rework_count INTEGER NOT NULL DEFAULT 0")
             )
+        for column, ddl in (
+            ("basis", "TEXT NOT NULL DEFAULT ''"),
+            ("recurrence", "VARCHAR(16) NOT NULL DEFAULT ''"),
+            ("recurrence_until", "TIMESTAMPTZ NULL"),
+            ("series_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("next_spawned_at", "TIMESTAMPTZ NULL"),
+            ("source", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("source_ref", "VARCHAR(256) NOT NULL DEFAULT ''"),
+        ):
+            if ptask_cols and column not in ptask_cols:
+                conn.execute(text(f"ALTER TABLE platform_tasks ADD COLUMN {column} {ddl}"))
+        news_cols = {
+            str(r[0])
+            for r in conn.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'today_news'
+                    """
+                )
+            ).fetchall()
+        }
+        for column, ddl in (
+            ("image_path", "VARCHAR(1024) NOT NULL DEFAULT ''"),
+            ("image_type", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ):
+            if news_cols and column not in news_cols:
+                conn.execute(text(f"ALTER TABLE today_news ADD COLUMN {column} {ddl}"))
         chat_rows = conn.execute(
             text(
                 """

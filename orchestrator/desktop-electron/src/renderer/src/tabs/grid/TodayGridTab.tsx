@@ -412,7 +412,7 @@ export function TodayGridTab({
   onAskOrchestrator: (message: string, appContext: string) => void
 }): React.JSX.Element {
   const { forceRefresh } = useGridDataRefreshContext()
-  const [periodDay, setPeriodDay] = useState(startOfToday)
+  const [periodDay] = useState(startOfToday)
   const { data, tiles: allTiles } = useTodayKpiData(user, periodDay)
   const board = useBoardReportReadiness(user)
   const [tileVisibility, setTileVisibility] = useState(() => readTodayTileVisibility(user.id || ''))
@@ -585,7 +585,6 @@ export function TodayGridTab({
         <HomeToday
           user={user}
           periodDay={periodDay}
-          onPeriodDayChange={setPeriodDay}
           tiles={homeTiles}
           activeTileIds={kpiTiles.activeIds}
           onTile={onKpiTileSelect}

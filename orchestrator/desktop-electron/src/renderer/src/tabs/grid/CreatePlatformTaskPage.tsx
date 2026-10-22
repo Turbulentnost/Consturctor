@@ -5,7 +5,12 @@ import type { UserProfile } from '../../api/types'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
 import { addWorkingDays, clockTime, formatRuDateTime, isoDay } from '../../workplace/docflowCreate'
-import { PLATFORM_PRIORITY_LABEL, type PlatformPriority } from '../../workplace/platformTasks'
+import {
+  PLATFORM_PRIORITY_LABEL,
+  PLATFORM_RECURRENCE_LABEL,
+  type PlatformPriority,
+  type PlatformRecurrence
+} from '../../workplace/platformTasks'
 import { openWorkplaceTab } from '../../workplace/workplaceNav'
 import { FioCombobox } from './FioCombobox'
 import './docflowGrid.css'
@@ -30,6 +35,9 @@ export function CreatePlatformTaskPage({ user }: { user: UserProfile }): React.J
   const [dueTime, setDueTime] = useState(() => clockTime(new Date()))
   const [priority, setPriority] = useState<PlatformPriority>('normal')
   const [description, setDescription] = useState('')
+  const [basis, setBasis] = useState('')
+  const [recurrence, setRecurrence] = useState<PlatformRecurrence | ''>('')
+  const [repeatUntil, setRepeatUntil] = useState('')
   const [files, setFiles] = useState<string[]>([])
 
   const [sending, setSending] = useState(false)
@@ -77,6 +85,9 @@ export function CreatePlatformTaskPage({ user }: { user: UserProfile }): React.J
     if (!dueDate) return 'Укажите срок исполнения'
     const due = new Date(`${dueDate}T${dueTime || '18:00'}`)
     if (Number.isNaN(due.getTime()) || due.getTime() <= Date.now()) return 'Срок исполнения должен быть позже текущего момента'
+    if (recurrence && repeatUntil && new Date(`${repeatUntil}T23:59`).getTime() <= due.getTime()) {
+      return '«Повторять до» — позже срока первой задачи'
+    }
     return ''
   }
 
@@ -90,7 +101,10 @@ export function CreatePlatformTaskPage({ user }: { user: UserProfile }): React.J
         assignee_fio: picked.fio,
         description: description.trim(),
         priority,
-        due_at: new Date(`${dueDate}T${dueTime || '18:00'}`).toISOString()
+        due_at: new Date(`${dueDate}T${dueTime || '18:00'}`).toISOString(),
+        basis: basis.trim(),
+        recurrence,
+        recurrence_until: recurrence && repeatUntil ? new Date(`${repeatUntil}T23:59`).toISOString() : ''
       })
       const failed: string[] = []
       for (const path of files) {
@@ -117,6 +131,9 @@ export function CreatePlatformTaskPage({ user }: { user: UserProfile }): React.J
     setSent(null)
     setFio('')
     setDescription('')
+    setBasis('')
+    setRecurrence('')
+    setRepeatUntil('')
     setFiles([])
     setPriority('normal')
     setDueDate(isoDay(addWorkingDays(current, 2)))
@@ -207,6 +224,37 @@ export function CreatePlatformTaskPage({ user }: { user: UserProfile }): React.J
                   </select>
                 </label>
 
+                <label className="tcx-ptask-field">
+                  <span>Периодичность</span>
+                  <select
+                    className="wp-select"
+                    value={recurrence}
+                    onChange={(event) => setRecurrence(event.target.value as PlatformRecurrence | '')}
+                  >
+                    <option value="">Разовая</option>
+                    {(Object.keys(PLATFORM_RECURRENCE_LABEL) as PlatformRecurrence[]).map((id) => (
+                      <option key={id} value={id}>
+                        {PLATFORM_RECURRENCE_LABEL[id]}
+                      </option>
+                    ))}
+                  </select>
+                  <small>Следующая задача ставится сама через период</small>
+                </label>
+
+                {recurrence ? (
+                  <label className="tcx-ptask-field">
+                    <span>Повторять до</span>
+                    <input
+                      className="onec-reconnect-input"
+                      type="date"
+                      value={repeatUntil}
+                      min={dueDate}
+                      onChange={(event) => setRepeatUntil(event.target.value)}
+                    />
+                    <small>Пусто — без даты окончания</small>
+                  </label>
+                ) : null}
+
                 <div className="tcx-ptask-field">
                   <span>Дата постановки</span>
                   <strong className="tcx-ptask-posted">{formatRuDateTime(now)}</strong>
@@ -224,6 +272,18 @@ export function CreatePlatformTaskPage({ user }: { user: UserProfile }): React.J
                     onChange={(event) => setDescription(event.target.value)}
                   />
                   <small>{description.length}/4000</small>
+                </label>
+
+                <label className="tcx-ptask-field tcx-ptask-field--wide">
+                  <span>Основание</span>
+                  <textarea
+                    className="onec-reconnect-input tcx-ptask-text"
+                    rows={2}
+                    maxLength={2000}
+                    value={basis}
+                    placeholder="Документ, приказ, протокол или пункт регламента, по которому ставится задача"
+                    onChange={(event) => setBasis(event.target.value)}
+                  />
                 </label>
 
                 <div className="tcx-ptask-field tcx-ptask-field--wide">
@@ -281,6 +341,8 @@ export function CreatePlatformTaskPage({ user }: { user: UserProfile }): React.J
                 <dd>{dueDate ? `${dueDate.split('-').reverse().join('.')} ${dueTime}` : '—'}</dd>
                 <dt>Приоритет</dt>
                 <dd>{PLATFORM_PRIORITY_LABEL[priority]}</dd>
+                <dt>Периодичность</dt>
+                <dd>{recurrence ? PLATFORM_RECURRENCE_LABEL[recurrence] : 'Разовая'}</dd>
                 <dt>Файлов</dt>
                 <dd>{files.length || '—'}</dd>
               </dl>

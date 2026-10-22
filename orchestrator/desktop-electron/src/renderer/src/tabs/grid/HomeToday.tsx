@@ -10,6 +10,7 @@ import { useTodayPlanTimeline } from '../../workplace/useTodayPlanTimeline'
 import { userGivenName } from '../../workplace/userContext'
 import type { TodayPlanBlock } from './todayDemoData'
 import { KnowledgeAccessPrompt } from './KnowledgeAccessPrompt'
+import { TodayNewsCards } from './TodayNewsCards'
 
 const DAY_START = 8
 const DAY_END = 18
@@ -162,7 +163,6 @@ function plural(n: number, one: string, few: string, many: string): string {
 export function HomeToday({
   user,
   periodDay,
-  onPeriodDayChange,
   tiles,
   activeTileIds,
   onTile,
@@ -184,7 +184,6 @@ export function HomeToday({
 }: {
   user: UserProfile
   periodDay: Date
-  onPeriodDayChange: (day: Date) => void
   tiles: SpecSummaryTile[]
   activeTileIds: string[]
   onTile: (id: string) => void
@@ -227,10 +226,6 @@ export function HomeToday({
     ? `Дальше в ${fmtHour(next.startHour)} — ${next.title}. В работе ${plural(tasks.length, 'задача', 'задачи', 'задач')} и ${plural(unread, 'непрочитанное письмо', 'непрочитанных письма', 'непрочитанных писем')}.`
     : `На этот день ${plural(agenda.length, 'событие', 'события', 'событий')} в плане. В работе ${plural(tasks.length, 'задача', 'задачи', 'задач')} и ${plural(unread, 'непрочитанное письмо', 'непрочитанных письма', 'непрочитанных писем')}.`
 
-  const dateLabel = periodDay.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
-  const weekday = periodDay.toLocaleDateString('ru-RU', { weekday: 'long' })
-  const dateValue = `${periodDay.getFullYear()}-${String(periodDay.getMonth() + 1).padStart(2, '0')}-${String(periodDay.getDate()).padStart(2, '0')}`
-
   const focusIds = activeTileIds.filter((id) => id !== 'all')
   const focusEvents = focusIds.includes('ev')
   const focusTasks = focusIds.some((id) => id === 'onec' || id === 'onec-from-me')
@@ -242,20 +237,6 @@ export function HomeToday({
         <div>
           <h1>Добрый день, {userGivenName(user.fio || '')}</h1>
           <p>{user.position || user.role || 'Оркестратор должности'}</p>
-        </div>
-        <div className="ht-hello-date">
-          <strong>{dateLabel}</strong>
-          <span>{weekday}</span>
-          <input
-            type="date"
-            value={dateValue}
-            aria-label="День"
-            onChange={(event) => {
-              const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(event.target.value)
-              if (!match) return
-              onPeriodDayChange(new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
-            }}
-          />
         </div>
       </header>
       <p className="ht-lede">{lede}</p>
@@ -289,6 +270,7 @@ export function HomeToday({
         </div>
       ) : null}
 
+      <TodayNewsCards />
       <KnowledgeAccessPrompt />
 
       <div className="ht-board">

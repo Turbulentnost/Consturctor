@@ -75,6 +75,7 @@ _AUDIO_TOOLS = frozenset(
         "audio.transcript_docx",
     }
 )
+_PLATFORM_TOOLS = frozenset({"news.publish", "platform.create_task"})
 _SERVER_TOOLS = (
     _IMAP_TOOLS
     | ONEC_TOOLS
@@ -82,6 +83,7 @@ _SERVER_TOOLS = (
     | _USERS_TOOLS
     | _AUDIO_TOOLS
     | MEETING_PLANNER_TOOLS
+    | _PLATFORM_TOOLS
 )
 
 
@@ -143,6 +145,8 @@ def _dispatch_server_tool(
             result = _invoke_users_tool(tool_name, arguments, auth)
         elif tool_name in _AUDIO_TOOLS:
             result = _invoke_audio_tool(tool_name, arguments, auth)
+        elif tool_name in _PLATFORM_TOOLS:
+            result = _invoke_platform_tool(tool_name, arguments, auth)
         elif tool_name in MEETING_PLANNER_TOOLS:
             if tool_name in MEETING_PLANNER_WRITE_TOOLS:
                 _require_meeting_planner_writer(auth)
@@ -497,6 +501,38 @@ def _invoke_audio_tool(
         return _invoke_audio_transcribe(arguments)
     finally:
         clear_tool_context()
+
+
+def _invoke_platform_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+) -> dict[str, Any]:
+    from app.api.v1.platform_tasks import _actor_fio
+    from app.api.v1.today_news import publish_as_user
+    from app.db.session import SessionLocal
+    from app.services import platform_tasks, today_news
+
+    db = SessionLocal()
+    try:
+        if tool_name == "news.publish":
+            return publish_as_user(db, auth, arguments)
+        return platform_tasks.create_task(
+            db,
+            author_id=auth.user_id,
+            author_fio=_actor_fio(db, auth),
+            assignee_fio=str(arguments.get("assignee_fio") or ""),
+            description=str(arguments.get("description") or ""),
+            priority=str(arguments.get("priority") or "normal"),
+            due_at=platform_tasks.parse_due(str(arguments.get("due_at") or "")),
+            basis=str(arguments.get("basis") or ""),
+            recurrence=str(arguments.get("recurrence") or ""),
+            recurrence_until=platform_tasks.parse_optional_moment(str(arguments.get("recurrence_until") or "")),
+        )
+    except (platform_tasks.PlatformTaskError, today_news.NewsError) as exc:
+        raise RuntimeError(exc.message) from exc
+    finally:
+        db.close()
 
 
 def _invoke_users_tool(

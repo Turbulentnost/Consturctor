@@ -64,6 +64,20 @@ class ExplorerFileKey(Base):
     )
 
 
+class ExplorerHistoryRepo(Base):
+    """Скрытый git-репозиторий истории в папке владельца. Ключ знает только система."""
+
+    __tablename__ = "explorer_history_repos"
+
+    owner_folder: Mapped[str] = mapped_column(String(255), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # Ключ Fernet, которым зашифровано каждое содержимое в репозитории.
+    key: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ExplorerKeyGrant(Base):
     """Кому, кроме владельца, выдан ключ файла: сотруднику, отделу или всем."""
 

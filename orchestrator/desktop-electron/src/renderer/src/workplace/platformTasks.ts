@@ -33,7 +33,24 @@ export interface PlatformTask {
   acceptedAt: string
   /** Сколько раз задача уходила на доработку. */
   reworkCount: number
+  /** Основание: документ, приказ, протокол. */
+  basis: string
+  /** Пусто — разовая задача. */
+  recurrence: PlatformRecurrence | ''
+  recurrenceUntil: string
+  /** Поставлена системой, например серверным агентом по документу. */
+  fromAgent: boolean
   files: PlatformTaskFile[]
+}
+
+export type PlatformRecurrence = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly'
+
+export const PLATFORM_RECURRENCE_LABEL: Record<PlatformRecurrence, string> = {
+  daily: 'Ежедневно',
+  weekly: 'Еженедельно',
+  monthly: 'Ежемесячно',
+  quarterly: 'Ежеквартально',
+  yearly: 'Ежегодно'
 }
 
 export const PLATFORM_PRIORITY_LABEL: Record<PlatformPriority, string> = {
@@ -63,6 +80,7 @@ export function parsePlatformTask(raw: unknown): PlatformTask {
   const priority = str(item.priority) as PlatformPriority
   const status = str(item.status) as PlatformStatus
   const role = str(item.role)
+  const recurrence = str(item.recurrence) as PlatformRecurrence
   return {
     id: str(item.id),
     authorUserId: str(item.author_user_id),
@@ -83,6 +101,10 @@ export function parsePlatformTask(raw: unknown): PlatformTask {
     reviewOverdue: Boolean(item.review_overdue),
     acceptedAt: str(item.accepted_at),
     reworkCount: Number(item.rework_count || 0),
+    basis: str(item.basis),
+    recurrence: recurrence in PLATFORM_RECURRENCE_LABEL ? recurrence : '',
+    recurrenceUntil: str(item.recurrence_until),
+    fromAgent: Boolean(str(item.source)),
     files: Array.isArray(item.files)
       ? item.files.map((file) => {
           const row = (file || {}) as Record<string, unknown>

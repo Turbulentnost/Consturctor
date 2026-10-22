@@ -28,6 +28,7 @@ def db(tmp_path, monkeypatch):
             _models.ExplorerEntry.__table__,
             _models.ExplorerFileKey.__table__,
             _models.ExplorerKeyGrant.__table__,
+            _models.ExplorerHistoryRepo.__table__,
             _user.AppUser.__table__,
         ],
     )

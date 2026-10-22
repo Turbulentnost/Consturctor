@@ -187,6 +187,19 @@ async def lifespan(_app: FastAPI):
                 elapsed = asyncio.get_running_loop().time() - started
                 await asyncio.sleep(max(5, INTERVAL_S - elapsed))
 
+        async def process_agent_scheduler() -> None:
+            from app.services.server_agents.process_agent import FIRST_DELAY_S, INTERVAL_S, tick_process_agent
+
+            await asyncio.sleep(FIRST_DELAY_S)
+            while True:
+                started = asyncio.get_running_loop().time()
+                try:
+                    await asyncio.to_thread(tick_process_agent)
+                except Exception:
+                    logger.exception("Process agent tick failed")
+                elapsed = asyncio.get_running_loop().time() - started
+                await asyncio.sleep(max(5, INTERVAL_S - elapsed))
+
         if db_ready:
             scheduler_tasks = [
                 asyncio.create_task(platform_task_scheduler()),
@@ -196,6 +209,7 @@ async def lifespan(_app: FastAPI):
                 asyncio.create_task(kpi_scheduler()),
                 asyncio.create_task(position_kpi_cache_scheduler()),
                 asyncio.create_task(access_advisor_scheduler()),
+                asyncio.create_task(process_agent_scheduler()),
             ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")

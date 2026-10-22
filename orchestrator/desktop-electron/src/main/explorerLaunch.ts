@@ -127,16 +127,34 @@ function regDelete(key: string, valueName?: string): Promise<void> {
   })
 }
 
+function regAdd(key: string, valueName: string, data: string): Promise<void> {
+  return new Promise((resolve) => {
+    execFile(
+      'reg.exe',
+      ['add', key, '/v', valueName, '/t', 'REG_SZ', '/d', data, '/f'],
+      { windowsHide: true, timeout: 8000 },
+      () => resolve()
+    )
+  })
+}
+
 /** Убирает из «Открыть с помощью» значение с именем неподписанного лаунчера. */
 async function removeOpenWithName(key: string, exeName: string): Promise<void> {
   const dump = await regText(['query', key])
   if (!dump) return
   const wanted = exeName.toLowerCase()
+  const dropped = new Set<string>()
   for (const line of dump.split(/\r?\n/)) {
     const match = line.match(/^\s+([a-z])\s+REG_SZ\s+(.*)$/i)
     if (!match || match[2].trim().toLowerCase() !== wanted) continue
+    dropped.add(match[1].toLowerCase())
     await regDelete(key, match[1])
   }
+  const mru = dump.match(/^\s+MRUList\s+REG_SZ\s+(\S+)/im)
+  if (!mru || dropped.size === 0) return
+  const next = [...mru[1].toLowerCase()].filter((letter) => !dropped.has(letter)).join('')
+  if (!next) await regDelete(key, 'MRUList')
+  else await regAdd(key, 'MRUList', next)
 }
 
 /**
@@ -225,70 +243,87 @@ if ($iconSource -match '\\.png$') {
 } elseif ($iconSource -match '\\.ico$') {
   Copy-Item $iconSource $ico -Force
 }
+if ([string]::IsNullOrWhiteSpace($installed)) { exit 0 }
 $exe = $installed
-if (-not $exe) {
-  $exe = Join-Path $iconDir 'Оркестратор.exe'
-  $cs = Join-Path $iconDir 'Launcher.cs'
-  @'
-using System;
-using System.Diagnostics;
-using System.Net.Http;
-using System.Reflection;
-[assembly: AssemblyTitle("Оркестратор")]
-[assembly: AssemblyProduct("Оркестратор")]
-[assembly: AssemblyDescription("Оркестратор")]
-class Program {
-  static void Main(string[] args) {
-    string electron = "${electronPath.replace(/\\/g, '\\\\')}";
-    string main = "${mainScript.replace(/\\/g, '\\\\')}";
-    var start = new ProcessStartInfo();
-    start.FileName = electron;
-    start.UseShellExecute = false;
-    string quoted = "\\"" + main + "\\"";
-    if (args.Length > 0) quoted += " \\"" + args[0] + "\\"";
-    start.Arguments = quoted;
-    string renderer = "";
-    try {
-      using (var client = new HttpClient()) {
-        client.Timeout = TimeSpan.FromMilliseconds(300);
-        for (int port = 5173; port <= 5185; port++) {
-          try {
-            var response = client.GetAsync("http://127.0.0.1:" + port + "/").Result;
-            if ((int)response.StatusCode < 500) {
-              renderer = "http://127.0.0.1:" + port;
-              break;
-            }
-          } catch {}
-        }
-      }
-    } catch {}
-    if (renderer.Length == 0) {
-      if (args.Length > 0) {
-        string dir = System.IO.Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "Orchestrator");
-        System.IO.Directory.CreateDirectory(dir);
-        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "pending-open.txt"), args[0]);
-      }
-      var dev = new ProcessStartInfo();
-      dev.FileName = "cmd.exe";
-      dev.Arguments = "/c npm run dev";
-      dev.WorkingDirectory = "${app.getAppPath().replace(/\\/g, '\\\\')}";
-      dev.UseShellExecute = false;
-      Process.Start(dev);
-      return;
-    }
-    start.EnvironmentVariables["ELECTRON_RENDERER_URL"] = renderer;
-    Process.Start(start);
-  }
-}
-'@ | Set-Content -Path $cs -Encoding UTF8
-  $csc = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe'
-  $iconArg = ''
-  if (Test-Path $ico) { $iconArg = '/win32icon:' + $ico }
-  & $csc /nologo /target:winexe /r:System.Net.Http.dll $iconArg ('/out:' + $exe) $cs | Out-Null
-}
 $exeName = [IO.Path]::GetFileName($exe)
 $icon = if ($installed) { $installed + ',0' } elseif (Test-Path $ico) { $ico } else { $exe + ',0' }
 $command = '"' + $exe + '" "%1"'
 New-Item -Force -Path "HKCU:\\Software\\Classes\\$progId" | Out-Null
 Set-Item -Path "HKCU:\\Software\\Classes\\$progId" -Value 'Оркестратор'
-New-Item -Force -Path "HKCU:\\Software\\Classes\\$p
+New-Item -Force -Path "HKCU:\\Software\\Classes\\$progId\\DefaultIcon" | Out-Null
+Set-Item -Path "HKCU:\\Software\\Classes\\$progId\\DefaultIcon" -Value $icon
+New-Item -Force -Path "HKCU:\\Software\\Classes\\$progId\\shell\\open\\command" | Out-Null
+Set-Item -Path "HKCU:\\Software\\Classes\\$progId\\shell\\open\\command" -Value $command
+if (-not [string]::IsNullOrWhiteSpace($exeName)) {
+$appKey = "HKCU:\\Software\\Classes\\Applications\\$exeName"
+New-Item -Force -Path $appKey | Out-Null
+Set-ItemProperty -Path $appKey -Name 'FriendlyAppName' -Value 'Оркестратор'
+New-Item -Force -Path "$appKey\\DefaultIcon" | Out-Null
+Set-Item -Path "$appKey\\DefaultIcon" -Value $icon
+New-Item -Force -Path "$appKey\\shell\\open\\command" | Out-Null
+Set-Item -Path "$appKey\\shell\\open\\command" -Value $command
+New-Item -Force -Path "$appKey\\SupportedTypes" | Out-Null
+}
+$exts = @(${OPEN_WITH_EXTENSIONS.map((ext) => powershellQuote(ext)).join(',')})
+  $listExe = -not [string]::IsNullOrWhiteSpace($exeName)
+  foreach ($ext in $exts) {
+  if (-not [string]::IsNullOrWhiteSpace($exeName)) {
+  New-ItemProperty -Path "$appKey\\SupportedTypes" -Name $ext -Value '' -PropertyType String -Force | Out-Null
+  }
+  $progids = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\$ext\\OpenWithProgids"
+  New-Item -Force -Path $progids | Out-Null
+  if (-not ((Get-Item $progids).Property -contains $progId)) {
+    New-ItemProperty -Path $progids -Name $progId -PropertyType String -Value '' -Force | Out-Null
+  }
+  if (-not $listExe) { continue }
+  $list = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\$ext\\OpenWithList"
+  New-Item -Force -Path $list | Out-Null
+  $item = Get-Item $list
+  $letters = @($item.Property | Where-Object { $_ -match '^[a-z]$' })
+  $already = $false
+  foreach ($letter in $letters) {
+    $value = [string](Get-ItemProperty -Path $list -Name $letter).$letter
+    if ($value -eq $exeName) { $already = $true; break }
+  }
+  if (-not $already) {
+    $used = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($letter in $letters) { [void]$used.Add([string]$letter) }
+    $free = $null
+    foreach ($code in [char]'a'..[char]'z') {
+      $candidate = [string][char]$code
+      if (-not $used.Contains($candidate)) { $free = $candidate; break }
+    }
+    if ($free) {
+      New-ItemProperty -Path $list -Name $free -Value $exeName -PropertyType String -Force | Out-Null
+      $mru = ''
+      if ($item.Property -contains 'MRUList') {
+        $mru = [string](Get-ItemProperty -Path $list -Name MRUList).MRUList
+      }
+      Set-ItemProperty -Path $list -Name MRUList -Value ($free + $mru)
+    }
+  }
+  $drop = @()
+  foreach ($letter in @((Get-Item $list).Property | Where-Object { $_ -match '^[a-z]$' })) {
+    $value = [string](Get-ItemProperty -Path $list -Name $letter).$letter
+    if ($value -eq 'electron.exe') { $drop += $letter }
+  }
+  foreach ($letter in $drop) {
+    Remove-ItemProperty -Path $list -Name $letter -ErrorAction SilentlyContinue
+  }
+}
+Add-Type -Namespace OrchWin32 -Name ShellNotify -MemberDefinition '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, System.IntPtr item1, System.IntPtr item2);' -ErrorAction SilentlyContinue
+[OrchWin32.ShellNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+`
+  const scriptPath = join(tmpdir(), 'orchestrator-open-with.ps1')
+  try {
+    writeFileSync(scriptPath, `\uFEFF${script}`, 'utf8')
+  } catch {
+    return
+  }
+  const child = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+    { windowsHide: true, stdio: 'ignore' }
+  )
+  child.unref()
+}

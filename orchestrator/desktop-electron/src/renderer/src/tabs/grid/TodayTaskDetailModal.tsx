@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { SpecPill } from '../../workplace/specV04Components'
 import type { SpecTaskRow } from '../../workplace/specV04DemoData'
-import { formatPlatformDateTime, PLATFORM_STATUS_LABEL } from '../../workplace/platformTasks'
+import { formatPlatformDateTime, PLATFORM_RECURRENCE_LABEL, PLATFORM_STATUS_LABEL } from '../../workplace/platformTasks'
 import { openWorkplaceTab } from '../../workplace/workplaceNav'
 
 /** Строка любого виджета задач «Сегодня»: 1С, платформа, проекты Turbo. */
@@ -67,6 +67,11 @@ export function TodayTaskDetailModal({
       label: 'Отметка исполнителя',
       value: platform && platform.status !== 'open' ? PLATFORM_STATUS_LABEL[platform.status] : ''
     },
+    {
+      label: 'Периодичность',
+      value: platform?.recurrence ? PLATFORM_RECURRENCE_LABEL[platform.recurrence] : ''
+    },
+    { label: 'Основание', value: text(platform?.basis) },
     { label: 'Комментарий исполнителя', value: text(platform?.statusComment) },
     { label: 'Возвратов на доработку', value: platform?.reworkCount ? String(platform.reworkCount) : '' }
   ].filter((item) => item.value)

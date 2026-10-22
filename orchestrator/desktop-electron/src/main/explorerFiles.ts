@@ -1,9 +1,10 @@
 import { shell } from 'electron'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, unwatchFile, watchFile, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, extname, join } from 'node:path'
+import { forgetUnsignedExplorerLauncher } from './explorerLaunch'
 
 export type ExplorerSyncEvent = {
   fileId: string
@@ -35,6 +36,68 @@ function openWithDialog(filePath: string): void {
     stdio: 'ignore'
   })
   child.unref()
+}
+
+/** Подписанные программы Office. Неподписанный лаунчер Оркестратора Smart App Control блокирует. */
+const OFFICE_EXECUTABLE: Record<string, string> = {
+  '.doc': 'WINWORD.EXE',
+  '.docx': 'WINWORD.EXE',
+  '.rtf': 'WINWORD.EXE',
+  '.odt': 'WINWORD.EXE',
+  '.xls': 'EXCEL.EXE',
+  '.xlsx': 'EXCEL.EXE',
+  '.xlsm': 'EXCEL.EXE',
+  '.ppt': 'POWERPNT.EXE',
+  '.pptx': 'POWERPNT.EXE'
+}
+
+function regDefault(key: string): Promise<string> {
+  return new Promise((resolve) => {
+    execFile('reg.exe', ['query', key, '/ve'], { windowsHide: true, timeout: 4000 }, (error, stdout) => {
+      if (error) {
+        resolve('')
+        return
+      }
+      const match = String(stdout).match(/REG_(?:SZ|EXPAND_SZ)\s+(.+)\s*$/im)
+      resolve(match ? match[1].trim().replace(/^"|"$/g, '') : '')
+    })
+  })
+}
+
+async function officeExecutable(ext: string): Promise<string> {
+  const exeName = OFFICE_EXECUTABLE[ext]
+  if (!exeName) return ''
+  const keys = [
+    `HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${exeName}`,
+    `HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${exeName}`
+  ]
+  for (const key of keys) {
+    const value = await regDefault(key)
+    if (value && existsSync(value)) return value
+  }
+  const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter((item): item is string => Boolean(item))
+  for (const root of roots) {
+    for (const version of ['Office16', 'Office15']) {
+      for (const candidate of [
+        join(root, 'Microsoft Office', 'root', version, exeName),
+        join(root, 'Microsoft Office', version, exeName)
+      ]) {
+        if (existsSync(candidate)) return candidate
+      }
+    }
+  }
+  return ''
+}
+
+function startEditor(exe: string, filePath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(exe, [filePath], { detached: true, stdio: 'ignore' })
+    child.once('error', () => resolve(false))
+    child.once('spawn', () => {
+      child.unref()
+      resolve(true)
+    })
+  })
 }
 
 async function uploadBack(
@@ -144,11 +207,18 @@ export async function openExplorerFile(
     })
   }
 
-  const openError = await shell.openPath(entry.path)
-  if (openError) {
-    if (process.platform !== 'win32') return { ok: false, error: openError }
-    openWithDialog(entry.path)
+  if (process.platform === 'win32') {
+    const ext = extname(entry.path).toLowerCase()
+    const [office] = await Promise.all([officeExecutable(ext), forgetUnsignedExplorerLauncher()])
+    if (office && (await startEditor(office, entry.path))) return { ok: true }
   }
+
+  const openError = await shell.openPath(entry.path)
+  if (!openError) return { ok: true }
+  if (process.platform !== 'win32' || OFFICE_EXECUTABLE[extname(entry.path).toLowerCase()]) {
+    return { ok: false, error: openError }
+  }
+  openWithDialog(entry.path)
   return { ok: true }
 }
 

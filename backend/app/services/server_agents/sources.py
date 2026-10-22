@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -25,11 +26,12 @@ NORMS_DIR = Path(
     r"\\192.168.1.198\Files\10.СКТБ\НОРМАТИВНЫЕ ДОКУМЕНТЫ ОРГАНИЗАЦИИ"
     r"\НОРМАТИВНЫЕ ДОКУМЕНТЫ\Нормативные документы по подразделениям"
 )
+LOOKUPS = {"people", "department", "norm", "position", "manager"}
 TEXT_LIMIT = 16_000
 NORM_TEXT_LIMIT = 6_000
 
 
-def extract_text(name: str, data: bytes) -> str:
+def extract_text(name: str, data: bytes, limit: int = TEXT_LIMIT) -> str:
     """Текст документа, если формат понятен. Пустая строка — агент не знает, что это за файл."""
     ext = Path(name).suffix.lower()
     try:
@@ -40,12 +42,12 @@ def extract_text(name: str, data: bytes) -> str:
         elif ext == ".xlsx":
             text = _xlsx_text(data)
         elif ext == ".pdf":
-            text = _pdf_text(data)
+            text = _pdf_text(data, limit)
         else:
             text = ""
     except Exception:
         text = ""
-    return " ".join(text.split())[:TEXT_LIMIT] if text else ""
+    return " ".join(text.split())[:limit] if text else ""
 
 
 def people_lookup(db: Session, query: str) -> dict:
@@ -88,6 +90,33 @@ def department_lookup(db: Session, query: str) -> dict:
     return {"ok": True, "items": items}
 
 
+def position_lookup(db: Session, query: str) -> dict:
+    """Кто занимает должность. Слишком общий запрос не возвращает толпу людей."""
+    safe = _safe(query)
+    if len(fio_key(safe)) < 8:
+        return {"ok": False, "error": "Укажите должность целиком, например «главный конструктор»"}
+    rows = [
+        member
+        for member in db.scalars(select(OrgMember).where(OrgMember.position.ilike(f"%{safe}%")).limit(16)).all()
+        if not is_liquidated(member.position) and not is_liquidated(member.fio) and not is_liquidated(member.department)
+    ]
+    if len(rows) > 5:
+        return {
+            "ok": True,
+            "too_many": True,
+            "count": len(rows),
+            "items": [],
+            "error": "Должность слишком общая, уточните её так, как она написана в документе",
+        }
+    return {"ok": True, "too_many": False, "items": [_person(db, member) for member in rows]}
+
+
+def position_holders(db: Session, query: str) -> list[dict[str, str]]:
+    found = position_lookup(db, query)
+    items = found.get("items")
+    return list(items) if isinstance(items, list) else []
+
+
 def resolve_person(db: Session, fio: str):
     """Один сотрудник по ФИО. None, если такого нет или под строку подходят двое."""
     key = fio_key(fio)
@@ -107,6 +136,58 @@ def resolve_person(db: Session, fio: str):
     if len(rows) != 1:
         return None
     return _person(db, rows[0])
+
+
+_HEAD_POST = re.compile(r"^(начальник|руководитель|директор|заведующ)", re.IGNORECASE)
+
+
+def superiors(db: Session, fio: str) -> dict | None:
+    """Факты для выбора руководителя: цепочка подразделений 1С и руководящие должности своего отдела.
+
+    Кто из них непосредственный руководитель, решает агент: в 1С подразделение заполнено не у всех,
+    а документ может сам назначать, кто контролирует.
+    """
+    own = fio_key(fio)
+    member = db.get(OrgMember, own)
+    if member is None:
+        return None
+    units = {unit.id: unit for unit in db.scalars(select(OrgUnit)).all()}
+    led = [unit for unit in units.values() if fio_key(unit.head_fio) == own]
+    current = units.get(member.unit_id) or (led[0] if len(led) == 1 else None)
+    chain: list[dict[str, str]] = []
+    for _ in range(40):
+        if current is None:
+            break
+        head = fio_key(current.head_fio)
+        if head and head != own:
+            boss = db.get(OrgMember, head)
+            if boss is not None and not is_liquidated(boss.fio):
+                chain.append(_person(db, boss) | {"heads_unit": current.name})
+            else:
+                chain.append({"user_id": "", "fio": current.head_fio, "position": "", "department": "", "heads_unit": current.name})
+        current = units.get(current.parent_id)
+    leaders = [
+        _person(db, row)
+        for row in db.scalars(
+            select(OrgMember).where(OrgMember.department == member.department, OrgMember.fio_key != own).limit(400)
+        ).all()
+        if member.department and _HEAD_POST.match(row.position or "") and not is_liquidated(row.fio)
+    ][:10]
+    return {
+        "person": _person(db, member),
+        "own_unit": units[member.unit_id].name if member.unit_id in units else "",
+        "heads_units": [unit.name for unit in led],
+        "unit_chain_heads": chain,
+        "department_leaders": leaders,
+    }
+
+
+def is_superior(db: Session, fio: str, boss_fio: str) -> bool:
+    found = superiors(db, fio)
+    if not found:
+        return False
+    key = fio_key(boss_fio)
+    return any(fio_key(item["fio"]) == key for item in found["unit_chain_heads"] + found["department_leaders"])
 
 
 def resolve_department(db: Session, name: str) -> str:
@@ -152,8 +233,8 @@ def norm_lookup(query: str) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args or args[0] not in {"people", "department", "norm"}:
-        _emit({"ok": False, "error": "Команда: people, department или norm, и строка поиска"})
+    if not args or args[0] not in LOOKUPS:
+        _emit({"ok": False, "error": "Команда: people, department, position, manager или norm, и строка поиска"})
         return 2
     command, query = args[0], " ".join(args[1:]).strip()
     if command == "norm":
@@ -165,6 +246,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if command == "people":
             _emit(people_lookup(db, query))
+        elif command == "position":
+            _emit(position_lookup(db, query))
+        elif command == "manager":
+            found = superiors(db, query)
+            _emit({"ok": True} | found if found else {"ok": False, "error": "Сотрудник не найден, уточните ФИО"})
         else:
             _emit(department_lookup(db, query))
     except Exception as exc:  # noqa: BLE001 — агент должен увидеть ошибку, а не трассировку с адресом базы
@@ -257,13 +343,74 @@ def _xlsx_text(data: bytes) -> str:
     return "\n".join(node.text or "" for node in root.iter() if node.tag.endswith("}t") and node.text)
 
 
-def _pdf_text(data: bytes) -> str:
+def pdf_page_images(data: bytes, *, first: int = 2, last: int = 1, dpi: int = 110) -> list[tuple[int, bytes]]:
+    """PNG первых и последних страниц PDF: на скане подписи, даты и печати есть только на изображении."""
     try:
-        from pypdf import PdfReader
+        import pymupdf
     except ImportError:
-        try:
-            from PyPDF2 import PdfReader
-        except ImportError:
-            return ""
-    reader = PdfReader(io.BytesIO(data))
-    return "\n".join((page.extract_text() or "") for page in reader.pages[:8])
+        return []
+    try:
+        document = pymupdf.open(stream=data, filetype="pdf")
+    except Exception:
+        return []
+    try:
+        count = document.page_count
+        wanted = sorted({*range(min(first, count)), *range(max(count - last, 0), count)})
+        return [(index + 1, document[index].get_pixmap(dpi=dpi).tobytes("png")) for index in wanted]
+    except Exception:
+        return []
+    finally:
+        document.close()
+
+
+def _pdf_text(data: bytes, limit: int = TEXT_LIMIT) -> str:
+    """Текст PDF через уже установленные PyMuPDF и pdfplumber. Страницы читаем, пока не наберём лимит."""
+    pages = max(30, limit // 1000)
+    text = _pdf_pymupdf(data, limit, pages)
+    if len(text.strip()) >= 40:
+        return text
+    fallback = _pdf_pdfplumber(data, limit, pages)
+    return fallback if len(fallback.strip()) > len(text.strip()) else text
+
+
+def _pdf_pymupdf(data: bytes, limit: int, pages: int) -> str:
+    try:
+        import pymupdf
+    except ImportError:
+        return ""
+    try:
+        document = pymupdf.open(stream=data, filetype="pdf")
+    except Exception:
+        return ""
+    parts: list[str] = []
+    total = 0
+    try:
+        for page in document:
+            if len(parts) >= pages or total >= limit:
+                break
+            piece = page.get_text("text") or ""
+            parts.append(piece)
+            total += len(piece)
+    finally:
+        document.close()
+    return "\n".join(parts)
+
+
+def _pdf_pdfplumber(data: bytes, limit: int, pages: int) -> str:
+    try:
+        import pdfplumber
+    except ImportError:
+        return ""
+    parts: list[str] = []
+    total = 0
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for page in pdf.pages:
+                if len(parts) >= pages or total >= limit:
+                    break
+                piece = page.extract_text() or ""
+                parts.append(piece)
+                total += len(piece)
+    except Exception:
+        return ""
+    return "\n".join(parts)

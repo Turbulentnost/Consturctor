@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.explorer import ExplorerEntry, ExplorerFileKey, ExplorerKeyGrant
 from app.models.user import AppUser
+from app.services import explorer_history
 
 SHARED_FOLDER_ID = "shared"
 SHARED_FOLDER_NAME = "Доступные мне"
@@ -146,6 +147,8 @@ def clean_name(raw: str) -> str:
         raise ExplorerError('Имя не может содержать символы < > : " / \\ | ? *')
     if Path(name).stem.lower() in _RESERVED_NAMES:
         raise ExplorerError("Это имя зарезервировано Windows")
+    if name.lower() == explorer_history.REPO_DIR:
+        raise ExplorerError("Это имя зарезервировано системой")
     if len(name) > 200:
         raise ExplorerError("Слишком длинное имя")
     return name
@@ -602,6 +605,73 @@ def _entry_for(db: Session, actor: Actor, entry_id: str) -> ExplorerEntry:
     return entry
 
 
+# ---------- history ----------
+
+
+@dataclass
+class _EntryRef:
+    id: str
+    kind: str
+    name: str
+    owner_folder: str
+    owner_user_id: str
+    owner_fio: str
+    rel_path: str
+
+    @classmethod
+    def of(cls, entry: ExplorerEntry) -> "_EntryRef":
+        return cls(
+            entry.id,
+            entry.kind,
+            entry.name,
+            entry.owner_folder,
+            entry.owner_user_id,
+            entry.owner_fio,
+            entry.rel_path,
+        )
+
+
+def _repo_relative(entry: ExplorerEntry | _EntryRef) -> str:
+    prefix = f"{entry.owner_folder}/"
+    return entry.rel_path[len(prefix) :] if entry.rel_path.startswith(prefix) else entry.rel_path
+
+
+def _history(
+    db: Session,
+    actor: Actor,
+    entry: _EntryRef,
+    data: bytes | None,
+    message: str,
+) -> None:
+    path = _repo_relative(entry) + ("/" if entry.kind == "folder" else "")
+
+    def baseline() -> list[explorer_history.BaselineSource]:
+        rows = db.execute(
+            select(ExplorerEntry, ExplorerFileKey.key)
+            .join(ExplorerFileKey, ExplorerFileKey.file_id == ExplorerEntry.id)
+            .where(
+                ExplorerEntry.owner_folder == entry.owner_folder,
+                ExplorerEntry.kind == "file",
+                ExplorerEntry.id != entry.id,
+            )
+        ).all()
+        return [(_repo_relative(row), _abs(row.rel_path), key) for row, key in rows]
+
+    explorer_history.record(
+        db,
+        owner_dir=_abs(entry.owner_folder),
+        owner_folder=entry.owner_folder,
+        owner_user_id=entry.owner_user_id,
+        owner_name=entry.owner_fio,
+        actor_id=actor.user_id,
+        actor_name=actor.fio,
+        changes=[explorer_history.Change(path, data)],
+        message=f"{message} «{entry.name}»\n\nFile-Id: {entry.id}\n",
+        baseline=baseline,
+        reader=_read_encrypted,
+    )
+
+
 # ---------- mutations ----------
 
 
@@ -681,6 +751,7 @@ def create_file(
         db.rollback()
         _abs(rel_path).unlink(missing_ok=True)
         raise
+    _history(db, actor, _EntryRef.of(entry), content, "Создал")
     return serialize(db, actor, entry)
 
 
@@ -711,6 +782,7 @@ def write_file(db: Session, actor: Actor, file_id: str, data: bytes) -> dict[str
     entry.updated_at = func.now()
     db.commit()
     db.refresh(entry)
+    _history(db, actor, _EntryRef.of(entry), data, "Изменил")
     return serialize(db, actor, entry)
 
 
@@ -721,6 +793,7 @@ def delete_entry(db: Session, actor: Actor, entry_id: str) -> None:
     if entry.owner_user_id != actor.user_id:
         raise ExplorerError("Удалять может только владелец", 403)
     target = _abs(entry.rel_path)
+    ref = _EntryRef.of(entry)
     if entry.kind == "folder":
         ids = [entry.id]
         frontier = [entry.id]
@@ -734,7 +807,9 @@ def delete_entry(db: Session, actor: Actor, entry_id: str) -> None:
             db.query(ExplorerEntry).filter(ExplorerEntry.id == child_id).delete()
         db.commit()
         shutil.rmtree(target, ignore_errors=True)
+        _history(db, actor, ref, None, "Удалил папку")
         return
     db.delete(entry)
     db.commit()
     target.unlink(missing_ok=True)
+    _history(db, actor, ref, None, "Удалил")

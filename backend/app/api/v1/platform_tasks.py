@@ -25,6 +25,9 @@ class PlatformTaskCreate(BaseModel):
     description: str = Field(..., min_length=1, max_length=4000)
     priority: str = "normal"
     due_at: str
+    basis: str = Field("", max_length=2000)
+    recurrence: str = ""
+    recurrence_until: str = ""
 
 
 class PlatformTaskStatus(BaseModel):
@@ -106,6 +109,9 @@ def create_task(
             description=body.description,
             priority=body.priority,
             due_at=platform_tasks.parse_due(body.due_at),
+            basis=body.basis,
+            recurrence=body.recurrence,
+            recurrence_until=platform_tasks.parse_optional_moment(body.recurrence_until),
         )
     except Exception as exc:  # noqa: BLE001
         _raise(exc)
@@ -230,6 +236,9 @@ async def platform_task_scheduler() -> None:
             returned = platform_tasks.return_unreviewed(db)
             if returned:
                 logger.info("platform tasks: %s tasks returned to rework (review expired)", returned)
+            spawned = platform_tasks.spawn_recurring(db)
+            if spawned:
+                logger.info("platform tasks: %s recurring tasks created", spawned)
         except Exception:
             logger.exception("platform task scheduler tick failed")
             stale = False

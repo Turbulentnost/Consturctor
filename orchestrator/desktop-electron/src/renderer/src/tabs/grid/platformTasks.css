@@ -99,6 +99,10 @@
   border-top: 3px solid #90a4ae;
 }
 
+.ptask-basis {
+  white-space: pre-line;
+}
+
 .ptask-detail-pills {
   display: flex;
   flex-wrap: wrap;

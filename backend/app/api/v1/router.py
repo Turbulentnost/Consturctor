@@ -17,6 +17,7 @@ from app.api.v1 import (
     position_kpi_builds,
     regulation_creation,
     regulations,
+    today_news,
     tools,
     triggers,
     user_ui,
@@ -47,4 +48,5 @@ api_router.include_router(workplace.router, prefix="/api/v1")
 api_router.include_router(user_ui.router, prefix="/api/v1")
 api_router.include_router(platform_tasks.router, prefix="/api/v1")
 api_router.include_router(explorer.router, prefix="/api/v1")
+api_router.include_router(today_news.router, prefix="/api/v1")
 api_router.include_router(chat_router, prefix="/api/v1")

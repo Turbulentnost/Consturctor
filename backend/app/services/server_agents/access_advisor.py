@@ -187,12 +187,14 @@ def judge_suggestions(
     payload: object,
     resolve_person: Callable[[str], dict[str, str] | None],
     resolve_department: Callable[[str], str],
+    resolve_position: Callable[[str], list[dict[str, str]]] | None = None,
 ) -> list[Draft]:
     """Оставляет только те рекомендации, где связь написана в самом документе."""
     by_id = {doc.file_id: doc for doc in docs}
     files = payload.get("files") if isinstance(payload, dict) else None
     if not isinstance(files, list):
         return []
+    holders = resolve_position or (lambda _phrase: [])
     drafts: list[Draft] = []
     seen: set[tuple[str, str, str, str]] = set()
     for item in files:
@@ -208,26 +210,49 @@ def judge_suggestions(
         for raw in suggestions:
             if not isinstance(raw, dict):
                 continue
-            draft = _one(doc, kind_name, raw, resolve_person, resolve_department)
-            if draft is None:
-                continue
-            marker = (draft.file_id, draft.kind, fio_key(draft.grantee_label), draft.permission)
-            if marker in seen:
-                continue
-            seen.add(marker)
-            drafts.append(draft)
+            for draft in _one(doc, kind_name, raw, resolve_person, resolve_department, holders):
+                marker = (draft.file_id, draft.kind, fio_key(draft.grantee_label), draft.permission)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                drafts.append(draft)
     return drafts
 
 
 def person_mentioned(fio: str, text: str, filename: str) -> bool:
-    """Фамилия и имя отдельными словами, с учётом падежа: «Соломичеву Светлану» — это та же Светлана."""
+    """Фамилия и имя, либо фамилия и инициал: «И.В. Хозуян» — тот же Хозуян Иван."""
     parts = fio_key(fio).split()
     if len(parts) < 2:
         return False
     words = re.findall(r"\w+", fio_key(f"{filename}\n{text}"))
     surname_at = {index for index, word in enumerate(words) if _inflected(word, parts[0])}
     name_at = {index for index, word in enumerate(words) if _inflected(word, parts[1]) and index not in surname_at}
-    return bool(surname_at) and bool(name_at)
+    if surname_at and name_at:
+        return True
+    return _initial_near(words, parts[0], parts[1][0])
+
+
+def position_in_text(position: str, text: str, filename: str) -> bool:
+    needle = fio_key(position)
+    return len(needle) >= 8 and needle in fio_key(f"{filename}\n{text}")
+
+
+def position_matches(holder_position: str, phrase: str) -> bool:
+    holder = fio_key(holder_position)
+    needle = fio_key(phrase)
+    return len(needle) >= 8 and bool(holder) and (needle in holder or holder in needle)
+
+
+def _initial_near(words: list[str], surname: str, initial: str) -> bool:
+    if not initial:
+        return False
+    for index, word in enumerate(words):
+        if not _inflected(word, surname):
+            continue
+        window = words[max(0, index - 3) : index] + words[index + 1 : index + 4]
+        if any(item == initial for item in window):
+            return True
+    return False
 
 
 def department_mentioned(name: str, text: str, filename: str) -> bool:
@@ -304,6 +329,7 @@ def _tick() -> None:
             result["recommendations"],
             lambda fio: sources.resolve_person(db, fio),
             lambda name: sources.resolve_department(db, name),
+            lambda phrase: sources.position_holders(db, phrase),
         )
         saved = _store(db, drafts, run_id)
         state = db.get(ExplorerAccessAgentState, AGENT_KEY)
@@ -598,102 +624,186 @@ def _one(
     raw: dict[str, Any],
     resolve_person: Callable[[str], dict[str, str] | None],
     resolve_department: Callable[[str], str],
-) -> Draft | None:
+    resolve_position: Callable[[str], list[dict[str, str]]],
+) -> list[Draft]:
     kind = str(raw.get("kind") or "").strip().lower()
     quote = " ".join(str(raw.get("quote") or "").split())
     if kind not in {"user", "department", "all", "private"} or not quote_in(quote, doc.text, doc.name):
-        return None
+        return []
     if kind in {"user", "department", "all"}:
         permission = str(raw.get("permission") or "").strip().lower()
         if permission not in {"read", "write"}:
-            return None
+            return []
     else:
         permission = ""
     if kind == "user":
-        person = resolve_person(str(raw.get("fio") or ""))
-        if person is None:
-            return None
-        fio = person["fio"]
-        surname = fio_key(fio).split()[0]
-        quote_words = re.findall(r"\w+", fio_key(quote))
-        if not person_mentioned(fio, doc.text, doc.name) or not any(_inflected(word, surname) for word in quote_words):
-            return None
-        if _covered(doc, kind="user", user_id=person["user_id"], fio=fio, department=person["department"], permission=permission):
-            return None
-        place = person["position"] or "должность не указана"
-        return Draft(
-            file_id=doc.file_id,
-            file_name=doc.name,
-            owner_user_id=doc.owner_user_id,
-            document_kind=document_kind,
-            kind="user",
-            grantee_id=person["user_id"],
-            grantee_label=fio,
-            position=person["position"],
-            department=person["department"],
-            permission=permission,
-            quote=quote[:1000],
-            reason=(
-                f"В документе прямо назван {fio}, {place}. "
-                f"Ключа на {PERM_RU[permission]} нет. «{quote[:240]}»"
-            ),
-        )
+        return _users_from_process(doc, document_kind, raw, quote, permission, resolve_person, resolve_position)
     if kind == "department":
         name = resolve_department(str(raw.get("department") or ""))
         if not name or not department_mentioned(name, doc.text, doc.name) or not department_mentioned(name, quote, ""):
-            return None
+            return []
         if _covered(doc, kind="department", user_id="", fio="", department=name, permission=permission):
-            return None
-        return Draft(
-            file_id=doc.file_id,
-            file_name=doc.name,
-            owner_user_id=doc.owner_user_id,
-            document_kind=document_kind,
-            kind="department",
-            grantee_id="",
-            grantee_label=name,
-            position="весь отдел",
-            department=name,
-            permission=permission,
-            quote=quote[:1000],
-            reason=f"В документе прямо назван отдел «{name}». Предлагаю {PERM_RU[permission]} всему отделу. «{quote[:240]}»",
-        )
+            return []
+        return [
+            Draft(
+                file_id=doc.file_id,
+                file_name=doc.name,
+                owner_user_id=doc.owner_user_id,
+                document_kind=document_kind,
+                kind="department",
+                grantee_id="",
+                grantee_label=name,
+                position="весь отдел",
+                department=name,
+                permission=permission,
+                quote=quote[:1000],
+                reason=f"В документе прямо назван отдел «{name}». Предлагаю {PERM_RU[permission]} всему отделу. «{quote[:240]}»",
+            )
+        ]
     why = " ".join(str(raw.get("why") or "").split())
     if len(why) < 40:
-        return None
+        return []
     if kind == "all":
         if _covered(doc, kind="all", user_id="", fio="", department="", permission=permission):
-            return None
-        return Draft(
+            return []
+        return [
+            Draft(
+                file_id=doc.file_id,
+                file_name=doc.name,
+                owner_user_id=doc.owner_user_id,
+                document_kind=document_kind,
+                kind="all",
+                grantee_id="",
+                grantee_label="Все сотрудники",
+                position="открыть всем",
+                department="",
+                permission=permission,
+                quote=quote[:1000],
+                reason=why,
+            )
+        ]
+    if doc.mode == "private" and not doc.grants:
+        return []
+    return [
+        Draft(
             file_id=doc.file_id,
             file_name=doc.name,
             owner_user_id=doc.owner_user_id,
             document_kind=document_kind,
-            kind="all",
+            kind="private",
             grantee_id="",
-            grantee_label="Все сотрудники",
-            position="открыть всем",
+            grantee_label="Сделать приватным",
+            position="закрыть доступ остальным",
             department="",
-            permission=permission,
+            permission="",
             quote=quote[:1000],
             reason=why,
         )
-    if doc.mode == "private" and not doc.grants:
-        return None
-    return Draft(
-        file_id=doc.file_id,
-        file_name=doc.name,
-        owner_user_id=doc.owner_user_id,
-        document_kind=document_kind,
-        kind="private",
-        grantee_id="",
-        grantee_label="Сделать приватным",
-        position="закрыть доступ остальным",
-        department="",
-        permission="",
-        quote=quote[:1000],
-        reason=why,
-    )
+    ]
+
+
+def _users_from_process(
+    doc: DocumentView,
+    document_kind: str,
+    raw: dict[str, Any],
+    quote: str,
+    permission: str,
+    resolve_person: Callable[[str], dict[str, str] | None],
+    resolve_position: Callable[[str], list[dict[str, str]]],
+) -> list[Draft]:
+    phrase = " ".join(str(raw.get("position") or "").split())
+    people: list[dict[str, str]] = []
+    named = resolve_person(" ".join(str(raw.get("fio") or "").split()))
+    if named is not None:
+        people.append(named)
+    if position_in_text(phrase, doc.text, doc.name) and position_in_text(phrase, quote, ""):
+        for holder in resolve_position(phrase):
+            if position_matches(holder.get("position") or "", phrase) and not any(
+                fio_key(holder.get("fio") or "") == fio_key(item.get("fio") or "") for item in people
+            ):
+                people.append(holder)
+    drafts: list[Draft] = []
+    evidence = fio_key(quote)
+    for person in people:
+        fio = person.get("fio") or ""
+        if not fio or not _linked_to_file(person, phrase, doc):
+            continue
+        surname = fio_key(fio).split()[0]
+        if surname not in evidence and fio_key(phrase) not in evidence and fio_key(person.get("position") or "") not in evidence:
+            continue
+        if _covered(doc, kind="user", user_id=person.get("user_id") or "", fio=fio, department=person.get("department") or "", permission=permission):
+            continue
+        place = person.get("position") or phrase or "должность не указана"
+        drafts.append(
+            Draft(
+                file_id=doc.file_id,
+                file_name=doc.name,
+                owner_user_id=doc.owner_user_id,
+                document_kind=document_kind,
+                kind="user",
+                grantee_id=person.get("user_id") or "",
+                grantee_label=fio,
+                position=person.get("position") or phrase,
+                department=person.get("department") or "",
+                permission=permission,
+                quote=quote[:1000],
+                reason=_why_included(raw, person, phrase, quote, permission),
+            )
+        )
+    return drafts
+
+
+def _why_included(raw: dict[str, Any], person: dict[str, str], phrase: str, quote: str, permission: str) -> str:
+    """Описание агента, почему человек включён. Если агент его не дал — собираем по роли в цитате."""
+    fio = person.get("fio") or ""
+    place = person.get("position") or phrase or "должность не указана"
+    written = " ".join(str(raw.get("why") or "").split())
+    blob = fio_key(written)
+    surname = fio_key(fio).split()[:1]
+    mentions = (surname and surname[0] in blob) or (phrase and fio_key(phrase) in blob) or (fio_key(place) in blob)
+    if len(written) >= 40 and mentions:
+        return written[:1000]
+    named = bool(surname) and _surname_in_text(quote, surname[0])
+    low = fio_key(quote)
+    if "внесение изменений" in low or "вносить изменения" in low:
+        role = f"инструкция поручает должности «{phrase or place}» вносить в неё изменения"
+    elif "разработал" in low:
+        role = "в листе согласования указан как разработчик документа"
+    elif "проверил" in low:
+        role = "в листе согласования проверял документ"
+    elif "согласовал" in low:
+        role = f"согласовал документ как {phrase or place}"
+    elif "утверждаю" in low:
+        role = "утверждает документ"
+    else:
+        role = "участвует в процессе, который описывает документ"
+    if named:
+        head = f"{fio}, {place}: {role}."
+    else:
+        head = f"В тексте названа должность «{phrase or place}», её занимает {fio}. {role[:1].upper() + role[1:]}."
+    return f"{head} Поэтому предлагается {PERM_RU[permission]}."
+
+
+def _surname_in_text(text: str, surname: str) -> bool:
+    return any(_inflected(word, surname) for word in re.findall(r"\w+", fio_key(text)))
+
+
+def _linked_to_file(person: dict[str, str], phrase: str, doc: DocumentView) -> bool:
+    fio = person.get("fio") or ""
+    if person_mentioned(fio, doc.text, doc.name):
+        return True
+    if phrase and position_in_text(phrase, doc.text, doc.name) and position_matches(person.get("position") or "", phrase):
+        return True
+    org_position = person.get("position") or ""
+    surname = fio_key(fio).split()[:1]
+    if surname and _surname_in(doc, surname[0]) and position_in_text(org_position, doc.text, doc.name):
+        return True
+    return False
+
+
+def _surname_in(doc: DocumentView, surname: str) -> bool:
+    words = re.findall(r"\w+", fio_key(f"{doc.name}\n{doc.text}"))
+    return any(_inflected(word, surname) for word in words)
 
 
 def _covered(doc: DocumentView, *, kind: str, user_id: str, fio: str, department: str, permission: str) -> bool:
@@ -760,43 +870,49 @@ def _task_prompt(workspace: Path, docs: list[DocumentView], last_plan: str, laun
         f"- {doc.file_id} | {doc.name} | сейчас: {doc.mode} | текст: {'texts/' + doc.file_id + '.txt' if doc.text else 'не читается, рекомендацию не давать'}"
         for doc in docs
     )
-    previous = f"\nПрошлый план, чтобы не начинать с нуля:\n{last_plan[:2000]}\n" if last_plan.strip() else ""
+    previous = (
+        "\nПрошлый план не переноси: должность участника процесса важнее полного имени. "
+        "Инициалы при фамилии достаточны, поиск по должности обязателен.\n"
+        if last_plan.strip()
+        else ""
+    )
     tool = launcher or "lookup.cmd"
     return f"""Ты серверный агент доступа к базе знаний. Люди тебя не видят и ответить не могут. Ничего не спрашивай.
 Изменённые файлы уже лежат в `{workspace}`. Список — recent.json, полный текст понятного документа — texts/<file_id>.txt.
 
 {files}
 {previous}
-Откуда брать людей и отделы. Других источников нет, всех подряд не выгружай:
-1. Сотрудник, должность и отдел — одна команда `{tool} people "фамилия"`. Это поиск по org_members (оргструктура 1С в базе Оркестратора), не больше 15 строк. Не запрашивай список всех людей.
-2. Отдел — `{tool} department "название из документа"`. Это org_units: название, руководитель и число людей, без списка сотрудников.
-3. Чем отдел занимается — один файл из `{sources.NORMS_DIR}`. Читать только так: `{tool} norm "название отдела"`. Если совпадений несколько, уточни имя и вызови ещё раз. Всю папку не открывай и не обходи.
+Откуда брать людей, должности и процессы. Всех подряд не выгружай:
+1. Должность — `{tool} position "должность из документа"`. Это сотрудники с этой должностью в org_members. Если ответ too_many, должность слишком общая: возьми формулировку из текста целиком, например «главный конструктор», а не «директор».
+2. Фамилия — `{tool} people "фамилия"`, когда нужно подтвердить человека. Не больше 15 строк.
+3. Отдел — `{tool} department "название из документа"`.
+4. Чем отдел занимается — один файл из `{sources.NORMS_DIR}`, команда `{tool} norm "название отдела"`. Всю папку не обходи.
+Процесс — это порядок, который описывает сам документ: его назначение и действия участников. Другого справочника процессов нет. Участник процесса — человек, чья должность в этом порядке названа, или кто стоит в листе разработки, проверки, согласования и утверждения.
 Не читай .env, не ходи в 1С, почту и чужие папки, не меняй файлы базы и доступы. Единственный записываемый результат — recommendations.json на втором шаге.
 
-Рекомендация по файлу допустима только если одновременно:
-- по тексту понятно, что это за документ (служебная записка, договор, объявление, положение);
-- человек назван в тексте или имени файла фамилией и именем, либо отдел назван своим именем;
-- цитата quote — непрерывный фрагмент этого текста или имени файла.
-Сходство темы с обязанностями отдела, «скорее всего им нужно», общий контекст и догадка — это неявная связь. По такому файлу не возвращай ничего.
-Не предлагай того, у кого доступ уже есть (смотри grants в recent.json), и не предлагай владельца файла.
-Чтение — человека или отдел просят ознакомиться, согласовать, исполнить, им адресован документ.
-Запись — человека прямо просят заполнить, исправить или подписать этот файл.
-Весь отдел — в тексте назван отдел, а не конкретные люди.
-Всем — в документе нет персональных, коммерческих и учётных данных, и это прямо видно из текста.
-Приватным — в тексте есть пароль, персональные данные, зарплата или прямая пометка о конфиденциальности, а файл сейчас открыт другим.
+Связь с файлом есть, и рекомендация обязательна, если выполнено хотя бы одно:
+- в тексте названа должность участника процесса («главный конструктор», «специалист по процессному управлению»);
+- названы фамилия и имя или фамилия с инициалами («И.В. Хозуян»).
+Должность важнее полного имени: «Главный конструктор И.В. Хозуян» — это Хозуян, его нужно найти командой position и включить в рекомендации.
+Цитата quote — непрерывный фрагмент текста, где есть эта должность или фамилия.
+«Разработал», «проверил», «согласовал», «утверждаю», «ознакомить», «исполнить», «внести изменения» означают, что этот участник связан с файлом. Чтение — участвует в процессе. Запись — ему поручено менять сам документ.
+Не оставляй files пустым, если такая должность или фамилия есть и lookup нашёл сотрудника.
+Не предлагай владельца и тех, у кого доступ уже есть (grants в recent.json).
+Не открывай файл всем только потому, что «все сотрудники должны соблюдать» инструкцию: это не список получателей.
+Сходство темы без названной должности, фамилии или отдела — не связь, рекомендации нет.
+Весь отдел — только если отдел назван своим именем, а не должность одного человека.
 
-На первом шаге только план. На втором запиши `{workspace / "recommendations.json"}` в виде:
-{{"files":[{{"file_id":"...","document_kind":"что это за документ","suggestions":[{{"kind":"user","fio":"Фамилия Имя Отчество","permission":"read","quote":"фраза из файла"}}]}}]}}
-kind ещё бывает department (поле department), all и private (поля permission, кроме private, quote и why — почему, не короче фразы).
-Файл без уверенной связи в files не включай. Пустой список files — нормальный итог.
+На первом шаге только план: для каждой должности участника вызови position. На втором запиши `{workspace / "recommendations.json"}`:
+{{"files":[{{"file_id":"...","document_kind":"инструкция","suggestions":[{{"kind":"user","fio":"Фамилия Имя Отчество","position":"должность из документа","permission":"read","quote":"фраза из файла","why":"Почему именно этот человек: какая у него роль в процессе документа, одна-две фразы"}}]}}]}}
+У каждого человека своё why. Не копируй одну фразу на всех. Напиши, что он делает с этим файлом: разработал, проверил, согласовал, утвердил или по должности вносит изменения.
 """
 
 
 def _run_prompt(workspace: Path, plan: str) -> str:
     return (
         "Выполни план. Человека нет, ничего не спрашивай и ничего, кроме recommendations.json, не меняй. "
-        "Доступ, 1С и почту не трогай. Если связь человека или отдела с файлом не написана в самом документе, "
-        "этот файл в рекомендации не включай.\n"
+        "Доступ, 1С и почту не трогай. Должность участника процесса в тексте — уже связь: найди сотрудника "
+        "и включи его в рекомендации, даже если в документе только инициалы.\n"
         f"Запиши итог в `{workspace / 'recommendations.json'}`.\n\n"
         f"{plan}"
     )
@@ -887,9 +1003,14 @@ def _parse_object(raw: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+HISTORY_ROWS_PER_TURN = 120
+_IMAGE_DATA = re.compile(r'"imageData"\s*:\s*"[^"]*"?')
+
+
 def _history_events(prompt: str, plan_events: list[dict[str, Any]], agent_events: list[dict[str, Any]]) -> list[dict[str, str]]:
     rows = [{"turn": "0", "type": "user", "body": prompt[:8000], "name": "", "status": "", "args": "", "result": ""}]
     for turn, events in (("0", plan_events), ("1", agent_events)):
+        turn_limit = len(rows) + HISTORY_ROWS_PER_TURN
         assistant: list[str] = []
         thinking: list[str] = []
 
@@ -917,13 +1038,13 @@ def _history_events(prompt: str, plan_events: list[dict[str, Any]], agent_events
                         "name": str(item.get("name") or ""),
                         "status": str(item.get("status") or ""),
                         "args": str(item.get("args") or "")[:2000],
-                        "result": str(item.get("result") or "")[:2000],
+                        "result": _IMAGE_DATA.sub('"imageData":"…"', str(item.get("result") or ""))[:2000],
                     }
                 )
-            if len(rows) >= 80:
+            if len(rows) >= turn_limit:
                 break
         flush()
-    return rows[:80]
+    return rows
 
 
 def _remember_history(
@@ -935,6 +1056,8 @@ def _remember_history(
     error: str,
     sdk_agent_id: str,
     events: list[dict[str, str]],
+    agent_id: str = "server-explorer-access",
+    agent_title: str = AGENT_TITLE,
 ) -> None:
     try:
         _write_history(
@@ -945,9 +1068,11 @@ def _remember_history(
             error=error[:2000],
             sdk_agent_id=sdk_agent_id,
             events=events,
+            agent_id=agent_id,
+            agent_title=agent_title,
         )
     except Exception:
-        logger.exception("access advisor history was not saved")
+        logger.exception("%s history was not saved", agent_id)
 
 
 def _write_history(
@@ -959,6 +1084,8 @@ def _write_history(
     error: str,
     sdk_agent_id: str,
     events: list[dict[str, str]],
+    agent_id: str,
+    agent_title: str,
 ) -> None:
     now = datetime.now(timezone.utc)
     manifest = {}
@@ -1003,8 +1130,8 @@ def _write_history(
                 "id": run_id,
                 "config_id": CONFIG_ID,
                 "config_title": "Конфигурация 2",
-                "agent_id": "server-explorer-access",
-                "agent_title": AGENT_TITLE,
+                "agent_id": agent_id,
+                "agent_title": agent_title,
                 "prompt": prompt,
                 "status": status,
                 "error": error,
