@@ -70,11 +70,9 @@ export function KpiDailyWaitingTile({ day }: { day: string }): React.JSX.Element
 
 export function KpiDailyRunPanel({
   daily,
-  onDownloadReport,
   onOpenChat
 }: {
   daily: KpiDailyRun
-  onDownloadReport: () => void
   onOpenChat?: () => void
 }): React.JSX.Element | null {
   const runs = useRuns()
@@ -98,21 +96,7 @@ export function KpiDailyRunPanel({
   const position = daily.today?.profile?.position || ''
   const day = daily.today?.day ? formatDay(daily.today.day) : ''
 
-  if (daily.phase === 'ready') {
-    return (
-      <div className="kpi-daily-run is-ready" role="status">
-        <div>
-          <strong>Расчёт KPI за {day} готов</strong>
-          <p>{position ? `Должность «${position}». ` : ''}Плитки и отчёт ИЦПП взяты из сегодняшнего кэша.</p>
-        </div>
-        <button type="button" className="spec-btn-outline" onClick={onDownloadReport}>
-          Скачать отчёт ИЦПП
-        </button>
-      </div>
-    )
-  }
-
-  if (daily.phase === 'waiting') return null
+  if (daily.phase === 'ready' || daily.phase === 'waiting') return null
 
   if (daily.phase === 'failed') {
     return (

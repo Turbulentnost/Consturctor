@@ -218,9 +218,29 @@ export function PlatformAgentPage({ workflowId, source, title, autoStart = false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStart, fromConstructor, openSession, platformAgentId, runId, workflowId])
 
+  const replacedDeadRun = useRef(false)
+
   useEffect(() => {
-    if (!sessionId) void load()
-  }, [load, sessionId])
+    if (!sessionId) {
+      void load()
+      return
+    }
+    let alive = true
+    void apiGet<PlatformSessionsResponse>(`/api/v1/platform/sessions?limit=${SESSIONS_LIMIT}`)
+      .then((data) => {
+        if (!alive || replacedDeadRun.current) return
+        const current = data.items.find((item) => item.id === sessionId)
+        if (!current || current.status !== 'error' || current.plan) return
+        replacedDeadRun.current = true
+        openedSession.delete(workflowId)
+        autoStartedRef.current = false
+        setSessionId(null)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [load, sessionId, workflowId])
 
   function addFiles(list: File[]): void {
     if (!list.length) return

@@ -21,6 +21,9 @@ _reopen_lock = threading.Lock()
 _CONN_TTL_SEC = 300.0
 _MAX_IDLE_CONNS = 4
 _PROBE_TIMEOUT_SEC = 5
+_staff_cache_lock = threading.Lock()
+_staff_cache: tuple[float, list["ErpStaffAssignment"]] | None = None
+_STAFF_CACHE_SEC = 60.0
 
 _DEPARTMENT_JOIN_SQL = """
     LEFT JOIN dbo._Reference513 d1 WITH (NOLOCK)
@@ -841,6 +844,85 @@ class ErpStaffAssignment:
     person_id: str = ""
 
 
+# Latest open staffing row per person: DateTo near year 5999, newest DateFrom.
+_CURRENT_STAFF_SQL = """
+;WITH latest AS (
+    SELECT
+        CONVERT(varchar(64), p._IDRRef, 2) AS PersonId,
+        CAST(p._Description AS nvarchar(256)) AS Person,
+        CONVERT(varchar(64), pos._IDRRef, 2) AS PositionId,
+        CAST(pos._Description AS nvarchar(256)) AS Position,
+        CAST(hr._Description AS nvarchar(256)) AS HrDept,
+        CAST(folder._Description AS nvarchar(256)) AS StaffFolder,
+        CAST(s._Description AS nvarchar(256)) AS StaffUnit,
+        ROW_NUMBER() OVER (
+            PARTITION BY p._IDRRef
+            ORDER BY t._Fld43774 DESC
+        ) AS rn
+    FROM dbo._InfoRg43757 t WITH (NOLOCK)
+    INNER JOIN dbo._Reference596 p WITH (NOLOCK)
+        ON t._Fld43761RRef = p._IDRRef
+    INNER JOIN dbo._Reference613X1 s WITH (NOLOCK)
+        ON t._Fld43767RRef = s._IDRRef
+    LEFT JOIN dbo._Reference613X1 folder WITH (NOLOCK)
+        ON s._ParentIDRRef = folder._IDRRef
+    LEFT JOIN dbo._Reference164 pos WITH (NOLOCK)
+        ON t._Fld43766RRef = pos._IDRRef
+    LEFT JOIN dbo._Reference358 hr WITH (NOLOCK)
+        ON t._Fld43765RRef = hr._IDRRef
+    WHERE t._Fld43775 >= '5999-01-01'
+      AND t._Fld43774 > '2002-01-01'
+      AND LTRIM(RTRIM(ISNULL(s._Description, N''))) <> N''
+)
+SELECT PersonId, Person, PositionId, Position, HrDept, StaffFolder, StaffUnit
+FROM latest
+WHERE rn = 1
+  AND LTRIM(RTRIM(ISNULL(Person, N''))) <> N''
+"""
+
+
+def _staff_from_rows(rows) -> list[ErpStaffAssignment]:
+    return [
+        ErpStaffAssignment(
+            fio=(row.Person or "").strip(),
+            person_id=(row.PersonId or "").strip().upper(),
+            position_id=(row.PositionId or "").strip().upper(),
+            position=(row.Position or "").strip(),
+            hr_department=(row.HrDept or "").strip(),
+            staff_folder=(row.StaffFolder or "").strip(),
+            staff_unit=(row.StaffUnit or "").strip(),
+        )
+        for row in rows
+    ]
+
+
+def _query_current_staff(cur) -> list[ErpStaffAssignment]:
+    cur.execute(_CURRENT_STAFF_SQL)
+    return _staff_from_rows(cur.fetchall())
+
+
+def list_current_staff() -> list[ErpStaffAssignment]:
+    """Текущие назначения из 1С erp_pm (регистр _InfoRg43757), не снимок Postgres."""
+    global _staff_cache
+    now = time.monotonic()
+    with _staff_cache_lock:
+        cached = _staff_cache
+        if cached is not None and now - cached[0] < _STAFF_CACHE_SEC:
+            return list(cached[1])
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        rows = _query_current_staff(cur)
+    except pyodbc.Error as exc:
+        raise ErpSqlError(f"Failed to load current staff: {exc}") from exc
+    finally:
+        _release_connection(conn)
+    with _staff_cache_lock:
+        _staff_cache = (now, rows)
+    return list(rows)
+
+
 def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
     """Вся управленческая структура: подразделения (_Reference513) и текущие назначения.
 
@@ -874,55 +956,7 @@ def load_org_structure() -> tuple[list[ErpOrgDept], list[ErpStaffAssignment]]:
             )
             for row in cur.fetchall()
         ]
-        cur.execute(
-            """
-            ;WITH latest AS (
-                SELECT
-                    CONVERT(varchar(64), p._IDRRef, 2) AS PersonId,
-                    CAST(p._Description AS nvarchar(256)) AS Person,
-                    CONVERT(varchar(64), pos._IDRRef, 2) AS PositionId,
-                    CAST(pos._Description AS nvarchar(256)) AS Position,
-                    CAST(hr._Description AS nvarchar(256)) AS HrDept,
-                    CAST(folder._Description AS nvarchar(256)) AS StaffFolder,
-                    CAST(s._Description AS nvarchar(256)) AS StaffUnit,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY p._IDRRef
-                        ORDER BY t._Fld43774 DESC
-                    ) AS rn
-                FROM dbo._InfoRg43757 t WITH (NOLOCK)
-                INNER JOIN dbo._Reference596 p WITH (NOLOCK)
-                    ON t._Fld43761RRef = p._IDRRef
-                INNER JOIN dbo._Reference613X1 s WITH (NOLOCK)
-                    ON t._Fld43767RRef = s._IDRRef
-                LEFT JOIN dbo._Reference613X1 folder WITH (NOLOCK)
-                    ON s._ParentIDRRef = folder._IDRRef
-                LEFT JOIN dbo._Reference164 pos WITH (NOLOCK)
-                    ON t._Fld43766RRef = pos._IDRRef
-                LEFT JOIN dbo._Reference358 hr WITH (NOLOCK)
-                    ON t._Fld43765RRef = hr._IDRRef
-                WHERE t._Fld43775 >= '5999-01-01'
-                  AND t._Fld43774 > '2002-01-01'
-                  AND LTRIM(RTRIM(ISNULL(s._Description, N''))) <> N''
-            )
-            SELECT PersonId, Person, PositionId, Position, HrDept, StaffFolder, StaffUnit
-            FROM latest
-            WHERE rn = 1
-              AND LTRIM(RTRIM(ISNULL(Person, N''))) <> N''
-            """
-        )
-        staff = [
-            ErpStaffAssignment(
-                fio=(row.Person or "").strip(),
-                person_id=(row.PersonId or "").strip().upper(),
-                position_id=(row.PositionId or "").strip().upper(),
-                position=(row.Position or "").strip(),
-                hr_department=(row.HrDept or "").strip(),
-                staff_folder=(row.StaffFolder or "").strip(),
-                staff_unit=(row.StaffUnit or "").strip(),
-            )
-            for row in cur.fetchall()
-        ]
-        return departments, staff
+        return departments, _query_current_staff(cur)
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to load org structure: {exc}") from exc
     finally:

@@ -51,6 +51,7 @@ import {
   type KpiRunProfile,
   type KpiTodayRun,
   type KpiTodayRunStatus,
+  type PositionKpiFactBreakdown,
   type PositionOrchestrator,
   type KpiTile,
   type KpiSide,
@@ -456,6 +457,27 @@ function parsePositionKpiCompensation(
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item ?? '')).filter(Boolean) : []
+}
+
+function parsePositionKpiFact(raw: Record<string, unknown>): PositionKpiFactBreakdown {
+  const summary = (Array.isArray(raw.summary) ? raw.summary : [])
+    .map((item) => asRecord(item))
+    .map((item) => ({ label: String(item.label ?? ''), value: String(item.value ?? '') }))
+    .filter((item) => item.label)
+  const columns = (Array.isArray(raw.columns) ? raw.columns : []).map((item) => String(item ?? ''))
+  const rows = (Array.isArray(raw.rows) ? raw.rows : []).map((item) =>
+    Array.isArray(item) ? item.map((cell) => String(cell ?? '')) : []
+  )
+  const included = (Array.isArray(raw.included) ? raw.included : []).map((item) => Boolean(item))
+  return {
+    name: String(raw.name ?? ''),
+    period: String(raw.period ?? ''),
+    factText: String(raw.fact_text ?? raw.factText ?? ''),
+    summary,
+    columns,
+    rows,
+    included
+  }
 }
 
 function parsePositionKpiMetric(raw: Record<string, unknown>): PositionKpiMetricDetail {
@@ -2823,6 +2845,15 @@ export class ApiClient {
       body: { current_pin: currentPin, pin, pin_repeat: pinRepeat }
     })
     return { hasPin: Boolean(data?.has_pin) }
+  }
+
+  async getPositionKpiFact(position: string, code: string, month = ''): Promise<PositionKpiFactBreakdown> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/position-kpi/metrics/${encodeURIComponent(code)}/fact`,
+      { params: { position: position.trim(), month: month.trim() }, timeoutMs: 30_000 }
+    )
+    return parsePositionKpiFact(data ?? {})
   }
 
   async getPositionKpiMetric(position: string, code: string): Promise<PositionKpiMetricDetail> {

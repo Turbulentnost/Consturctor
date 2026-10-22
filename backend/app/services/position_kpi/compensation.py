@@ -15,7 +15,7 @@ from app.models.position_kpi import PositionCompRule
 from app.services.admin.finance import current_salary
 from app.services.admin.salary_source import MODE_ONEC, effective_salary_mode
 from app.services.org_structure import fio_key
-from app.services.position_kpi.daily import get_or_compute_position_kpi, resolve_profile
+from app.services.position_kpi.daily import read_today_position_kpi, resolve_profile
 from app.services.position_kpi.erp_salary import PlannedSalary, lookup_salary_history
 from app.services.position_kpi.pin import KpiPinError, verify_pin
 
@@ -164,13 +164,12 @@ def unlock_compensation(
     if profile is not None:
         rule = db.scalar(select(PositionCompRule).where(PositionCompRule.profile_id == profile.id))
         if rule is not None and rule.bonus_kind == "salary_times_crp_times_sum":
-            snapshot = get_or_compute_position_kpi(
+            snapshot = read_today_position_kpi(
                 db,
                 position_name,
                 as_of=target_day,
                 date_from=date_from,
                 date_to=date_to,
-                allow_stale=True,
                 subject=(auth.fio or "").strip(),
                 department=department,
             )

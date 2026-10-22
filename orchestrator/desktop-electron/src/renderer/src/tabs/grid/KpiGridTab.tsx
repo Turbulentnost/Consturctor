@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/types'
-import { FioSuggest } from '../../components/FioSuggest'
 import { StandardTabChrome } from './TabChromeGrid'
 import { DEFAULT_KPI_LAYOUT } from './useTabChromeLayout'
 import type { UserProfile } from '../../api/types'
@@ -29,6 +28,7 @@ import { KpiEmployeePanel, KpiMethodOffer } from './KpiEmployeePanel'
 import { KpiMetricCodeModal } from './KpiMetricCodeModal'
 import { KpiDailyRunPanel, KpiDailyWaitingTile } from './KpiDailyRunPanel'
 import { sameAgentTitle, useKpiDailyRun } from './useKpiDailyRun'
+import { KpiFactModal } from './KpiFactModal'
 import './kpiGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
@@ -45,12 +45,21 @@ function bonusMonth(from: string, to: string): { from: string; to: string } {
 
 const KPI_GENERATOR_PLATFORM_ID = 'f856136c-d75a-493b-8814-99bf6b06d721'
 const KPI_GENERATOR_TITLE = 'генератор модулей kpi'
-function kpiGeneratorTask(position: string, department: string): string {
+const KPI_RUNNER_TITLE = 'запуск модулей kpi'
+
+function sameRunnerTitle(title: string): boolean {
+  return title.trim().toLowerCase().replace(/ё/g, 'е') === KPI_RUNNER_TITLE
+}
+
+function kpiGeneratorTask(position: string, department: string, fio: string): string {
   const place = department ? `, подразделение «${department}»` : ''
+  const who = fio.trim() ? ` Сотрудник, который открыл этот экран: «${fio.trim()}».` : ''
   return (
-    `Считай только должность «${position}»${place}. ` +
-    'Не обходи другие должности, даже если журнал прошлого запуска перечисляет их. ' +
-    'Выполни план из materials/agent.md только для этой должности.'
+    `Считай только должность «${position}»${place}.${who} ` +
+    'Модули запускай только с --fio этого человека. ' +
+    'Другие должности и других держателей не обходи, даже если план в materials/agent.md ' +
+    'говорит «для каждого profile_id» и «каждого из people», и даже если журнал прошлого запуска их перечисляет. ' +
+    'Выполни план из materials/agent.md только для этой должности и этого сотрудника.'
   )
 }
 
@@ -63,10 +72,6 @@ export function KpiGridTab(_props: {
 }): React.JSX.Element {
   const { from, to } = useWorkplacePeriod()
   const selfFio = (_props.user?.fio || '').trim()
-  const [formOpen, setFormOpen] = useState(false)
-  const [person, setPerson] = useState(selfFio)
-  const [personPosition, setPersonPosition] = useState('')
-  const [subjectError, setSubjectError] = useState('')
   const [formBusy, setFormBusy] = useState(false)
   const [formNote, setFormNote] = useState('')
   const [agentQuery, setAgentQuery] = useState('')
@@ -76,7 +81,6 @@ export function KpiGridTab(_props: {
   const [gatePassword, setGatePassword] = useState('')
   const [gateBusy, setGateBusy] = useState(false)
   const [gateError, setGateError] = useState('')
-  const [inMoney, setInMoney] = useState(true)
   const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
   const positionKpi = usePositionKpi(_props.user?.position || '')
   const positionCompensation = usePositionCompensation()
@@ -142,11 +146,12 @@ export function KpiGridTab(_props: {
       }
       const position = (positionKpi.methodology?.position || _props.user?.position || '').trim()
       const department = (positionKpi.methodology?.department || _props.user?.department || '').trim()
+      const fio = (_props.user?.fio || '').trim()
       if (!position) {
         setLaunchError('У пользователя не указана должность.')
         return
       }
-      _props.onRunAgent(workflowId, title, kpiGeneratorTask(position, department))
+      _props.onRunAgent(workflowId, title, kpiGeneratorTask(position, department, fio))
     } catch (err) {
       setLaunchError(err instanceof Error ? err.message : 'Не удалось запустить агента')
     } finally {
@@ -154,11 +159,38 @@ export function KpiGridTab(_props: {
     }
   }
 
-  const downloadDailyReport = async (): Promise<void> => {
-    const month = (dailyRun.today?.day || '').slice(0, 7)
-    const result = await api.downloadKpiTodayReport(selfFio, month)
-    if (!result.ok && !result.canceled) {
-      setFormNote(result.error || 'Не удалось скачать отчёт ИЦПП')
+  const launchRunner = async (): Promise<void> => {
+    if (launchingGenerator) return
+    setLaunchError('')
+    setLaunchingGenerator(true)
+    try {
+      const fromBoard = workflowBoard.agents.find((item) => sameRunnerTitle(item.title))
+      let workflowId = fromBoard?.id || ''
+      let title = fromBoard?.title || 'Запуск модулей KPI'
+      if (!workflowId) {
+        const rows = await api.listWorkflows()
+        const match = rows
+          .filter((item) => item.phase === 'done' && sameRunnerTitle(item.title))
+          .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
+        workflowId = match?.id || ''
+        title = match?.title || title
+      }
+      if (!workflowId || !_props.onRunAgent) {
+        setLaunchError('В «Моих агентах» нет карточки «Запуск модулей KPI».')
+        return
+      }
+      const position = (positionKpi.methodology?.position || _props.user?.position || '').trim()
+      const department = (positionKpi.methodology?.department || _props.user?.department || '').trim()
+      const fio = (_props.user?.fio || '').trim()
+      if (!position) {
+        setLaunchError('У пользователя не указана должность.')
+        return
+      }
+      _props.onRunAgent(workflowId, title, kpiGeneratorTask(position, department, fio))
+    } catch (err) {
+      setLaunchError(err instanceof Error ? err.message : 'Не удалось запустить агента')
+    } finally {
+      setLaunchingGenerator(false)
     }
   }
 
@@ -212,35 +244,6 @@ export function KpiGridTab(_props: {
       })
   }, [from, to, loading, periodSources, reload])
 
-  useEffect(() => {
-    if (!formOpen) return
-    const fio = person.trim()
-    if (fio.split(/\s+/).filter(Boolean).length < 2) {
-      setPersonPosition('')
-      setSubjectError('')
-      return
-    }
-    let alive = true
-    const timer = window.setTimeout(() => {
-      void api
-        .getPositionKpiSubject(fio)
-        .then((subject) => {
-          if (!alive) return
-          setPersonPosition(subject.position)
-          setSubjectError('')
-        })
-        .catch((err: unknown) => {
-          if (!alive) return
-          setPersonPosition('')
-          setSubjectError(err instanceof ApiError ? err.message : 'Не удалось определить должность')
-        })
-    }, 250)
-    return () => {
-      alive = false
-      window.clearTimeout(timer)
-    }
-  }, [formOpen, person])
-
   const userId = _props.user?.id || ''
   const unlocked = Boolean(protection.unlockToken)
   const showGate =
@@ -270,38 +273,35 @@ export function KpiGridTab(_props: {
     setGateDismissed(true)
   }
 
-  useEffect(() => {
-    const openBonusForm = (): void => {
-      setPerson((current) => current.trim() || selfFio)
-      setFormNote('')
-      setFormOpen(true)
-    }
-    window.addEventListener('kpi:open-bonus-form', openBonusForm)
-    return () => window.removeEventListener('kpi:open-bonus-form', openBonusForm)
-  }, [selfFio])
-
   const downloadForm = async (): Promise<void> => {
     if (formBusy) return
     setFormBusy(true)
     setFormNote('')
     const period = bonusMonth(from, to)
-    const token = unlocked && inMoney ? protection.unlockToken : ''
+    const token = unlocked ? protection.unlockToken : ''
     try {
-      const result = await api.downloadPositionKpiForm(person.trim() || selfFio, period.from, period.to, token)
+      const result = await api.downloadPositionKpiForm(selfFio, period.from, period.to, token)
       if (result.canceled) return
       if (!result.ok) {
         if (token && /истёк|пароль KPI/i.test(result.error || '')) writeKpiUnlock(userId, null)
-        setFormNote(result.error || 'Не удалось сохранить форму')
+        setFormNote(result.error || 'Не удалось скачать отчёт')
         return
       }
-      setFormNote('Форма премирования сохранена')
-      setFormOpen(false)
+      setFormNote('')
     } catch (err: unknown) {
-      setFormNote(err instanceof Error ? err.message : 'Не удалось сохранить форму')
+      setFormNote(err instanceof Error ? err.message : 'Не удалось скачать отчёт')
     } finally {
       setFormBusy(false)
     }
   }
+
+  useEffect(() => {
+    const exportReport = (): void => {
+      void downloadForm()
+    }
+    window.addEventListener('kpi:open-bonus-form', exportReport)
+    return () => window.removeEventListener('kpi:open-bonus-form', exportReport)
+  })
 
   if (buildingMethod) {
     return (
@@ -323,9 +323,10 @@ export function KpiGridTab(_props: {
   return (
     <>
     {codeFor ? (
-      <KpiMetricCodeModal
+      <KpiFactModal
         position={_props.user?.position || ''}
         code={codeFor}
+        month={(positionKpi.snap?.periodFrom || '').slice(0, 7)}
         onClose={() => setCodeFor('')}
       />
     ) : null}
@@ -349,7 +350,6 @@ export function KpiGridTab(_props: {
             />
             <KpiDailyRunPanel
               daily={dailyRun}
-              onDownloadReport={() => void downloadDailyReport()}
               onOpenChat={_props.onOpenRun ? () => _props.onOpenRun?.(dailyRun.workflowId, dailyRun.title) : undefined}
             />
             <div className="kpi-two-tier-tiles" ref={tilesRef}>
@@ -368,12 +368,15 @@ export function KpiGridTab(_props: {
               onUnlockCompensation={positionCompensation.unlock}
               onHideCompensation={positionCompensation.hide}
               pin={kpiPin}
-              pinPromptAllowed={!showGate && !formOpen}
+              pinPromptAllowed={!showGate}
               loading={positionKpi.loading}
               needsMethodology={positionKpi.needsBuild}
               methodologyStatus={positionKpi.methodologyStatus}
               methodology={positionKpi.methodology}
-              onCalculate={() => void launchGenerator()}
+              onCalculate={() => setBuildingMethod(true)}
+              onOpenCalc={() => void launchRunner()}
+              calcBusy={launchingGenerator}
+              calcError={launchError}
               onInfo={(code) => setCodeFor(code)}
             />
             </div>
@@ -438,58 +441,8 @@ export function KpiGridTab(_props: {
             )
           : null}
         {notice ? <p className="kpi-dash-status-banner">{notice}</p> : null}
-        {formNote && !formOpen ? (
-          <p className={`kpi-dash-status-banner${formNote.includes('сохранена') ? '' : ' error'}`}>{formNote}</p>
-        ) : null}
+        {formNote ? <p className="kpi-dash-status-banner error">{formNote}</p> : null}
         {error ? <p className="kpi-dash-status-banner error">{error}</p> : null}
-        {formOpen
-          ? createPortal(
-              <div className="kpi-form-modal" role="dialog" aria-modal="true" aria-labelledby="kpi-form-title">
-                <button className="kpi-form-modal-backdrop" type="button" aria-label="Закрыть" onClick={() => setFormOpen(false)} />
-                <div className="kpi-form-modal-card">
-                  <h3 id="kpi-form-title">Индивидуальные целевые показатели</h3>
-                  <p className="kpi-form-modal-lead">
-                    Форма за месяц выбранного периода. Цели подставятся по должности сотрудника.
-                  </p>
-                  <label className="spec-filter-input kpi-form-person">
-                    <FioSuggest
-                      value={person}
-                      onChange={setPerson}
-                      onSelect={(fio) => setPerson(fio)}
-                      placeholder="ФИО, например Ильченко Екатерина Александровна"
-                      inputClassName="wp-search"
-                      autoFocus
-                    />
-                  </label>
-                  {personPosition ? <p className="kpi-form-modal-position">{personPosition}</p> : null}
-                  {subjectError ? <p className="kpi-form-modal-error">{subjectError}</p> : null}
-                  {unlocked ? (
-                    <label className="kpi-form-money">
-                      <input type="checkbox" checked={inMoney} onChange={(event) => setInMoney(event.target.checked)} />
-                      <span>В рублях: оклад и база премии из 1С:ЗУП</span>
-                    </label>
-                  ) : protection.enabled ? (
-                    <p className="kpi-form-modal-lead">Форма будет в процентах. Для сумм в рублях введите пароль KPI.</p>
-                  ) : null}
-                  {formNote ? <p className="kpi-form-modal-error">{formNote}</p> : null}
-                  <div className="kpi-form-modal-actions">
-                    <button
-                      className="btn-primary"
-                      type="button"
-                      disabled={formBusy || !person.trim()}
-                      onClick={() => void downloadForm()}
-                    >
-                      {formBusy ? 'Готовлю…' : 'Скачать'}
-                    </button>
-                    <button className="spec-btn-outline" type="button" onClick={() => setFormOpen(false)}>
-                      Отмена
-                    </button>
-                  </div>
-                </div>
-              </div>,
-              document.body
-            )
-          : null}
         </>
         ),
         main: (

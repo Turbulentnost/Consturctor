@@ -94,8 +94,8 @@ function KpiEmployeeTile({
           <button
             type="button"
             className="kpi-employee-info"
-            title="Как считается этот показатель"
-            aria-label={`Как считается «${metric.title}»`}
+            title="Как сформировался факт"
+            aria-label={`Как сформировался факт «${metric.title}»`}
             onClick={() => onInfo(metric.id)}
           >
             i
@@ -461,6 +461,30 @@ export function KpiMethodOffer({
   )
 }
 
+function KpiCalcPlaque({
+  busy,
+  error,
+  onOpen
+}: {
+  busy?: boolean
+  error?: string
+  onOpen?: () => void
+}): React.JSX.Element {
+  return (
+    <div className="kpi-calc-plaque">
+      <div>
+        <strong>Идёт расчёт модулей</strong>
+        <p className={error ? 'is-error' : undefined}>
+          {error || 'Модули должности считаются. В чате виден ход агента.'}
+        </p>
+      </div>
+      <button type="button" className="btn-primary" disabled={busy} onClick={() => onOpen?.()}>
+        {busy ? 'Запуск…' : 'Открыть чат'}
+      </button>
+    </div>
+  )
+}
+
 export function KpiEmployeePanel({
   metrics,
   compensation,
@@ -474,8 +498,11 @@ export function KpiEmployeePanel({
   methodologyStatus = needsMethodology ? 'needs_modules' : 'ready',
   methodology,
   onCalculate,
+  onOpenCalc,
   onDetails,
   onInfo,
+  calcBusy,
+  calcError,
   variant = 'panel',
   leadTile
 }: {
@@ -499,14 +526,24 @@ export function KpiEmployeePanel({
   methodologyStatus?: 'none' | 'needs_modules' | 'ready'
   methodology?: PositionKpiMethodology | null
   onCalculate?: () => void
+  /** Чат агента, который считает уже готовые модули. */
+  onOpenCalc?: () => void
   onDetails?: () => void
   /** Открыть код, источник и формулу показателя. */
   onInfo?: (code: string) => void
+  calcBusy?: boolean
+  calcError?: string
   variant?: 'panel' | 'bar'
   leadTile?: ReactNode
 }): React.JSX.Element {
   const gradPrefix = useId().replace(/:/g, '')
   const pendingMetrics = (methodology?.metrics ?? []).filter((item) => !item.moduleReady)
+  const modulesReady = (methodology?.metrics ?? []).some((item) => item.moduleReady)
+  const showCalcPlaque =
+    !loading &&
+    metrics.length === 0 &&
+    methodologyStatus === 'ready' &&
+    (modulesReady || methodology == null)
   const [pinModal, setPinModal] = useState<PinModal>(null)
   const pinPrompted = useRef(false)
 
@@ -557,12 +594,15 @@ export function KpiEmployeePanel({
           onShow={showSalary}
           onHide={onHideCompensation}
         />
-        {loading && !metrics.length ? (
+        {showCalcPlaque ? (
+          <KpiCalcPlaque busy={calcBusy} error={calcError} onOpen={onOpenCalc ?? onCalculate} />
+        ) : null}
+        {loading && !metrics.length && !showCalcPlaque ? (
           <p className="spec-v04-muted kpi-employee-loading">Загружаем KPI…</p>
         ) : metrics.map((m) => (
             <KpiEmployeeTile key={m.id} metric={m} gradId={`${gradPrefix}-${m.id}`} onInfo={onInfo} />
           ))}
-      {methodologyStatus === 'needs_modules'
+      {!loading && !metrics.length && methodologyStatus === 'needs_modules'
         ? pendingMetrics.map((item) => (
             <button
               key={item.code}

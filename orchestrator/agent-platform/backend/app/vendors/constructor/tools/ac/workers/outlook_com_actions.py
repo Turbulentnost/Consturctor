@@ -698,7 +698,7 @@ def person_match_needles(person: str) -> list[str]:
 
 
 def event_involves_person(event: dict, person: str) -> bool:
-    """Встреча относится к пользователю системы: организатор или участник."""
+    """Встреча относится к человеку: организатор, участник, тема или место."""
     if event.get("own_calendar"):
         return True
     name = (person or "").strip()
@@ -710,6 +710,7 @@ def event_involves_person(event: dict, person: str) -> bool:
             str(event.get("required_attendees") or ""),
             str(event.get("optional_attendees") or ""),
             str(event.get("subject") or ""),
+            str(event.get("location") or ""),
             str(event.get("calendar_owner") or ""),
         ]
     ).casefold()

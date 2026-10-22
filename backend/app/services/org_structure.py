@@ -40,6 +40,24 @@ def is_liquidated(name: str) -> bool:
     return bool(_LIQUIDATED.match(name or ""))
 
 
+def current_staff_items(staff: Iterable[ErpStaffAssignment]) -> list[dict[str, str]]:
+    """Открытые назначения без ликвидированных должностей и подразделений."""
+    items: list[dict[str, str]] = []
+    for row in staff:
+        if is_liquidated(row.position) or is_liquidated(row.staff_unit):
+            continue
+        if is_liquidated(row.hr_department) or is_liquidated(row.staff_folder):
+            continue
+        items.append(
+            {
+                "fio": row.fio,
+                "position": row.position,
+                "department": row.hr_department or row.staff_folder,
+            }
+        )
+    return items
+
+
 @dataclass(frozen=True, slots=True)
 class UnitRow:
     id: str

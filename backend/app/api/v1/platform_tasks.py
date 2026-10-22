@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.clients.erp_sql import ErpSqlError, list_current_staff
 from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db
 from app.models.user import AppUser
@@ -53,6 +54,16 @@ def run_org_sync() -> dict[str, Any]:
         return org_structure.sync_org_structure(db)
     finally:
         db.close()
+
+
+@router.get("/org/staff")
+def read_current_staff(_: AuthContext = Depends(get_current_user)) -> dict[str, Any]:
+    """Кто сейчас занимает должность: живой регистр назначений 1С, не текстовый снимок."""
+    try:
+        rows = list_current_staff()
+    except ErpSqlError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"items": org_structure.current_staff_items(rows), "source": "erp_pm"}
 
 
 @router.get("/org/status")

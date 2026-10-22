@@ -27,13 +27,14 @@ from app.services.position_kpi.daily import (
     attach_tile_history,
     get_or_compute_position_kpi,
     month_bounds,
+    read_today_position_kpi,
     resolve_profile,
-    schedule_today_fill,
 )
 from app.services.position_kpi.daily_run import DailyRunError, claim, own_report, today_status
 from app.services.position_kpi import pin as kpi_pin
 from app.services.position_kpi import protection as kpi_protection
 from app.services.position_kpi.explain import PositionKpiMetricNotFound, explain_metric
+from app.services.position_kpi.report_fact import ReportFactMissing, load_metric_fact
 from app.services.position_kpi.salary import SalaryLookupError
 from app.services.position_kpi.sources import SOURCES, catalog, validate_spec
 from app.services.position_kpi.sources import load as load_source
@@ -269,22 +270,28 @@ def read_position_kpi(
     own_position = (auth.position or "").strip().casefold() == name.casefold()
     department = (auth.department or "").strip() if own_position else None
     try:
-        payload = get_or_compute_position_kpi(
-            db,
-            name,
-            date_from=date_from,
-            date_to=date_to,
-            refresh=refresh,
-            allow_stale=not refresh,
-            subject=subject,
-            department=department,
-        )
+        if refresh:
+            payload = get_or_compute_position_kpi(
+                db,
+                name,
+                date_from=date_from,
+                date_to=date_to,
+                refresh=True,
+                allow_stale=False,
+                subject=subject,
+                department=department,
+            )
+        else:
+            payload = read_today_position_kpi(
+                db,
+                name,
+                date_from=date_from,
+                date_to=date_to,
+                subject=subject,
+                department=department,
+            )
     except PositionKpiNotFound:
         raise HTTPException(status_code=404, detail="Должность не найдена в каталоге KPI") from None
-    if payload.get("stale") and not refresh:
-        schedule_today_fill(
-            name, date_from=date_from, date_to=date_to, subject=subject, department=department
-        )
     return PositionKpiDailyOut.model_validate(attach_tile_history(db, payload, subject=subject))
 
 
@@ -444,6 +451,43 @@ def download_today_report(
         media_type=_XLSX,
         headers={"Content-Disposition": f"attachment; filename=\"icpp.xlsx\"; filename*=UTF-8''{encoded}"},
     )
+
+
+@router.get("/metrics/{code}/fact")
+def read_metric_fact(
+    code: str,
+    position: str = Query(default=""),
+    month: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Как сложился факт: лист показателя из отчёта ИЦПП."""
+    name = (position or auth.position or "").strip()
+    fio = (auth.fio or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите должность")
+    if not fio:
+        raise HTTPException(status_code=400, detail="Не указано ФИО")
+    own_position = (auth.position or "").strip().casefold() == name.casefold()
+    department = (auth.department or "").strip() if own_position else None
+    profile = resolve_profile(db, name, department=department)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Должность не найдена в каталоге KPI")
+    metric = db.scalar(
+        select(PositionKpiMetric).where(
+            PositionKpiMetric.profile_id == profile.id,
+            PositionKpiMetric.code == code.strip(),
+        )
+    )
+    if metric is None:
+        raise HTTPException(status_code=404, detail="У должности нет такого показателя")
+    period = month.strip() or date.today().strftime("%Y-%m")
+    if len(period) >= 7:
+        period = period[:7]
+    try:
+        return load_metric_fact(fio, period, metric.name)
+    except ReportFactMissing as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from None
 
 
 @router.get("/metrics/{code}")

@@ -311,6 +311,8 @@ def run_generated_pair(mod: Any, ctx: "SourceBundle", metric: "PositionKpiMetric
     if callable(calculate):
         load_fn = getattr(mod, "load_rows", None)
         if not callable(load_fn):
+            load_fn = getattr(mod, "load_data", None)
+        if not callable(load_fn):
             load_fn = _find_load_fn(mod)
         loaded = _call_load(load_fn, ctx) if callable(load_fn) else []
         return _report_from_calculate(calculate(loaded))

@@ -136,19 +136,36 @@ def _report_row(db: Session, profile_id: str, subject: str, day: date) -> Positi
     ).scalar_one_or_none()
 
 
+def _subject_rows(db: Session, profile_id: str, subject: str, day: date) -> list[PositionKpiSubjectFact]:
+    if not subject:
+        return []
+    return list(
+        db.scalars(
+            select(PositionKpiSubjectFact).where(
+                PositionKpiSubjectFact.profile_id == profile_id,
+                PositionKpiSubjectFact.subject == subject,
+                PositionKpiSubjectFact.day == day,
+            )
+        ).all()
+    )
+
+
 def _agent_subject_row(db: Session, profile_id: str, subject: str, day: date) -> PositionKpiSubjectFact | None:
-    rows = db.scalars(
-        select(PositionKpiSubjectFact).where(
-            PositionKpiSubjectFact.profile_id == profile_id,
-            PositionKpiSubjectFact.subject == subject,
-            PositionKpiSubjectFact.day == day,
-        )
-    ).all()
-    for row in rows:
+    for row in _subject_rows(db, profile_id, subject, day):
         payload = row.payload if isinstance(row.payload, dict) else {}
         if payload.get("source") == AGENT_SOURCE:
             return row
     return None
+
+
+def _subject_has_tiles(db: Session, profile_id: str, subject: str, day: date) -> bool:
+    """Плитки на экране уже есть — повторный запуск агента не нужен."""
+    for row in _subject_rows(db, profile_id, subject, day):
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        tiles = payload.get("tiles")
+        if isinstance(tiles, list) and any(isinstance(tile, dict) for tile in tiles):
+            return True
+    return False
 
 
 def _run_out(row: PositionKpiDailyRun | None) -> dict[str, Any] | None:
@@ -180,8 +197,11 @@ def today_status(db: Session, auth: AuthContext, *, day: date | None = None) -> 
     row = _run_row(db, profile.id, day)
     subject = subject_key(auth.fio or "")
     report_available = bool(subject) and _report_row(db, profile.id, subject, day) is not None
-    own_facts = bool(subject) and _agent_subject_row(db, profile.id, subject, day) is not None
+    has_tiles = _subject_has_tiles(db, profile.id, subject, day)
+    own_facts = has_tiles or (bool(subject) and _agent_subject_row(db, profile.id, subject, day) is not None)
     extra = {"run": _run_out(row), "report_available": report_available, "own_facts": own_facts}
+    if has_tiles:
+        return {**base, **extra, "status": "ready"}
     if row is None:
         return {**base, **extra, "status": "missing"}
     if row.status == "done":
@@ -278,6 +298,8 @@ def claim(
         if own.id not in with_modules:
             _mark_skipped(db, own, day)
             return {"day": day.isoformat(), "scope": "own", "granted": False, "profiles": [], "reason": "no_modules"}
+        if not retry_failed and _subject_has_tiles(db, own.id, subject_key(auth.fio or ""), day):
+            return {"day": day.isoformat(), "scope": "own", "granted": False, "profiles": [], "reason": "ready"}
         granted = _try_claim(db, own, day, auth.user_id, retry_failed=retry_failed)
         out = _profile_out(own)
         if not (out["department"] or "").strip():

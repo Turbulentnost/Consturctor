@@ -240,6 +240,22 @@ def test_review_due_is_end_of_the_same_day(db, notes) -> None:
     assert local.date() == msk(row.status_at).date()
 
 
+def test_current_staff_items_drop_liquidated() -> None:
+    rows = [
+        _staff("Григорьева Яна Павловна", "Азовский СЦ", "Кассир-приемщик"),
+        _staff("Бывший Сотрудник", "Азовский СЦ", "(ликв.) Кассир-приемщик"),
+        _staff("Архивный Сотрудник", "(ликв.) Азовский СЦ", "Техник"),
+    ]
+    items = org_structure.current_staff_items(rows)
+    assert items == [
+        {
+            "fio": "Григорьева Яна Павловна",
+            "position": "Кассир-приемщик",
+            "department": "Азовский СЦ",
+        }
+    ]
+
+
 def test_overdue_notifies_both_once(db, notes) -> None:
     due = datetime.now(timezone.utc) + timedelta(hours=1)
     task = platform_tasks.create_task(

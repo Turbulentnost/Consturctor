@@ -1,9 +1,10 @@
-"""Оффлайн-справочник должностей из enterprise_positions_report_all.txt (пока 1С недоступен)."""
+"""Должность → ФИО по текущим назначениям 1С. Текстовый отчёт — только если передан report_path."""
 
 from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -140,6 +141,57 @@ def _load_index(report_path: str) -> dict[str, list[EnterprisePositionAssignment
     return build_fio_index(parse_enterprise_positions_report(text))
 
 
+_LIVE_TTL_SEC = 60.0
+_live_cache: tuple[float, tuple[EnterprisePositionAssignment, ...]] | None = None
+
+
+def _file_assignments(report_path: str | Path) -> list[EnterprisePositionAssignment]:
+    path = Path(report_path)
+    if not path.is_file():
+        return []
+    return parse_enterprise_positions_report(path.read_text(encoding="utf-8-sig"))
+
+
+def load_live_assignments() -> list[EnterprisePositionAssignment]:
+    """Текущие назначения из erp_pm через Constructor, не enterprise_positions_report_all.txt."""
+    global _live_cache
+    now = time.monotonic()
+    if _live_cache is not None and now - _live_cache[0] < _LIVE_TTL_SEC:
+        return list(_live_cache[1])
+    from app.tools.constructor_session import ensure_session, last_error
+    from app.vendors.constructor.tools.runtime_api import request
+
+    if not ensure_session():
+        raise RuntimeError(last_error() or "Нет сессии Constructor для чтения должностей из 1С")
+    payload = request("GET", "/api/v1/platform-tasks/org/staff", timeout=60.0)
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise RuntimeError("1С не вернула текущие назначения")
+    assignments: list[EnterprisePositionAssignment] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        fio = str(item.get("fio") or "").strip()
+        position = str(item.get("position") or "").strip()
+        if not fio or not position:
+            continue
+        assignments.append(
+            EnterprisePositionAssignment(
+                fio=fio,
+                position=position,
+                department=str(item.get("department") or "").strip(),
+            )
+        )
+    _live_cache = (now, tuple(assignments))
+    return list(assignments)
+
+
+def _assignments(report_path: str | Path | None) -> list[EnterprisePositionAssignment]:
+    if report_path is not None:
+        return _file_assignments(report_path)
+    return load_live_assignments()
+
+
 def lookup_assignments_by_fio(
     fio: str,
     *,
@@ -148,8 +200,7 @@ def lookup_assignments_by_fio(
     key = normalize_name(fio)
     if not key:
         return []
-    index = _load_index(str(resolve_report_path(report_path)))
-    return list(index.get(key, []))
+    return list(build_fio_index(_assignments(report_path)).get(key, []))
 
 
 def build_position_title_index(
@@ -183,8 +234,7 @@ def lookup_fios_by_position_title(
     key = normalize_position_title(position)
     if not key:
         return []
-    index = _load_position_title_index(str(resolve_report_path(report_path)))
-    assignments = index.get(key, [])
+    assignments = build_position_title_index(_assignments(report_path)).get(key, [])
     fios: list[str] = []
     seen: set[str] = set()
     for item in assignments:
