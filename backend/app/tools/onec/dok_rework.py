@@ -106,16 +106,21 @@ def _open_check_task_id(config: DokConfig, source: ET.Element, *, timeout: float
 
 
 def checkup_due_comment(due: datetime) -> str:
-    """Как в карточке 1С: комментарий проверяющего — новый срок, не свободный текст."""
+    """Запасной комментарий, если проверяющий не написал свой."""
     return f"Новый срок исполнения: {due.strftime('%d.%m.%Y %H:%M:%S')}"
 
 
-def apply_checkup_return(checkup: ET.Element, due: datetime) -> None:
+def _review_comment(comment: str) -> str:
+    lines = [" ".join(line.split()) for line in str(comment or "").splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
+def apply_checkup_return(checkup: ET.Element, due: datetime, *, comment: str = "") -> None:
     """ОтправленоНаДоработку и комментарий проверяющего в результате проверки."""
     results = checkup.findall("m:checkResults", NS)
     if not results:
         raise ReworkError("У «Проверки исполнения» нет строк результата")
-    note = checkup_due_comment(due)
+    note = _review_comment(comment) or checkup_due_comment(due)
     for result in results:
         set_child(result, "returned", _CHECK_RESULT_ORDER, "true")
         set_child(result, "checkComment", _CHECK_RESULT_ORDER, note)
@@ -188,12 +193,12 @@ def _shift_process_due(
 
 
 def _save_checkup_return(
-    config: DokConfig, checkup_id: str, due: datetime, *, timeout: float
+    config: DokConfig, checkup_id: str, due: datetime, *, comment: str, timeout: float
 ) -> None:
     checkup = _retrieve_task_node(config, checkup_id, timeout=timeout)
     if not _is_check(checkup):
         raise ReworkError("Возврат на доработку закрывает «Проверку исполнения», а не задачу исполнителя")
-    apply_checkup_return(checkup, due)
+    apply_checkup_return(checkup, due, comment=comment)
     execute_dm(
         config,
         '<dm:request xsi:type="dm:DMUpdateRequest">'
@@ -225,7 +230,7 @@ def return_task_for_rework(
 ) -> dict[str, Any]:
     """Вернуть проверку в том же процессе: новый срок исполнителя и комментарий в истории."""
     task_id = str(task_id or "").strip()
-    comment = " ".join(str(comment or "").split())
+    comment = _review_comment(comment)
     if not task_id:
         raise ReworkError("Не указана задача")
     if not comment:
@@ -249,7 +254,7 @@ def return_task_for_rework(
                 "Исполнитель уже закрыл задачу, но открытая «Проверка исполнения» не найдена"
             )
     _shift_process_due(config, copy_source, due=due, timeout=timeout)
-    _save_checkup_return(config, close_id, due, timeout=timeout)
+    _save_checkup_return(config, close_id, due, comment=comment, timeout=timeout)
     try:
         closed = mark_task_executed(
             config,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -14,6 +15,7 @@ from app.services.position_kpi import daily as daily_mod
 from app.services.position_kpi.daily import (
     PositionKpiNotFound,
     get_or_compute_position_kpi,
+    read_today_position_kpi,
     refresh_all_profiles,
     resolve_profile,
 )
@@ -39,7 +41,7 @@ def _session(*, wire_psd: bool = False) -> Session:
 
 
 def _wire_psd_scorers(db: Session) -> None:
-    """Тесты движка подключают калькуляторы сами: в каталоге должности их больше нет."""
+    """Тесты движка явно проставляют калькуляторы помощника ПСД."""
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.models.position_kpi import PositionKpiMetric, PositionKpiSource
@@ -244,11 +246,16 @@ def test_failed_scorer_skips_tile_not_response(monkeypatch) -> None:
         date_from=PERIOD_FROM,
         date_to=PERIOD_TO,
     )
-    assert [tile["code"] for tile in result["tiles"]] == [
+    tiles = {tile["code"]: tile for tile in result["tiles"]}
+    assert list(tiles) == [
         "package_on_time",
+        "protocol_on_time",
         "instructions",
         "quality",
     ]
+    assert tiles["protocol_on_time"]["fact"] is None
+    assert tiles["protocol_on_time"]["score"] is None
+    assert "Модуль не посчитал" in tiles["protocol_on_time"]["evidence"]
     assert calls["protocol"] == 1
 
 
@@ -396,26 +403,31 @@ def test_refresh_all_profiles_warms_catalog(monkeypatch) -> None:
     assert db.query(PositionKpiDailyFact).count() == 4
 
 
+def _api_payload(position: str, *, cached: bool = True, tiles: list | None = None) -> dict:
+    return {
+        "position": position,
+        "profile_id": "plnpo010-office",
+        "period_from": PERIOD_FROM.isoformat(),
+        "period_to": PERIOD_TO.isoformat(),
+        "as_of": AS_OF.isoformat(),
+        "computed_at": "2026-09-22T08:00:00+00:00",
+        "cached": cached,
+        "stale": False,
+        "tiles": [] if tiles is None else tiles,
+    }
+
+
 def test_api_uses_jwt_position_and_maps_errors(monkeypatch) -> None:
     from app.api.v1 import position_kpi as api
 
     captured: dict[str, str] = {}
 
-    def fake_compute(_db, position, **_kwargs):
+    def fake_read(_db, position, **_kwargs):
         captured["position"] = position
-        return {
-            "position": position,
-            "profile_id": "plnpo010-office",
-            "period_from": PERIOD_FROM.isoformat(),
-            "period_to": PERIOD_TO.isoformat(),
-            "as_of": AS_OF.isoformat(),
-            "computed_at": "2026-09-22T08:00:00+00:00",
-            "cached": True,
-            "stale": False,
-            "tiles": [],
-        }
+        return _api_payload(position)
 
-    monkeypatch.setattr(api, "get_or_compute_position_kpi", fake_compute)
+    monkeypatch.setattr(api, "read_today_position_kpi", fake_read)
+    monkeypatch.setattr(api, "attach_tile_history", lambda _db, payload, **_kwargs: payload)
     auth = AuthContext(user_id="u1", position=OFFICE)
     out = api.read_position_kpi(
         position="",
@@ -441,7 +453,7 @@ def test_api_uses_jwt_position_and_maps_errors(monkeypatch) -> None:
 
     monkeypatch.setattr(
         api,
-        "get_or_compute_position_kpi",
+        "read_today_position_kpi",
         lambda *_a, **_k: (_ for _ in ()).throw(PositionKpiNotFound("x")),
     )
     with pytest.raises(HTTPException) as missing:
@@ -456,40 +468,30 @@ def test_api_uses_jwt_position_and_maps_errors(monkeypatch) -> None:
     assert missing.value.status_code == 404
 
 
-def test_api_schedules_today_fill_when_stale(monkeypatch) -> None:
+def test_api_cache_miss_returns_empty_without_compute(monkeypatch) -> None:
     from app.api.v1 import position_kpi as api
 
-    scheduled: dict[str, object] = {}
+    def fail_compute(*_args, **_kwargs):
+        raise AssertionError("открытие вкладки не запускает расчёт")
 
-    def fake_compute(_db, position, **_kwargs):
-        return {
-            "position": position,
-            "profile_id": "plnpo010-office",
-            "period_from": PERIOD_FROM.isoformat(),
-            "period_to": PERIOD_TO.isoformat(),
-            "as_of": "2026-09-21",
-            "computed_at": "2026-09-21T08:00:00+00:00",
-            "cached": True,
-            "stale": True,
-            "tiles": [],
-        }
-
-    monkeypatch.setattr(api, "get_or_compute_position_kpi", fake_compute)
+    monkeypatch.setattr(api, "get_or_compute_position_kpi", fail_compute)
     monkeypatch.setattr(
         api,
-        "schedule_today_fill",
-        lambda name, **kwargs: scheduled.update({"position": name, **kwargs}),
+        "read_today_position_kpi",
+        lambda _db, position, **_kwargs: _api_payload(position, cached=False),
     )
+    monkeypatch.setattr(api, "attach_tile_history", lambda _db, payload, **_kwargs: payload)
     out = api.read_position_kpi(
         position=OFFICE,
         period_from=None,
         period_to=None,
         refresh=False,
-        auth=AuthContext(user_id="u1"),
+        auth=AuthContext(user_id="u1", position=OFFICE),
         db=None,
     )
-    assert out.stale is True
-    assert scheduled["position"] == OFFICE
+    assert out.cached is False
+    assert out.tiles == []
+    assert out.stale is False
 
 
 def test_load_for_accepts_rows_and_skips_unknown() -> None:
@@ -499,6 +501,120 @@ def test_load_for_accepts_rows_and_skips_unknown() -> None:
     assert ctx.load_for({"kind": "unknown", "note": "Турбопроект"}) == []
     assert ctx.load_for({"kind": "manual"}) == []
     assert ctx.load_for({"kind": "regulation"}) == []
+
+
+def test_read_today_shows_runner_cache_when_subject_snapshot_missing(tmp_path, monkeypatch) -> None:
+    db = _session()
+    profile = resolve_profile(db, PSD)
+    assert profile is not None
+    from app.models.position_kpi import PositionKpiModule
+
+    db.add(
+        PositionKpiModule(
+            id="mod-protocol",
+            profile_id=profile.id,
+            metric_code="protocol_on_time",
+            module_name="kpi.generated.generated_test_protocol",
+            source="print('ok')",
+            tests="",
+            content_hash="abc",
+        )
+    )
+    db.commit()
+    day = date(2026, 10, 21)
+    folder = tmp_path / day.isoformat() / "generated_test_protocol"
+    folder.mkdir(parents=True)
+    (folder / "Ильченко Екатерина Александровна.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "output": (
+                    "Показатель: Своевременность протоколов\n"
+                    "Факт: 62.5\nВыполнение: 65.79%\nВклад: 16.45%\n"
+                ),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(daily_mod, "runner_cache_root", lambda: tmp_path)
+    fio = "Ильченко Екатерина Александровна"
+    result = read_today_position_kpi(
+        db,
+        PSD,
+        as_of=day,
+        date_from=date(2026, 10, 1),
+        date_to=date(2026, 10, 31),
+        subject=fio,
+    )
+    assert result["tiles"][0]["code"] == "protocol_on_time"
+    assert result["tiles"][0]["fact"] == 62.5
+    assert result["tiles"][0]["score"] == 65.79
+    again = read_today_position_kpi(
+        db,
+        PSD,
+        as_of=day,
+        date_from=date(2026, 10, 1),
+        date_to=date(2026, 10, 31),
+        subject=fio,
+    )
+    assert again["cached"] is True
+    assert again["tiles"][0]["fact"] == 62.5
+
+
+def test_remember_module_run_writes_full_cache_and_subject_tiles(tmp_path, monkeypatch) -> None:
+    db = _session()
+    profile = resolve_profile(db, PSD)
+    assert profile is not None
+    from app.models.position_kpi import PositionKpiModule
+    from kpi.module_cache import remember_module_run
+
+    db.add(
+        PositionKpiModule(
+            id="mod-cache",
+            profile_id=profile.id,
+            metric_code="protocol_on_time",
+            module_name="kpi.generated.generated_cache_probe",
+            source="print('ok')",
+            tests="",
+            content_hash="abc",
+        )
+    )
+    db.commit()
+    monkeypatch.setattr(daily_mod, "runner_cache_root", lambda: tmp_path)
+    day = date(2026, 10, 21)
+    path = remember_module_run(
+        "generated_cache_probe.py",
+        "Ильченко Екатерина Александровна",
+        "2026-10",
+        {
+            "name": "Своевременность протоколов",
+            "weight": 25,
+            "plan": 95.0,
+            "fact": 62.5,
+            "score": 65.79,
+            "contribution": 16.45,
+            "rows": [{"protocol": "ПСД-1"}],
+        },
+        db=db,
+        root=tmp_path,
+        today=day,
+    )
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["status"] == "ok"
+    assert saved["result"]["rows"] == [{"protocol": "ПСД-1"}]
+    assert saved["position"] == PSD
+    snapshot = read_today_position_kpi(
+        db,
+        PSD,
+        as_of=day,
+        date_from=date(2026, 10, 1),
+        date_to=date(2026, 10, 31),
+        subject="Ильченко Екатерина Александровна",
+    )
+    tile = snapshot["tiles"][0]
+    assert tile["fact"] == 62.5
+    assert tile["detail"]["rows"] == [{"protocol": "ПСД-1"}]
 
 
 def test_celery_beat_includes_position_kpi_daily() -> None:

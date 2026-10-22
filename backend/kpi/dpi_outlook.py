@@ -53,12 +53,8 @@ def load_events(path: Path) -> list[dict]:
 
 
 def _outlook_com():
-    try:
-        from desktop.app.tools.ac.workers import outlook_com_actions as outlook_com
-    except Exception:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "desktop"))
-        from app.tools.ac.workers import outlook_com_actions as outlook_com
-    return outlook_com
+    """COM-календарь живёт в desktop.app. Нельзя импортировать его как backend app."""
+    return _load_outlook_com()
 
 
 def try_read_outlook(date_from: date, date_to: date) -> list[dict]:

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../../api/client'
 import type { UserProfile } from '../../api/types'
 import { runDocflowAction, type DocflowUiAction } from '../../workplace/taskSourceActions'
@@ -15,6 +16,78 @@ function currentUser(): Promise<UserProfile> {
     throw err
   })
   return profile
+}
+
+function ReworkCommentModal({
+  agentComment,
+  comment,
+  due,
+  busy,
+  error,
+  onComment,
+  onDue,
+  onCancel,
+  onConfirm
+}: {
+  agentComment: string
+  comment: string
+  due: string
+  busy: boolean
+  error?: string
+  onComment: (value: string) => void
+  onDue: (value: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}): React.JSX.Element {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !busy) onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [busy, onCancel])
+
+  return createPortal(
+    <div className="rework-modal" role="dialog" aria-modal="true" aria-labelledby="rework-modal-title">
+      <button type="button" className="rework-modal-backdrop" aria-label="Закрыть" disabled={busy} onClick={onCancel} />
+      <form
+        className="rework-modal-card"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onConfirm()
+        }}
+      >
+        <h3 id="rework-modal-title">Вернуть на доработку</h3>
+        <p className="rework-modal-lead">
+          {agentComment
+            ? 'Текст подготовил агент. Его можно стереть и написать свой. После подтверждения комментарий запишется в историю задачи в 1С.'
+            : 'Напишите, что нужно доработать. После подтверждения комментарий запишется в историю задачи в 1С.'}
+        </p>
+        <textarea
+          rows={8}
+          value={comment}
+          disabled={busy}
+          autoFocus
+          placeholder="Что нужно доработать"
+          onChange={(event) => onComment(event.target.value)}
+        />
+        <label>
+          Новый срок
+          <input type="date" value={due} disabled={busy} onChange={(event) => onDue(event.target.value)} />
+        </label>
+        {error ? <p className="rework-modal-error">{error}</p> : null}
+        <div className="rework-modal-actions">
+          <button type="submit" className="closure-btn danger" disabled={busy || !comment.trim() || !due}>
+            {busy ? 'Отправляем…' : 'Подтвердить'}
+          </button>
+          <button type="button" className="closure-btn" disabled={busy} onClick={onCancel}>
+            Отмена
+          </button>
+        </div>
+      </form>
+    </div>,
+    document.body
+  )
 }
 
 function contextOf(item: AgentDocflowAction): TaskActionContext {
@@ -39,8 +112,15 @@ export function DocflowActionRow({
 }): React.JSX.Element {
   const [state, setState] = useState<RowState>({})
   const [rework, setRework] = useState(false)
-  const [comment, setComment] = useState(item.comment || (item.action === 'return' ? item.reason : ''))
+  const agentComment = item.comment || (item.action === 'return' ? item.reason : '')
+  const [comment, setComment] = useState(agentComment)
   const [due, setDue] = useState(defaultReworkDue())
+  const openRework = (): void => {
+    setComment(agentComment)
+    setDue(defaultReworkDue())
+    setState({})
+    setRework(true)
+  }
 
   const run = async (label: string, action: DocflowUiAction, note = '', nextDue = ''): Promise<void> => {
     setState({ busy: label })
@@ -73,34 +153,7 @@ export function DocflowActionRow({
       </div>
       {item.event && !bare ? <div className="docflow-action-event">{item.event}</div> : null}
       {item.reason ? <div className="docflow-action-reason">{item.reason}</div> : null}
-      {state.done ? null : rework ? (
-        <div className="docflow-action-form">
-          <textarea
-            rows={2}
-            value={comment}
-            disabled={busy}
-            placeholder="Что доработать исполнителю"
-            onChange={(event) => setComment(event.target.value)}
-          />
-          <label>
-            Новый срок
-            <input type="date" value={due} disabled={busy} onChange={(event) => setDue(event.target.value)} />
-          </label>
-          <div className="docflow-action-buttons">
-            <button
-              type="button"
-              className="closure-btn danger"
-              disabled={busy || !comment.trim() || !due}
-              onClick={() => void run('return', 'return', comment, due)}
-            >
-              {state.busy === 'return' ? 'Отправляем…' : 'Вернуть на доработку'}
-            </button>
-            <button type="button" className="closure-btn" disabled={busy} onClick={() => setRework(false)}>
-              Отмена
-            </button>
-          </div>
-        </div>
-      ) : (
+      {state.done ? null : (
         <div className="docflow-action-buttons">
           <button
             type="button"
@@ -114,7 +167,7 @@ export function DocflowActionRow({
             type="button"
             className={`closure-btn${recommendClose ? '' : ' danger'}`}
             disabled={busy}
-            onClick={() => setRework(true)}
+            onClick={openRework}
           >
             Вернуть
           </button>
@@ -128,6 +181,19 @@ export function DocflowActionRow({
           </button>
         </div>
       )}
+      {rework && !state.done ? (
+        <ReworkCommentModal
+          agentComment={agentComment}
+          comment={comment}
+          due={due}
+          busy={busy}
+          error={state.error ? state.message : undefined}
+          onComment={setComment}
+          onDue={setDue}
+          onCancel={() => setRework(false)}
+          onConfirm={() => void run('return', 'return', comment, due)}
+        />
+      ) : null}
       {state.message ? (
         <div className={`docflow-action-message${state.error ? ' error' : ''}`}>{state.message}</div>
       ) : null}
@@ -237,6 +303,12 @@ export function DocflowReviewButtons({
   const [note, setNote] = useState(comment)
   const [due, setDue] = useState(defaultReworkDue())
   const busy = Boolean(state.busy)
+  const openRework = (): void => {
+    setNote(comment)
+    setDue(defaultReworkDue())
+    setState({})
+    setRework(true)
+  }
   const ctx: TaskActionContext = { kind: 'docflow', rowId: taskId, title, refKey: taskId, step, taskName: title }
 
   const run = async (label: string, action: DocflowUiAction, text = '', nextDue = ''): Promise<void> => {
@@ -263,42 +335,6 @@ export function DocflowReviewButtons({
     )
   }
 
-  if (rework) {
-    return (
-      <div className="docflow-action-row bare">
-        <div className="docflow-action-form">
-          <textarea
-            rows={2}
-            value={note}
-            disabled={busy}
-            placeholder="Что доработать исполнителю"
-            onChange={(event) => setNote(event.target.value)}
-          />
-          <label>
-            Новый срок
-            <input type="date" value={due} disabled={busy} onChange={(event) => setDue(event.target.value)} />
-          </label>
-          <div className="docflow-action-buttons">
-            <button
-              type="button"
-              className="closure-btn danger"
-              disabled={busy || !note.trim() || !due}
-              onClick={() => void run('return', 'return', note, due)}
-            >
-              {state.busy === 'return' ? 'Отправляем…' : 'Вернуть на доработку'}
-            </button>
-            <button type="button" className="closure-btn" disabled={busy} onClick={() => setRework(false)}>
-              Отмена
-            </button>
-          </div>
-        </div>
-        {state.message ? (
-          <div className={`docflow-action-message${state.error ? ' error' : ''}`}>{state.message}</div>
-        ) : null}
-      </div>
-    )
-  }
-
   return (
     <div className="docflow-action-row bare">
       <div className="docflow-action-buttons">
@@ -315,12 +351,25 @@ export function DocflowReviewButtons({
         >
           {state.busy === 'close' ? 'Отправляем…' : 'Закрыть'}
         </button>
-        <button type="button" className="closure-btn danger" disabled={busy || !taskId} onClick={() => setRework(true)}>
+        <button type="button" className="closure-btn danger" disabled={busy || !taskId} onClick={openRework}>
           Вернуть на доработку
         </button>
       </div>
-      {state.message ? (
+      {state.message && !rework ? (
         <div className={`docflow-action-message${state.error ? ' error' : ''}`}>{state.message}</div>
+      ) : null}
+      {rework ? (
+        <ReworkCommentModal
+          agentComment={comment}
+          comment={note}
+          due={due}
+          busy={busy}
+          error={state.error ? state.message : undefined}
+          onComment={setNote}
+          onDue={setDue}
+          onCancel={() => setRework(false)}
+          onConfirm={() => void run('return', 'return', note, due)}
+        />
       ) : null}
     </div>
   )

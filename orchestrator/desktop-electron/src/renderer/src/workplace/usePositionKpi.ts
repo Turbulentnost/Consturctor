@@ -5,7 +5,8 @@ import type { WorkplaceKpiEmployeeMetric } from './workplaceKpiTypes'
 
 function formatPct(value: number | null): string {
   if (value == null) return 'нет данных'
-  return `${Number.isInteger(value) ? value : value.toFixed(1)}%`.replace('.0%', '%')
+  const rounded = Math.round(value * 100) / 100
+  return `${Number.isInteger(rounded) ? rounded : rounded}%`
 }
 
 function sparkColor(score: number | null, plan: number | null): string {
@@ -61,39 +62,31 @@ export function usePositionKpi(position = ''): {
   const reload = useCallback(() => {
     let alive = true
     setLoading(true)
-    const methodRequest = api.getPositionKpiMethodology()
-    void methodRequest
+    void api
+      .getPositionKpiMethodology()
       .then((value) => {
         if (!alive) return
         setMethodology(value)
         setMissing(value.status === 'none')
       })
-      .catch(() => undefined)
-    void Promise.allSettled([methodRequest, api.getPositionKpi(position)])
-      .then(([methodResult, kpiResult]) => {
+      .catch((reason: unknown) => {
         if (!alive) return
-        if (methodResult.status === 'rejected') {
-          setMethodology(null)
-          setMissing(false)
-          setError(
-            methodResult.reason instanceof Error
-              ? methodResult.reason.message
-              : 'Не удалось проверить методику KPI'
-          )
-        }
-        if (kpiResult.status === 'fulfilled') {
-          setSnap(kpiResult.value)
-          if (methodResult.status === 'fulfilled') setError('')
-        } else if (kpiResult.reason instanceof ApiError && kpiResult.reason.status === 404) {
-          setSnap(null)
-        } else {
-          setSnap(null)
-          setError(
-            kpiResult.reason instanceof Error
-              ? kpiResult.reason.message
-              : 'Не удалось загрузить KPI должности'
-          )
-        }
+        setMethodology(null)
+        setMissing(false)
+        setError(reason instanceof Error ? reason.message : 'Не удалось проверить методику KPI')
+      })
+    void api
+      .getPositionKpi(position)
+      .then((value) => {
+        if (!alive) return
+        setSnap(value)
+        setError('')
+      })
+      .catch((reason: unknown) => {
+        if (!alive) return
+        setSnap(null)
+        if (reason instanceof ApiError && reason.status === 404) return
+        setError(reason instanceof Error ? reason.message : 'Не удалось загрузить KPI должности')
       })
       .finally(() => {
         if (alive) setLoading(false)

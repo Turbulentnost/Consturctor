@@ -63,15 +63,22 @@ interface AgentSessionProps {
 }
 
 // Скрытый ход работы: сообщения человека, вопросы, разрешения, план, ошибки и итоговый
-// текст каждого завершённого хода — без размышлений, инструментов и промежуточных реплик.
+// текст каждого завершённого хода. Пока ход ещё идёт, его реплики и размышления остаются
+// на экране — иначе виден только список разрешённых команд.
 function resultsOnly(visible: SessionEvent[], running: boolean): SessionEvent[] {
   const lastTurn = visible.reduce((max, event) => Math.max(max, event.turn), 0)
   const finalText = new Map<number, number>()
   for (const event of visible) if (event.type === 'assistant' && event.text.trim()) finalText.set(event.turn, event.seq)
+  const liveTurn = (event: SessionEvent): boolean => running && event.turn === lastTurn
   return visible.filter((event) => {
-    if (event.type === 'assistant') return finalText.get(event.turn) === event.seq && !(running && event.turn === lastTurn)
+    if (event.type === 'assistant') {
+      if (!event.text.trim()) return false
+      if (liveTurn(event)) return true
+      return finalText.get(event.turn) === event.seq
+    }
     if (event.type === 'tool') return isQuestionEvent(event)
-    return event.type !== 'thinking'
+    if (event.type === 'thinking') return liveTurn(event)
+    return true
   })
 }
 
@@ -177,7 +184,7 @@ function Feed({
         if (event.type === 'thinking') {
           const live = running && event === last
           return (
-            <details key={event.seq} className={live ? 'sess-thinking live' : 'sess-thinking'}>
+            <details key={event.seq} className={live ? 'sess-thinking live' : 'sess-thinking'} open={live}>
               <summary>{live ? 'Размышляет…' : 'Размышления'}</summary>
               <p>{event.text}</p>
             </details>

@@ -781,6 +781,18 @@ export interface PositionKpiDataSourceInfo {
   perEmployee: boolean
 }
 
+/** Лист показателя из отчёта ИЦПП: как сложился факт. */
+export interface PositionKpiFactBreakdown {
+  name: string
+  period: string
+  factText: string
+  summary: { label: string; value: string }[]
+  columns: string[]
+  rows: string[][]
+  /** Строка вошла в факт. Пустой список — экран считает сам по колонкам листа. */
+  included: boolean[]
+}
+
 /** Что считает плитку KPI: код модуля, источник и формула (кнопка «i»). */
 export interface PositionKpiMetricDetail {
   position: string

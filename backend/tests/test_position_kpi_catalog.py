@@ -34,7 +34,15 @@ def test_psd_uses_regulation_deadlines():
         source.get("extra_json", {}).get("returns_assumed_zero") is True
         for source in quality["sources"]
     )
+    expected_modules = {
+        "package_on_time": "kpi.sources.sd_rk_packages",
+        "protocol_on_time": "kpi.sources.sd_rk_protocols",
+        "instructions": "kpi.sources.sd_rk_instructions",
+        "quality": "kpi.sources.sd_rk_quality",
+    }
     for metric in psd["metrics"]:
-        for source in metric["sources"]:
-            module = str((source.get("extra_json") or {}).get("module") or "")
-            assert not module.startswith("kpi.sources.sd_rk")
+        modules = {
+            str((source.get("extra_json") or {}).get("module") or "")
+            for source in metric["sources"]
+        }
+        assert expected_modules[metric["code"]] in modules

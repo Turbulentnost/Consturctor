@@ -101,7 +101,7 @@ def test_unlock_checks_pin_and_calculates_bonus(monkeypatch: pytest.MonkeyPatch)
     db = _session()
     monkeypatch.setattr(
         compensation,
-        "get_or_compute_position_kpi",
+        "read_today_position_kpi",
         lambda *_args, **_kwargs: {"tiles": [{"contrib": 25}, {"contrib": 35}]},
     )
 

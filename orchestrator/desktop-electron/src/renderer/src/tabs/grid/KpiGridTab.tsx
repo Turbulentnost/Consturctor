@@ -26,7 +26,7 @@ import { useKpiPin } from '../../workplace/useKpiPin'
 import { kpiPageTone, overallKpiPercent, useKpiPageTone } from '../../workplace/kpiPageTone'
 import { usePositionKpi } from '../../workplace/usePositionKpi'
 import { KpiEmployeePanel, KpiMethodOffer } from './KpiEmployeePanel'
-import { KpiMetricCodeModal } from './KpiMetricCodeModal'
+import { KpiFactModal } from './KpiFactModal'
 import './kpiGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 
@@ -43,17 +43,25 @@ function bonusMonth(from: string, to: string): { from: string; to: string } {
 
 const KPI_GENERATOR_PLATFORM_ID = 'f856136c-d75a-493b-8814-99bf6b06d721'
 const KPI_GENERATOR_TITLE = 'генератор модулей kpi'
+const KPI_RUNNER_TITLE = 'запуск модулей kpi'
 
 function sameAgentTitle(title: string): boolean {
   return title.trim().toLowerCase().replace(/ё/g, 'е') === KPI_GENERATOR_TITLE
 }
 
-function kpiGeneratorTask(position: string, department: string): string {
+function sameRunnerTitle(title: string): boolean {
+  return title.trim().toLowerCase().replace(/ё/g, 'е') === KPI_RUNNER_TITLE
+}
+
+function kpiGeneratorTask(position: string, department: string, fio: string): string {
   const place = department ? `, подразделение «${department}»` : ''
+  const who = fio.trim() ? ` Сотрудник, который открыл этот экран: «${fio.trim()}».` : ''
   return (
-    `Считай только должность «${position}»${place}. ` +
-    'Не обходи другие должности, даже если журнал прошлого запуска перечисляет их. ' +
-    'Выполни план из materials/agent.md только для этой должности.'
+    `Считай только должность «${position}»${place}.${who} ` +
+    'Модули запускай только с --fio этого человека. ' +
+    'Другие должности и других держателей не обходи, даже если план в materials/agent.md ' +
+    'говорит «для каждого profile_id» и «каждого из people», и даже если журнал прошлого запуска их перечисляет. ' +
+    'Выполни план из materials/agent.md только для этой должности и этого сотрудника.'
   )
 }
 
@@ -143,11 +151,47 @@ export function KpiGridTab(_props: {
       }
       const position = (positionKpi.methodology?.position || _props.user?.position || '').trim()
       const department = (positionKpi.methodology?.department || _props.user?.department || '').trim()
+      const fio = (_props.user?.fio || '').trim()
       if (!position) {
         setLaunchError('У пользователя не указана должность.')
         return
       }
-      _props.onRunAgent(workflowId, title, kpiGeneratorTask(position, department))
+      _props.onRunAgent(workflowId, title, kpiGeneratorTask(position, department, fio))
+    } catch (err) {
+      setLaunchError(err instanceof Error ? err.message : 'Не удалось запустить агента')
+    } finally {
+      setLaunchingGenerator(false)
+    }
+  }
+
+  const launchRunner = async (): Promise<void> => {
+    if (launchingGenerator) return
+    setLaunchError('')
+    setLaunchingGenerator(true)
+    try {
+      const fromBoard = workflowBoard.agents.find((item) => sameRunnerTitle(item.title))
+      let workflowId = fromBoard?.id || ''
+      let title = fromBoard?.title || 'Запуск модулей KPI'
+      if (!workflowId) {
+        const rows = await api.listWorkflows()
+        const match = rows
+          .filter((item) => item.phase === 'done' && sameRunnerTitle(item.title))
+          .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
+        workflowId = match?.id || ''
+        title = match?.title || title
+      }
+      if (!workflowId || !_props.onRunAgent) {
+        setLaunchError('В «Моих агентах» нет карточки «Запуск модулей KPI».')
+        return
+      }
+      const position = (positionKpi.methodology?.position || _props.user?.position || '').trim()
+      const department = (positionKpi.methodology?.department || _props.user?.department || '').trim()
+      const fio = (_props.user?.fio || '').trim()
+      if (!position) {
+        setLaunchError('У пользователя не указана должность.')
+        return
+      }
+      _props.onRunAgent(workflowId, title, kpiGeneratorTask(position, department, fio))
     } catch (err) {
       setLaunchError(err instanceof Error ? err.message : 'Не удалось запустить агента')
     } finally {
@@ -316,9 +360,10 @@ export function KpiGridTab(_props: {
   return (
     <>
     {codeFor ? (
-      <KpiMetricCodeModal
+      <KpiFactModal
         position={_props.user?.position || ''}
         code={codeFor}
+        month={(positionKpi.snap?.periodFrom || '').slice(0, 7)}
         onClose={() => setCodeFor('')}
       />
     ) : null}
@@ -354,7 +399,10 @@ export function KpiGridTab(_props: {
               needsMethodology={positionKpi.needsBuild}
               methodologyStatus={positionKpi.methodologyStatus}
               methodology={positionKpi.methodology}
-              onCalculate={() => void launchGenerator()}
+              onCalculate={() => setBuildingMethod(true)}
+              onOpenCalc={() => void launchRunner()}
+              calcBusy={launchingGenerator}
+              calcError={launchError}
               onInfo={(code) => setCodeFor(code)}
             />
             </div>
